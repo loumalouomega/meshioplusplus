@@ -199,6 +199,13 @@ inline constexpr std::int64_t kFitCadVertexBlendType = 9;
 /// `fit_cad:type` of a chamfer: a blend of straight cross-sections, of
 /// constant or varying width, that is no plane or cone (v17.2.0).
 inline constexpr std::int64_t kFitCadChamferType = 10;
+/// `fit_cad:type` of a surface of linear extrusion: a planar profile no line
+/// or circle explains, swept along a direction (`mKinematicSurfaces`,
+/// unreleased).
+inline constexpr std::int64_t kFitCadExtrusionType = 11;
+/// `fit_cad:type` of a surface of revolution: a planar profile no line or
+/// circle explains, turned about an axis (`mKinematicSurfaces`, unreleased).
+inline constexpr std::int64_t kFitCadRevolutionType = 12;
 /// Field data outside `FitCadFreeformMode::Legacy`: one row per patch tried
 /// as a surface, the columns of `FitCadFaceRecord` in declaration order as
 /// float64 (`(n, 13)`, v17.12.0).
@@ -493,6 +500,16 @@ struct FitCadOptions {
     /// The objective of that fit (unreleased); `Default` keeps every output
     /// as it was.
     FitCadFreeformObjective mFreeformObjective = FitCadFreeformObjective::Default;
+    /// Whether a patch no primitive explains is first tried as a kinematic
+    /// surface (unreleased, doc/fit_cad_freeform_plan.md step 5): a surface
+    /// of linear extrusion (`kFitCadExtrusionType`), of revolution
+    /// (`kFitCadRevolutionType`) or a helical surface (`kFitCadHelicalType`),
+    /// each the sweep of a fitted planar profile; a patch closed round (a
+    /// band) is cut into two discs first. The extrusion and the revolution
+    /// are written exactly (`SURFACE_OF_LINEAR_EXTRUSION`,
+    /// `SURFACE_OF_REVOLUTION`; a revolution's NURBS form is rational). Both
+    /// backends; off by default.
+    bool mKinematicSurfaces = false;
 };
 
 /// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,
@@ -652,6 +669,12 @@ struct FitCadResult {
     /// The control points of the faces that are not planes, spheres,
     /// cylinders, cones or tori, summed over the solid as NURBS.
     std::int64_t mTotalFreeformControlPoints = 0;
+    /// With `mKinematicSurfaces` (unreleased): the surfaces of linear
+    /// extrusion and of revolution, and the helical faces the kinematic stage
+    /// built (also counted in `mNumHelical`).
+    std::int64_t mNumExtrusion = 0;
+    std::int64_t mNumRevolution = 0;
+    std::int64_t mNumKinematicHelical = 0;
 };
 
 /**

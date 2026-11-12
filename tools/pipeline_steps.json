@@ -230,7 +230,8 @@
       {"name": "ValidationReport", "kind": "flag", "default": false},
       {"name": "ValidationAcceptance", "kind": "flag", "default": false},
       {"name": "FreeformFitSchedule", "kind": "text", "default": "legacy"},
-      {"name": "FreeformObjective", "kind": "text", "default": "default"}
+      {"name": "FreeformObjective", "kind": "text", "default": "default"},
+      {"name": "KinematicSurfaces", "kind": "flag", "default": false}
     ]},
     {"op": "RefinePatches", "keys": [
       {"name": "Tolerance", "kind": "number", "default": 0.001},

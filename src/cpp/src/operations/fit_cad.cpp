@@ -50,6 +50,7 @@
 #include "../detail/fit_cad_native.hpp"
 #include "../detail/cut_graph.hpp"
 #include "../detail/freeform_adaptive.hpp"
+#include "../detail/kinematic_fit.hpp"
 #include "../detail/patch_flatten.hpp"
 #include "../detail/patch_network.hpp"
 #include "../detail/primitive_constraints.hpp"
@@ -1058,10 +1059,108 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
             return left;
         };
 
+    // Kinematic surfaces first (`mKinematicSurfaces`): a patch fitted as a
+    // surface of linear extrusion, of revolution or a helical surface is a
+    // face and leaves the freeform work; a band (a wall closed round) is cut
+    // into two discs, both of which must fit.
+    std::vector<std::int64_t> cands = rCandidates;
+    if (rOptions.mKinematicSurfaces) {
+        detail::KinematicOptions ko;
+        ko.mTolerance = Tol;
+        const auto try_patch = [&](const std::vector<std::size_t>& rFacets, std::int64_t Label,
+                                   std::vector<detail::StepFreeformFace>& rFaces,
+                                   std::vector<FitCadFaceRecord>& rRecs) {
+            std::vector<detail::PatchVec> pts;
+            std::vector<detail::PatchTri> tris;
+            std::vector<std::size_t> tri_facet;
+            fcn_local_triangles(rFc, rFacets, pts, tris, tri_facet, nullptr);
+            const detail::KinematicFit fit = detail::kinematic_fit(pts, tris, ko);
+            log::debug("fit_cad: kinematic fit of patch {} ({} triangles): {}", Label, tris.size(),
+                       fit.mOk ? "type " + std::to_string(static_cast<int>(fit.mKind)) : fit.mWhy);
+            if (!fit.mOk)
+                return false;
+            detail::StepFreeformFace face;
+            face.mLabel = Label;
+            face.mType = static_cast<int>(fit.mKind);
+            face.mSurface = fit.mSurface;
+            face.mSense = fcn_sense(rFc, fit.mSurface, tris, tri_facet, fit.mU, fit.mV);
+            face.mKinematic.mProfile = fit.mProfile;
+            face.mKinematic.mSwept = fit.SweptCurve();
+            face.mKinematic.mOrigin = fit.mOrigin;
+            face.mKinematic.mAxis = fit.mAxis;
+            face.mKinematic.mE1 = fit.mE1;
+            face.mKinematic.mE2 = fit.mE2;
+            rFaces.push_back(std::move(face));
+            FitCadFaceRecord rec;
+            rec.mPatch = Label;
+            rec.mNumControl = static_cast<std::int64_t>(fit.mKind == detail::KinematicKind::Helical
+                                                            ? fit.mSurface.NumPoles()
+                                                            : fit.mProfile.mPoles.size());
+            rec.mMaxDist = fit.mMaxDist;
+            rec.mRmsDist = fit.mRmsDist;
+            rec.mReverseMaxDist = fit.mReverseMaxDist;
+            rRecs.push_back(rec);
+            return true;
+        };
+        std::vector<std::int64_t> left;
+        for (std::int64_t label : rCandidates) {
+            const auto it = facets_of.find(label);
+            if (it == facets_of.end()) {
+                left.push_back(label);
+                continue;
+            }
+            std::vector<detail::PatchVec> pts;
+            std::vector<detail::PatchTri> tris;
+            std::vector<std::size_t> tri_facet;
+            fcn_local_triangles(rFc, it->second, pts, tris, tri_facet, nullptr);
+            std::vector<detail::StepFreeformFace> faces;
+            std::vector<FitCadFaceRecord> recs;
+            bool ok = false;
+            std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> halves;
+            if (detail::kinematic_is_band(tris)) {
+                std::size_t num = 0;
+                const std::vector<std::int64_t> piece =
+                    detail::patch_split_to_discs(pts, tris, 24, num);
+                if (num == 2) {
+                    std::vector<std::vector<std::size_t>> pf(2);
+                    for (std::size_t t = 0; t < tris.size(); ++t) {
+                        if (t > 0 && tri_facet[t] == tri_facet[t - 1])
+                            continue;
+                        pf[static_cast<std::size_t>(piece[t])].push_back(tri_facet[t]);
+                    }
+                    ok = true;
+                    for (std::size_t h = 0; h < 2 && ok; ++h) {
+                        halves.emplace_back(next_label + static_cast<std::int64_t>(h), pf[h]);
+                        ok = try_patch(pf[h], halves.back().first, faces, recs);
+                    }
+                }
+            } else {
+                ok = try_patch(it->second, label, faces, recs);
+            }
+            if (!ok) {
+                left.push_back(label);
+                continue;
+            }
+            if (!halves.empty()) {
+                next_label += 2;
+                ++out.mNumSplit;
+                for (auto& h : halves)
+                    pieces.emplace_back(h.first, std::move(h.second));
+            }
+            for (std::size_t k = 0; k < faces.size(); ++k) {
+                out.mRecords[faces[k].mLabel] = recs[k];
+                out.mFaces.push_back(std::move(faces[k]));
+            }
+        }
+        cands = std::move(left);
+    }
+    if (!rOptions.mFreeform || rOptions.mFreeformMode == FitCadFreeformMode::Legacy)
+        cands.clear();
+
     std::vector<Item> work;
     if (rOptions.mFreeformMode == FitCadFreeformMode::Network) {
         std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> items;
-        for (std::int64_t label : rCandidates) {
+        for (std::int64_t label : cands) {
             const auto it = facets_of.find(label);
             if (it != facets_of.end())
                 items.emplace_back(label, it->second);
@@ -1069,7 +1168,7 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
         for (auto& it : network(items))
             work.push_back({it.first, std::move(it.second), 0, 1, rOptions.mResegmentRounds});
     } else {
-        for (std::int64_t label : rCandidates) {
+        for (std::int64_t label : cands) {
             const auto it = facets_of.find(label);
             if (it != facets_of.end())
                 work.push_back({label, it->second, 0, 0});
@@ -1329,8 +1428,9 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     // type 0, or a refinement's freeform or facets verdict; not a type left
     // out of `mTypes`) are tried as adaptive freeform faces (v17.12.0).
     FcnFreeform freeform;
-    if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy && work.HasFieldData("fit:patch_id") &&
-        work.HasFieldData("fit:patch_type")) {
+    // The kinematic surfaces, in every mode.
+    if ((rOptions.mFreeformMode != FitCadFreeformMode::Legacy || rOptions.mKinematicSurfaces) &&
+        work.HasFieldData("fit:patch_id") && work.HasFieldData("fit:patch_type")) {
         const std::unordered_map<std::int64_t, std::int64_t> proxy_of = fcn_refine_proxy(work);
         const NDArray& ids = work.FieldData("fit:patch_id");
         const NDArray& types = work.FieldData("fit:patch_type");
@@ -1344,7 +1444,7 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                   k->second == static_cast<std::int64_t>(RefineProxy::Freeform))))
                 candidates.push_back(label);
         }
-        if (rOptions.mFreeform && !candidates.empty()) {
+        if ((rOptions.mFreeform || rOptions.mKinematicSurfaces) && !candidates.empty()) {
             const double wtol = fcn_tolerance(*pSource, fc, rOptions.mTolerance);
             freeform = fcn_freeform(*pSource, fc, candidates, rOptions, wtol);
             if (freeform.mSplit)
@@ -1384,6 +1484,10 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mCounts = brep.mCounts;
     result.mNumBspline = brep.mNumBspline;
     result.mNumFreeformAdaptive = brep.mNumBspline;
+    result.mNumExtrusion = brep.mNumExtrusion;
+    result.mNumRevolution = brep.mNumRevolution;
+    result.mNumKinematicHelical = brep.mNumHelical;
+    result.mNumHelical = brep.mNumHelical;
     result.mNumNetworkEdges = freeform.mNumNetworkEdges;
     result.mNumExtraordinaryVertices = freeform.mNumExtraordinary;
     result.mMaxG1AngleDeg = freeform.mMaxG1AngleDeg;

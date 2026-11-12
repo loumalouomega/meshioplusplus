@@ -3023,7 +3023,7 @@ contains
         integer(int64) :: nrsplit, nrmerge
         real(real64) :: explained
         logical :: was_refined, was_closed, was_kept
-        integer(int64) :: nsnapped
+        integer(int64) :: nsnapped, nkin
         real(real64) :: hmax, hrms
         integer(int64) :: nsplit, nfillet, nhelical, nvarfillet, nblend, nrounded
         integer(int64) :: nvertex, nchamfer, nconic, ntapered, nvarpitch
@@ -3264,6 +3264,10 @@ contains
         call solid%free()
         solid = sq%fit_cad(backend='native', freeform_objective='nope', stat=ierr)
         call check(ierr /= 0, 'fit_cad refuses an unknown objective')
+        solid = sq%fit_cad(backend='native', kinematic_surfaces=.true., &
+                           num_extrusion=nkin, stat=ierr)
+        call check(ierr == 0 .and. nkin == 0_int64, 'a cube has no kinematic surface')
+        call solid%free()
         ! The Phase 3 options (v17.11.0): closed on every backend, nothing
         ! measured is NaN, and an option out of range is refused.
         solid = sq%fit_cad(backend='native', closed=was_closed, hausdorff_max=hmax, &

@@ -51,6 +51,7 @@
 #include "detail/closed_facets.hpp"
 #include "detail/cut_graph.hpp"
 #include "detail/freeform_adaptive.hpp"
+#include "detail/kinematic_fit.hpp"
 #include "detail/patch_flatten.hpp"
 #include "detail/patch_network.hpp"
 #include "detail/primitive_constraints.hpp"
@@ -143,6 +144,7 @@
 #include <GeomAPI_PointsToBSplineSurface.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BoundedSurface.hxx>
+#include <GeomConvert.hxx>
 #include <GeomLib.hxx>
 #include <GeomFill_Pipe.hxx>
 #include <Geom_OffsetSurface.hxx>
@@ -165,6 +167,9 @@
 #include <Geom_Surface.hxx>
 #include <Geom_ToroidalSurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_SurfaceOfLinearExtrusion.hxx>
+#include <Geom_SurfaceOfRevolution.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Interface_Static.hxx>
 #include <Message.hxx>
@@ -949,7 +954,8 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
             auto swept = [&](std::int64_t G) {
                 const std::int32_t t = rSkin.mPatches[static_cast<std::size_t>(G)].mType;
                 return t == kFitCadFilletType || t == kFitCadHelicalType ||
-                       t == kFitCadVertexBlendType || t == kFitCadChamferType;
+                       t == kFitCadVertexBlendType || t == kFitCadChamferType ||
+                       t == kFitCadExtrusionType || t == kFitCadRevolutionType;
             };
             // Two B-splines (a network patch and its freeform neighbours, which
             // meet it tangentially or nearly so, and in the freeform modes any
@@ -2912,6 +2918,167 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         skin.mPatches[R].mAccepted = true;
         feature[R] = Feature;
     };
+    // Kinematic surfaces (`mKinematicSurfaces`): a patch no primitive
+    // explains fitted as a surface of linear extrusion or of revolution
+    // before the fillets and threads (a chamfer's straight sections would
+    // claim an extruded wall), and as a helical surface after them (a
+    // thread's own fit knows its neighbours), by `detail::kinematic_fit` as
+    // the native backend does. A band (a wall closed round) is cut into two
+    // discs, appended as rows, both of which must fit.
+    std::vector<std::uint8_t> kinematic_row(skin.mPatches.size(), 0);
+    std::int64_t next_label = 0;
+    for (const FcPatch& p : skin.mPatches)
+        next_label = std::max(next_label, p.mLabel + 1);
+    const auto kinematic_pass = [&](bool Helical) {
+        detail::KinematicOptions ko;
+        ko.mTolerance = tol;
+        ko.mExtrusion = ko.mRevolution = !Helical;
+        ko.mHelical = Helical;
+        // The patch's triangles and the facet each came from.
+        const auto tri_facets = [&](std::size_t R) {
+            std::vector<std::size_t> out;
+            for (std::size_t f : facets_of[R])
+                for (std::int64_t k = 1; k + 1 < fc.mStart[f + 1] - fc.mStart[f]; ++k)
+                    out.push_back(f);
+            return out;
+        };
+        // The OpenCASCADE surface of a fit, or null.
+        const auto occt_surface = [&](const detail::KinematicFit& rFit) -> FcHandle<Geom_Surface> {
+            if (rFit.mKind == detail::KinematicKind::Helical)
+                return fc_occt_bspline(rFit.mSurface);
+            const detail::BsplineCurve& c = rFit.mProfile;
+            const FcHandle<Geom_Curve> curve = fc_occt_bspline_curve(rFit.SweptCurve());
+            const gp_Dir axis(rFit.mAxis[0], rFit.mAxis[1], rFit.mAxis[2]);
+            if (rFit.mKind == detail::KinematicKind::Extrusion) {
+                const FcHandle<Geom_Surface> ext = new Geom_SurfaceOfLinearExtrusion(curve, axis);
+                return FcHandle<Geom_Surface>(
+                    new Geom_RectangularTrimmedSurface(ext, rFit.mV0, rFit.mV1, Standard_False));
+            }
+            // A surface of revolution, as its exact rational B-spline over the
+            // angles and the whole profile: the NURBS form is then the
+            // surface itself, its trims inside its domain.
+            const FcHandle<Geom_Surface> rev = new Geom_SurfaceOfRevolution(
+                curve, gp_Ax1(gp_Pnt(rFit.mOrigin[0], rFit.mOrigin[1], rFit.mOrigin[2]), axis));
+            const FcHandle<Geom_Surface> exact = GeomConvert::SurfaceToBSplineSurface(
+                new Geom_RectangularTrimmedSurface(rev, rFit.mV0, rFit.mV1, c.T0(), c.T1()));
+            return exact;
+        };
+        // Fit row R's facets; its surface and record when it is a face.
+        struct Kin {
+            FcHandle<Geom_Surface> mSurface;
+            std::int64_t mType = 0;
+            FcRowInfo mInfo;
+        };
+        const auto fit_facets = [&](const std::vector<gp_Pnt>& rPts,
+                                    const std::vector<std::array<std::size_t, 3>>& rTris,
+                                    const std::vector<detail::PatchVec>& rFlat,
+                                    std::int64_t Label) -> Kin {
+            Kin k;
+            const detail::KinematicFit fit = detail::kinematic_fit(rFlat, rTris, ko);
+            log::debug("fit_cad: kinematic fit of patch {} ({} triangles): {}", Label, rTris.size(),
+                       fit.mOk ? "type " + std::to_string(static_cast<int>(fit.mKind)) : fit.mWhy);
+            if (!fit.mOk)
+                return k;
+            try {
+                FcHandle<Geom_Surface> srf = occt_surface(fit);
+                if (!srf.IsNull() && fc_surface_fits(srf, rPts, rTris, tol, false, true)) {
+                    k.mSurface = srf;
+                    k.mType = static_cast<std::int64_t>(fit.mKind);
+                    k.mInfo.mTried = true;
+                    k.mInfo.mNumControl = static_cast<std::int64_t>(
+                        fit.mKind == detail::KinematicKind::Helical ? fit.mSurface.NumPoles()
+                                                                    : fit.mProfile.mPoles.size());
+                    k.mInfo.mMaxDist = fit.mMaxDist;
+                    k.mInfo.mRmsDist = fit.mRmsDist;
+                    k.mInfo.mReverseMaxDist = fit.mReverseMaxDist;
+                } else {
+                    log::debug("fit_cad: patch {}: the kinematic surface strays from it", Label);
+                }
+            } catch (const Standard_Failure& rErr) {
+                log::debug("fit_cad: patch {} has no kinematic surface: {}", Label,
+                           rErr.GetMessageString());
+            }
+            return k;
+        };
+        const auto take = [&](std::size_t R, const Kin& rK) {
+            accept(R, rK.mSurface, rK.mType, 0);
+            fc_row(row_info, R) = rK.mInfo;
+            kinematic_row.resize(std::max(kinematic_row.size(), R + 1), 0);
+            kinematic_row[R] = 1;
+        };
+        const std::size_t rows = skin.mPatches.size();
+        for (std::size_t r = 0; r < rows; ++r) {
+            bool finite = true;
+            for (double x : skin.mPatches[r].mParams)
+                finite = finite && std::isfinite(x);
+            const std::int32_t type = skin.mPatches[r].mType;
+            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
+                continue;
+            std::vector<gp_Pnt> pts;
+            std::vector<std::array<std::size_t, 3>> tris;
+            std::vector<detail::PatchVec> flat;
+            patch_mesh(r, pts, tris, flat);
+            if (!detail::kinematic_is_band(tris)) {
+                const Kin k = fit_facets(pts, tris, flat, skin.mPatches[r].mLabel);
+                if (!k.mSurface.IsNull())
+                    take(r, k);
+                continue;
+            }
+            if (Helical)
+                continue;  // a band was cut before the threads
+            std::size_t num = 0;
+            const std::vector<std::int64_t> piece =
+                detail::patch_split_to_discs(flat, tris, 24, num);
+            if (num != 2)
+                continue;
+            const std::vector<std::size_t> tf = tri_facets(r);
+            std::vector<std::vector<std::size_t>> pf(2);
+            for (std::size_t t = 0; t < tris.size(); ++t) {
+                if (t > 0 && tf[t] == tf[t - 1])
+                    continue;
+                pf[static_cast<std::size_t>(piece[t])].push_back(tf[t]);
+            }
+            // Both halves fitted before either becomes a row.
+            Kin halves[2];
+            bool ok = true;
+            const std::vector<std::size_t> whole = facets_of[r];
+            for (std::size_t h = 0; h < 2 && ok; ++h) {
+                facets_of[r] = pf[h];
+                std::vector<gp_Pnt> hp;
+                std::vector<std::array<std::size_t, 3>> ht;
+                std::vector<detail::PatchVec> hf;
+                patch_mesh(r, hp, ht, hf);
+                halves[h] = fit_facets(hp, ht, hf, skin.mPatches[r].mLabel);
+                ok = !halves[h].mSurface.IsNull();
+            }
+            facets_of[r] = whole;
+            if (!ok)
+                continue;
+            facets_of[r].clear();
+            for (std::size_t h = 0; h < 2; ++h) {
+                FcPatch np;
+                np.mLabel = next_label++;
+                np.mType = 0;
+                np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+                np.mTolerance = skin.mPatches[r].mTolerance;
+                const std::size_t row = skin.mPatches.size();
+                for (std::size_t f : pf[h])
+                    skin.mRow[f] = static_cast<std::int64_t>(row);
+                skin.mPatches.push_back(np);
+                facets_of.push_back(pf[h]);
+                surface.emplace_back();
+                analytic.push_back(0);
+                feature.resize(row + 1, 0);
+                take(row, halves[h]);
+            }
+        }
+    };
+    if (rOptions.mKinematicSurfaces) {
+        kinematic_pass(false);
+        // The halves are rows from here on.
+        m = skin.mPatches.size();
+    }
+
     for (std::size_t r = 0; (rOptions.mFillets || rOptions.mThreads) && r < m; ++r) {
         {
             bool finite = true;
@@ -3155,9 +3322,6 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     // its flattenings is split, and the pieces, appended as new rows, are
     // fitted in turn by this same loop.
     std::int64_t num_freeform_tried = 0;
-    std::int64_t next_label = 0;
-    for (const FcPatch& p : skin.mPatches)
-        next_label = std::max(next_label, p.mLabel + 1);
     std::vector<std::uint8_t> is_piece(m, 0), tile_depth(m, 0);
     // The general freeform stage's halvings so far, and what it built per row.
     std::vector<std::int64_t> general_depth(m, 0);
@@ -3462,6 +3626,10 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         return true;
     };
 
+    // The helical kinematic faces, after the threads (see above).
+    if (rOptions.mKinematicSurfaces)
+        kinematic_pass(true);
+
     if (rOptions.mFreeform && rOptions.mFreeformMode == FitCadFreeformMode::Network)
         occt_network(freeform_rows(false), false);
     for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
@@ -3710,8 +3878,11 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         for (std::size_t r = 0; r < m; ++r)
             type_before[r] = skin.mPatches[r].mType;
         auto fitted = [&](std::size_t Q) {
-            return analytic_before[Q] && type_before[Q] >= 1 &&
-                   type_before[Q] <= static_cast<std::int32_t>(kFitCadBsplineType);
+            return analytic_before[Q] &&
+                   ((type_before[Q] >= 1 &&
+                     type_before[Q] <= static_cast<std::int32_t>(kFitCadBsplineType)) ||
+                    type_before[Q] == kFitCadExtrusionType ||
+                    type_before[Q] == kFitCadRevolutionType);
         };
         for (std::size_t r = 0; r < m; ++r) {
             bool finite = true;
@@ -4237,8 +4408,17 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 result.mNumBlend += (feat & kFcBlend) ? 1 : 0;
                 result.mNumConicBlend += (feat & kFcConic) ? 1 : 0;
                 break;
+            case kFitCadExtrusionType:
+                ++result.mNumExtrusion;
+                break;
+            case kFitCadRevolutionType:
+                ++result.mNumRevolution;
+                break;
             case kFitCadHelicalType:
                 ++result.mNumHelical;
+                if (g >= 0 && static_cast<std::size_t>(g) < kinematic_row.size() &&
+                    kinematic_row[static_cast<std::size_t>(g)])
+                    ++result.mNumKinematicHelical;
                 result.mNumRoundedThread += (feat & kFcRounded) ? 1 : 0;
                 result.mNumTaperedThread += (feat & kFcTapered) ? 1 : 0;
                 result.mNumVariablePitchThread += (feat & kFcVariablePitch) ? 1 : 0;

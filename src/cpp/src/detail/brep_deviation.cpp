@@ -439,14 +439,24 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
             if (!(hi_u > lo_u) || !(hi_v > lo_v))
                 continue;
         }
-        std::vector<Vec3> node((N + 1) * (N + 1));
-        std::vector<char> inside((N + 1) * (N + 1), 0);
-        std::vector<double> nu((N + 1) * (N + 1)), nv((N + 1) * (N + 1));
-        for (std::size_t j = 0; j <= N; ++j)
-            for (std::size_t i = 0; i <= N; ++i) {
-                const std::size_t k = j * (N + 1) + i;
-                nu[k] = lo_u + (hi_u - lo_u) * static_cast<double>(i) / static_cast<double>(N);
-                nv[k] = lo_v + (hi_v - lo_v) * static_cast<double>(j) / static_cast<double>(N);
+        // A face of more knot spans than `N` (a thread's many turns) gets a
+        // node per span, so no node is a turn away from its neighbours.
+        const std::size_t Gu =
+            std::min<std::size_t>(1024, std::max(N, f.mNu > static_cast<std::size_t>(f.mP)
+                                                        ? f.mNu - static_cast<std::size_t>(f.mP)
+                                                        : std::size_t{0}));
+        const std::size_t Gv =
+            std::min<std::size_t>(1024, std::max(N, f.mNv > static_cast<std::size_t>(f.mQ)
+                                                        ? f.mNv - static_cast<std::size_t>(f.mQ)
+                                                        : std::size_t{0}));
+        std::vector<Vec3> node((Gu + 1) * (Gv + 1));
+        std::vector<char> inside((Gu + 1) * (Gv + 1), 0);
+        std::vector<double> nu((Gu + 1) * (Gv + 1)), nv((Gu + 1) * (Gv + 1));
+        for (std::size_t j = 0; j <= Gv; ++j)
+            for (std::size_t i = 0; i <= Gu; ++i) {
+                const std::size_t k = j * (Gu + 1) + i;
+                nu[k] = lo_u + (hi_u - lo_u) * static_cast<double>(i) / static_cast<double>(Gu);
+                nv[k] = lo_v + (hi_v - lo_v) * static_cast<double>(j) / static_cast<double>(Gv);
                 Vec3 su, sv;
                 bd_eval(f, nu[k], nv[k], node[k], su, sv);
                 inside[k] = bd_inside(f, nu[k], nv[k]) ? 1 : 0;
@@ -464,22 +474,22 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
         // cells a node of which is inside or a trim runs through.
         if (bd_triangulate(f, fi, nu, nv, inside, cad, cad_uv, cad_face))
             continue;
-        std::vector<char> crossed(N * N, 0);
+        std::vector<char> crossed(Gu * Gv, 0);
         for (std::size_t l = 0; l < f.mBoundaryUv.size(); ++l)
             for (const auto& uv : f.mBoundaryUv[l]) {
-                const double fu = (uv[0] - lo_u) / (hi_u - lo_u) * static_cast<double>(N);
-                const double fv = (uv[1] - lo_v) / (hi_v - lo_v) * static_cast<double>(N);
-                if (!(fu >= 0.0) || !(fv >= 0.0) || fu > static_cast<double>(N) ||
-                    fv > static_cast<double>(N))
+                const double fu = (uv[0] - lo_u) / (hi_u - lo_u) * static_cast<double>(Gu);
+                const double fv = (uv[1] - lo_v) / (hi_v - lo_v) * static_cast<double>(Gv);
+                if (!(fu >= 0.0) || !(fv >= 0.0) || fu > static_cast<double>(Gu) ||
+                    fv > static_cast<double>(Gv))
                     continue;
-                const std::size_t ci = std::min(N - 1, static_cast<std::size_t>(fu));
-                const std::size_t cj = std::min(N - 1, static_cast<std::size_t>(fv));
-                crossed[cj * N + ci] = 1;
+                const std::size_t ci = std::min(Gu - 1, static_cast<std::size_t>(fu));
+                const std::size_t cj = std::min(Gv - 1, static_cast<std::size_t>(fv));
+                crossed[cj * Gu + ci] = 1;
             }
-        for (std::size_t j = 0; j < N; ++j)
-            for (std::size_t i = 0; i < N; ++i) {
-                const std::size_t a = j * (N + 1) + i, b = a + 1, c = a + N + 1, d = c + 1;
-                if (!(inside[a] || inside[b] || inside[c] || inside[d] || crossed[j * N + i]))
+        for (std::size_t j = 0; j < Gv; ++j)
+            for (std::size_t i = 0; i < Gu; ++i) {
+                const std::size_t a = j * (Gu + 1) + i, b = a + 1, c = a + Gu + 1, d = c + 1;
+                if (!(inside[a] || inside[b] || inside[c] || inside[d] || crossed[j * Gu + i]))
                     continue;
                 for (const std::array<std::size_t, 3>& tri :
                      {std::array<std::size_t, 3>{a, b, d}, std::array<std::size_t, 3>{a, d, c}}) {

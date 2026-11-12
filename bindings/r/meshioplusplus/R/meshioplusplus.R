@@ -2529,6 +2529,9 @@ mio_has_occt <- function() {
 #'   B-spline fit schedule, `"legacy"` or `"continuation"`.
 #' @param freeform_objective Its objective, `"default"`, `"pdm"`, `"tdm"` or
 #'   `"sdm"`.
+#' @param kinematic_surfaces Whether a patch no primitive explains is first
+#'   tried as a surface of linear extrusion, of revolution or a helical
+#'   surface.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -2562,7 +2565,8 @@ mio_has_occt <- function() {
 #'   `normal_deviation_p95_deg`, `step_round_trip_checked`,
 #'   `step_round_trip_valid`, `step_round_trip_volume_ratio` and
 #'   `total_freeform_control_points`; `NaN` and `FALSE` unless
-#'   `validation_report` measured them).
+#'   `validation_report` measured them), and `num_extrusion`,
+#'   `num_revolution` and `num_kinematic_helical` (the kinematic faces).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
@@ -2588,7 +2592,7 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         validate_by_surface_sampling = TRUE,
                         constrain_primitives = FALSE, validation_report = FALSE,
                         validation_acceptance = FALSE, freeform_fit_schedule = "legacy",
-                        freeform_objective = "default") {
+                        freeform_objective = "default", kinematic_surfaces = FALSE) {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -2617,7 +2621,7 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     isTRUE(layout_snap_to_features), isTRUE(validate_by_surface_sampling),
     isTRUE(constrain_primitives), isTRUE(validation_report),
     isTRUE(validation_acceptance), as.character(freeform_fit_schedule),
-    as.character(freeform_objective)
+    as.character(freeform_objective), isTRUE(kinematic_surfaces)
   )
 }
 

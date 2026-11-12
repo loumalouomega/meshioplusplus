@@ -1138,7 +1138,8 @@ static int32_t oc_fit_cad_keyword(const mxArray *value, const char *name,
  *         layout_target_patch_size, layout_max_valence_deviation,
  *         resegment_rounds, layout_snap_to_features,
  *         validate_by_surface_sampling, constrain_primitives, validation_report,
- *         validation_acceptance, freeform_fit_schedule, freeform_objective) -- 50
+ *         validation_acceptance, freeform_fit_schedule, freeform_objective,
+ *         kinematic_surfaces) -- 51
  *         arguments, R's order exactly. */
 static mxArray *O_mio_fit_cad(const mxArray **a) {
     mio_fit_cad_opts opts;
@@ -1166,6 +1167,7 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
     opts_ex2.local_refine = oc_fit_cad_keyword(a[37], "local_refine", refines);
     opts_ex2.freeform_fit_schedule = oc_fit_cad_keyword(a[48], "freeform_fit_schedule", schedules);
     opts_ex2.freeform_objective = oc_fit_cad_keyword(a[49], "freeform_objective", objectives);
+    opts_ex2.kinematic_surfaces = mio_o_bool(a[50], "kinematic_surfaces") ? 1 : 0;
     opts_ex2.freeform_g1_tolerance_deg = mio_o_double(a[38], "freeform_g1_tolerance_deg");
     opts_ex2.freeform_max_control_points = mio_o_int64(a[39], "freeform_max_control_points");
     opts_ex2.layout_target_patch_size = mio_o_double(a[40], "layout_target_patch_size");
@@ -1299,7 +1301,10 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
                            "step_round_trip_checked",
                            "step_round_trip_valid",
                            "step_round_trip_volume_ratio",
-                           "total_freeform_control_points"};
+                           "total_freeform_control_points",
+                           "num_extrusion",
+                           "num_revolution",
+                           "num_kinematic_helical"};
     mxArray *values[] = {
         mio_o_wrap_mesh(out),
         mio_o_logical(report.valid != 0),
@@ -1377,8 +1382,11 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
         mio_o_logical(report_ex4.step_round_trip_checked != 0),
         mio_o_logical(report_ex4.step_round_trip_valid != 0),
         mio_o_scalar(report_ex4.step_round_trip_volume_ratio),
-        mio_o_scalar((double)report_ex4.total_freeform_control_points)};
-    return mio_o_struct(75, names, values);
+        mio_o_scalar((double)report_ex4.total_freeform_control_points),
+        mio_o_scalar((double)report_ex4.num_extrusion),
+        mio_o_scalar((double)report_ex4.num_revolution),
+        mio_o_scalar((double)report_ex4.num_kinematic_helical)};
+    return mio_o_struct(78, names, values);
 }
 
 /* --- interfaces between regions ------------------------------------------ */
@@ -2159,7 +2167,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_fit_primitives, 14),
     MIO_O_ENTRY(mio_has_occt, 0),
     MIO_O_ENTRY(mio_refine_patches, 13),
-    MIO_O_ENTRY(mio_fit_cad, 50),
+    MIO_O_ENTRY(mio_fit_cad, 51),
     MIO_O_ENTRY(mio_region_adjacency, 2),
     MIO_O_ENTRY(mio_find_interface, 9),
     MIO_O_ENTRY(mio_contact_pairs, 6),

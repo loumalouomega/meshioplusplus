@@ -6254,7 +6254,7 @@ PYBIND11_MODULE(_core, m) {
            std::int64_t resegment_rounds, bool layout_snap_to_features,
            bool validate_by_surface_sampling, bool constrain_primitives, bool validation_report,
            bool validation_acceptance, const std::string& freeform_fit_schedule,
-           const std::string& freeform_objective) {
+           const std::string& freeform_objective, bool kinematic_surfaces) {
             // A keyword option's position in its list, or a ValueError naming it.
             const auto keyword = [](const std::string& rValue, const char* pName,
                                     std::initializer_list<const char*> Words) {
@@ -6329,6 +6329,7 @@ PYBIND11_MODULE(_core, m) {
             options.mValidateBySurfaceSampling = validate_by_surface_sampling;
             options.mConstrainPrimitives = constrain_primitives;
             options.mValidationReport = validation_report;
+            options.mKinematicSurfaces = kinematic_surfaces;
             options.mValidationAcceptance = validation_acceptance;
             options.mFreeformFitSchedule =
                 static_cast<meshioplusplus::FitCadFreeformFitSchedule>(keyword(
@@ -6431,6 +6432,10 @@ PYBIND11_MODULE(_core, m) {
             out["step_round_trip_valid"] = r.mStepRoundTripValid;
             out["step_round_trip_volume_ratio"] = r.mStepRoundTripVolumeRatio;
             out["total_freeform_control_points"] = r.mTotalFreeformControlPoints;
+            // The kinematic surfaces (unreleased).
+            out["num_extrusion"] = r.mNumExtrusion;
+            out["num_revolution"] = r.mNumRevolution;
+            out["num_kinematic_helical"] = r.mNumKinematicHelical;
             py::list faces;
             for (const meshioplusplus::FitCadFaceRecord& f : r.mFaces) {
                 py::dict row;
@@ -6475,7 +6480,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("resegment_rounds") = 2, py::arg("layout_snap_to_features") = true,
         py::arg("validate_by_surface_sampling") = true, py::arg("constrain_primitives") = false,
         py::arg("validation_report") = false, py::arg("validation_acceptance") = false,
-        py::arg("freeform_fit_schedule") = "legacy", py::arg("freeform_objective") = "default");
+        py::arg("freeform_fit_schedule") = "legacy", py::arg("freeform_objective") = "default",
+        py::arg("kinematic_surfaces") = false);
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See

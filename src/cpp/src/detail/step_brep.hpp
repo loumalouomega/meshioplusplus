@@ -86,6 +86,27 @@ namespace detail {
 struct StepFreeformFace {
     /// The `segment:patch` label; its row of the fit table becomes the face.
     std::int64_t mLabel = -1;
+    /// Its `fit_cad:type`: 6 a freeform B-spline, 8 a helical surface (its
+    /// B-spline approximation), 11 a surface of linear extrusion, 12 one of
+    /// revolution (`fit_cad`'s `kinematic_surfaces`).
+    int mType = 6;
+    /// Types 11 and 12: the exact surface, written as
+    /// `SURFACE_OF_LINEAR_EXTRUSION` / `SURFACE_OF_REVOLUTION` of the profile;
+    /// `mSurface` is then its B-spline over `(profile, motion)` parameters,
+    /// which the writer projects on.
+    struct Kinematic {
+        /// The profile, `(x, y, 0)` in the frame: a point `mOrigin + x mE1 + y
+        /// mE2` of an extrusion along `mAxis`, `mOrigin + x mE1 + y mAxis` of
+        /// a revolution about the axis through `mOrigin` (`x` its radius).
+        BsplineCurve mProfile;
+        /// The profile in 3-D (`KinematicFit::SweptCurve`): the STEP
+        /// surface's swept curve.
+        BsplineCurve mSwept;
+        PatchVec mOrigin{0.0, 0.0, 0.0};
+        PatchVec mAxis{0.0, 0.0, 1.0};
+        PatchVec mE1{1.0, 0.0, 0.0};
+        PatchVec mE2{0.0, 1.0, 0.0};
+    } mKinematic;
     BsplineSurface mSurface;
     /// Whether the surface's normal (`S_u x S_v`) agrees with the facets'.
     bool mSense = true;
@@ -153,6 +174,11 @@ struct StepBrepResult {
     std::int64_t mNumPcurveEdges = 0;
     /// Faces written from `StepBrepOptions::mFreeform` (`fit_cad:type` 6).
     std::int64_t mNumBspline = 0;
+    /// Of `mFreeform`'s, the kinematic ones by type (8, 11, 12), not in
+    /// `mNumBspline`.
+    std::int64_t mNumHelical = 0;
+    std::int64_t mNumExtrusion = 0;
+    std::int64_t mNumRevolution = 0;
     /// Per row of the fit table (its order): the `segment:patch` label, and
     /// why an accepted patch was written as coplanar groups (a
     /// `FitCadDemotionReason` value: 2 a point beyond the tolerance, 3 loops

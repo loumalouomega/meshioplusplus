@@ -1687,7 +1687,7 @@ struct _CFitCadOptsEx2
     validation_acceptance::Int32
     freeform_fit_schedule::Int32
     freeform_objective::Int32
-    reserved32::Int32
+    kinematic_surfaces::Int32
     reserved::NTuple{5,Int64}
 end
 
@@ -1728,7 +1728,10 @@ struct _CFitCadReportEx4
     normal_deviation_p95_deg::Cdouble
     step_round_trip_volume_ratio::Cdouble
     total_freeform_control_points::Int64
-    reserved::NTuple{22,Int64}
+    num_extrusion::Int64
+    num_revolution::Int64
+    num_kinematic_helical::Int64
+    reserved::NTuple{19,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),

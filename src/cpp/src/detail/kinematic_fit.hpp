@@ -121,6 +121,9 @@ struct KinematicFit {
     PatchVec At(double T, double S) const;
     /// The profile point `(x, y)` at `T` in 3-D, in the frame.
     PatchVec ProfilePoint(double T) const;
+    /// The profile as a 3-D curve (its poles mapped as `ProfilePoint` maps
+    /// its points): an extrusion's at height 0, a revolution's at angle 0.
+    BsplineCurve SweptCurve() const;
 };
 
 /// Whether a patch is a band: one connected surface of genus 0 with two

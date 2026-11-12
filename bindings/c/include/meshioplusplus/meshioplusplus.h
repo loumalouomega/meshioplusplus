@@ -7228,7 +7228,11 @@ typedef struct mio_fit_cad_opts_ex2 {
     /** Its objective, a mio_fit_cad_objective; 0 (default) as before. Takes
      *  the front of the former reserved[0] (unreleased). */
     int32_t freeform_objective;
-    int32_t reserved32;  /**< must be zero */
+    /** Nonzero: a patch no primitive explains is first tried as a kinematic
+     *  surface (a surface of linear extrusion, of revolution or a helical
+     *  surface, fit_cad:type 11, 12 and 8). Takes the former `reserved32`;
+     *  0 (the default) tries none (unreleased). */
+    int32_t kinematic_surfaces;
     int64_t reserved[5]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts_ex2;
 
@@ -7310,7 +7314,13 @@ typedef struct mio_fit_cad_report_ex4 {
     double step_round_trip_volume_ratio;
     /** The control points of the faces no primitive is. */
     int64_t total_freeform_control_points;
-    int64_t reserved[22]; /**< zero; room for additive growth */
+    /** With opts_ex2->kinematic_surfaces: the surfaces of linear extrusion
+     *  and of revolution, and the helical faces the kinematic stage built.
+     *  Take the front of the former reserved tail (unreleased). */
+    int64_t num_extrusion;
+    int64_t num_revolution;
+    int64_t num_kinematic_helical;
+    int64_t reserved[19]; /**< zero; room for additive growth */
 } mio_fit_cad_report_ex4;
 
 /**

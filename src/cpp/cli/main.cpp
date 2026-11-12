@@ -3314,6 +3314,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                           {"constrain-primitives", {}, false},
                                           {"validation-report", {}, false},
                                           {"validation-acceptance", {}, false},
+                                          {"kinematic-surfaces", {}, false},
                                           {"mesh-out", {}, true},
                                           {"cad-json", {}, true}},
                                          report_flag_specs()}));
@@ -3445,6 +3446,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     options.mConstrainPrimitives = has_flag(p, "constrain-primitives");
     options.mValidationReport = has_flag(p, "validation-report");
     options.mValidationAcceptance = has_flag(p, "validation-acceptance");
+    options.mKinematicSurfaces = has_flag(p, "kinematic-surfaces");
     const bool modes = options.mFreeformMode != meshioplusplus::FitCadFreeformMode::Legacy;
     static const char* const kModes[] = {"legacy", "adaptive", "network", "auto"};
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
@@ -3530,6 +3532,11 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
             json.Field("step_round_trip_valid", r.mStepRoundTripValid);
             json.Field("step_round_trip_volume_ratio", r.mStepRoundTripVolumeRatio);
             json.Field("total_freeform_control_points", r.mTotalFreeformControlPoints);
+        }
+        if (options.mKinematicSurfaces) {
+            json.Field("num_extrusion", r.mNumExtrusion);
+            json.Field("num_revolution", r.mNumRevolution);
+            json.Field("num_kinematic_helical", r.mNumKinematicHelical);
         }
         // The freeform modes report only outside the legacy mode.
         if (modes) {
@@ -3639,6 +3646,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                       << (r.mStepRoundTripChecked ? (r.mStepRoundTripValid ? "valid" : "NOT valid")
                                                   : "not checked")
                       << "\n";
+        if (options.mKinematicSurfaces)
+            std::cout << "  kinematic: " << r.mNumExtrusion << " extrusion(s), " << r.mNumRevolution
+                      << " revolution(s), " << r.mNumKinematicHelical << " helical face(s)\n";
         if (modes)
             std::cout << "  freeform (" << kModes[static_cast<int>(r.mFreeformMode) & 3]
                       << "): " << r.mNumFreeformAdaptive << " adaptive face(s), "

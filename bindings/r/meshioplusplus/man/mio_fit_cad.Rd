@@ -54,7 +54,8 @@ mio_fit_cad(
   validation_report = FALSE,
   validation_acceptance = FALSE,
   freeform_fit_schedule = "legacy",
-  freeform_objective = "default"
+  freeform_objective = "default",
+  kinematic_surfaces = FALSE
 )
 }
 \arguments{
@@ -191,6 +192,10 @@ B-spline fit schedule, `"legacy"` or `"continuation"`.}
 
 \item{freeform_objective}{Its objective, `"default"`, `"pdm"`, `"tdm"` or
 `"sdm"`.}
+
+\item{kinematic_surfaces}{Whether a patch no primitive explains is first
+tried as a surface of linear extrusion, of revolution or a helical
+surface.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -226,7 +231,8 @@ A list of `mesh` (the solid re-meshed, with cell data
   `normal_deviation_p95_deg`, `step_round_trip_checked`,
   `step_round_trip_valid`, `step_round_trip_volume_ratio` and
   `total_freeform_control_points`; `NaN` and `FALSE` unless
-  `validation_report` measured them).
+  `validation_report` measured them), and `num_extrusion`,
+  `num_revolution` and `num_kinematic_helical` (the kinematic faces).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the

@@ -1680,6 +1680,7 @@ meshioplusplus to-cad [options] INFILE OUTFILE.step
 | `--constrain-primitives` | Fit related primitives together: coaxial surfaces share one axis, parallel and perpendicular planes and nearly equal radii are made exact ([constrained primitives](/fit_cad#constrained-primitives)) |
 | `--validation-report` | Measure the solid against the skin both ways, the normal deviation and the STEP file read back ([validation report](/fit_cad#validation-report)) |
 | `--validation-acceptance` | Hold every freeform face to the validation measures before accepting it |
+| `--kinematic-surfaces` | First try a patch no primitive explains as a surface of linear extrusion, of revolution or a helical surface (unreleased) |
 | `--freeform-fit-schedule legacy\|continuation` | The freeform B-spline fit's schedule ([the fit's schedule and objective](/fit_cad#the-fit-s-schedule-and-objective)) |
 | `--freeform-objective default\|pdm\|tdm\|sdm` | The error that fit minimises |
 | `--mesh-out FILE` | Also write the re-meshed solid |

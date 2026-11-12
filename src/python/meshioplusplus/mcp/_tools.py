@@ -4065,6 +4065,7 @@ def tool_fit_cad(
     validation_acceptance=False,
     freeform_fit_schedule="legacy",
     freeform_objective="default",
+    kinematic_surfaces=False,
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
     faces (and, through OpenCASCADE, rolling-ball fillet, thread flank and
@@ -4113,7 +4114,10 @@ def tool_fit_cad(
     validation_acceptance (off) holds every freeform face to those measures.
     freeform_fit_schedule ("legacy" or "continuation") and freeform_objective
     ("default", "pdm", "tdm" or "sdm") choose how the adaptive and general
-    freeform faces' B-spline fit runs."""
+    freeform faces' B-spline fit runs. kinematic_surfaces (off) first tries
+    a patch no primitive explains as a surface of linear extrusion, of
+    revolution or a helical surface (fit_cad:type 11, 12, 8) and adds
+    num_extrusion, num_revolution and num_kinematic_helical."""
     from .._fit_cad import has_occt
 
     occt = has_occt()
@@ -4198,6 +4202,7 @@ def tool_fit_cad(
         validation_acceptance=validation_acceptance,
         freeform_fit_schedule=freeform_fit_schedule,
         freeform_objective=freeform_objective,
+        kinematic_surfaces=kinematic_surfaces,
     )
     _cache_invalidate(step_path)
     extra = {"step_path": step_path, "occt_available": occt, **report}

@@ -508,6 +508,9 @@ function t_fit_cad()
     expect_equal(sc.num_faces, 6);
     expect_error(@() mio.fit_cad(m, 'backend', 'native', 'freeform_objective', 'nope'), ...
         'freeform_objective');
+    kn = mio.fit_cad(m, 'backend', 'native', 'kinematic_surfaces', true);
+    expect_equal(kn.num_extrusion, 0);
+    expect_equal(kn.num_revolution, 0);
     % A STEP file is written on request.
     step = [tempname() '.step'];
     cleanup = onCleanup(@() delete_if(step));

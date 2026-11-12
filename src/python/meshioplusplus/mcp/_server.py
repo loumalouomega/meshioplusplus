@@ -5003,6 +5003,7 @@ def _register_gated(server: FastMCP) -> None:
         validation_acceptance: bool = False,
         freeform_fit_schedule: str = "legacy",
         freeform_objective: str = "default",
+        kinematic_surfaces: bool = False,
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -5104,7 +5105,11 @@ def _register_gated(server: FastMCP) -> None:
         validation_acceptance (off) holds every freeform face to them.
         freeform_fit_schedule ("legacy" or "continuation") and
         freeform_objective ("default", "pdm", "tdm" or "sdm") choose how the
-        adaptive and general freeform faces' B-spline fit runs."""
+        adaptive and general freeform faces' B-spline fit runs.
+        kinematic_surfaces (off) first tries a patch no primitive explains as
+        a surface of linear extrusion, of revolution or a helical surface
+        (fit_cad:type 11, 12, 8) and adds num_extrusion, num_revolution and
+        num_kinematic_helical."""
 
     @server.tool()
     @_forward(_tools.tool_data_export)

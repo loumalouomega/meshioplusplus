@@ -659,7 +659,7 @@ module meshioplusplus
         integer(c_int32_t) :: validation_acceptance = 0
         integer(c_int32_t) :: freeform_fit_schedule = 0
         integer(c_int32_t) :: freeform_objective = 0
-        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int32_t) :: kinematic_surfaces = 0
         integer(c_int64_t) :: reserved(5) = 0
     end type
 
@@ -701,7 +701,10 @@ module meshioplusplus
         real(c_double) :: normal_deviation_p95_deg = 0.0_c_double
         real(c_double) :: step_round_trip_volume_ratio = 0.0_c_double
         integer(c_int64_t) :: total_freeform_control_points = 0
-        integer(c_int64_t) :: reserved(22) = 0
+        integer(c_int64_t) :: num_extrusion = 0
+        integer(c_int64_t) :: num_revolution = 0
+        integer(c_int64_t) :: num_kinematic_helical = 0
+        integer(c_int64_t) :: reserved(19) = 0
     end type
 
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
@@ -10852,7 +10855,8 @@ contains
                           normal_deviation_max_deg, normal_deviation_p95_deg, &
                           step_round_trip_checked, step_round_trip_valid, &
                           step_round_trip_volume_ratio, total_freeform_control_points, &
-                          freeform_fit_schedule, freeform_objective) result(out)
+                          freeform_fit_schedule, freeform_objective, kinematic_surfaces, &
+                          num_extrusion, num_revolution, num_kinematic_helical) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -10922,6 +10926,9 @@ contains
         real(real64), intent(out), optional :: step_round_trip_volume_ratio
         integer(int64), intent(out), optional :: total_freeform_control_points
         character(*), intent(in), optional :: freeform_fit_schedule, freeform_objective
+        logical, intent(in), optional :: kinematic_surfaces
+        integer(int64), intent(out), optional :: num_extrusion, num_revolution, &
+                                                 num_kinematic_helical
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
@@ -11017,6 +11024,8 @@ contains
             merge(1_c_int32_t, 0_c_int32_t, validation_report)
         if (present(validation_acceptance)) opts_ex2%validation_acceptance = &
             merge(1_c_int32_t, 0_c_int32_t, validation_acceptance)
+        if (present(kinematic_surfaces)) opts_ex2%kinematic_surfaces = &
+            merge(1_c_int32_t, 0_c_int32_t, kinematic_surfaces)
         if (present(refine_segmentation)) &
             opts_ex%refine_segmentation = merge(1_c_int32_t, 0_c_int32_t, refine_segmentation)
         if (present(max_refine_iterations)) &
@@ -11177,6 +11186,10 @@ contains
             step_round_trip_volume_ratio = real(report_ex4%step_round_trip_volume_ratio, real64)
         if (present(total_freeform_control_points)) &
             total_freeform_control_points = int(report_ex4%total_freeform_control_points, int64)
+        if (present(num_extrusion)) num_extrusion = int(report_ex4%num_extrusion, int64)
+        if (present(num_revolution)) num_revolution = int(report_ex4%num_revolution, int64)
+        if (present(num_kinematic_helical)) &
+            num_kinematic_helical = int(report_ex4%num_kinematic_helical, int64)
         call clear_status(stat, errmsg)
     end function
 

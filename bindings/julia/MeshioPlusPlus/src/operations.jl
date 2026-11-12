@@ -4528,7 +4528,7 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             layout_snap_to_features=true, validate_by_surface_sampling=true,
             constrain_primitives=false, validation_report=false,
             validation_acceptance=false, freeform_fit_schedule="legacy",
-            freeform_objective="default")
+            freeform_objective="default", kinematic_surfaces=false)
         -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
@@ -4548,7 +4548,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
              cad_to_mesh_p99, mesh_to_cad_max, mesh_to_cad_p95, mesh_to_cad_p99,
              normal_deviation_max_deg, normal_deviation_p95_deg, step_round_trip_checked,
              step_round_trip_valid, step_round_trip_volume_ratio,
-             total_freeform_control_points)
+             total_freeform_control_points, num_extrusion, num_revolution,
+             num_kinematic_helical)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -4616,7 +4617,10 @@ read back (`step_round_trip_*`, OpenCASCADE only); `validation_acceptance`
 holds every freeform face to those measures. `freeform_fit_schedule`
 (`"legacy"` or `"continuation"`) and `freeform_objective` (`"default"`,
 `"pdm"`, `"tdm"` or `"sdm"`) choose how the adaptive and general freeform
-faces' B-spline fit runs. See `doc/fit_cad.md`.
+faces' B-spline fit runs. `kinematic_surfaces` first tries a patch no
+primitive explains as a surface of linear extrusion, of revolution or a
+helical surface (`num_extrusion`, `num_revolution`, `num_kinematic_helical`).
+See `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  exact_edges::Bool=true,
@@ -4646,7 +4650,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  constrain_primitives::Bool=false, validation_report::Bool=false,
                  validation_acceptance::Bool=false,
                  freeform_fit_schedule::AbstractString="legacy",
-                 freeform_objective::AbstractString="default")
+                 freeform_objective::AbstractString="default",
+                 kinematic_surfaces::Bool=false)
     pick(name, value, words) = begin
         k = findfirst(==(String(value)), words)
         k === nothing && throw(ArgumentError("meshio++: fit_cad: $(name) must be one of " *
@@ -4699,7 +4704,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                                Int32(layout_snap_to_features),
                                Int32(validate_by_surface_sampling),
                                Int32(constrain_primitives), Int32(validation_report),
-                               Int32(validation_acceptance), schedule_c, objective_c, Int32(0),
+                               Int32(validation_acceptance), schedule_c, objective_c,
+                               Int32(kinematic_surfaces),
                                ntuple(_ -> Int64(0), 5))
     ptr = ccall(_sym(:mio_fit_cad4), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
@@ -4763,7 +4769,9 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      step_round_trip_checked=ex4.step_round_trip_checked != 0,
      step_round_trip_valid=ex4.step_round_trip_valid != 0,
      step_round_trip_volume_ratio=ex4.step_round_trip_volume_ratio,
-     total_freeform_control_points=Int(ex4.total_freeform_control_points))
+     total_freeform_control_points=Int(ex4.total_freeform_control_points),
+     num_extrusion=Int(ex4.num_extrusion), num_revolution=Int(ex4.num_revolution),
+     num_kinematic_helical=Int(ex4.num_kinematic_helical))
 end
 
 """

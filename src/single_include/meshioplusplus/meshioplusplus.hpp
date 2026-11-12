@@ -30656,6 +30656,13 @@ inline constexpr std::int64_t kFitCadVertexBlendType = 9;
 /// `fit_cad:type` of a chamfer: a blend of straight cross-sections, of
 /// constant or varying width, that is no plane or cone (v17.2.0).
 inline constexpr std::int64_t kFitCadChamferType = 10;
+/// `fit_cad:type` of a surface of linear extrusion: a planar profile no line
+/// or circle explains, swept along a direction (`mKinematicSurfaces`,
+/// unreleased).
+inline constexpr std::int64_t kFitCadExtrusionType = 11;
+/// `fit_cad:type` of a surface of revolution: a planar profile no line or
+/// circle explains, turned about an axis (`mKinematicSurfaces`, unreleased).
+inline constexpr std::int64_t kFitCadRevolutionType = 12;
 /// Field data outside `FitCadFreeformMode::Legacy`: one row per patch tried
 /// as a surface, the columns of `FitCadFaceRecord` in declaration order as
 /// float64 (`(n, 13)`, v17.12.0).
@@ -30950,6 +30957,16 @@ struct FitCadOptions {
     /// The objective of that fit (unreleased); `Default` keeps every output
     /// as it was.
     FitCadFreeformObjective mFreeformObjective = FitCadFreeformObjective::Default;
+    /// Whether a patch no primitive explains is first tried as a kinematic
+    /// surface (unreleased, doc/fit_cad_freeform_plan.md step 5): a surface
+    /// of linear extrusion (`kFitCadExtrusionType`), of revolution
+    /// (`kFitCadRevolutionType`) or a helical surface (`kFitCadHelicalType`),
+    /// each the sweep of a fitted planar profile; a patch closed round (a
+    /// band) is cut into two discs first. The extrusion and the revolution
+    /// are written exactly (`SURFACE_OF_LINEAR_EXTRUSION`,
+    /// `SURFACE_OF_REVOLUTION`; a revolution's NURBS form is rational). Both
+    /// backends; off by default.
+    bool mKinematicSurfaces = false;
 };
 
 /// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,
@@ -31109,6 +31126,12 @@ struct FitCadResult {
     /// The control points of the faces that are not planes, spheres,
     /// cylinders, cones or tori, summed over the solid as NURBS.
     std::int64_t mTotalFreeformControlPoints = 0;
+    /// With `mKinematicSurfaces` (unreleased): the surfaces of linear
+    /// extrusion and of revolution, and the helical faces the kinematic stage
+    /// built (also counted in `mNumHelical`).
+    std::int64_t mNumExtrusion = 0;
+    std::int64_t mNumRevolution = 0;
+    std::int64_t mNumKinematicHelical = 0;
 };
 
 /**
@@ -44613,7 +44636,11 @@ BrepCurve brep_curve_bspline(const BsplineCurve& rC);
 
 /// What a face's surface is (`fit_cad:type` numbering).
 struct BrepNurbsSurface {
-    int mKind = 1;  ///< 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, 6 B-spline
+    /// 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, 6 B-spline, 12 a
+    /// surface of revolution of `pProfile` (`fit_cad`'s kinematic faces):
+    /// its parameters the angle about `mZ` from `mX` and the profile's own,
+    /// the patch exactly rational.
+    int mKind = 1;
     /// The frame: the origin (a sphere's or torus's centre, a cone's apex, a
     /// point of the plane or of the cylinder's axis) and orthonormal axes, `mZ`
     /// the axis of revolution or the plane's normal.
@@ -44625,6 +44652,8 @@ struct BrepNurbsSurface {
     double mMinor = 0.0;         ///< a torus's minor radius
     double mTanHalfAngle = 0.0;  ///< a cone's: radius per height above the apex
     const BsplineSurface* pBspline = nullptr;
+    /// Kind 12: the profile, `(rho, z, 0)` in the frame's meridian half-plane.
+    const BsplineCurve* pProfile = nullptr;
 };
 
 /// One trim of a loop, along the loop.
@@ -53094,6 +53123,9 @@ struct KinematicFit {
     PatchVec At(double T, double S) const;
     /// The profile point `(x, y)` at `T` in 3-D, in the frame.
     PatchVec ProfilePoint(double T) const;
+    /// The profile as a 3-D curve (its poles mapped as `ProfilePoint` maps
+    /// its points): an extrusion's at height 0, a revolution's at angle 0.
+    BsplineCurve SweptCurve() const;
 };
 
 /// Whether a patch is a band: one connected surface of genus 0 with two
@@ -56633,6 +56665,27 @@ namespace detail {
 struct StepFreeformFace {
     /// The `segment:patch` label; its row of the fit table becomes the face.
     std::int64_t mLabel = -1;
+    /// Its `fit_cad:type`: 6 a freeform B-spline, 8 a helical surface (its
+    /// B-spline approximation), 11 a surface of linear extrusion, 12 one of
+    /// revolution (`fit_cad`'s `kinematic_surfaces`).
+    int mType = 6;
+    /// Types 11 and 12: the exact surface, written as
+    /// `SURFACE_OF_LINEAR_EXTRUSION` / `SURFACE_OF_REVOLUTION` of the profile;
+    /// `mSurface` is then its B-spline over `(profile, motion)` parameters,
+    /// which the writer projects on.
+    struct Kinematic {
+        /// The profile, `(x, y, 0)` in the frame: a point `mOrigin + x mE1 + y
+        /// mE2` of an extrusion along `mAxis`, `mOrigin + x mE1 + y mAxis` of
+        /// a revolution about the axis through `mOrigin` (`x` its radius).
+        BsplineCurve mProfile;
+        /// The profile in 3-D (`KinematicFit::SweptCurve`): the STEP
+        /// surface's swept curve.
+        BsplineCurve mSwept;
+        PatchVec mOrigin{0.0, 0.0, 0.0};
+        PatchVec mAxis{0.0, 0.0, 1.0};
+        PatchVec mE1{1.0, 0.0, 0.0};
+        PatchVec mE2{0.0, 1.0, 0.0};
+    } mKinematic;
     BsplineSurface mSurface;
     /// Whether the surface's normal (`S_u x S_v`) agrees with the facets'.
     bool mSense = true;
@@ -56700,6 +56753,11 @@ struct StepBrepResult {
     std::int64_t mNumPcurveEdges = 0;
     /// Faces written from `StepBrepOptions::mFreeform` (`fit_cad:type` 6).
     std::int64_t mNumBspline = 0;
+    /// Of `mFreeform`'s, the kinematic ones by type (8, 11, 12), not in
+    /// `mNumBspline`.
+    std::int64_t mNumHelical = 0;
+    std::int64_t mNumExtrusion = 0;
+    std::int64_t mNumRevolution = 0;
     /// Per row of the fit table (its order): the `segment:patch` label, and
     /// why an accepted patch was written as coplanar groups (a
     /// `FitCadDemotionReason` value: 2 a point beyond the tolerance, 3 loops
@@ -63346,7 +63404,7 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "FreeformG1ToleranceDeg", "FreeformMaxControlPoints", "LayoutTargetPatchSize",
           "LayoutMaxValenceDeviation", "ResegmentRounds", "LayoutSnapToFeatures",
           "ValidateBySurfaceSampling", "ConstrainPrimitives", "ValidationReport",
-          "ValidationAcceptance", "FreeformFitSchedule", "FreeformObjective"}},
+          "ValidationAcceptance", "FreeformFitSchedule", "FreeformObjective", "KinematicSurfaces"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -78261,14 +78319,24 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
             if (!(hi_u > lo_u) || !(hi_v > lo_v))
                 continue;
         }
-        std::vector<Vec3> node((N + 1) * (N + 1));
-        std::vector<char> inside((N + 1) * (N + 1), 0);
-        std::vector<double> nu((N + 1) * (N + 1)), nv((N + 1) * (N + 1));
-        for (std::size_t j = 0; j <= N; ++j)
-            for (std::size_t i = 0; i <= N; ++i) {
-                const std::size_t k = j * (N + 1) + i;
-                nu[k] = lo_u + (hi_u - lo_u) * static_cast<double>(i) / static_cast<double>(N);
-                nv[k] = lo_v + (hi_v - lo_v) * static_cast<double>(j) / static_cast<double>(N);
+        // A face of more knot spans than `N` (a thread's many turns) gets a
+        // node per span, so no node is a turn away from its neighbours.
+        const std::size_t Gu =
+            std::min<std::size_t>(1024, std::max(N, f.mNu > static_cast<std::size_t>(f.mP)
+                                                        ? f.mNu - static_cast<std::size_t>(f.mP)
+                                                        : std::size_t{0}));
+        const std::size_t Gv =
+            std::min<std::size_t>(1024, std::max(N, f.mNv > static_cast<std::size_t>(f.mQ)
+                                                        ? f.mNv - static_cast<std::size_t>(f.mQ)
+                                                        : std::size_t{0}));
+        std::vector<Vec3> node((Gu + 1) * (Gv + 1));
+        std::vector<char> inside((Gu + 1) * (Gv + 1), 0);
+        std::vector<double> nu((Gu + 1) * (Gv + 1)), nv((Gu + 1) * (Gv + 1));
+        for (std::size_t j = 0; j <= Gv; ++j)
+            for (std::size_t i = 0; i <= Gu; ++i) {
+                const std::size_t k = j * (Gu + 1) + i;
+                nu[k] = lo_u + (hi_u - lo_u) * static_cast<double>(i) / static_cast<double>(Gu);
+                nv[k] = lo_v + (hi_v - lo_v) * static_cast<double>(j) / static_cast<double>(Gv);
                 Vec3 su, sv;
                 bd_eval(f, nu[k], nv[k], node[k], su, sv);
                 inside[k] = bd_inside(f, nu[k], nv[k]) ? 1 : 0;
@@ -78286,22 +78354,22 @@ BrepDeviation brep_deviation(const BrepInfo& rBrep, const std::vector<double>& r
         // cells a node of which is inside or a trim runs through.
         if (bd_triangulate(f, fi, nu, nv, inside, cad, cad_uv, cad_face))
             continue;
-        std::vector<char> crossed(N * N, 0);
+        std::vector<char> crossed(Gu * Gv, 0);
         for (std::size_t l = 0; l < f.mBoundaryUv.size(); ++l)
             for (const auto& uv : f.mBoundaryUv[l]) {
-                const double fu = (uv[0] - lo_u) / (hi_u - lo_u) * static_cast<double>(N);
-                const double fv = (uv[1] - lo_v) / (hi_v - lo_v) * static_cast<double>(N);
-                if (!(fu >= 0.0) || !(fv >= 0.0) || fu > static_cast<double>(N) ||
-                    fv > static_cast<double>(N))
+                const double fu = (uv[0] - lo_u) / (hi_u - lo_u) * static_cast<double>(Gu);
+                const double fv = (uv[1] - lo_v) / (hi_v - lo_v) * static_cast<double>(Gv);
+                if (!(fu >= 0.0) || !(fv >= 0.0) || fu > static_cast<double>(Gu) ||
+                    fv > static_cast<double>(Gv))
                     continue;
-                const std::size_t ci = std::min(N - 1, static_cast<std::size_t>(fu));
-                const std::size_t cj = std::min(N - 1, static_cast<std::size_t>(fv));
-                crossed[cj * N + ci] = 1;
+                const std::size_t ci = std::min(Gu - 1, static_cast<std::size_t>(fu));
+                const std::size_t cj = std::min(Gv - 1, static_cast<std::size_t>(fv));
+                crossed[cj * Gu + ci] = 1;
             }
-        for (std::size_t j = 0; j < N; ++j)
-            for (std::size_t i = 0; i < N; ++i) {
-                const std::size_t a = j * (N + 1) + i, b = a + 1, c = a + N + 1, d = c + 1;
-                if (!(inside[a] || inside[b] || inside[c] || inside[d] || crossed[j * N + i]))
+        for (std::size_t j = 0; j < Gv; ++j)
+            for (std::size_t i = 0; i < Gu; ++i) {
+                const std::size_t a = j * (Gu + 1) + i, b = a + 1, c = a + Gu + 1, d = c + 1;
+                if (!(inside[a] || inside[b] || inside[c] || inside[d] || crossed[j * Gu + i]))
                     continue;
                 for (const std::array<std::size_t, 3>& tri :
                      {std::array<std::size_t, 3>{a, b, d}, std::array<std::size_t, 3>{a, d, c}}) {
@@ -78884,7 +78952,7 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                      BrepNurbsFace& rOut, std::string& rWhy) {
     rOut = BrepNurbsFace{};
     const int kind = rSurface.mKind;
-    const bool revolution = kind >= 2 && kind <= 5;
+    const bool revolution = (kind >= 2 && kind <= 5) || kind == 12;
     const bool periodic[2] = {revolution, kind == 5};
     if (rLoops.empty()) {
         rWhy = "a face without loops";
@@ -78892,6 +78960,10 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
     }
     if (kind == 6 && rSurface.pBspline == nullptr) {
         rWhy = "a B-spline face without its surface";
+        return false;
+    }
+    if (kind == 12 && rSurface.pProfile == nullptr) {
+        rWhy = "a surface of revolution without its profile";
         return false;
     }
 
@@ -78988,6 +79060,8 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
         pX[0] = std::atan2(dy, dx);
         if (kind == 3 || kind == 4) {
             pX[1] = dz;
+        } else if (kind == 12) {
+            bspline_curve_project(*rSurface.pProfile, {rho, dz, 0.0}, pX[1]);
         } else if (kind == 2) {
             pX[1] = std::atan2(dz, rho);
             if (std::fabs(pX[1]) > 0.5 * kBnPi - 1e-6)
@@ -79370,6 +79444,12 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
             const double r1 = kind == 3 ? rSurface.mRadius : dhi[1] * t;
             profile = {{r0, dlo[1], 1.0}, {r1, dhi[1], 1.0}};
             profile_knots = {dlo[1], dlo[1], dhi[1], dhi[1]};
+        } else if (kind == 12) {
+            // A profile curve's own poles, at weight 1: exact.
+            profile_degree = rSurface.pProfile->mDegree;
+            profile_knots = rSurface.pProfile->mKnots;
+            for (const PatchVec& q : rSurface.pProfile->mPoles)
+                profile.push_back({q[0], q[1], 1.0});
         } else {
             arc_v = unit_arc(dlo[1], dhi[1]);
             profile_degree = 2;
@@ -79400,7 +79480,7 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
         if (!revolution)
             return {rS.mX[0], rS.mX[1]};
         const double u = unit_arc_param(arc_u, std::min(std::max(rS.mX[0], dlo[0]), dhi[0]));
-        const double v = (kind == 3 || kind == 4)
+        const double v = (kind == 3 || kind == 4 || kind == 12)
                              ? rS.mX[1]
                              : unit_arc_param(arc_v, std::min(std::max(rS.mX[1], dlo[1]), dhi[1]));
         return {u, v};
@@ -100258,6 +100338,64 @@ void kf_params(const BsplineSurface& rS, const std::vector<PatchVec>& rPts, cons
     }
 }
 
+// The parameters of every used point on a helical fit's surface, from the
+// screw itself: the angle unwrapped along the patch's edges (a thread winds
+// round many times, where the nearest node of a grid can lie a turn away),
+// the profile parameter from the point's radius or height; then Newton.
+void kf_helical_params(const KinematicFit& rF, const std::vector<PatchVec>& rPts,
+                       const std::vector<PatchTri>& rTris, const KfPatch& rP,
+                       std::vector<double>& rU, std::vector<double>& rV) {
+    const HelicalFit& h = rF.mHelical;
+    const std::size_t n = rPts.size();
+    std::vector<std::vector<std::size_t>> adj(n);
+    for (const PatchTri& t : rTris)
+        for (std::size_t k = 0; k < 3; ++k) {
+            adj[t[k]].push_back(t[(k + 1) % 3]);
+            adj[t[(k + 1) % 3]].push_back(t[k]);
+        }
+    for (auto& a : adj) {
+        std::sort(a.begin(), a.end());
+        a.erase(std::unique(a.begin(), a.end()), a.end());
+    }
+    std::vector<double> raw(n, 0.0), theta(n, 0.0);
+    for (std::size_t v : rP.mLive) {
+        const PatchVec r = vec3_sub(rPts[v], h.mOrigin);
+        raw[v] = std::atan2(vec3_dot(r, h.mE2), vec3_dot(r, h.mE1));
+    }
+    std::vector<std::uint8_t> seen(n, 0);
+    double lo = std::numeric_limits<double>::infinity();
+    for (std::size_t seed : rP.mLive) {
+        if (seen[seed])
+            continue;
+        std::vector<std::size_t> queue{seed};
+        seen[seed] = 1;
+        theta[seed] = raw[seed];
+        for (std::size_t q = 0; q < queue.size(); ++q) {
+            const std::size_t a = queue[q];
+            lo = std::min(lo, theta[a]);
+            for (std::size_t b : adj[a])
+                if (!seen[b]) {
+                    seen[b] = 1;
+                    theta[b] = theta[a] + std::remainder(raw[b] - theta[a], 2.0 * kKfPi);
+                    queue.push_back(b);
+                }
+        }
+    }
+    const double shift = 2.0 * kKfPi * std::round((h.mThetaMin - lo) / (2.0 * kKfPi));
+    rU.assign(n, 0.0);
+    rV.assign(n, 0.0);
+    for (std::size_t v : rP.mLive) {
+        const double th = theta[v] + shift;
+        const PatchVec r = vec3_sub(rPts[v], h.mOrigin);
+        const double g = h.Advance(th);
+        const double rho = std::hypot(vec3_dot(r, h.mE1), vec3_dot(r, h.mE2)) - h.mTaper * g;
+        const double zeta = vec3_dot(r, h.mAxis) - g;
+        rU[v] = std::clamp(h.mRhoOfZeta ? zeta : rho, rF.mSurface.U0(), rF.mSurface.U1());
+        rV[v] = std::clamp(th, rF.mSurface.V0(), rF.mSurface.V1());
+        bspline_project(rF.mSurface, rPts[v].data(), rU[v], rV[v]);
+    }
+}
+
 // A cubic B-spline over [U0, U1] x [V0, V1] through the exact surface
 // `rAt`, within a twentieth of the tolerance where it can be.
 template <class F>
@@ -100311,7 +100449,10 @@ bool kf_accept(KinematicFit& rFit, const std::vector<PatchVec>& rPts,
         rFit.mWhy = "no surface";
         return false;
     }
-    kf_params(rFit.mSurface, rPts, rP, rFit.mU, rFit.mV);
+    if (rFit.mKind == KinematicKind::Helical)
+        kf_helical_params(rFit, rPts, rTris, rP, rFit.mU, rFit.mV);
+    else
+        kf_params(rFit.mSurface, rPts, rP, rFit.mU, rFit.mV);
     const FreeformAcceptance acc =
         freeform_accept(rFit.mSurface, rPts, rTris, rFit.mU, rFit.mV, Tol, 0.0, true);
     rFit.mMaxDist = acc.mMaxDist;
@@ -100333,6 +100474,17 @@ PatchVec KinematicFit::ProfilePoint(double T) const {
     return {mOrigin[0] + q[0] * mE1[0] + q[1] * second[0],
             mOrigin[1] + q[0] * mE1[1] + q[1] * second[1],
             mOrigin[2] + q[0] * mE1[2] + q[1] * second[2]};
+}
+
+BsplineCurve KinematicFit::SweptCurve() const {
+    BsplineCurve c = mProfile;
+    const PatchVec& second = mKind == KinematicKind::Revolution ? mAxis : mE2;
+    for (PatchVec& q : c.mPoles) {
+        const PatchVec p = q;
+        for (std::size_t k = 0; k < 3; ++k)
+            q[k] = mOrigin[k] + p[0] * mE1[k] + p[1] * second[k];
+    }
+    return c;
 }
 
 PatchVec KinematicFit::At(double T, double S) const {
@@ -100470,8 +100622,18 @@ KinematicFit kinematic_fit(const std::vector<PatchVec>& rPts, const std::vector<
             } else if (kf_refine_axis(rPts, patch, tol, f, mer)) {
                 const double a0 = mer.mA0, a1 = mer.mA1, gap = mer.mGap;
                 const double m = std::min(rOptions.mMargin * (a1 - a0), 0.5 * (gap - 1e-3));
-                f.mV0 = a0 - m;
-                f.mV1 = a1 + m;
+                // The frame turned so the angles run about pi, inside
+                // (0, 2 pi): a CAD kernel's periodic angle then needs no
+                // shift past its seam.
+                const double turn = 0.5 * (a0 + a1) - kKfPi;
+                const double ct = std::cos(turn), st = std::sin(turn);
+                const PatchVec e1 = f.mE1, e2 = f.mE2;
+                for (std::size_t k = 0; k < 3; ++k) {
+                    f.mE1[k] = ct * e1[k] + st * e2[k];
+                    f.mE2[k] = -st * e1[k] + ct * e2[k];
+                }
+                f.mV0 = a0 - turn - m;
+                f.mV1 = a1 - turn + m;
                 const std::size_t nu = f.mProfile.mPoles.size() + 2;
                 const std::size_t nv = std::max<std::size_t>(
                     4, static_cast<std::size_t>(std::ceil((f.mV1 - f.mV0) / (kKfPi / 6.0))) + 3);
@@ -116902,10 +117064,14 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
         for (std::size_t r = 0; r < rows.size(); ++r) {
             const bool freeform = rows[r].mType == 6;
             rows[r].mAnalytic = rows[r].mAccepted && present[r] && (freeform || worst[r] <= tol);
+            // A surface of revolution's parameters run (angle, profile), its
+            // B-spline's (profile, angle): the normals are opposite.
             rows[r].mSense =
                 freeform
-                    ? (*rOptions.mFreeform)[static_cast<std::size_t>(rows[r].mFreeform)].mSense !=
-                          (reversed[r] != 0)
+                    ? ((*rOptions.mFreeform)[static_cast<std::size_t>(rows[r].mFreeform)].mSense !=
+                       (reversed[r] != 0)) !=
+                          ((*rOptions.mFreeform)[static_cast<std::size_t>(rows[r].mFreeform)]
+                               .mType == 12)
                     : agree[r] >= 0.0;
             if (rows[r].mAccepted && present[r] && !rows[r].mAnalytic) {
                 ++res.mCounts.mNumDemoted;
@@ -117441,19 +117607,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             if (found != surface_of.end())
                 return found->second;
             const SbRow* row = &rows[static_cast<std::size_t>(G)];
-            const BsplineSurface& bs =
-                (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)].mSurface;
-            std::string grid;
-            for (std::size_t i = 0; i < bs.mNu; ++i) {
-                std::string line;
-                for (std::size_t j = 0; j < bs.mNv; ++j) {
-                    const std::int64_t q =
-                        st.Ent("CARTESIAN_POINT(''," +
-                               StepStream::Triple(&bs.mPoles[3 * (i + bs.mNu * j)]) + ")");
-                    line += (j == 0 ? "" : ",") + StepStream::Ref(q);
-                }
-                grid += (i == 0 ? "(" : ",(") + line + ")";
-            }
+            const StepFreeformFace& ff =
+                (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)];
             const auto knots = [](const std::vector<double>& rK, std::string& rMults,
                                   std::string& rValues) {
                 std::size_t i = 0;
@@ -117466,6 +117621,51 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                     i = j;
                 }
             };
+            if (ff.mType == 11 || ff.mType == 12) {
+                // The exact kinematic surface: its profile as a 3-D curve in
+                // the frame, swept along or about the axis.
+                const StepFreeformFace::Kinematic& kin = ff.mKinematic;
+                std::string poles;
+                for (const PatchVec& q : kin.mSwept.mPoles) {
+                    const std::int64_t id =
+                        st.Ent("CARTESIAN_POINT(''," + StepStream::Triple(q.data()) + ")");
+                    poles += (poles.empty() ? "" : ",") + StepStream::Ref(id);
+                }
+                std::string cm, ck;
+                knots(kin.mSwept.mKnots, cm, ck);
+                const std::int64_t curve = st.Ent(
+                    "B_SPLINE_CURVE_WITH_KNOTS(''," + std::to_string(kin.mSwept.mDegree) + ",(" +
+                    poles + "),.UNSPECIFIED.,.F.,.F.,(" + cm + "),(" + ck + "),.UNSPECIFIED.)");
+                const std::int64_t axis = direction(kin.mAxis.data());
+                std::int64_t id = 0;
+                if (ff.mType == 11) {
+                    const std::int64_t vec =
+                        st.Ent("VECTOR(''," + StepStream::Ref(axis) + "," + step_real(1.0) + ")");
+                    id = st.Ent("SURFACE_OF_LINEAR_EXTRUSION(''," + StepStream::Ref(curve) + "," +
+                                StepStream::Ref(vec) + ")");
+                } else {
+                    const std::int64_t at = st.Ent("CARTESIAN_POINT(''," +
+                                                   StepStream::Triple(kin.mOrigin.data()) + ")");
+                    const std::int64_t place = st.Ent("AXIS1_PLACEMENT(''," + StepStream::Ref(at) +
+                                                      "," + StepStream::Ref(axis) + ")");
+                    id = st.Ent("SURFACE_OF_REVOLUTION(''," + StepStream::Ref(curve) + "," +
+                                StepStream::Ref(place) + ")");
+                }
+                surface_of.emplace(G, id);
+                return id;
+            }
+            const BsplineSurface& bs = ff.mSurface;
+            std::string grid;
+            for (std::size_t i = 0; i < bs.mNu; ++i) {
+                std::string line;
+                for (std::size_t j = 0; j < bs.mNv; ++j) {
+                    const std::int64_t q =
+                        st.Ent("CARTESIAN_POINT(''," +
+                               StepStream::Triple(&bs.mPoles[3 * (i + bs.mNu * j)]) + ")");
+                    line += (j == 0 ? "" : ",") + StepStream::Ref(q);
+                }
+                grid += (i == 0 ? "(" : ",(") + line + ")";
+            }
             std::string um, uk, vm, vk;
             knots(bs.mKnotsU, um, uk);
             knots(bs.mKnotsV, vm, vk);
@@ -117800,7 +118000,21 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         ++res.mCounts.mNumCone;
                         break;
                     case 6:
-                        ++res.mNumBspline;
+                        switch (
+                            (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)].mType) {
+                            case 8:
+                                ++res.mNumHelical;
+                                break;
+                            case 11:
+                                ++res.mNumExtrusion;
+                                break;
+                            case 12:
+                                ++res.mNumRevolution;
+                                break;
+                            default:
+                                ++res.mNumBspline;
+                                break;
+                        }
                         break;
                     default:
                         ++res.mCounts.mNumTorus;
@@ -117951,11 +118165,21 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                             srf.mRadius = p[6];
                             srf.mMinor = p[7];
                             break;
-                        case 6:
-                            srf.pBspline =
-                                &(*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)]
-                                     .mSurface;
+                        case 6: {
+                            const StepFreeformFace& ff =
+                                (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)];
+                            srf.pBspline = &ff.mSurface;
+                            if (ff.mType == 12) {
+                                // Exactly rational about the axis.
+                                srf.mKind = 12;
+                                srf.mOrigin = ff.mKinematic.mOrigin;
+                                srf.mX = ff.mKinematic.mE1;
+                                srf.mY = ff.mKinematic.mE2;
+                                srf.mZ = ff.mKinematic.mAxis;
+                                srf.pProfile = &ff.mKinematic.mProfile;
+                            }
                             break;
+                        }
                         default:
                             frame(srf, p, p + 3);
                             break;
@@ -118103,8 +118327,11 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             if (analytic_group(g)) {
                 const SbRow& row = rows[static_cast<std::size_t>(g)];
                 res.mTypeOfFacet[f] = row.mType;
-                if (row.mType == 6)
+                if (row.mType == 6) {
+                    res.mTypeOfFacet[f] =
+                        (*rOptions.mFreeform)[static_cast<std::size_t>(row.mFreeform)].mType;
                     continue;  // its fit measured it
+                }
                 for (std::int64_t k = start[f]; k < start[f + 1]; ++k)
                     res.mMaxDeviation = std::max(
                         res.mMaxDeviation,
@@ -246426,10 +246653,108 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
             return left;
         };
 
+    // Kinematic surfaces first (`mKinematicSurfaces`): a patch fitted as a
+    // surface of linear extrusion, of revolution or a helical surface is a
+    // face and leaves the freeform work; a band (a wall closed round) is cut
+    // into two discs, both of which must fit.
+    std::vector<std::int64_t> cands = rCandidates;
+    if (rOptions.mKinematicSurfaces) {
+        detail::KinematicOptions ko;
+        ko.mTolerance = Tol;
+        const auto try_patch = [&](const std::vector<std::size_t>& rFacets, std::int64_t Label,
+                                   std::vector<detail::StepFreeformFace>& rFaces,
+                                   std::vector<FitCadFaceRecord>& rRecs) {
+            std::vector<detail::PatchVec> pts;
+            std::vector<detail::PatchTri> tris;
+            std::vector<std::size_t> tri_facet;
+            fcn_local_triangles(rFc, rFacets, pts, tris, tri_facet, nullptr);
+            const detail::KinematicFit fit = detail::kinematic_fit(pts, tris, ko);
+            log::debug("fit_cad: kinematic fit of patch {} ({} triangles): {}", Label, tris.size(),
+                       fit.mOk ? "type " + std::to_string(static_cast<int>(fit.mKind)) : fit.mWhy);
+            if (!fit.mOk)
+                return false;
+            detail::StepFreeformFace face;
+            face.mLabel = Label;
+            face.mType = static_cast<int>(fit.mKind);
+            face.mSurface = fit.mSurface;
+            face.mSense = fcn_sense(rFc, fit.mSurface, tris, tri_facet, fit.mU, fit.mV);
+            face.mKinematic.mProfile = fit.mProfile;
+            face.mKinematic.mSwept = fit.SweptCurve();
+            face.mKinematic.mOrigin = fit.mOrigin;
+            face.mKinematic.mAxis = fit.mAxis;
+            face.mKinematic.mE1 = fit.mE1;
+            face.mKinematic.mE2 = fit.mE2;
+            rFaces.push_back(std::move(face));
+            FitCadFaceRecord rec;
+            rec.mPatch = Label;
+            rec.mNumControl = static_cast<std::int64_t>(fit.mKind == detail::KinematicKind::Helical
+                                                            ? fit.mSurface.NumPoles()
+                                                            : fit.mProfile.mPoles.size());
+            rec.mMaxDist = fit.mMaxDist;
+            rec.mRmsDist = fit.mRmsDist;
+            rec.mReverseMaxDist = fit.mReverseMaxDist;
+            rRecs.push_back(rec);
+            return true;
+        };
+        std::vector<std::int64_t> left;
+        for (std::int64_t label : rCandidates) {
+            const auto it = facets_of.find(label);
+            if (it == facets_of.end()) {
+                left.push_back(label);
+                continue;
+            }
+            std::vector<detail::PatchVec> pts;
+            std::vector<detail::PatchTri> tris;
+            std::vector<std::size_t> tri_facet;
+            fcn_local_triangles(rFc, it->second, pts, tris, tri_facet, nullptr);
+            std::vector<detail::StepFreeformFace> faces;
+            std::vector<FitCadFaceRecord> recs;
+            bool ok = false;
+            std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> halves;
+            if (detail::kinematic_is_band(tris)) {
+                std::size_t num = 0;
+                const std::vector<std::int64_t> piece =
+                    detail::patch_split_to_discs(pts, tris, 24, num);
+                if (num == 2) {
+                    std::vector<std::vector<std::size_t>> pf(2);
+                    for (std::size_t t = 0; t < tris.size(); ++t) {
+                        if (t > 0 && tri_facet[t] == tri_facet[t - 1])
+                            continue;
+                        pf[static_cast<std::size_t>(piece[t])].push_back(tri_facet[t]);
+                    }
+                    ok = true;
+                    for (std::size_t h = 0; h < 2 && ok; ++h) {
+                        halves.emplace_back(next_label + static_cast<std::int64_t>(h), pf[h]);
+                        ok = try_patch(pf[h], halves.back().first, faces, recs);
+                    }
+                }
+            } else {
+                ok = try_patch(it->second, label, faces, recs);
+            }
+            if (!ok) {
+                left.push_back(label);
+                continue;
+            }
+            if (!halves.empty()) {
+                next_label += 2;
+                ++out.mNumSplit;
+                for (auto& h : halves)
+                    pieces.emplace_back(h.first, std::move(h.second));
+            }
+            for (std::size_t k = 0; k < faces.size(); ++k) {
+                out.mRecords[faces[k].mLabel] = recs[k];
+                out.mFaces.push_back(std::move(faces[k]));
+            }
+        }
+        cands = std::move(left);
+    }
+    if (!rOptions.mFreeform || rOptions.mFreeformMode == FitCadFreeformMode::Legacy)
+        cands.clear();
+
     std::vector<Item> work;
     if (rOptions.mFreeformMode == FitCadFreeformMode::Network) {
         std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> items;
-        for (std::int64_t label : rCandidates) {
+        for (std::int64_t label : cands) {
             const auto it = facets_of.find(label);
             if (it != facets_of.end())
                 items.emplace_back(label, it->second);
@@ -246437,7 +246762,7 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
         for (auto& it : network(items))
             work.push_back({it.first, std::move(it.second), 0, 1, rOptions.mResegmentRounds});
     } else {
-        for (std::int64_t label : rCandidates) {
+        for (std::int64_t label : cands) {
             const auto it = facets_of.find(label);
             if (it != facets_of.end())
                 work.push_back({label, it->second, 0, 0});
@@ -246697,8 +247022,9 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     // type 0, or a refinement's freeform or facets verdict; not a type left
     // out of `mTypes`) are tried as adaptive freeform faces (v17.12.0).
     FcnFreeform freeform;
-    if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy && work.HasFieldData("fit:patch_id") &&
-        work.HasFieldData("fit:patch_type")) {
+    // The kinematic surfaces, in every mode.
+    if ((rOptions.mFreeformMode != FitCadFreeformMode::Legacy || rOptions.mKinematicSurfaces) &&
+        work.HasFieldData("fit:patch_id") && work.HasFieldData("fit:patch_type")) {
         const std::unordered_map<std::int64_t, std::int64_t> proxy_of = fcn_refine_proxy(work);
         const NDArray& ids = work.FieldData("fit:patch_id");
         const NDArray& types = work.FieldData("fit:patch_type");
@@ -246712,7 +247038,7 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                   k->second == static_cast<std::int64_t>(RefineProxy::Freeform))))
                 candidates.push_back(label);
         }
-        if (rOptions.mFreeform && !candidates.empty()) {
+        if ((rOptions.mFreeform || rOptions.mKinematicSurfaces) && !candidates.empty()) {
             const double wtol = fcn_tolerance(*pSource, fc, rOptions.mTolerance);
             freeform = fcn_freeform(*pSource, fc, candidates, rOptions, wtol);
             if (freeform.mSplit)
@@ -246752,6 +247078,10 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mCounts = brep.mCounts;
     result.mNumBspline = brep.mNumBspline;
     result.mNumFreeformAdaptive = brep.mNumBspline;
+    result.mNumExtrusion = brep.mNumExtrusion;
+    result.mNumRevolution = brep.mNumRevolution;
+    result.mNumKinematicHelical = brep.mNumHelical;
+    result.mNumHelical = brep.mNumHelical;
     result.mNumNetworkEdges = freeform.mNumNetworkEdges;
     result.mNumExtraordinaryVertices = freeform.mNumExtraordinary;
     result.mMaxG1AngleDeg = freeform.mMaxG1AngleDeg;
@@ -274048,6 +274378,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mConstrainPrimitives = pipe_flag(rStep, "ConstrainPrimitives", false);
         opts.mValidationReport = pipe_flag(rStep, "ValidationReport", false);
         opts.mValidationAcceptance = pipe_flag(rStep, "ValidationAcceptance", false);
+        opts.mKinematicSurfaces = pipe_flag(rStep, "KinematicSurfaces", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -274110,6 +274441,12 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             counters.emplace_back("NormalDeviationMaxDeg", cr.mNormalDeviationMaxDeg);
             counters.emplace_back("StepRoundTripChecked", cr.mStepRoundTripChecked ? 1.0 : 0.0);
             counters.emplace_back("StepRoundTripValid", cr.mStepRoundTripValid ? 1.0 : 0.0);
+        }
+        if (opts.mKinematicSurfaces) {
+            counters.emplace_back("NumExtrusion", static_cast<double>(cr.mNumExtrusion));
+            counters.emplace_back("NumRevolution", static_cast<double>(cr.mNumRevolution));
+            counters.emplace_back("NumKinematicHelical",
+                                  static_cast<double>(cr.mNumKinematicHelical));
         }
         // The freeform modes (v17.12.0) report only outside the legacy mode.
         if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {
@@ -309753,6 +310090,7 @@ void register_netgen() {
 #include "detail/closed_facets.hpp"
 #include "detail/cut_graph.hpp"
 #include "detail/freeform_adaptive.hpp"
+#include "detail/kinematic_fit.hpp"
 #include "detail/patch_flatten.hpp"
 #include "detail/patch_network.hpp"
 #include "detail/primitive_constraints.hpp"
@@ -309835,6 +310173,7 @@ void register_netgen() {
 #include <GeomAPI_PointsToBSplineSurface.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_BoundedSurface.hxx>
+#include <GeomConvert.hxx>
 #include <GeomLib.hxx>
 #include <GeomFill_Pipe.hxx>
 #include <Geom_OffsetSurface.hxx>
@@ -309857,6 +310196,9 @@ void register_netgen() {
 #include <Geom_Surface.hxx>
 #include <Geom_ToroidalSurface.hxx>
 #include <Geom_TrimmedCurve.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_SurfaceOfLinearExtrusion.hxx>
+#include <Geom_SurfaceOfRevolution.hxx>
 #include <IFSelect_ReturnStatus.hxx>
 #include <Interface_Static.hxx>
 #include <Message.hxx>
@@ -310641,7 +310983,8 @@ FcBuild fc_build(const FcSkin& rSkin, const std::vector<FcHandle<Geom_Surface>>&
             auto swept = [&](std::int64_t G) {
                 const std::int32_t t = rSkin.mPatches[static_cast<std::size_t>(G)].mType;
                 return t == kFitCadFilletType || t == kFitCadHelicalType ||
-                       t == kFitCadVertexBlendType || t == kFitCadChamferType;
+                       t == kFitCadVertexBlendType || t == kFitCadChamferType ||
+                       t == kFitCadExtrusionType || t == kFitCadRevolutionType;
             };
             // Two B-splines (a network patch and its freeform neighbours, which
             // meet it tangentially or nearly so, and in the freeform modes any
@@ -312604,6 +312947,167 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         skin.mPatches[R].mAccepted = true;
         feature[R] = Feature;
     };
+    // Kinematic surfaces (`mKinematicSurfaces`): a patch no primitive
+    // explains fitted as a surface of linear extrusion or of revolution
+    // before the fillets and threads (a chamfer's straight sections would
+    // claim an extruded wall), and as a helical surface after them (a
+    // thread's own fit knows its neighbours), by `detail::kinematic_fit` as
+    // the native backend does. A band (a wall closed round) is cut into two
+    // discs, appended as rows, both of which must fit.
+    std::vector<std::uint8_t> kinematic_row(skin.mPatches.size(), 0);
+    std::int64_t next_label = 0;
+    for (const FcPatch& p : skin.mPatches)
+        next_label = std::max(next_label, p.mLabel + 1);
+    const auto kinematic_pass = [&](bool Helical) {
+        detail::KinematicOptions ko;
+        ko.mTolerance = tol;
+        ko.mExtrusion = ko.mRevolution = !Helical;
+        ko.mHelical = Helical;
+        // The patch's triangles and the facet each came from.
+        const auto tri_facets = [&](std::size_t R) {
+            std::vector<std::size_t> out;
+            for (std::size_t f : facets_of[R])
+                for (std::int64_t k = 1; k + 1 < fc.mStart[f + 1] - fc.mStart[f]; ++k)
+                    out.push_back(f);
+            return out;
+        };
+        // The OpenCASCADE surface of a fit, or null.
+        const auto occt_surface = [&](const detail::KinematicFit& rFit) -> FcHandle<Geom_Surface> {
+            if (rFit.mKind == detail::KinematicKind::Helical)
+                return fc_occt_bspline(rFit.mSurface);
+            const detail::BsplineCurve& c = rFit.mProfile;
+            const FcHandle<Geom_Curve> curve = fc_occt_bspline_curve(rFit.SweptCurve());
+            const gp_Dir axis(rFit.mAxis[0], rFit.mAxis[1], rFit.mAxis[2]);
+            if (rFit.mKind == detail::KinematicKind::Extrusion) {
+                const FcHandle<Geom_Surface> ext = new Geom_SurfaceOfLinearExtrusion(curve, axis);
+                return FcHandle<Geom_Surface>(
+                    new Geom_RectangularTrimmedSurface(ext, rFit.mV0, rFit.mV1, Standard_False));
+            }
+            // A surface of revolution, as its exact rational B-spline over the
+            // angles and the whole profile: the NURBS form is then the
+            // surface itself, its trims inside its domain.
+            const FcHandle<Geom_Surface> rev = new Geom_SurfaceOfRevolution(
+                curve, gp_Ax1(gp_Pnt(rFit.mOrigin[0], rFit.mOrigin[1], rFit.mOrigin[2]), axis));
+            const FcHandle<Geom_Surface> exact = GeomConvert::SurfaceToBSplineSurface(
+                new Geom_RectangularTrimmedSurface(rev, rFit.mV0, rFit.mV1, c.T0(), c.T1()));
+            return exact;
+        };
+        // Fit row R's facets; its surface and record when it is a face.
+        struct Kin {
+            FcHandle<Geom_Surface> mSurface;
+            std::int64_t mType = 0;
+            FcRowInfo mInfo;
+        };
+        const auto fit_facets = [&](const std::vector<gp_Pnt>& rPts,
+                                    const std::vector<std::array<std::size_t, 3>>& rTris,
+                                    const std::vector<detail::PatchVec>& rFlat,
+                                    std::int64_t Label) -> Kin {
+            Kin k;
+            const detail::KinematicFit fit = detail::kinematic_fit(rFlat, rTris, ko);
+            log::debug("fit_cad: kinematic fit of patch {} ({} triangles): {}", Label, rTris.size(),
+                       fit.mOk ? "type " + std::to_string(static_cast<int>(fit.mKind)) : fit.mWhy);
+            if (!fit.mOk)
+                return k;
+            try {
+                FcHandle<Geom_Surface> srf = occt_surface(fit);
+                if (!srf.IsNull() && fc_surface_fits(srf, rPts, rTris, tol, false, true)) {
+                    k.mSurface = srf;
+                    k.mType = static_cast<std::int64_t>(fit.mKind);
+                    k.mInfo.mTried = true;
+                    k.mInfo.mNumControl = static_cast<std::int64_t>(
+                        fit.mKind == detail::KinematicKind::Helical ? fit.mSurface.NumPoles()
+                                                                    : fit.mProfile.mPoles.size());
+                    k.mInfo.mMaxDist = fit.mMaxDist;
+                    k.mInfo.mRmsDist = fit.mRmsDist;
+                    k.mInfo.mReverseMaxDist = fit.mReverseMaxDist;
+                } else {
+                    log::debug("fit_cad: patch {}: the kinematic surface strays from it", Label);
+                }
+            } catch (const Standard_Failure& rErr) {
+                log::debug("fit_cad: patch {} has no kinematic surface: {}", Label,
+                           rErr.GetMessageString());
+            }
+            return k;
+        };
+        const auto take = [&](std::size_t R, const Kin& rK) {
+            accept(R, rK.mSurface, rK.mType, 0);
+            fc_row(row_info, R) = rK.mInfo;
+            kinematic_row.resize(std::max(kinematic_row.size(), R + 1), 0);
+            kinematic_row[R] = 1;
+        };
+        const std::size_t rows = skin.mPatches.size();
+        for (std::size_t r = 0; r < rows; ++r) {
+            bool finite = true;
+            for (double x : skin.mPatches[r].mParams)
+                finite = finite && std::isfinite(x);
+            const std::int32_t type = skin.mPatches[r].mType;
+            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
+                continue;
+            std::vector<gp_Pnt> pts;
+            std::vector<std::array<std::size_t, 3>> tris;
+            std::vector<detail::PatchVec> flat;
+            patch_mesh(r, pts, tris, flat);
+            if (!detail::kinematic_is_band(tris)) {
+                const Kin k = fit_facets(pts, tris, flat, skin.mPatches[r].mLabel);
+                if (!k.mSurface.IsNull())
+                    take(r, k);
+                continue;
+            }
+            if (Helical)
+                continue;  // a band was cut before the threads
+            std::size_t num = 0;
+            const std::vector<std::int64_t> piece =
+                detail::patch_split_to_discs(flat, tris, 24, num);
+            if (num != 2)
+                continue;
+            const std::vector<std::size_t> tf = tri_facets(r);
+            std::vector<std::vector<std::size_t>> pf(2);
+            for (std::size_t t = 0; t < tris.size(); ++t) {
+                if (t > 0 && tf[t] == tf[t - 1])
+                    continue;
+                pf[static_cast<std::size_t>(piece[t])].push_back(tf[t]);
+            }
+            // Both halves fitted before either becomes a row.
+            Kin halves[2];
+            bool ok = true;
+            const std::vector<std::size_t> whole = facets_of[r];
+            for (std::size_t h = 0; h < 2 && ok; ++h) {
+                facets_of[r] = pf[h];
+                std::vector<gp_Pnt> hp;
+                std::vector<std::array<std::size_t, 3>> ht;
+                std::vector<detail::PatchVec> hf;
+                patch_mesh(r, hp, ht, hf);
+                halves[h] = fit_facets(hp, ht, hf, skin.mPatches[r].mLabel);
+                ok = !halves[h].mSurface.IsNull();
+            }
+            facets_of[r] = whole;
+            if (!ok)
+                continue;
+            facets_of[r].clear();
+            for (std::size_t h = 0; h < 2; ++h) {
+                FcPatch np;
+                np.mLabel = next_label++;
+                np.mType = 0;
+                np.mParams.fill(std::numeric_limits<double>::quiet_NaN());
+                np.mTolerance = skin.mPatches[r].mTolerance;
+                const std::size_t row = skin.mPatches.size();
+                for (std::size_t f : pf[h])
+                    skin.mRow[f] = static_cast<std::int64_t>(row);
+                skin.mPatches.push_back(np);
+                facets_of.push_back(pf[h]);
+                surface.emplace_back();
+                analytic.push_back(0);
+                feature.resize(row + 1, 0);
+                take(row, halves[h]);
+            }
+        }
+    };
+    if (rOptions.mKinematicSurfaces) {
+        kinematic_pass(false);
+        // The halves are rows from here on.
+        m = skin.mPatches.size();
+    }
+
     for (std::size_t r = 0; (rOptions.mFillets || rOptions.mThreads) && r < m; ++r) {
         {
             bool finite = true;
@@ -312847,9 +313351,6 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     // its flattenings is split, and the pieces, appended as new rows, are
     // fitted in turn by this same loop.
     std::int64_t num_freeform_tried = 0;
-    std::int64_t next_label = 0;
-    for (const FcPatch& p : skin.mPatches)
-        next_label = std::max(next_label, p.mLabel + 1);
     std::vector<std::uint8_t> is_piece(m, 0), tile_depth(m, 0);
     // The general freeform stage's halvings so far, and what it built per row.
     std::vector<std::int64_t> general_depth(m, 0);
@@ -313154,6 +313655,10 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         return true;
     };
 
+    // The helical kinematic faces, after the threads (see above).
+    if (rOptions.mKinematicSurfaces)
+        kinematic_pass(true);
+
     if (rOptions.mFreeform && rOptions.mFreeformMode == FitCadFreeformMode::Network)
         occt_network(freeform_rows(false), false);
     for (std::size_t r = 0; rOptions.mFreeform && r < skin.mPatches.size(); ++r) {
@@ -313402,8 +313907,11 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         for (std::size_t r = 0; r < m; ++r)
             type_before[r] = skin.mPatches[r].mType;
         auto fitted = [&](std::size_t Q) {
-            return analytic_before[Q] && type_before[Q] >= 1 &&
-                   type_before[Q] <= static_cast<std::int32_t>(kFitCadBsplineType);
+            return analytic_before[Q] &&
+                   ((type_before[Q] >= 1 &&
+                     type_before[Q] <= static_cast<std::int32_t>(kFitCadBsplineType)) ||
+                    type_before[Q] == kFitCadExtrusionType ||
+                    type_before[Q] == kFitCadRevolutionType);
         };
         for (std::size_t r = 0; r < m; ++r) {
             bool finite = true;
@@ -313929,8 +314437,17 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 result.mNumBlend += (feat & kFcBlend) ? 1 : 0;
                 result.mNumConicBlend += (feat & kFcConic) ? 1 : 0;
                 break;
+            case kFitCadExtrusionType:
+                ++result.mNumExtrusion;
+                break;
+            case kFitCadRevolutionType:
+                ++result.mNumRevolution;
+                break;
             case kFitCadHelicalType:
                 ++result.mNumHelical;
+                if (g >= 0 && static_cast<std::size_t>(g) < kinematic_row.size() &&
+                    kinematic_row[static_cast<std::size_t>(g)])
+                    ++result.mNumKinematicHelical;
                 result.mNumRoundedThread += (feat & kFcRounded) ? 1 : 0;
                 result.mNumTaperedThread += (feat & kFcTapered) ? 1 : 0;
                 result.mNumVariablePitchThread += (feat & kFcVariablePitch) ? 1 : 0;

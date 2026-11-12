@@ -1999,6 +1999,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mConstrainPrimitives = pipe_flag(rStep, "ConstrainPrimitives", false);
         opts.mValidationReport = pipe_flag(rStep, "ValidationReport", false);
         opts.mValidationAcceptance = pipe_flag(rStep, "ValidationAcceptance", false);
+        opts.mKinematicSurfaces = pipe_flag(rStep, "KinematicSurfaces", false);
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -2061,6 +2062,12 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             counters.emplace_back("NormalDeviationMaxDeg", cr.mNormalDeviationMaxDeg);
             counters.emplace_back("StepRoundTripChecked", cr.mStepRoundTripChecked ? 1.0 : 0.0);
             counters.emplace_back("StepRoundTripValid", cr.mStepRoundTripValid ? 1.0 : 0.0);
+        }
+        if (opts.mKinematicSurfaces) {
+            counters.emplace_back("NumExtrusion", static_cast<double>(cr.mNumExtrusion));
+            counters.emplace_back("NumRevolution", static_cast<double>(cr.mNumRevolution));
+            counters.emplace_back("NumKinematicHelical",
+                                  static_cast<double>(cr.mNumKinematicHelical));
         }
         // The freeform modes (v17.12.0) report only outside the legacy mode.
         if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {

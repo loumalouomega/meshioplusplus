@@ -1185,7 +1185,7 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                    SEXP layout_snap_to_features, SEXP validate_by_surface_sampling,
                    SEXP constrain_primitives, SEXP validation_report,
                    SEXP validation_acceptance, SEXP freeform_fit_schedule,
-                   SEXP freeform_objective) {
+                   SEXP freeform_objective, SEXP kinematic_surfaces) {
     mio_fit_cad_opts opts;
     mio_fit_cad_opts_ex opts_ex;
     mio_fit_cad_opts_ex2 opts_ex2;
@@ -1215,6 +1215,7 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
         ops_fit_cad_keyword(freeform_fit_schedule, "freeform_fit_schedule", schedules);
     opts_ex2.freeform_objective =
         ops_fit_cad_keyword(freeform_objective, "freeform_objective", objectives);
+    opts_ex2.kinematic_surfaces = mio_r_bool(kinematic_surfaces, "kinematic_surfaces") ? 1 : 0;
     opts_ex2.freeform_g1_tolerance_deg =
         mio_r_double(freeform_g1_tolerance_deg, "freeform_g1_tolerance_deg");
     opts_ex2.freeform_max_control_points =
@@ -1369,7 +1370,10 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            "step_round_trip_checked",
                            "step_round_trip_valid",
                            "step_round_trip_volume_ratio",
-                           "total_freeform_control_points"};
+                           "total_freeform_control_points",
+                           "num_extrusion",
+                           "num_revolution",
+                           "num_kinematic_helical"};
     const SEXP values[] = {mo,         valid, NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
                            NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
                            NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
@@ -1378,7 +1382,7 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            NULL,       kept,  checked, mode, NULL, NULL, NULL,    NULL, NULL,
                            NULL,       NULL,  g1,   NULL,   NULL, NULL, NULL,     NULL, measured,
                            NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, rt_checked,
-                           rt_valid,   NULL,  NULL};
+                           rt_valid,   NULL,  NULL, NULL, NULL, NULL};
     const double numbers[] = {report.tolerance, report.volume, report.skin_volume,
                               report.volume_ratio, report.max_deviation, (double)report.num_faces,
                               (double)report.num_plane, (double)report.num_sphere,
@@ -1419,8 +1423,11 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                               report_ex4.normal_deviation_max_deg,
                               report_ex4.normal_deviation_p95_deg,
                               report_ex4.step_round_trip_volume_ratio,
-                              (double)report_ex4.total_freeform_control_points};
-    SEXP res = mio_r_report_list(75, names, values, numbers);
+                              (double)report_ex4.total_freeform_control_points,
+                              (double)report_ex4.num_extrusion,
+                              (double)report_ex4.num_revolution,
+                              (double)report_ex4.num_kinematic_helical};
+    SEXP res = mio_r_report_list(78, names, values, numbers);
     UNPROTECT(12);
     return res;
 }

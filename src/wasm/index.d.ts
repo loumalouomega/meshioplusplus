@@ -5842,6 +5842,11 @@ export interface FitCadOptions {
   freeformFitSchedule?: 'legacy' | 'continuation';
   /** The error that fit minimises (default 'default'). */
   freeformObjective?: 'default' | 'pdm' | 'tdm' | 'sdm';
+  /**
+   * Whether a patch no primitive explains is first tried as a surface of linear
+   * extrusion, of revolution or a helical surface (default false, unreleased).
+   */
+  kinematicSurfaces?: boolean;
 }
 
 /** One patch {@link MeshioPlusPlusModule.fitCad} tried as a surface (v17.12.0). */
@@ -6240,6 +6245,10 @@ export interface FitCadResult {
   stepRoundTripVolumeRatio: number;
   /** The control points of the faces no primitive is (with `validationReport`). */
   totalFreeformControlPoints: number;
+  /** The kinematic faces (with `kinematicSurfaces`): extrusions, revolutions and helical faces. */
+  numExtrusion: number;
+  numRevolution: number;
+  numKinematicHelical: number;
   /** Outside the legacy mode: one record per patch tried as a surface. */
   faces?: FitCadFaceRecord[];
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */

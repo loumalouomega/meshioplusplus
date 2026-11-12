@@ -34,6 +34,7 @@
 
 #include "thread_sweep.hpp"
 
+#include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/step.hpp"
@@ -573,6 +574,54 @@ TEST(FitCadModes, NetworkOnAGenusTwoSkin) {
     EXPECT_LT(net.mFacetAreaFraction, adaptive.mFacetAreaFraction);
 }
 
+// Kinematic surfaces (doc/fit_cad_freeform_plan.md step 5), natively: the
+// lobed prism's wall is two surfaces of linear extrusion and the wavy wall two
+// of revolution, written exactly, read back by a CAD kernel where there is
+// one; with the option off nothing changes.
+TEST(FitCadModes, NativeKinematicSurfaces) {
+    struct Case {
+        const char* mName;
+        Mesh mSkin;
+        std::int64_t FitCadResult::*pCount;
+    };
+    for (Case& c : std::vector<Case>{
+             {"extruded_lobe", analytic::extruded_lobe(), &FitCadResult::mNumExtrusion},
+             {"wavy_capped", analytic::wavy_capped(), &FitCadResult::mNumRevolution}}) {
+        const double tol = 2e-3 * fcfix::diagonal(c.mSkin);
+        const Mesh fitted = fcfix::fitted_abs(c.mSkin, tol);
+        FitCadOptions o;
+        o.mBackend = FitCadBackend::Native;
+        o.mTolerance = tol;
+        const FitCadResult off = fit_cad(fitted, "", o);
+        EXPECT_EQ(off.*c.pCount, 0) << c.mName;
+        o.mKinematicSurfaces = true;
+        o.mValidationReport = true;
+        const std::string path = temp_step((std::string(c.mName) + "_kinematic.step").c_str());
+        const FitCadResult r = fit_cad(fitted, path, o);
+        EXPECT_EQ(r.*c.pCount, 2) << c.mName;
+        EXPECT_TRUE(r.mValid) << c.mName;
+        EXPECT_EQ(r.mFacetAreaFraction, 0.0) << c.mName;
+        EXPECT_LE(r.mMeshToCadMax, tol) << c.mName;
+        EXPECT_LE(r.mCadToMeshMax, tol) << c.mName;
+        if (r.mStepRoundTripChecked) {
+            EXPECT_TRUE(r.mStepRoundTripValid) << c.mName;
+            EXPECT_NEAR(r.mStepRoundTripVolumeRatio, 1.0, 1e-2) << c.mName;
+        }
+        // The file names the exact surfaces.
+        auto in = meshioplusplus::detail::make_classic_ifstream(path);
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        EXPECT_NE(text.find(r.mNumExtrusion > 0 ? "SURFACE_OF_LINEAR_EXTRUSION"
+                                                : "SURFACE_OF_REVOLUTION"),
+                  std::string::npos)
+            << c.mName;
+        // Deterministic.
+        const FitCadResult again = fit_cad(fitted, "", o);
+        EXPECT_EQ(again.mCounts.mNumFaces, r.mCounts.mNumFaces);
+        EXPECT_EQ(again.mMeshToCadMax, r.mMeshToCadMax);
+    }
+}
+
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 
 // The adaptive mode through OpenCASCADE: checked B-spline faces, no more facet
@@ -727,6 +776,31 @@ TEST(FitCadModes, OcctUnfittedPatchHasAReason) {
     if (r.mNumBspline == 0) {
         EXPECT_TRUE(demoted);
         EXPECT_GT(r.mFacetAreaFraction, 0.0);
+    }
+}
+
+// The kinematic surfaces through OpenCASCADE: the walls the legacy build
+// leaves as facets become exact surfaces of extrusion and revolution.
+TEST(FitCadModes, OcctKinematicSurfaces) {
+    struct Case {
+        const char* mName;
+        Mesh mSkin;
+        std::int64_t FitCadResult::*pCount;
+    };
+    for (Case& c : std::vector<Case>{
+             {"extruded_lobe", analytic::extruded_lobe(), &FitCadResult::mNumExtrusion},
+             {"wavy_capped", analytic::wavy_capped(), &FitCadResult::mNumRevolution}}) {
+        const double tol = 2e-3 * fcfix::diagonal(c.mSkin);
+        FitCadOptions o;
+        o.mTolerance = tol;
+        o.mKinematicSurfaces = true;
+        o.mValidationReport = true;
+        const FitCadResult r = fit_cad(fcfix::fitted_abs(c.mSkin, tol), "", o);
+        EXPECT_TRUE(r.mBrepChecked) << c.mName;
+        EXPECT_TRUE(r.mValid) << c.mName;
+        EXPECT_EQ(r.*c.pCount, 2) << c.mName;
+        EXPECT_EQ(r.mFacetAreaFraction, 0.0) << c.mName;
+        EXPECT_LE(r.mMeshToCadMax, tol) << c.mName;
     }
 }
 

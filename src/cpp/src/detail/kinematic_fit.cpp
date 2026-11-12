@@ -354,6 +354,64 @@ void kf_params(const BsplineSurface& rS, const std::vector<PatchVec>& rPts, cons
     }
 }
 
+// The parameters of every used point on a helical fit's surface, from the
+// screw itself: the angle unwrapped along the patch's edges (a thread winds
+// round many times, where the nearest node of a grid can lie a turn away),
+// the profile parameter from the point's radius or height; then Newton.
+void kf_helical_params(const KinematicFit& rF, const std::vector<PatchVec>& rPts,
+                       const std::vector<PatchTri>& rTris, const KfPatch& rP,
+                       std::vector<double>& rU, std::vector<double>& rV) {
+    const HelicalFit& h = rF.mHelical;
+    const std::size_t n = rPts.size();
+    std::vector<std::vector<std::size_t>> adj(n);
+    for (const PatchTri& t : rTris)
+        for (std::size_t k = 0; k < 3; ++k) {
+            adj[t[k]].push_back(t[(k + 1) % 3]);
+            adj[t[(k + 1) % 3]].push_back(t[k]);
+        }
+    for (auto& a : adj) {
+        std::sort(a.begin(), a.end());
+        a.erase(std::unique(a.begin(), a.end()), a.end());
+    }
+    std::vector<double> raw(n, 0.0), theta(n, 0.0);
+    for (std::size_t v : rP.mLive) {
+        const PatchVec r = vec3_sub(rPts[v], h.mOrigin);
+        raw[v] = std::atan2(vec3_dot(r, h.mE2), vec3_dot(r, h.mE1));
+    }
+    std::vector<std::uint8_t> seen(n, 0);
+    double lo = std::numeric_limits<double>::infinity();
+    for (std::size_t seed : rP.mLive) {
+        if (seen[seed])
+            continue;
+        std::vector<std::size_t> queue{seed};
+        seen[seed] = 1;
+        theta[seed] = raw[seed];
+        for (std::size_t q = 0; q < queue.size(); ++q) {
+            const std::size_t a = queue[q];
+            lo = std::min(lo, theta[a]);
+            for (std::size_t b : adj[a])
+                if (!seen[b]) {
+                    seen[b] = 1;
+                    theta[b] = theta[a] + std::remainder(raw[b] - theta[a], 2.0 * kKfPi);
+                    queue.push_back(b);
+                }
+        }
+    }
+    const double shift = 2.0 * kKfPi * std::round((h.mThetaMin - lo) / (2.0 * kKfPi));
+    rU.assign(n, 0.0);
+    rV.assign(n, 0.0);
+    for (std::size_t v : rP.mLive) {
+        const double th = theta[v] + shift;
+        const PatchVec r = vec3_sub(rPts[v], h.mOrigin);
+        const double g = h.Advance(th);
+        const double rho = std::hypot(vec3_dot(r, h.mE1), vec3_dot(r, h.mE2)) - h.mTaper * g;
+        const double zeta = vec3_dot(r, h.mAxis) - g;
+        rU[v] = std::clamp(h.mRhoOfZeta ? zeta : rho, rF.mSurface.U0(), rF.mSurface.U1());
+        rV[v] = std::clamp(th, rF.mSurface.V0(), rF.mSurface.V1());
+        bspline_project(rF.mSurface, rPts[v].data(), rU[v], rV[v]);
+    }
+}
+
 // A cubic B-spline over [U0, U1] x [V0, V1] through the exact surface
 // `rAt`, within a twentieth of the tolerance where it can be.
 template <class F>
@@ -407,7 +465,10 @@ bool kf_accept(KinematicFit& rFit, const std::vector<PatchVec>& rPts,
         rFit.mWhy = "no surface";
         return false;
     }
-    kf_params(rFit.mSurface, rPts, rP, rFit.mU, rFit.mV);
+    if (rFit.mKind == KinematicKind::Helical)
+        kf_helical_params(rFit, rPts, rTris, rP, rFit.mU, rFit.mV);
+    else
+        kf_params(rFit.mSurface, rPts, rP, rFit.mU, rFit.mV);
     const FreeformAcceptance acc =
         freeform_accept(rFit.mSurface, rPts, rTris, rFit.mU, rFit.mV, Tol, 0.0, true);
     rFit.mMaxDist = acc.mMaxDist;
@@ -429,6 +490,17 @@ PatchVec KinematicFit::ProfilePoint(double T) const {
     return {mOrigin[0] + q[0] * mE1[0] + q[1] * second[0],
             mOrigin[1] + q[0] * mE1[1] + q[1] * second[1],
             mOrigin[2] + q[0] * mE1[2] + q[1] * second[2]};
+}
+
+BsplineCurve KinematicFit::SweptCurve() const {
+    BsplineCurve c = mProfile;
+    const PatchVec& second = mKind == KinematicKind::Revolution ? mAxis : mE2;
+    for (PatchVec& q : c.mPoles) {
+        const PatchVec p = q;
+        for (std::size_t k = 0; k < 3; ++k)
+            q[k] = mOrigin[k] + p[0] * mE1[k] + p[1] * second[k];
+    }
+    return c;
 }
 
 PatchVec KinematicFit::At(double T, double S) const {
@@ -566,8 +638,18 @@ KinematicFit kinematic_fit(const std::vector<PatchVec>& rPts, const std::vector<
             } else if (kf_refine_axis(rPts, patch, tol, f, mer)) {
                 const double a0 = mer.mA0, a1 = mer.mA1, gap = mer.mGap;
                 const double m = std::min(rOptions.mMargin * (a1 - a0), 0.5 * (gap - 1e-3));
-                f.mV0 = a0 - m;
-                f.mV1 = a1 + m;
+                // The frame turned so the angles run about pi, inside
+                // (0, 2 pi): a CAD kernel's periodic angle then needs no
+                // shift past its seam.
+                const double turn = 0.5 * (a0 + a1) - kKfPi;
+                const double ct = std::cos(turn), st = std::sin(turn);
+                const PatchVec e1 = f.mE1, e2 = f.mE2;
+                for (std::size_t k = 0; k < 3; ++k) {
+                    f.mE1[k] = ct * e1[k] + st * e2[k];
+                    f.mE2[k] = -st * e1[k] + ct * e2[k];
+                }
+                f.mV0 = a0 - turn - m;
+                f.mV1 = a1 - turn + m;
                 const std::size_t nu = f.mProfile.mPoles.size() + 2;
                 const std::size_t nv = std::max<std::size_t>(
                     4, static_cast<std::size_t>(std::ceil((f.mV1 - f.mV0) / (kKfPi / 6.0))) + 3);

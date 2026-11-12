@@ -28,8 +28,10 @@ function r = fit_cad(mesh, varargin)
 %     'layout_snap_to_features' (true), 'validate_by_surface_sampling' (true),
 %     'constrain_primitives' (false), 'validation_report' (false),
 %     'validation_acceptance' (false), 'freeform_fit_schedule' ('legacy' or
-%     'continuation') and 'freeform_objective' ('default', 'pdm', 'tdm' or
-%     'sdm').
+%     'continuation'), 'freeform_objective' ('default', 'pdm', 'tdm' or
+%     'sdm') and 'kinematic_surfaces' (false: true first tries a patch no
+%     primitive explains as a surface of linear extrusion, of revolution or a
+%     helical surface).
 %   Returns a struct: mesh (with cell data 'fit_cad:face', 'fit_cad:type' and
 %   'fit_cad:patch'), valid, tolerance, volume, skin_volume, volume_ratio,
 %   max_deviation, num_faces, num_plane, num_sphere, num_cylinder, num_cone,
@@ -53,7 +55,8 @@ function r = fit_cad(mesh, varargin)
 %   normal_deviation_max_deg, normal_deviation_p95_deg,
 %   step_round_trip_checked, step_round_trip_valid,
 %   step_round_trip_volume_ratio and total_freeform_control_points (NaN and
-%   false unless 'validation_report' measured them).
+%   false unless 'validation_report' measured them), num_extrusion,
+%   num_revolution and num_kinematic_helical.
 
     o = mio.internal.opts(varargin, {'step_path', '', 'tolerance', 0, 'exact_edges', true, ...
         'types', {'plane', 'sphere', 'cylinder', 'cone', 'torus'}, 'mesh_deflection', 0, ...
@@ -73,7 +76,8 @@ function r = fit_cad(mesh, varargin)
         'resegment_rounds', 2, 'layout_snap_to_features', true, ...
         'validate_by_surface_sampling', true, 'constrain_primitives', false, ...
         'validation_report', false, 'validation_acceptance', false, ...
-        'freeform_fit_schedule', 'legacy', 'freeform_objective', 'default'}, 'mio.fit_cad');
+        'freeform_fit_schedule', 'legacy', 'freeform_objective', 'default', ...
+        'kinematic_surfaces', false}, 'mio.fit_cad');
     if isempty(o.ransac_seed)
         seed = [];
     else
@@ -102,7 +106,8 @@ function r = fit_cad(mesh, varargin)
         logical(o.validate_by_surface_sampling), logical(o.constrain_primitives), ...
         logical(o.validation_report), logical(o.validation_acceptance), ...
         mio.internal.str(o.freeform_fit_schedule, 'freeform_fit_schedule'), ...
-        mio.internal.str(o.freeform_objective, 'freeform_objective'));
+        mio.internal.str(o.freeform_objective, 'freeform_objective'), ...
+        logical(o.kinematic_surfaces));
 end
 
 function mask = types_mask(types, fname)

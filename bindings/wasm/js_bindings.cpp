@@ -6201,8 +6201,9 @@ val refine_patches_js(const val& rMeshObj, const val& rOptions) {
  *   maxFreeformIterations, maxFreeformSplits, sewTolerance, extendSurfaces,
  *   snapJunctions, faceDeviation, the freeform-mode keys,
  *   constrainPrimitives, validationReport, validationAcceptance,
- *   freeformFitSchedule ('legacy' | 'continuation') and freeformObjective
- *   ('default' | 'pdm' | 'tdm' | 'sdm')}`, every key optional;
+ *   freeformFitSchedule ('legacy' | 'continuation'), freeformObjective
+ *   ('default' | 'pdm' | 'tdm' | 'sdm') and kinematicSurfaces}`, every key
+ *   optional;
  *   `types` is an array of `'plane'`, `'sphere'`, `'cylinder'`, `'cone'`,
  *   `'torus'`, `backend` one of `'auto'`, `'occt'`, `'native'`; the
  *   `refine*` keys, `normalWeight`, `allow*` and `ransacSeed` set
@@ -6268,7 +6269,8 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                                  "validationReport",
                                  "validationAcceptance",
                                  "freeformFitSchedule",
-                                 "freeformObjective"});
+                                 "freeformObjective",
+                                 "kinematicSurfaces"});
             const auto has = [&](const char* pKey) {
                 return rOptions.hasOwnProperty(pKey) && !rOptions[pKey].isUndefined();
             };
@@ -6414,6 +6416,8 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
                 options.mValidationReport = rOptions["validationReport"].as<bool>();
             if (has("validationAcceptance"))
                 options.mValidationAcceptance = rOptions["validationAcceptance"].as<bool>();
+            if (has("kinematicSurfaces"))
+                options.mKinematicSurfaces = rOptions["kinematicSurfaces"].as<bool>();
         }
         if (options.mBackend == meshioplusplus::FitCadBackend::Occt &&
             !meshioplusplus::fit_cad_has_occt())
@@ -6471,6 +6475,9 @@ val fit_cad_js(const val& rMeshObj, const val& rOptions) {
             {"numConstrainedPrimitives", r.mNumConstrainedPrimitives},
             {"numConstraintGroups", r.mNumConstraintGroups},
             {"totalFreeformControlPoints", r.mTotalFreeformControlPoints},
+            {"numExtrusion", r.mNumExtrusion},
+            {"numRevolution", r.mNumRevolution},
+            {"numKinematicHelical", r.mNumKinematicHelical},
         };
         for (const auto& [name, value] : counters)
             out.set(name, static_cast<double>(value));

@@ -238,6 +238,7 @@ OP_TABLE = {
         "ValidationAcceptance",
         "FreeformFitSchedule",
         "FreeformObjective",
+        "KinematicSurfaces",
     ),
     "RefinePatches": (
         "Tolerance",
@@ -1389,6 +1390,7 @@ KEY_DEFAULTS = {
         ("ValidationAcceptance", "flag", False),
         ("FreeformFitSchedule", "text", "legacy"),
         ("FreeformObjective", "text", "default"),
+        ("KinematicSurfaces", "flag", False),
     ),
     "RefinePatches": (
         ("Tolerance", "number", 0.001),

@@ -2114,6 +2114,9 @@ end
     @test scheduled.num_faces == 6
     close(scheduled.mesh)
     @test_throws ArgumentError fit_cad(cube; backend="native", freeform_objective="nope")
+    kinematic = fit_cad(cube; backend="native", kinematic_surfaces=true)
+    @test kinematic.num_extrusion == 0 && kinematic.num_revolution == 0
+    close(kinematic.mesh)
     if has_occt()
         snapped = fit_cad(cube; snap_junctions=true, face_deviation=true)
         @test snapped.valid && snapped.closed

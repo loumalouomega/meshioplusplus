@@ -74,13 +74,17 @@ Departures: a knot is removed by refitting the samples without it, not by algori
 
 `kinematic_surfaces` tries each patch no primitive or feature explains, before the freeform ladder, as a surface of linear extrusion, of revolution or a helical surface: the line complex of its normals (Pottmann and Randrup, Computing 60, 1998) as a full 6 × 6 problem, so a translation and a rotation are found as well as a screw, refined by Levenberg-Marquardt; the points projected to the profile plane or meridian half-plane are fitted by a cubic B-spline curve; the face is accepted by the freeform test. OpenCASCADE builds `Geom_SurfaceOfLinearExtrusion` and `Geom_SurfaceOfRevolution`; the native writer writes `SURFACE_OF_LINEAR_EXTRUSION` and `SURFACE_OF_REVOLUTION` (or, if a reader disagrees, the exact rational B-spline of step 6) and gains helical faces as B-splines swept from the exact profile.
 
-- [ ] Kinematic fit with tests, both backends, report counts, KPI.
+- [x] Kinematic fit (`detail/kinematic_fit`) with tests, both backends, report counts (`num_extrusion`, `num_revolution`, `num_kinematic_helical`), every binding, KPI. See [kinematic surfaces](./fit_cad.md#kinematic-surfaces).
+
+Departures: the line complex stays the 3 × 3 screw estimate `helical_fit` already had (`screw_estimate`, extracted with its arithmetic unchanged), which finds a rotation (a screw of no advance) but not a translation, so an extrusion is found instead by the area-weighted second moment of the normals, whose smallest eigenvector is the direction. The revolution's axis is refined by Levenberg-Marquardt against the meridian profile rather than the line complex, since the skin's discretised normals bias the complex by about a thousandth of a radian. A patch closed round (a band) is cut into two discs, both of which must fit, so no face is periodic and neither writer needs a seam. OpenCASCADE writes the revolution as its exact rational B-spline rather than the `Geom_SurfaceOfRevolution`: its NURBS conversion took the face's bounds, which the face's p-curves overrun. The extrusion and the revolution are tried before the fillets and threads (a chamfer's straight sections claimed the lobed prism's wall and failed), the helical surface after them.
 
 ### Step 6: rational output only where exact
 
 The revolution construction inside `brep_nurbs_face` becomes `brep_nurbs_revolve`, with `brep_nurbs_extrude` beside it, so the NURBS B-rep (and Kratos CAD JSON) of a kinematic face is exact; the four primitives' output stays bit for bit. Tests check each rational surface against its analytic or kinematic original to `1e-9`.
 
-- [ ] Refactor, extrusion, tests.
+- [x] Kind 12 of `brep_nurbs_face` (a profile turned about an axis, exactly rational), extrusion, tests.
+
+Departures: the revolution block stays inline and kind 12 is one more profile for it (its poles at weight 1), so kinds 2 to 5 are untouched without a refactor; the extrusion needs no function of its own, being the polynomial `(p, 1)` B-spline the kinematic fit already builds. The rational patch reproduces the profile turned about the axis within `10⁻⁹` (test `RevolvedProfileIsExactlyRational`).
 
 ### Step 7: a coupled G1 network
 

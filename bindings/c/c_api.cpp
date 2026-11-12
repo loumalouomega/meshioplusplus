@@ -9160,6 +9160,8 @@ static_assert(offsetof(mio_fit_cad_opts_ex2, freeform_fit_schedule) == 76,
               "mio_fit_cad_opts_ex2: freeform_fit_schedule left the former reserved32");
 static_assert(offsetof(mio_fit_cad_opts_ex2, freeform_objective) == 80,
               "mio_fit_cad_opts_ex2: freeform_objective left the reserved tail's start");
+static_assert(offsetof(mio_fit_cad_opts_ex2, kinematic_surfaces) == 84,
+              "mio_fit_cad_opts_ex2: kinematic_surfaces left the former reserved32");
 static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 88,
               "mio_fit_cad_opts_ex2: the reserved tail moved");
 static_assert(MIO_OBJECTIVE_SDM == static_cast<int>(meshioplusplus::FitCadFreeformObjective::Sdm),
@@ -9169,7 +9171,9 @@ static_assert(MIO_FIT_SCHEDULE_CONTINUATION ==
               "mio_fit_cad_fit_schedule must match FitCadFreeformFitSchedule");
 static_assert(sizeof(mio_fit_cad_report_ex4) == 272,
               "mio_fit_cad_report_ex4 grew outside its reserved tail");
-static_assert(offsetof(mio_fit_cad_report_ex4, reserved) == 96,
+static_assert(offsetof(mio_fit_cad_report_ex4, num_extrusion) == 96,
+              "mio_fit_cad_report_ex4: the kinematic counts left the reserved tail's start");
+static_assert(offsetof(mio_fit_cad_report_ex4, reserved) == 120,
               "mio_fit_cad_report_ex4: the reserved tail moved");
 static_assert(offsetof(mio_fit_cad_report_ex3, num_constrained_primitives) == 104,
               "mio_fit_cad_report_ex3: the counts left the reserved tail's start");
@@ -11032,6 +11036,7 @@ mio_mesh* mio_fit_cad4(const mio_mesh* mesh, const char* step_path, const mio_fi
                 opts_ex2->freeform_fit_schedule);
             options.mFreeformObjective =
                 static_cast<meshioplusplus::FitCadFreeformObjective>(opts_ex2->freeform_objective);
+            options.mKinematicSurfaces = opts_ex2->kinematic_surfaces != 0;
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -11126,6 +11131,9 @@ mio_mesh* mio_fit_cad4(const mio_mesh* mesh, const char* step_path, const mio_fi
             report_ex4->normal_deviation_p95_deg = r.mNormalDeviationP95Deg;
             report_ex4->step_round_trip_volume_ratio = r.mStepRoundTripVolumeRatio;
             report_ex4->total_freeform_control_points = r.mTotalFreeformControlPoints;
+            report_ex4->num_extrusion = r.mNumExtrusion;
+            report_ex4->num_revolution = r.mNumRevolution;
+            report_ex4->num_kinematic_helical = r.mNumKinematicHelical;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

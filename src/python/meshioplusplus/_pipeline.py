@@ -1617,6 +1617,7 @@ def _apply_step(mesh, step, steps, warnings):
             constrain_primitives=_flag(step, "ConstrainPrimitives", False),
             validation_report=_flag(step, "ValidationReport", False),
             validation_acceptance=_flag(step, "ValidationAcceptance", False),
+            kinematic_surfaces=_flag(step, "KinematicSurfaces", False),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1673,6 +1674,10 @@ def _apply_step(mesh, step, steps, warnings):
             entry["StepRoundTripValid"] = (
                 1.0 if report["step_round_trip_valid"] else 0.0
             )
+        if "num_extrusion" in report:
+            entry["NumExtrusion"] = report["num_extrusion"]
+            entry["NumRevolution"] = report["num_revolution"]
+            entry["NumKinematicHelical"] = report["num_kinematic_helical"]
         # The freeform modes (v17.12.0) report only outside the legacy mode.
         if "freeform_mode" in report:
             entry["BrepChecked"] = 1.0 if report["brep_checked"] else 0.0

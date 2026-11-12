@@ -350,6 +350,12 @@ def add_args(parser):
         help="hold every freeform face to the validation measures before accepting it",
     )
     parser.add_argument(
+        "--kinematic-surfaces",
+        action="store_true",
+        help="first try a patch no primitive explains as a surface of linear "
+        "extrusion, of revolution or a helical surface",
+    )
+    parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
     )
     parser.add_argument(
@@ -440,6 +446,7 @@ def to_cad_cmd(args):
         constrain_primitives=args.constrain_primitives,
         validation_report=args.validation_report,
         validation_acceptance=args.validation_acceptance,
+        kinematic_surfaces=args.kinematic_surfaces,
     )
     if args.mesh_out:
         write(args.mesh_out, out)
@@ -504,6 +511,12 @@ def to_cad_cmd(args):
                     if report["step_round_trip_checked"]
                     else "not checked"
                 )
+            )
+        if args.kinematic_surfaces:
+            print(
+                f"  kinematic: {report['num_extrusion']} extrusion(s), "
+                f"{report['num_revolution']} revolution(s), "
+                f"{report['num_kinematic_helical']} helical face(s)"
             )
         if report.get("refined"):
             print(

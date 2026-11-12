@@ -235,6 +235,7 @@ def fit_cad(
     validation_acceptance: bool = False,
     freeform_fit_schedule: str = "legacy",
     freeform_objective: str = "default",
+    kinematic_surfaces: bool = False,
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -417,10 +418,20 @@ def fit_cad(
         (point distance only), ``"tdm"`` (a tangent-distance step first every
         iteration) or ``"sdm"`` (a squared-distance step by the principal
         curvatures at the foot points, first every iteration).
+    :param kinematic_surfaces: first try a patch no primitive explains as a
+        kinematic surface, the sweep of a fitted planar profile: a surface of
+        linear extrusion (``fit_cad:type`` 11), of revolution (12) or a
+        helical surface (8). A patch closed round (a band) is cut into two
+        discs first. The extrusion and the revolution are exact (the native
+        STEP writer names them ``SURFACE_OF_LINEAR_EXTRUSION`` and
+        ``SURFACE_OF_REVOLUTION``; a revolution's NURBS form is rational).
+        The report then holds ``num_extrusion``, ``num_revolution`` and
+        ``num_kinematic_helical``.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
-        chamfer, else as ``fit:type``) and
+        chamfer, 11 a surface of linear extrusion, 12 a surface of
+        revolution, else as ``fit:type``) and
         ``fit_cad:patch``, and the solid as NURBS faces,
         loops and edges in ``mesh.info["brep"]`` (face ``i`` of
         ``fit_cad:face`` has id ``i + 1``), so writing it as ``.cad.json`` gives
@@ -616,6 +627,7 @@ def fit_cad(
         **({"constrain_primitives": True} if constrain_primitives else {}),
         **({"validation_report": True} if validation_report else {}),
         **({"validation_acceptance": True} if validation_acceptance else {}),
+        **({"kinematic_surfaces": True} if kinematic_surfaces else {}),
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}
@@ -659,6 +671,9 @@ def fit_cad(
         report["total_freeform_control_points"] = int(
             res["total_freeform_control_points"]
         )
+    if kinematic_surfaces:
+        for key in ("num_extrusion", "num_revolution", "num_kinematic_helical"):
+            report[key] = int(res[key])
     return out, report
 
 

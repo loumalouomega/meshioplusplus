@@ -8362,6 +8362,7 @@ TEST(CApi, FitCad3FreeformModes) {
     EXPECT_EQ(ex2.validation_acceptance, 0);
     EXPECT_EQ(ex2.freeform_fit_schedule, MIO_FIT_SCHEDULE_LEGACY);
     EXPECT_EQ(ex2.freeform_objective, MIO_OBJECTIVE_DEFAULT);
+    EXPECT_EQ(ex2.kinematic_surfaces, 0);
     mio_fit_cad_report_ex4 report_ex4;
     skin = mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr,
                         &report_ex4);
@@ -8381,6 +8382,16 @@ TEST(CApi, FitCad3FreeformModes) {
     for (int64_t r : report_ex4.reserved)
         EXPECT_EQ(r, 0);
     mio_mesh_free(skin);
+    // The kinematic surfaces (unreleased): accepted; a box has none.
+    ex2.kinematic_surfaces = 1;
+    skin = mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr,
+                        &report_ex4);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report_ex4.num_extrusion, 0);
+    EXPECT_EQ(report_ex4.num_revolution, 0);
+    EXPECT_EQ(report_ex4.num_kinematic_helical, 0);
+    mio_mesh_free(skin);
+    ex2.kinematic_surfaces = 0;
     // The fit's schedule and objective (unreleased): in range they reach the
     // core, out of range they are refused by name.
     ex2.freeform_fit_schedule = MIO_FIT_SCHEDULE_CONTINUATION;
