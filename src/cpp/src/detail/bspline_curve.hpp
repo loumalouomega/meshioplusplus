@@ -61,6 +61,19 @@ struct BsplineCurve {
 /// The point at `T` (clamped to the domain) and, with `pD`, the first derivative.
 PatchVec bspline_curve_eval(const BsplineCurve& rC, double T, PatchVec* pD = nullptr);
 
+/// The point at `T` (clamped) with its first and second derivatives
+/// (unreleased).
+PatchVec bspline_curve_eval2(const BsplineCurve& rC, double T, PatchVec& rD1, PatchVec& rD2);
+
+/**
+ * @brief The foot of @p rP on @p rC: Newton on `(C(t) - P) . C'(t) = 0`
+ * from the best of `Samples` evenly spaced parameters, clamped to the
+ * domain, with step halving (unreleased). @p rT receives the foot's
+ * parameter; returns the distance.
+ */
+double bspline_curve_project(const BsplineCurve& rC, const PatchVec& rP, double& rT,
+                             int Samples = 64);
+
 /// Insert the knot `T` `Times` times (exact; the multiplicity may reach the
 /// degree + 1, which splits the curve there).
 void bspline_curve_insert_knot(BsplineCurve& rC, double T, int Times);

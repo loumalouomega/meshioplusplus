@@ -1006,6 +1006,84 @@ FfProfileFit ff_profile_fit(const std::vector<double>& rS, const std::vector<dou
 
 }  // namespace
 
+void feature_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                            std::vector<PatchVec>& rNormals, std::vector<std::uint8_t>& rInterior) {
+    ff_vertex_normals(rPts, rTris, rNormals, rInterior);
+}
+
+ScrewEstimate screw_estimate(const std::vector<PatchVec>& rPts,
+                             const std::vector<PatchVec>& rNormals,
+                             const std::vector<double>& rArea, const std::vector<std::size_t>& rLive,
+                             const PatchVec& centre, double scale) {
+    ScrewEstimate est;
+    double A[9] = {0}, B[9] = {0}, C[9] = {0};
+    for (std::size_t v : rLive) {
+        const PatchVec x{(rPts[v][0] - centre[0]) / scale, (rPts[v][1] - centre[1]) / scale,
+                         (rPts[v][2] - centre[2]) / scale};
+        const PatchVec& nv = rNormals[v];
+        const PatchVec m = vec3_cross(x, nv);
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j) {
+                A[i * 3 + j] +=
+                    rArea[v] * m[static_cast<std::size_t>(i)] * m[static_cast<std::size_t>(j)];
+                B[i * 3 + j] +=
+                    rArea[v] * m[static_cast<std::size_t>(i)] * nv[static_cast<std::size_t>(j)];
+                C[i * 3 + j] +=
+                    rArea[v] * nv[static_cast<std::size_t>(i)] * nv[static_cast<std::size_t>(j)];
+            }
+    }
+    // C^-1 by its adjugate.
+    const double det = C[0] * (C[4] * C[8] - C[5] * C[7]) - C[1] * (C[3] * C[8] - C[5] * C[6]) +
+                       C[2] * (C[3] * C[7] - C[4] * C[6]);
+    const double ctr = C[0] + C[4] + C[8];
+    if (!(std::fabs(det) > 1e-12 * ctr * ctr * ctr))
+        return est;
+    const double Ci[9] = {(C[4] * C[8] - C[5] * C[7]) / det, (C[2] * C[7] - C[1] * C[8]) / det,
+                          (C[1] * C[5] - C[2] * C[4]) / det, (C[5] * C[6] - C[3] * C[8]) / det,
+                          (C[0] * C[8] - C[2] * C[6]) / det, (C[2] * C[3] - C[0] * C[5]) / det,
+                          (C[3] * C[7] - C[4] * C[6]) / det, (C[1] * C[6] - C[0] * C[7]) / det,
+                          (C[0] * C[4] - C[1] * C[3]) / det};
+    // S = A - B C^-1 B^T.
+    double BCi[9] = {0}, S[9] = {0};
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            for (int l = 0; l < 3; ++l)
+                BCi[i * 3 + j] += B[i * 3 + l] * Ci[l * 3 + j];
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            double s = A[i * 3 + j];
+            for (int l = 0; l < 3; ++l)
+                s -= BCi[i * 3 + l] * B[j * 3 + l];
+            S[i * 3 + j] = s;
+        }
+    for (int i = 0; i < 3; ++i)
+        for (int j = i + 1; j < 3; ++j)
+            S[i * 3 + j] = S[j * 3 + i] = 0.5 * (S[i * 3 + j] + S[j * 3 + i]);
+    double w[3], vec[9];
+    lsq_sym3_eigen(S, w, vec);
+    for (int i = 0; i < 3; ++i)
+        est.mEigen[i] = w[i];
+    // One screw only: a plane, a cylinder or a sphere is left unchanged by
+    // more than one, and its two smallest eigenvalues both vanish.
+    if (!(w[1] > 100.0 * std::max(w[0], 1e-15 * std::fabs(w[2]))))
+        return est;
+    const PatchVec c{vec[0], vec[1], vec[2]};
+    PatchVec cbar{0.0, 0.0, 0.0};
+    for (int i = 0; i < 3; ++i) {
+        double s = 0.0;
+        for (int l = 0; l < 3; ++l)  // (C^-1 B^T c)_i = sum_l Ci_il (B^T c)_l
+            s += Ci[i * 3 + l] *
+                 (B[0 * 3 + l] * c[0] + B[1 * 3 + l] * c[1] + B[2 * 3 + l] * c[2]);
+        cbar[static_cast<std::size_t>(i)] = -s;
+    }
+    est.mAxis = c;
+    est.mCbar = cbar;
+    est.mK = scale * vec3_dot(c, cbar);
+    est.mOrigin = ff_axpy(centre, scale, vec3_cross(c, cbar));
+    est.mOk = true;
+    return est;
+}
+
 HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
                        const PatchVec* pOrigin, const PatchVec* pAxis, double Tol, bool General,
                        double TaperSeed) {
@@ -1052,67 +1130,12 @@ HelicalFit helical_fit(const std::vector<PatchVec>& rPts, const std::vector<Patc
     PatchVec axis{}, origin{};
     double k = 0.0;
     if (pAxis == nullptr) {
-        double A[9] = {0}, B[9] = {0}, C[9] = {0};
-        for (std::size_t v : live) {
-            const PatchVec x{(rPts[v][0] - centre[0]) / scale, (rPts[v][1] - centre[1]) / scale,
-                             (rPts[v][2] - centre[2]) / scale};
-            const PatchVec& nv = normals[v];
-            const PatchVec m = vec3_cross(x, nv);
-            for (int i = 0; i < 3; ++i)
-                for (int j = 0; j < 3; ++j) {
-                    A[i * 3 + j] +=
-                        area[v] * m[static_cast<std::size_t>(i)] * m[static_cast<std::size_t>(j)];
-                    B[i * 3 + j] +=
-                        area[v] * m[static_cast<std::size_t>(i)] * nv[static_cast<std::size_t>(j)];
-                    C[i * 3 + j] +=
-                        area[v] * nv[static_cast<std::size_t>(i)] * nv[static_cast<std::size_t>(j)];
-                }
-        }
-        // C^-1 by its adjugate.
-        const double det = C[0] * (C[4] * C[8] - C[5] * C[7]) - C[1] * (C[3] * C[8] - C[5] * C[6]) +
-                           C[2] * (C[3] * C[7] - C[4] * C[6]);
-        const double ctr = C[0] + C[4] + C[8];
-        if (!(std::fabs(det) > 1e-12 * ctr * ctr * ctr))
+        const ScrewEstimate est = screw_estimate(rPts, normals, area, live, centre, scale);
+        if (!est.mOk)
             return out;
-        const double Ci[9] = {(C[4] * C[8] - C[5] * C[7]) / det, (C[2] * C[7] - C[1] * C[8]) / det,
-                              (C[1] * C[5] - C[2] * C[4]) / det, (C[5] * C[6] - C[3] * C[8]) / det,
-                              (C[0] * C[8] - C[2] * C[6]) / det, (C[2] * C[3] - C[0] * C[5]) / det,
-                              (C[3] * C[7] - C[4] * C[6]) / det, (C[1] * C[6] - C[0] * C[7]) / det,
-                              (C[0] * C[4] - C[1] * C[3]) / det};
-        // S = A - B C^-1 B^T.
-        double BCi[9] = {0}, S[9] = {0};
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j)
-                for (int l = 0; l < 3; ++l)
-                    BCi[i * 3 + j] += B[i * 3 + l] * Ci[l * 3 + j];
-        for (int i = 0; i < 3; ++i)
-            for (int j = 0; j < 3; ++j) {
-                double s = A[i * 3 + j];
-                for (int l = 0; l < 3; ++l)
-                    s -= BCi[i * 3 + l] * B[j * 3 + l];
-                S[i * 3 + j] = s;
-            }
-        for (int i = 0; i < 3; ++i)
-            for (int j = i + 1; j < 3; ++j)
-                S[i * 3 + j] = S[j * 3 + i] = 0.5 * (S[i * 3 + j] + S[j * 3 + i]);
-        double w[3], vec[9];
-        lsq_sym3_eigen(S, w, vec);
-        // One screw only: a plane, a cylinder or a sphere is left unchanged by
-        // more than one, and its two smallest eigenvalues both vanish.
-        if (!(w[1] > 100.0 * std::max(w[0], 1e-15 * std::fabs(w[2]))))
-            return out;
-        const PatchVec c{vec[0], vec[1], vec[2]};
-        PatchVec cbar{0.0, 0.0, 0.0};
-        for (int i = 0; i < 3; ++i) {
-            double s = 0.0;
-            for (int l = 0; l < 3; ++l)  // (C^-1 B^T c)_i = sum_l Ci_il (B^T c)_l
-                s += Ci[i * 3 + l] *
-                     (B[0 * 3 + l] * c[0] + B[1 * 3 + l] * c[1] + B[2 * 3 + l] * c[2]);
-            cbar[static_cast<std::size_t>(i)] = -s;
-        }
-        axis = c;
-        k = scale * vec3_dot(c, cbar);
-        origin = ff_axpy(centre, scale, vec3_cross(c, cbar));
+        axis = est.mAxis;
+        k = est.mK;
+        origin = est.mOrigin;
     } else {
         origin = *pOrigin;
         axis = MathUtils::UnitByDivision(*pAxis);

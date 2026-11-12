@@ -18,6 +18,7 @@
 // System includes
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 // Project includes (private, not installed)
 #include "bspline_curve.hpp"
@@ -86,6 +87,68 @@ PatchVec bspline_curve_eval(const BsplineCurve& rC, double T, PatchVec* pD) {
     if (pD)
         *pD = d;
     return out;
+}
+
+PatchVec bspline_curve_eval2(const BsplineCurve& rC, double T, PatchVec& rD1, PatchVec& rD2) {
+    const std::size_t n = rC.mPoles.size();
+    T = std::max(rC.T0(), std::min(rC.T1(), T));
+    const std::size_t span = nurbs_find_span(rC.mDegree, rC.mKnots, n, T);
+    const std::size_t p = static_cast<std::size_t>(rC.mDegree);
+    double ders[3 * (kBsplineMaxDegree + 1)] = {0.0};
+    bspline_basis_ders(span, T, rC.mDegree, 2, rC.mKnots, ders);
+    PatchVec out{0.0, 0.0, 0.0};
+    rD1 = {0.0, 0.0, 0.0};
+    rD2 = {0.0, 0.0, 0.0};
+    for (std::size_t k = 0; k <= p; ++k) {
+        const PatchVec& q = rC.mPoles[span - p + k];
+        for (std::size_t j = 0; j < 3; ++j) {
+            out[j] += ders[k] * q[j];
+            rD1[j] += ders[(p + 1) + k] * q[j];
+            rD2[j] += ders[2 * (p + 1) + k] * q[j];
+        }
+    }
+    return out;
+}
+
+double bspline_curve_project(const BsplineCurve& rC, const PatchVec& rP, double& rT, int Samples) {
+    const double t0 = rC.T0(), t1 = rC.T1();
+    const int ns = std::max(2, Samples);
+    double best = std::numeric_limits<double>::infinity();
+    for (int i = 0; i <= ns; ++i) {
+        const double t = t0 + (t1 - t0) * static_cast<double>(i) / static_cast<double>(ns);
+        const double d = vec3_norm(vec3_sub(bspline_curve_eval(rC, t), rP));
+        if (d < best) {
+            best = d;
+            rT = t;
+        }
+    }
+    for (int it = 0; it < 30; ++it) {
+        PatchVec d1, d2;
+        const PatchVec c = bspline_curve_eval2(rC, rT, d1, d2);
+        const PatchVec r = vec3_sub(c, rP);
+        const double g = vec3_dot(r, d1);
+        double h = vec3_dot(d1, d1) + vec3_dot(r, d2);
+        if (!(h > 0.0))
+            h = vec3_dot(d1, d1);
+        if (!(h > 0.0))
+            break;
+        double step = -g / h;
+        bool moved = false;
+        for (int half = 0; half < 30; ++half) {
+            const double t = std::max(t0, std::min(t1, rT + step));
+            const double d = vec3_norm(vec3_sub(bspline_curve_eval(rC, t), rP));
+            if (d < best) {
+                moved = std::abs(t - rT) > 1e-15 * (t1 - t0);
+                best = d;
+                rT = t;
+                break;
+            }
+            step *= 0.5;
+        }
+        if (!moved)
+            break;
+    }
+    return best;
 }
 
 void bspline_curve_insert_knot(BsplineCurve& rC, double T, int Times) {
