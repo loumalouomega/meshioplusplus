@@ -98,6 +98,9 @@ Departures: the G1 rows aim both sides at the plane halfway between their normal
 
 Regularity constraints (tangency, offset axes, angles snapped to 0, 45 or 90 degrees, each re-checked and reported) extend [`constrain_primitives`](./constrain_primitives.md) behind `regularity_constraints`; rational weights are optimised by bounded Gauss-Newton behind `freeform_rational_weights`, kept per face only where the deviation falls at equal poles. Either is merged only if the KPI table shows a gain, and is otherwise recorded under [measured and parked](./fit_cad.md#measured-and-parked).
 
+- [x] Step 8 prototyped (45-degree planes, cylinders tangent to a plane) and measured: no faceted area falls, one more patch demoted on the noisy turned part. Parked; see [measured and parked](./fit_cad.md#measured-and-parked).
+- [x] Step 9 prototyped (fewer poles with optimised weights) and measured: a third to a half fewer control points on four freeform fixtures, but a rational face of the sphere with a handle measured beyond the tolerance and its read-back volume moved. Parked, likewise.
+
 ## Measurements
 
 The KPI tables are in [benchmarks](./benchmarks.md#fit-cad-freeform-kpis), their rows in `benchmark/fit_cad_kpi.csv`. Each stage's deltas against the baseline:
