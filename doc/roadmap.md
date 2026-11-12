@@ -15,6 +15,8 @@ Effort key: **S** = days, **M** = a couple of weeks, **L** = a month or more, **
 - **An item estimated from a doc, a `.d.ts` or a changelog alone says so** ("verify first") and names its probe; the code has repeatedly been more or less capable than its description.
 - **[Non-goals](#non-goals-and-decisions-taken) record decisions already taken**, with their reasons, so they are not re-proposed as gaps.
 - **Every open item is written to be picked up without a planning pass** (November 2026). It states what exists today with the place in the code that proves the gap, what to reuse, ordered steps numbered so one can be closed alone, tests and fixtures, and a *done when* probe; a design-pass item lists the decisions to take and the option the code favours. Line numbers are those of `master` in November 2026 and drift: each is given beside a function, option or message name, which is what to search for. A claim an item could not check in the code says *verify first*.
+- **A priority is optional and only for sections that need to be ordered against each other** (§10 to §12 do not use one; their order is the sequencing's). Where an item carries one: **P0** blocks correctness or a release, **P1** the next release, **P2** planned, **P3** opportunistic or a spike. It never replaces the effort letter.
+- **GPL and AGPL implementations (Gmsh's sources, ScanRuler) inform an item only through their documented behaviour**; no code is read from them or ported ([non-goals](#non-goals-and-decisions-taken)).
 
 ### Landing checklists {#landing-checklists}
 
@@ -580,6 +582,24 @@ Publishing already uses OIDC for PyPI and (with a token fallback, `wasm.yml` lin
 - **3.17.3 Compile time.** `-ftime-trace` with ClangBuildAnalyzer on a full build; report the ten slowest translation units (`src/cpp/cli/main.cpp`, `bindings/python/_core.cpp` at 10,482 lines, `bindings/c/c_api.cpp`, `bindings/wasm/js_bindings.cpp` at 11,083 lines) and headers in [benchmarks](./benchmarks.md). Then, by what it shows: split `_core.cpp` and `js_bindings.cpp` by area into several sources (they are globbed, so no CMake change), precompiled headers for `meshioplusplus_tests`, and a `CMAKE_UNITY_BUILD=ON` leg as a check that the amalgamation's unique-name rule holds for the sources too. **M**
 - **3.17.4 Hardening the released binaries.** For `cli.yml` and `wheels.yml` builds only, through a `MESHIOPLUSPLUS_HARDENING` option applied `PRIVATE`: `-D_FORTIFY_SOURCE=3`, `-fstack-protector-strong`, `-Wl,-z,relro,-z,now`, `-fcf-protection=full` (x86-64) or `-mbranch-protection=standard` (arm64), `/guard:cf` and `/Qspectre` on MSVC. Measure on the [instruction-count gate](./benchmarks.md#instruction-count-gate) first and record the cost. **S–M**
 
+### 3.18 Compatibility with upstream meshio's own tests
+
+*Verify first.* Nothing in `tests/python` runs upstream meshio's suite against meshio++, so the claim of being a drop-in for `import meshio` rests on meshio++'s own tests. **S–M**
+
+- **Steps.**
+  - **3.18.1 A shim run.** A scheduled job in `ci.yml` (weekly, advisory): install the last upstream `meshio` sdist's `tests/` into a scratch directory, alias `import meshio` to `meshioplusplus` through a `conftest.py` that sets `sys.modules["meshio"]`, run it, and write the failures to a committed `tests/python/upstream_meshio_known.txt`.
+  - **3.18.2 Classify each failure** as a bug here (fix it, or add it to §1 if it loses data), a documented divergence (a line on the format page and in the [README](https://github.com/loumalouomega/meshioplusplus/blob/main/README.md)'s comparison), or an upstream defect.
+- **Done when.** The job passes with the known-failures file as its only allowance, and every entry in it cites a page.
+
+### 3.19 Index and identifier widths
+
+*Verify first.* The VTU `UInt64` header type is tested (`tests/python/meshes/vtu/01_raw_binary_int64.vtu`), but no test builds a mesh with a node or cell tag above 2³¹ and writes it to every format that can hold one. **S–M**
+
+- **Steps.**
+  - **3.19.1 An audit.** Build with `-Wshorten-64-to-32` on Clang (an advisory leg, as 3.6.2) and list the narrowing conversions on index, count and tag paths of `src/cpp/src/formats/`; each is fixed, or a check that throws `ReadError`/`WriteError` naming the format and the value.
+  - **3.19.2 A table of widths** in [formats](./formats.md): for each format, the widest node and cell id it stores (MSH 4.1's sizes, Exodus' `int64` mode, CGNS' `cgsize_t`, VTKHDF, VTU's header types), generated from a test that writes an id above 2³¹ to each and records the outcome as the conformance matrix does.
+- **Done when.** A mesh with a tag of 2³¹ + 5 either round-trips or fails with the format's name, for every registered writer.
+
 ---
 
 ## 4. Ecosystem reach {#ecosystem-reach}
@@ -1014,6 +1034,92 @@ Only if 2.4.3 or 2.4.6 lands, since nothing read today is georeferenced. `field_
 
 ---
 
+## 10. In-situ and coupling interchange {#in-situ-interchange}
+
+*Admission: a data description a simulation or a coupling library hands over in memory, which meshio++ can convert to and from without reading a file. Added in November 2026 from a proposed revision of this file; every item here was checked against the tree for a prior implementation (none found) and is marked **verify first** for the library's own current API. MPI inside the library stays a [non-goal](#non-goals-and-decisions-taken): these adapters take the data a rank holds, as [`partition`](./partition.md)'s ghost layers already do.*
+
+### 10.1 A Conduit Mesh Blueprint adapter {#conduit-blueprint}
+
+Conduit's Mesh Blueprint† is the description Catalyst 2 and Ascent receive and ParaView's Catalyst implementation reads a subset of; a simulation that already holds a `conduit::Node` could reach every meshio++ writer through it. **M, design pass first**
+
+- **State today.** No file or document names Conduit, Blueprint, Catalyst or Ascent. The in-memory interop layer is Python ([interop](./interop.md)); the core's uniform API is `mesh_api.hpp`.
+- **Decisions to take first.** (1) Where it lives: an optional, dynamically linked provider (the registry of `providers.hpp`, as OpenCASCADE and Netgen are), so the base wheel gains no dependency, or a Python-only `to_conduit`/`from_conduit` over `conduit`'s own Python module (days, and the first step). (2) Which topologies map: `unstructured` with `shape` `point`/`line`/`tri`/`quad`/`tet`/`hex`/`wedge`/`pyramid`/`polygonal`/`polyhedral`, `uniform`, `rectilinear` and `structured` expanded as 8.6 describes. (3) Fields: `vertex` and `element` association to point and cell data; `material_map` and `adjsets` stay unread.
+- **Steps.** 10.1.1 The Python bridge by [checklist F](#landing-checklists)'s step 4 pattern, as 4.3 does for Open3D: `to_conduit(mesh)` and `from_conduit(node)`, `_NOT_TOOLS` entries in the MCP parity guard, a gated test that calls `conduit.blueprint.mesh.verify`. 10.1.2 A native provider only if 10.1.1 shows a consumer that cannot use Python.
+- **Done when.** `conduit.blueprint.mesh.verify(node, info)` passes for a node built from every cell type of the registry's canonical mesh, and a round trip is exact. Sources: Conduit's Blueprint documentation†; no code is copied.
+
+### 10.2 Catalyst and Ascent as consumers {#catalyst-ascent}
+
+After 10.1. A Catalyst 2 pipeline script or an Ascent action receives a Blueprint node: meshio++ is a Python step in it that writes any registry format or applies a [pipeline](./pipeline.md). **S–M**
+
+- **Steps.** A `contrib/catalyst/` script in the shape of `contrib/ansys_dpf/` (a documented route, tested against a stand-in of the Conduit API as `tests/python/test_contrib_routes.py` does, and run once for real: record it under [recording a run](#awaiting-a-licensed-run)); a page in [vendor routes](./vendor_routes.md).
+- **Done when.** A ParaView Catalyst example's output channel is written as a `.vtkhdf` series and read back by [`read_sequence`](./sequences.md).
+
+### 10.3 ADIOS2 BP5 and Fides {#adios2-fides}
+
+*Verify first.* [`vtx`](./formats/vtx.md) reads DOLFINx's ADIOS2 `.bp`; whether it also reads the Fides schema that ParaView and VTK-m use, and whether a writer of either exists, is stated on that page and not checked here. **M**
+
+- **Steps.** Read the page; if only DOLFINx's VTX schema is covered, add Fides as a second schema in the same format (`schema=` read and write option) with the same `ADIOS2` build gate; test against ParaView's `ADIOS2VTXReader` and `vtkmFides`† as `tools/gen_vtx_reference.py` already drives the first.
+
+### 10.4 Ghost, owner and global-id conventions {#ghost-conventions}
+
+*Design pass.* `partition` writes halo layers and `pvtu` reads and writes them, Elmer and MFEM carry global ids, and the Nemesis item (2.3.8.2) will carry two more maps. Name the arrays once: `partition:ghost`, `partition:owner`, `global:node_id`, `global:cell_id`, and the rule for which operations preserve them. **M**
+
+- **Steps.** A page `doc/ghosts.md` (a decision record; link it from [partition](./partition.md) and [regions](./regions.md)); the readers and writers that already hold the data moved onto the names in the same change, with digests unchanged (`tools/bench_ops.sh --hash`); 2.3.8.1's helper takes them as its inputs.
+- **Done when.** A partition written by `partition`, read by `read_pvtu` and merged by 2.3.8.1 returns the serial mesh sorted by `global:cell_id`.
+
+## 11. A modern C++ API surface {#modern-cpp-api}
+
+*Admission: the installable C++ API ([C++ API](./cpp_api.md)) as a library user meets it, as opposed to its formats or operations. Each item here changes an installed header, so each is a pure addition or an [ABI](./abi.md) bump named in its steps. Link 4.14 (the module) and 3.13 (the ABI diff) rather than repeating them.*
+
+### 11.1 Errors as values {#errors-as-values}
+
+Every reader throws `ReadError` (`exceptions.hpp`) and the C API turns it into a status; a C++ caller who wants to branch on "this file is not this format" pays for an exception per probe. **M, design pass first**
+
+- **Decisions to take first.** (1) The type: `std::expected<Mesh, Error>` where the compiler's library has it (C++23) and a small header-only twin otherwise, against a `Result<T>` of the project's own that needs no feature test. (2) `Error` carries the format name, the byte offset or line where the reader knows one (it mostly does not: say so on the page and fill it where `detail/parse_guard.hpp` and the line readers do) and the C API's status code, one to one. (3) Whether `try_read`/`try_write` are new entry points beside the throwing ones (a pure addition, recommended) or replace them (an ABI bump).
+- **Steps.** `try_read`, `try_read_as`, `try_write` and `try_sniff` as thin wrappers over the registry (`registry_read` and the `catch` converting `ReadError`, `WriteError`, `Unsupported`); a test that every registered reader's refusal of a junk file arrives as an `Error` naming its format; an ABI review row.
+- **Done when.** `try_read` on 64 random bytes returns an `Error` for each registered format with no exception escaping, under ASan and UBSan.
+
+### 11.2 Views, not copies {#mesh-views}
+
+*Verify first* how the uniform API hands back arrays today (`mesh_api.hpp`, `ndarray.hpp`): a caller who wants the points of a mesh to feed a solver copies them or reaches for a backend member. **M**
+
+- **Steps.** A non-owning `MeshView` (points as `std::span<const double>` with stride 3, one `CellBlockView` per block with its `CellType` and a two-dimensional view of the connectivity as `std::mdspan` where available and a hand-written `Strided2D` otherwise), built from any backend through `AssignPoints`' read-side twin and `CellView`; lifetime rules as the C API's borrowed getters (valid until the mesh is mutated); the single header carries it.
+- **Reuse.** The C API's getters already borrow; the WASM and Python bindings already expose the same buffers (`np_conversions.hpp`): the view is their native shape.
+- **Done when.** A solver-shaped loop (a `std::span` pass over `points` and `cells`) runs with no copy and no backend member, on MESHIO, NATIVE and KRATOS.
+
+### 11.3 Concepts for user meshes {#mesh-concepts}
+
+After 11.2. A `MeshLike` concept (what `registry_write` needs from a type) so an application's own mesh class can be written without being converted first. **M**
+
+- **Steps.** `template <MeshLike M> void write(const std::string&, const M&)` building a `MeshView`, so no format code changes; a test with a deliberately minimal user type; the page records which backends satisfy it.
+
+## 12. Provenance, remote data and dataset interop {#provenance-remote}
+
+*Admission: where a mesh and its data come from and where they are kept, beyond the formats themselves. Added in November 2026 from the same proposed revision; the parts that already exist (fsspec URLs in Python, dataset manifests, the PyG `Dataset`, ghost layers, Zarr v3 in Python) are not re-listed.*
+
+### 12.1 Provenance as W3C PROV and RO-Crate {#prov-rocrate}
+
+[Provenance](./provenance.md) records what produced a mesh in its own schema. A reviewer or a data repository wants the standard ones. **S**
+
+- **Steps.** `provenance_to_prov(mesh)` (PROV-JSON†: an entity per input file with its digest, an activity per recorded operation with its options, the software agent with the version) and `write_ro_crate(directory, mesh, outputs)` (`ro-crate-metadata.json`† listing the files with their formats); both Python-only, MCP exemptions recorded in `_NOT_TOOLS` unless they are expressible through file paths (the crate writer is: add it as a tool).
+- **Done when.** The PROV document validates against PROV-JSON's schema†, and the crate against `rocrate-validator`†.
+
+### 12.2 Remote reads beyond Python {#remote-reads}
+
+*Verify first.* [Formats](./formats.md#remote-files) reads URLs through the optional `fsspec` in Python only; the native CLI and WASM do not (the [CLI page](./cli.md) says so). **M, design pass first**
+
+- **Decisions to take first.** Whether the native CLI gains an HTTP(S) range reader with a vendored client (a dependency and a supply-chain item for 3.14.6's SBOM), or stays Python-only by decision and the page says why; for HDF5 formats, the ROS3 virtual file driver† where the bundled HDF5 is built with it.
+- **Done when.** The decision is a line under [non-goals](#non-goals-and-decisions-taken) or the item is split into steps.
+
+### 12.3 Statistics and resumption for `dataset add` {#dataset-build}
+
+[`meshioplusplus dataset add`](./datasets.md) registers files by glob into a manifest. *Verify first* whether an entry records per-file statistics (cells, bounds, field ranges) and whether re-running skips files already registered. **S**
+
+- **Steps.** A `--stats` option on `add` filling each entry from `read_metadata` (no full read; `_cli/_dataset.py`), and `--resume`, which skips an entry whose file digest is already in the manifest.
+- **Done when.** Interrupting and re-running a 100-file `add --resume` reads no file twice.
+
+---
+
 ## Non-goals and decisions taken
 
 Recorded so they are not re-proposed as gaps. A decision is reopened when what it rested on has changed, and then it is narrowed here, with the date and the number of the item that took it up; the November 2026 review read each against what has shipped since. It reopened five (surface booleans through a backend, 9.1; decomposed files read without MPI, 2.3.8; the `zarr` and `pmsh` stores in the core, 4.15; an in-place `transform`, 5.14; vector kernels behind runtime dispatch, 5.15) and four formats of *Considered, not queued* (2.4.5 to 2.4.8), and left the rest as they stand: the reasons recorded for the native constrained tetrahedralisation, NURBS as an entity kind in `Mesh`, Kokkos device execution, link-time optimisation by default (though a profile was never tried: 5.12), solver-coupled learning, contact mechanics, the copyleft codes and the CAD modeller have not moved.
@@ -1034,7 +1140,7 @@ Recorded so they are not re-proposed as gaps. A decision is reopened when what i
   - **`szplt`** does not write polygon and polyhedral zones: TecIO 2018.3, the newest source available, refuses them in an SZL file, so the reader refuses them by name too and the face-based zones stay with the `.plt` and ASCII readers. Partitioned output is for tetrahedron and brick zones of a static file only (TecIO's own limit), and a series is written whole.
   - **`vtx`**: DOLFINx and ParaView read one cell type per file, so a file of several cell types or parts is meshio++'s own extension of the layout.
 - **Generators the primitives leave out** — recorded when roadmap §3.1 closed (October 2026), with the [parametric primitives](./primitives.md#not-generated): generators driven by a user callback (no callback crosses the flat ABI; numpy users build `Mesh(points, cells)` directly, and [`isosurface`](./isosurface.md) on a `grid` covers implicit shapes); scanned or modelled assets (the bunny, the teapot, the bracket fixture — data rather than parameters, each under its own licence); and CSG combinations, under the volume-meshing non-goal below (surface booleans were reopened as a spike and kept out on its measurements, [findings](./spikes.md#surface-booleans-formerly-roadmap-7-8)) — two-body interface and contact fixtures are primitives placed with `transform` and joined with `merge`.
-- **MPI in the library** — none planned ([C++ API](./cpp_api.md)); `partition`'s ghost layers produce the halo an MPI assembly in the owning application needs. ParMmg, MMG's MPI layer, is excluded with it. Narrowed in November 2026: reading the files a parallel run left, one per rank, into one mesh needs no MPI, as the OpenFOAM and `pvtu` readers show, and is queued for the formats that lack it as 2.3.8.
+- **MPI in the library** — none planned ([C++ API](./cpp_api.md)); `partition`'s ghost layers produce the halo an MPI assembly in the owning application needs. ParMmg, MMG's MPI layer, is excluded with it. Narrowed in November 2026: reading the files a parallel run left, one per rank, into one mesh needs no MPI, as the OpenFOAM and `pvtu` readers show, and is queued for the formats that lack it as 2.3.8. Added November 2026: this also excludes MPI-parallel writers (parallel HDF5, collective `cgp_*`) from [§10](#in-situ-interchange), whose adapters take the data a rank holds and never talk to a communicator; reopen only with an application that needs a shared file and cannot gather.
 - **Solver-coupled physics-ML** — assembled solver residuals, adjoints and Sobolev training, co-simulation, active-learning *labeling*, adaptive remeshing driven by a surrogate, and MPI model-part gathering. Every one needs a live solver (an assembly routine, its tangent, its communicator) and meshio++ has no notion of a discrete system; they belong in the application that owns the solver, the division [Symbolic and physics](physicsnemo/symbolic_and_physics.md) describes.
 - **The Python-only layers stay Python** — `pmsh`, `zarr`, `cae` and `usd`, and the physics-ML surface (grids, point budgets, proximity graphs, datasets, training) are export targets and tooling for a training pipeline, registered in Python rather than the shared C++ registry. A core kernel they call (the neighbour search) does not change that; `tessellate` moved to the core ([tessellation](./tessellation.md)) because the native CLI and the flat bindings needed it, and its `Tessellation` helpers stay Python. Narrowed in November 2026 for the two stores a dataset is written to: reading `zarr` and `pmsh` in the core, so the browser, the flat bindings and the native CLI open what Python wrote, is queued as 4.15 behind a design pass; `usd`, `cae` and the physics-ML surface stay as decided.
 - **Polyscope in the release CLI executables** — excluded deliberately, so `view`/`screenshot` there report the build flag rather than opening a window ([viewer](./viewer.md)): the executable stays free of OpenGL, GLFW and X11. Narrowed in November 2026, once v18.0.0's plugins made it possible: a Polyscope plugin loaded beside the executable is queued as 4.8.2.
@@ -1097,3 +1203,4 @@ Open work only; what shipped is in `CHANGELOG.md`.
 10. **SonarCloud findings ([§7](#sonarcloud-findings))** — the next scan's counts first (7.1), then the coverage gate (7.2); the viewer's rebuild check (7.3) with the next WebAssembly build.
 11. **Operations ([§9](#operations))** — the boolean backend's measurement first (9.1.1, 9.1.2), since it decides a non-goal and two parked features; then the small ones a user notices missing (mass properties 9.4, ray casting and point location 9.3, point-cloud conditioning 9.9, the IGA list 9.8), then subdivision and elevation (9.2, 9.5), the partitioner providers (9.7) and repeated green refinement (9.6.1). Only 9.10.2 and 9.6.2 wait on a decision.
 12. **Data model ([§8](#data-model))** — design passes only until one says otherwise. The two whose recommended form is a convention and days of work, and which close losses already listed on format pages: complex pairs (8.1) and the structured annotation (8.6). Strings (8.2) before hierarchy (8.5), which uses them. Integration-point data (8.3) is the largest and the one most formats wait on (2.3.6.1, MED ELGA, the result readers); side data (8.4) unblocks 2.3.1.4 and 2.3.2.3. The format items that wait on each say so.
+13. **In-situ interchange, the modern C++ surface and provenance ([§10](#in-situ-interchange) to [§12](#provenance-remote))** — after everything above, in this order by dependency: the Conduit bridge (10.1) in Python first, since it needs no core change, and the ghost conventions (10.4) with 2.3.8.1, which wants the same names; errors as values and views (11.1, 11.2) together in one ABI change, then the concepts on top (11.3); PROV and RO-Crate (12.1), the `dataset add` statistics (12.3) and the remote-read decision (12.2) are small and independent. The upstream-meshio run (3.18) and the identifier-width audit (3.19) belong with the tooling of item 4. §10 to §12 came from a proposed revision of this file in November 2026: what the revision listed that the tree or this file already had (supply chain, hardening, the ABI diff, the C++ module, Zarr and pmsh in the core, the dataset manifests, the PyG dataset, partition ghosts and the `pvtu` writer, node-order tables, fsspec URLs, the mutation-testing and engine-differential spikes) was not repeated.

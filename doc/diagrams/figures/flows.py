@@ -1109,6 +1109,34 @@ def roadmap_map():
             ],
             [],
         ),
+        (
+            "§10 in-situ interchange",
+            [
+                ("Conduit Blueprint (design first)", "M"),
+                ("Catalyst · Ascent consumers", "S"),
+                ("ADIOS2 BP5 · Fides", "M"),
+                ("ghost / global-id names (design first)", "M"),
+            ],
+            [(0, 1)],
+        ),
+        (
+            "§11 modern C++ API",
+            [
+                ("errors as values (design first)", "M"),
+                ("mesh views over span", "M"),
+                ("concepts for user meshes", "M"),
+            ],
+            [(1, 2)],
+        ),
+        (
+            "§12 provenance · remote",
+            [
+                ("PROV · RO-Crate", "S"),
+                ("remote reads (design first)", "M"),
+                ("dataset add: stats, resume", "S"),
+            ],
+            [],
+        ),
     ]
     per_row = 4
     col_w = 176
