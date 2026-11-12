@@ -2918,22 +2918,41 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         skin.mPatches[R].mAccepted = true;
         feature[R] = Feature;
     };
-    // Kinematic surfaces (`mKinematicSurfaces`): a patch no primitive
-    // explains fitted as a surface of linear extrusion or of revolution
-    // before the fillets and threads (a chamfer's straight sections would
-    // claim an extruded wall), and as a helical surface after them (a
-    // thread's own fit knows its neighbours), by `detail::kinematic_fit` as
-    // the native backend does. A band (a wall closed round) is cut into two
-    // discs, appended as rows, both of which must fit.
+    // Kinematic surfaces (`mKinematicSurfaces`), by `detail::kinematic_fit`
+    // as the native backend does. Before the fillets and threads, a patch no
+    // primitive explains is tried as a surface of linear extrusion or of
+    // revolution unless it is a blend's: between two primitives along most
+    // of its boundary, other than two parallel planes, which meet nowhere (a
+    // chamfer's straight sections would claim the wall between them and
+    // fail). A band (a wall closed round) is cut into two discs, appended as
+    // rows, both of which must fit. After the threads (whose own fit knows
+    // their neighbours), what is left is tried as any of the three.
     std::vector<std::uint8_t> kinematic_row(skin.mPatches.size(), 0);
     std::int64_t next_label = 0;
     for (const FcPatch& p : skin.mPatches)
         next_label = std::max(next_label, p.mLabel + 1);
-    const auto kinematic_pass = [&](bool Helical) {
+    const auto blend_like = [&](std::size_t R) {
+        double perimeter = 0.0;
+        const std::vector<std::pair<double, std::int64_t>> by_length = neighbours(R, perimeter);
+        if (by_length.size() < 2)
+            return false;
+        const std::size_t q1 = static_cast<std::size_t>(by_length[0].second);
+        const std::size_t q2 = static_cast<std::size_t>(by_length[1].second);
+        if (!is_primitive(q1) || !is_primitive(q2) ||
+            -(by_length[0].first + by_length[1].first) < 0.6 * perimeter)
+            return false;
+        const FcPatch& a = skin.mPatches[q1];
+        const FcPatch& b = skin.mPatches[q2];
+        if (a.mType != 1 || b.mType != 1)
+            return true;
+        const gp_Vec na(a.mParams[3], a.mParams[4], a.mParams[5]);
+        const gp_Vec nb(b.mParams[3], b.mParams[4], b.mParams[5]);
+        return na.Crossed(nb).Magnitude() > 1e-6 * na.Magnitude() * nb.Magnitude();
+    };
+    const auto kinematic_pass = [&](bool Late) {
         detail::KinematicOptions ko;
         ko.mTolerance = tol;
-        ko.mExtrusion = ko.mRevolution = !Helical;
-        ko.mHelical = Helical;
+        ko.mHelical = Late;
         // The patch's triangles and the facet each came from.
         const auto tri_facets = [&](std::size_t R) {
             std::vector<std::size_t> out;
@@ -3012,7 +3031,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             for (double x : skin.mPatches[r].mParams)
                 finite = finite && std::isfinite(x);
             const std::int32_t type = skin.mPatches[r].mType;
-            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
+            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite) ||
+                (!Late && blend_like(r)))
                 continue;
             std::vector<gp_Pnt> pts;
             std::vector<std::array<std::size_t, 3>> tris;
@@ -3024,7 +3044,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                     take(r, k);
                 continue;
             }
-            if (Helical)
+            if (Late)
                 continue;  // a band was cut before the threads
             std::size_t num = 0;
             const std::vector<std::int64_t> piece =
@@ -3626,7 +3646,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         return true;
     };
 
-    // The helical kinematic faces, after the threads (see above).
+    // The kinematic faces after the threads (see above).
     if (rOptions.mKinematicSurfaces)
         kinematic_pass(true);
 
