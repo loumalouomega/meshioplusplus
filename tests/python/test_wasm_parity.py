@@ -121,6 +121,8 @@ _C_WITHOUT_JS = {
     # `mio_fit_cad3` adds the freeform-mode options and report (v17.12.0) the
     # same way: `fitCad` takes them as keys too.
     "fit_cad3",
+    # `mio_fit_cad4` adds the validation report (unreleased) the same way.
+    "fit_cad4",
     # The MMG backend (roadmap 3.2) is in neither WebAssembly artifact until
     # its port, roadmap 3.2.8: `hasMmg()` reports that, and the operations
     # join the wrapper with the port. metric_from_hessian goes with adapt,

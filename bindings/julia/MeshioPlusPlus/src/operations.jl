@@ -4526,7 +4526,10 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             freeform_max_control_points=400, layout_target_patch_size=0.1,
             layout_max_valence_deviation=2, resegment_rounds=2,
             layout_snap_to_features=true, validate_by_surface_sampling=true,
-            constrain_primitives=false)
+            constrain_primitives=false, validation_report=false,
+            validation_acceptance=false, freeform_fit_schedule="legacy",
+            freeform_objective="default", kinematic_surfaces=false,
+            freeform_g1_solve="sweeps")
         -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
@@ -4542,7 +4545,13 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
              num_network_patches, num_network_edges, num_extraordinary_vertices,
              num_resegmented, num_escalations, max_g1_angle_deg, max_freeform_distance,
              rms_freeform_distance, num_face_records, num_constrained_primitives,
-             num_constraint_groups)
+             num_constraint_groups, validation_reported, cad_to_mesh_max, cad_to_mesh_p95,
+             cad_to_mesh_p99, mesh_to_cad_max, mesh_to_cad_p95, mesh_to_cad_p99,
+             normal_deviation_max_deg, normal_deviation_p95_deg, step_round_trip_checked,
+             step_round_trip_valid, step_round_trip_volume_ratio,
+             total_freeform_control_points, num_extrusion, num_revolution,
+             num_kinematic_helical, max_g1_angle_away_deg, max_g1_angle_at_ev_deg,
+             num_coupled_regions)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -4602,7 +4611,22 @@ the solid, and outside the legacy mode the mesh carries the
 (coaxial cylinders, cones, tori and spheres share one axis; parallel and
 perpendicular planes and nearly equal radii are made exact), each change kept
 only where its patch still passes its fit; `num_constrained_primitives` and
-`num_constraint_groups` count what it changed. See `doc/fit_cad.md`.
+`num_constraint_groups` count what it changed. `validation_report` measures
+the solid against the skin both ways (`cad_to_mesh_*`, `mesh_to_cad_*`, as
+maxima, 95th and 99th percentiles), the normal deviation
+(`normal_deviation_max_deg`, `normal_deviation_p95_deg`) and the STEP file
+read back (`step_round_trip_*`, OpenCASCADE only); `validation_acceptance`
+holds every freeform face to those measures. `freeform_fit_schedule`
+(`"legacy"` or `"continuation"`) and `freeform_objective` (`"default"`,
+`"pdm"`, `"tdm"` or `"sdm"`) choose how the adaptive and general freeform
+faces' B-spline fit runs. `kinematic_surfaces` first tries a patch no
+primitive explains as a surface of linear extrusion, of revolution or a
+helical surface (`num_extrusion`, `num_revolution`, `num_kinematic_helical`).
+`freeform_g1_solve` (`"sweeps"` or `"coupled"`) picks how the patch network
+reaches G1 (`num_coupled_regions`); `max_g1_angle_away_deg` and
+`max_g1_angle_at_ev_deg` split its largest angle at the extraordinary
+vertices.
+See `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  exact_edges::Bool=true,
@@ -4629,7 +4653,12 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  layout_max_valence_deviation::Integer=2, resegment_rounds::Integer=2,
                  layout_snap_to_features::Bool=true,
                  validate_by_surface_sampling::Bool=true,
-                 constrain_primitives::Bool=false)
+                 constrain_primitives::Bool=false, validation_report::Bool=false,
+                 validation_acceptance::Bool=false,
+                 freeform_fit_schedule::AbstractString="legacy",
+                 freeform_objective::AbstractString="default",
+                 kinematic_surfaces::Bool=false,
+                 freeform_g1_solve::AbstractString="sweeps")
     pick(name, value, words) = begin
         k = findfirst(==(String(value)), words)
         k === nothing && throw(ArgumentError("meshio++: fit_cad: $(name) must be one of " *
@@ -4641,6 +4670,9 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                    ("auto", "projection", "lscm", "harmonic"))
     ev_c = pick("extraordinary_vertex", extraordinary_vertex, ("g0", "g1", "g1x", "g1xx"))
     refine_c = pick("local_refine", local_refine, ("knots", "thb"))
+    schedule_c = pick("freeform_fit_schedule", freeform_fit_schedule, ("legacy", "continuation"))
+    objective_c = pick("freeform_objective", freeform_objective, ("default", "pdm", "tdm", "sdm"))
+    g1_solve_c = pick("freeform_g1_solve", freeform_g1_solve, ("sweeps", "coupled"))
     backend_c = backend == "auto" ? Int32(0) : backend == "occt" ? Int32(1) :
                 backend == "native" ? Int32(2) :
                 throw(ArgumentError("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\""))
@@ -4654,6 +4686,7 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
     report_ex = Ref{_CFitCadReportEx}()
     report_ex2 = Ref{_CFitCadReportEx2}()
     report_ex3 = Ref{_CFitCadReportEx3}()
+    report_ex4 = Ref{_CFitCadReportEx4}()
     opts = _CFitCadOpts(Float64(tolerance), Float64(mesh_deflection),
                         Int64(max_demotion_rounds), Int32(exact_edges), mask,
                         Int32(freeform), Int32(freeform_degree), Int64(freeform_max_control),
@@ -4678,18 +4711,22 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                                Int64(layout_max_valence_deviation), Int64(resegment_rounds),
                                Int32(layout_snap_to_features),
                                Int32(validate_by_surface_sampling),
-                               Int32(constrain_primitives), Int32(0), ntuple(_ -> Int64(0), 7))
-    ptr = ccall(_sym(:mio_fit_cad3), Ptr{Cvoid},
+                               Int32(constrain_primitives), Int32(validation_report),
+                               Int32(validation_acceptance), schedule_c, objective_c,
+                               Int32(kinematic_surfaces), g1_solve_c, Int32(0),
+                               ntuple(_ -> Int64(0), 4))
+    ptr = ccall(_sym(:mio_fit_cad4), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
                  Ref{_CFitCadOptsEx2}, Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx},
-                 Ptr{_CFitCadReportEx2}, Ptr{_CFitCadReportEx3}),
+                 Ptr{_CFitCadReportEx2}, Ptr{_CFitCadReportEx3}, Ptr{_CFitCadReportEx4}),
                 _handle(m), String(step_path), Ref(opts), Ref(opts_ex), Ref(opts_ex2), report,
-                report_ex, report_ex2, report_ex3)
+                report_ex, report_ex2, report_ex3, report_ex4)
     r = _check_ptr(ptr)
     rep = report[]
     ex = report_ex[]
     ex2 = report_ex2[]
     ex3 = report_ex3[]
+    ex4 = report_ex4[]
     (mesh=Mesh(r), backend=ex.backend == 2 ? "native" : "occt", valid=rep.valid != 0,
      closed=ex2.closed != 0, tolerance=rep.tolerance, volume=rep.volume,
      skin_volume=rep.skin_volume, volume_ratio=rep.volume_ratio,
@@ -4730,7 +4767,22 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      rms_freeform_distance=ex3.rms_freeform_distance,
      num_face_records=Int(ex3.num_face_records),
      num_constrained_primitives=Int(ex3.num_constrained_primitives),
-     num_constraint_groups=Int(ex3.num_constraint_groups))
+     num_constraint_groups=Int(ex3.num_constraint_groups),
+     validation_reported=ex4.validation_reported != 0,
+     cad_to_mesh_max=ex4.cad_to_mesh_max, cad_to_mesh_p95=ex4.cad_to_mesh_p95,
+     cad_to_mesh_p99=ex4.cad_to_mesh_p99, mesh_to_cad_max=ex4.mesh_to_cad_max,
+     mesh_to_cad_p95=ex4.mesh_to_cad_p95, mesh_to_cad_p99=ex4.mesh_to_cad_p99,
+     normal_deviation_max_deg=ex4.normal_deviation_max_deg,
+     normal_deviation_p95_deg=ex4.normal_deviation_p95_deg,
+     step_round_trip_checked=ex4.step_round_trip_checked != 0,
+     step_round_trip_valid=ex4.step_round_trip_valid != 0,
+     step_round_trip_volume_ratio=ex4.step_round_trip_volume_ratio,
+     total_freeform_control_points=Int(ex4.total_freeform_control_points),
+     num_extrusion=Int(ex4.num_extrusion), num_revolution=Int(ex4.num_revolution),
+     num_kinematic_helical=Int(ex4.num_kinematic_helical),
+     max_g1_angle_away_deg=ex4.max_g1_angle_away_deg,
+     max_g1_angle_at_ev_deg=ex4.max_g1_angle_at_ev_deg,
+     num_coupled_regions=Int(ex4.num_coupled_regions))
 end
 
 """

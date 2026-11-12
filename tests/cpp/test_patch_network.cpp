@@ -288,3 +288,102 @@ TEST(PatchNetwork, DeterministicAcrossThreads) {
     mio_test::set_threads(saved);
 #endif
 }
+
+// The coupled solve (doc/fit_cad_freeform_plan.md step 7): the edge curves
+// move with both patches they bound, so the saddle top reaches the G1
+// tolerance the sweeps miss, every patch still within the tolerance and the
+// patches still meeting exactly on their shared curves.
+TEST(PatchNetwork, CoupledSolveReachesG1OnTheSaddle) {
+    const PnTestPatch top = pn_patch(monkey_saddle_box(24), true);
+    detail::QuadLayoutOptions lo;
+    lo.mTargetSize = 0.4;
+    const detail::QuadLayout l = detail::quad_layout(top.mPts, top.mTris, lo);
+    ASSERT_TRUE(l.mOk);
+    detail::PatchNetworkOptions o;
+    o.mTolerance = 2e-3 * pn_diag(top);
+    const detail::PatchNetwork sw = detail::patch_network_fit(top.mPts, top.mTris, l, o);
+    o.mCoupled = true;
+    const detail::PatchNetwork cp = detail::patch_network_fit(top.mPts, top.mTris, l, o);
+    EXPECT_TRUE(cp.mOk);
+    for (const auto& p : cp.mPatches) {
+        EXPECT_TRUE(p.mOk);
+        EXPECT_LE(p.mMaxDist, o.mTolerance);
+    }
+    EXPECT_LT(pn_g0_gap(l, cp), 1e-9);
+    EXPECT_LE(cp.mMaxG1AngleDeg, sw.mMaxG1AngleDeg);
+    EXPECT_LE(cp.mMaxG1AngleAwayDeg, o.mG1ToleranceDeg);
+    // No extraordinary vertex on the saddle top: nothing at them.
+    EXPECT_EQ(cp.mMaxG1AngleAtEvDeg, 0.0);
+    EXPECT_EQ(cp.mMaxG1AngleAwayDeg, cp.mMaxG1AngleDeg);
+    std::printf("  saddle: sweeps %.3f deg, coupled %.3f deg (kept %d)\n", sw.mMaxG1AngleDeg,
+                cp.mMaxG1AngleDeg, cp.mCoupledKept ? 1 : 0);
+}
+
+// On a closed cage with extraordinary vertices: never fewer patches within
+// the tolerance and no larger angle than the sweeps, G0 exact, and the angle
+// at the extraordinary vertices reported apart from the one away from them.
+TEST(PatchNetwork, CoupledSolveOnTheCage) {
+    const PnTestPatch p = pn_patch(cc_cage(3, 4), false);
+    detail::QuadLayoutOptions lo;
+    lo.mTargetSize = 0.25 * pn_diag(p);
+    const detail::QuadLayout l = detail::quad_layout(p.mPts, p.mTris, lo);
+    ASSERT_TRUE(l.mOk);
+    detail::PatchNetworkOptions o;
+    o.mTolerance = 2e-3 * pn_diag(p);
+    const detail::PatchNetwork sw = detail::patch_network_fit(p.mPts, p.mTris, l, o);
+    o.mCoupled = true;
+    const detail::PatchNetwork cp = detail::patch_network_fit(p.mPts, p.mTris, l, o);
+    const auto good = [](const detail::PatchNetwork& rN) {
+        std::size_t g = 0;
+        for (const auto& q : rN.mPatches)
+            g += q.mOk ? 1 : 0;
+        return g;
+    };
+    EXPECT_GE(good(cp), good(sw));
+    EXPECT_LE(cp.mMaxG1AngleDeg, sw.mMaxG1AngleDeg);
+    EXPECT_LT(pn_g0_gap(l, cp), 1e-9);
+    EXPECT_EQ(cp.mNumExtraordinary, 8U);
+    EXPECT_LE(cp.mMaxG1AngleAwayDeg, cp.mMaxG1AngleDeg);
+    EXPECT_LE(cp.mMaxG1AngleAtEvDeg, cp.mMaxG1AngleDeg);
+    EXPECT_GT(cp.mMaxG1AngleAtEvDeg, 0.0);
+    std::printf(
+        "  cage: sweeps %.3f deg (away %.3f, at EVs %.3f), coupled %.3f (away %.3f, at "
+        "EVs %.3f), kept %d\n",
+        sw.mMaxG1AngleDeg, sw.mMaxG1AngleAwayDeg, sw.mMaxG1AngleAtEvDeg, cp.mMaxG1AngleDeg,
+        cp.mMaxG1AngleAwayDeg, cp.mMaxG1AngleAtEvDeg, cp.mCoupledKept ? 1 : 0);
+}
+
+TEST(PatchNetwork, CoupledSolveIsDeterministic) {
+    const PnTestPatch top = pn_patch(hood_box(16, true), true);
+    detail::QuadLayoutOptions lo;
+    lo.mTargetSize = 0.5;
+    const detail::QuadLayout l = detail::quad_layout(top.mPts, top.mTris, lo);
+    ASSERT_TRUE(l.mOk);
+    detail::PatchNetworkOptions o;
+    o.mTolerance = 2e-3 * pn_diag(top);
+    o.mCoupled = true;
+    std::vector<double> ref;
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    const int saved = mio_test::max_threads();
+    for (int threads : {1, 2, 8}) {
+        mio_test::set_threads(threads);
+#else
+    for (int threads : {1, 1}) {
+        (void)threads;
+#endif
+        const detail::PatchNetwork n = detail::patch_network_fit(top.mPts, top.mTris, l, o);
+        std::vector<double> poles;
+        for (const auto& p : n.mPatches)
+            poles.insert(poles.end(), p.mSurface.mPoles.begin(), p.mSurface.mPoles.end());
+        for (const auto& c : n.mChains)
+            for (const auto& q : c.mPoles)
+                poles.insert(poles.end(), q.begin(), q.end());
+        if (ref.empty())
+            ref = poles;
+        else
+            EXPECT_EQ(poles, ref);
+    }
+#if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
+    mio_test::set_threads(saved);
+#endif
+}

@@ -292,7 +292,11 @@ MIO_ABI_LAYOUT(meshioplusplus::CadReadOptions, 32, 8);
 // v18.0.0 (roadmap 4.7): the CAD kernel a provider registers. Two `std::string`s
 // and three `std::function`s, 32 bytes each with libstdc++. The add-on wheels
 // pin the base wheel's exact version, so this only has to hold within a release.
-MIO_ABI_LAYOUT(meshioplusplus::CadKernelProvider, 160, 8);
+// ABI 46 (doc/fit_cad_freeform_plan.md): a fourth `std::function`, `mCheckStep`,
+// 160 -> 192, and the `CadStepCheck` it returns (three bools, a double and two
+// `int64_t`s).
+MIO_ABI_LAYOUT(meshioplusplus::CadKernelProvider, 192, 8);
+MIO_ABI_LAYOUT(meshioplusplus::CadStepCheck, 32, 8);
 // The tetrahedral mesher (two `std::string`s and one `std::function`) and its
 // request and result (two vectors and scalars), and the remesher (two strings, a
 // bool and an int sharing 8 bytes, four `std::function`s).
@@ -602,8 +606,13 @@ static_assert(offsetof(meshioplusplus::FitPrimitivesOptions, mUsedPoints) == 184
 // appended the freeform modes (mFreeformMode .. mValidateBySurfaceSampling):
 // 224 -> 288, grew FitCadResult by their report and added FitCadFaceRecord.
 // ABI 36 put mConstrainPrimitives in the tail padding (same size, a new
-// member) and grew FitCadResult by its two counts.
-MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 288, 8);
+// member) and grew FitCadResult by its two counts. ABI 46 put
+// mValidationReport and mValidationAcceptance in the tail padding (same size,
+// new members) and grew FitCadResult by the validation report, then appended
+// mFreeformFitSchedule and mFreeformObjective: 288 -> 296, and
+// mKinematicSurfaces: 296 -> 304, and mFreeformG1Solve in its tail padding
+// (still 304).
+MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 304, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitCadFaceRecord, 96, 8);
 static_assert(offsetof(meshioplusplus::FitCadOptions, mMergeFaces) == 51,
               "FitCadOptions::mMergeFaces moved");
@@ -631,6 +640,18 @@ static_assert(offsetof(meshioplusplus::FitCadOptions, mValidateBySurfaceSampling
               "FitCadOptions::mValidateBySurfaceSampling moved");
 static_assert(offsetof(meshioplusplus::FitCadOptions, mConstrainPrimitives) == 282,
               "FitCadOptions::mConstrainPrimitives moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mValidationReport) == 283,
+              "FitCadOptions::mValidationReport moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mValidationAcceptance) == 284,
+              "FitCadOptions::mValidationAcceptance moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mFreeformFitSchedule) == 288,
+              "FitCadOptions::mFreeformFitSchedule moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mFreeformObjective) == 292,
+              "FitCadOptions::mFreeformObjective moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mKinematicSurfaces) == 296,
+              "FitCadOptions::mKinematicSurfaces moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mFreeformG1Solve) == 300,
+              "FitCadOptions::mFreeformG1Solve moved");
 // refine_patches' options (operations/refine_patches.hpp, ABI 32).
 MIO_ABI_LAYOUT(meshioplusplus::RefinePatchesOptions, 96, 8);
 // The kernel-free STEP writer's options (formats/step.hpp), from ABI 31.

@@ -104,6 +104,7 @@ CadKernelProvider make_occt_provider() {
         return occt_read_shape(rPath, true, rInfo, rOptions);
     };
     provider.mFitCad = detail::occt_fit_cad;
+    provider.mCheckStep = detail::occt_check_step;
     return provider;
 }
 

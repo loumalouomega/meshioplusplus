@@ -1118,6 +1118,78 @@ build/bench-ops-seq/meshioplusplus_bench_ops --tier XL --runs 1 --ops feature_ed
 
 The digests agree at 1 and 4 threads and on the `NATIVE` mesh backend (tiers S to L). The rows never fail CI on time.
 
+### fit_cad freeform KPIs
+
+The quality of [`fit_cad`](fit_cad.md)'s freeform faces, measured over every fixture of its golden, freeform and kinematic sets (`tests/cpp/fit_cad_fixtures.hpp`) in each freeform mode and with both backends, as the [freeform plan](fit_cad_freeform_plan.md) records each of its steps against: the faceted area share, validity and closedness, faces by type and control points, the two-sided distance and the normal deviation of the [validation report](fit_cad.md#validation-report) (as multiples of the tolerance), the largest G1 angle, the STEP file read back by OpenCASCADE, and the time. `meshioplusplus_fit_cad_kpi` (built with the tests) measures, `tools/fit_cad_kpi.py` writes `benchmark/fit_cad_kpi.csv` and regenerates the tables below, and `--compare OLD.csv` prints a change's deltas and fails on a lost solid or a rise in the faceted share. It is out of CI: the full set takes minutes, the hook of notebook 39 (`--hook example/data/hook.mdpa`) hours. The first table is the faceted area share (✗ a solid that is not valid or not closed); the second each fixture's run with the least of it.
+
+<!-- fit_cad_kpi:begin -->
+
+| Fixture | native legacy | native adaptive | native network | native auto | occt legacy | occt adaptive | occt network | occt auto |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| box | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| capped_cylinder | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| turned_part | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| filleted_plate | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| saddle_box | 0.174 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| wavy_capped | 0.705 | 0 | 0 | 0 | 0 | 0 | 0.0047 | 0 |
+| threaded_rod | 0.716 | 0.606 | 0.606 | 0.606 | 0.247 | 0.0775 | 0.0775 | 0.0775 |
+| rounded_box | 0.372 | 0 | 0.0191 | 0 | 0 | 0 | 0 | 0 |
+| noisy_turned_part | 7.08e-05 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| monkey_saddle | 0.195 | 0 | 0 | 0 | 0.195 | 0 | 0 | 0 |
+| gaussian_bump | 0.182 | 0.0013 | 0 | 0 | 0.182 | 0.0725 | 0 | 0.0725 |
+| s_band | 0.173 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| hood | 0.375 | 0 | 0.00527 | 0 | 0.375 | 0.112 | 0.141 | 0.126 |
+| organic_torus | 1 | 0 | 0.00675 | 0 | 1 | 0.961 | 0.931 | 0.961 |
+| cc_valence3 | 1 | 0 | 0 | 0 | 1 | 0.937 | 0 | 0 |
+| cc_valence5 | 1 | 0 | 0 | 0 | 1 | 0.876 | 0 | 0 |
+| cc_valence6 | 1 | 0 | 0 | 0 | 1 | 0.813 | 0 | 0 |
+| g1_loaf | 0.577 | 0 | 0 | 0 | 0.577 | 0 | 0 | 0 |
+| extruded_lobe | 0.615 | 0 | 0 | 0 | 0.615 | 0.615 | 0.615 | 0.615 |
+| revolved_wave | 0.705 | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| helical_sweep | 0.712 | 0.604 | 0.604 | 0.604 | 0.764 | 0.764 | 0.764 | 0.764 |
+| sphere_handle | 1 | 0.152 | 0.0628 | 0.191 | 1 | 0.668 | 0.651 | 0.664 |
+| double_torus | 0.985 | 0.125 | 0.0112 | 0.243 | 0.976 | 0.55 | 0.542 | 0.658 |
+
+| Fixture | Run | Faces (B-spline) | Control points | Mesh→CAD max / P95 | CAD→mesh max / P95 | Normal max / P95 (°) | G1 max (°) | STEP read back | Time (s) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| box | native network | 6 (0) | 0 | 2.62e-14 / 1.31e-14 tol | 5.23e-14 / 2.62e-14 tol | 0 / 0 | 0 | valid (1) | 0.016 |
+| capped_cylinder | native network | 3 (0) | 0 | 0.412 / 0.412 tol | 0.444 / 0.444 tol | 1.88 / 1.88 | 0 | valid (1.00645) | 0.026 |
+| turned_part | native legacy | 6 (0) | 0 | 0.845 / 0.111 tol | 0.192 / 0.0897 tol | 5.7 / 2.19 | 0 | valid (0.979737) | 0.266 |
+| filleted_plate | native adaptive | 8 (0) | 0 | 3.07 / 0.067 tol | 0.217 / 0.189 tol | 11.3 / 1.25 | 0 | valid (1) | 0.036 |
+| saddle_box | native adaptive | 6 (1) | 36 | 0.0236 / 0.0213 tol | 0.0118 / 0.0109 tol | 0.9 / 0.864 | 0 | valid (0.999912) | 0.17 |
+| wavy_capped | native auto | 4 (2) | 162 | 0.101 / 0.0652 tol | 0.0812 / 0.0615 tol | 3.33 / 2.94 | 0 | valid (1.00073) | 2.51 |
+| threaded_rod | occt network | 54 (6) | 3714 | 9.87 / 0.101 tol | 0.642 / 0.0745 tol | 3.74 / 0.938 | 0 | valid (1.00328) | 36.2 |
+| rounded_box | native adaptive | 26 (20) | 772 | 0.247 / 0.131 tol | 0.21 / 0.116 tol | 4.76 / 3.16 | 0 | valid (1.00037) | 0.442 |
+| noisy_turned_part | native network | 7 (1) | 36 | 0.289 / 0.0365 tol | 0.0872 / 0.0291 tol | 19.8 / 3.71 | 0 | valid (1.0309) | 0.49 |
+| monkey_saddle | native adaptive | 6 (1) | 36 | 0.2 / 0.0815 tol | 0.262 / 0.0926 tol | 3.07 / 2.18 | 0 | valid (1.00013) | 0.165 |
+| gaussian_bump | native network | 21 (16) | 599 | 0.572 / 0.0809 tol | 0.754 / 0.263 tol | 8.91 / 1.73 | 1.14 | valid (0.999932) | 0.931 |
+| s_band | native auto | 6 (1) | 36 | 0.247 / 0.101 tol | 0.194 / 0.0976 tol | 2.56 / 0.651 | 0 | valid (0.99979) | 0.18 |
+| hood | native auto | 5 (1) | 195 | 0.519 / 0.137 tol | 0.46 / 0.0763 tol | 10.8 / 1.81 | 0 | valid (1.00082) | 0.927 |
+| organic_torus | native auto | 4 (4) | 900 | 1.13 / 0.436 tol | 0.77 / 0.421 tol | 87 / 6.14 | 0 | valid (1.00671) | 2.55 |
+| cc_valence3 | native auto | 2 (2) | 220 | 0.287 / 0.242 tol | 0.285 / 0.23 tol | 2.3 / 1.55 | 0 | valid (0.997522) | 0.682 |
+| cc_valence5 | native adaptive | 2 (2) | 230 | 0.305 / 0.205 tol | 0.305 / 0.196 tol | 3.05 / 1.61 | 0 | valid (1.14815) | 0.82 |
+| cc_valence6 | native adaptive | 2 (2) | 544 | 0.341 / 0.167 tol | 0.35 / 0.162 tol | 3.27 / 1.79 | 0 | valid (0.820597) | 2.11 |
+| g1_loaf | native network | 28 (25) | 458 | 0.483 / 0.284 tol | 0.493 / 0.289 tol | 3.15 / 2.2 | 0.783 | valid (0.996529) | 0.37 |
+| extruded_lobe | native network | 67 (65) | 1108 | 0.414 / 0.228 tol | 0.419 / 0.233 tol | 3.92 / 1.82 | 2.49 | valid (1.0006) | 2.2 |
+| revolved_wave | native adaptive | 4 (2) | 162 | 0.338 / 0.217 tol | 0.271 / 0.205 tol | 3.33 / 2.94 | 0 | valid (1.00073) | 2.34 |
+| helical_sweep | native adaptive | 2503 (18) | 648 | 0.713 / 0.707 tol | 0.835 / 3.41e-13 tol | 14.3 / 14.3 | 0 | valid (1.00008) | 11.3 |
+| sphere_handle | native network | 843 (66) | 3493 | 1.25 / 0.198 tol | 21.3 / 0.0734 tol | 71.7 / 8.51 | 0 | valid (1.00106) | 24.6 |
+| double_torus | native network | 187 (69) | 4558 | 1.99 / 0.262 tol | 2.89 / 0.25 tol | 85.8 / 16.1 | 0 | NOT valid | 35 |
+
+<!-- fit_cad_kpi:end -->
+
+The baseline above is every option at its default (OpenCASCADE 7.6.3, GCC 13.3, Release, the jobs run five at a time on four cores, so the times are high by up to that factor), measured with the validation report. Read with it:
+
+- **The modes.** Every fixture the legacy mode leaves partly faceted is all faces in some freeform mode, except the threaded rod and the helical sweep (thread flanks the freeform faces cannot follow and OpenCASCADE's helical faces only partly take) and, with OpenCASCADE, the extruded lobe (0.615 in every mode: its wall, which the native adaptive face takes whole, fails OpenCASCADE's checks), the genus fixtures and the Gaussian bump and hood. These are the targets of the later steps.
+- **The read-back.** Every file reads back as a valid closed solid but the native network's double torus (and, in the full set, OpenCASCADE's adaptive one), and the native network writes no NURBS form of the hood, which is then neither measured nor read back. The native cages of valence 5 and 6 read back valid with 1.15 and 0.82 of the skin's volume.
+- **The distances.** Every face lies within its tolerance of the skin both ways but where the fit lets it: a native face's corners and analytic faces' polygons (the filleted plate's 3.1 tolerances), the adaptive face of the organic torus that folds within its tolerance (87 degrees at one facet), the sphere with a handle's network patch that runs past its patch (21 tolerances CAD to mesh), and OpenCASCADE's multi-turn helical flanks, whose trims in the NURBS form cover less than the faces (9.9 tolerances on the threaded rod).
+
+The freeform plan's [steps 3 and 4](fit_cad_freeform_plan.md#step-3-the-fit-schedule) were measured against this baseline: `freeform_fit_schedule="continuation"` takes the hood's OpenCASCADE adaptive faces from 0.112 of the area as facets with 324 control points to none with 46, the cages of valence 3, 5 and 6 from 0.94, 0.88 and 0.81 to 0.72, 0.55 and 0.23, and cuts the control points of most freeform faces by a third to two thirds, but leaves 0.42 to 0.44 of the native organic and double tori as facets where the default leaves 0 to 0.13; `freeform_objective="sdm"` changes the faceted share by less than 0.03 on all but the sphere with a handle and the double torus, either way. Neither is a default.
+
+Its [step 5](fit_cad_freeform_plan.md#step-5-kinematic-surfaces), `kinematic_surfaces=1` over the golden and kinematic sets (`benchmark/fit_cad_kpi_kinematic.csv`, `--compare` against the baseline): the lobed prism goes from 0.615 of its area facets to none in every OpenCASCADE mode and the native legacy one, two exact extrusions; the wavy wall (golden `wavy_capped`, kinematic `revolved_wave`) from 0.705 natively in legacy (and 0.0047 through OpenCASCADE's network) to none, two exact revolutions; the native threaded rod and helical sweep from 0.61 to 0.72 to 0.25, helical faces; the native rounded box from 0.372 (legacy) and 0.019 (network) to 0.055 and 0, its straight edge blends twelve extrusions. Nothing else moves: no run loses its validity, closedness or read-back, and every kinematic face lies within the tolerance both ways (at most 0.26 of it). OpenCASCADE's thread flanks keep their thread faces (0.764 of the helical sweep and 0.0775 to 0.247 of the threaded rod still facets, edges between the flanks and their cylinders that fail).
+
+Its [step 7](fit_cad_freeform_plan.md#step-7-a-coupled-g1-network), `freeform_g1_solve="coupled"` over the golden and freeform sets in the network and auto modes (`benchmark/fit_cad_kpi_coupled.csv`, `--compare` against the baseline; three jobs at a time on four cores): the largest G1 angle of the network mode falls, with both backends, on the hood from 2.87 to 0.28 degrees, the monkey saddle from 1.18 to 0.37, the Gaussian bump from 1.14 to 0.84 and the wavy wall from 26.1 to 3.8; on the cube cages of valence 3 and 6 from 2.46 and 1.62 to 0.93 and 0.57 away from their extraordinary vertices (the new `max_g1_away_deg` column) and to 6.0 and 2.8 at them (`max_g1_ev_deg`, 18.9 and 16.4 under the sweeps); the cage of valence 5, the S band and the loaf keep their sweeps. OpenCASCADE's hood leaves less as facets (0.141 to 0.132 network, 0.126 to 0.108 auto), its wavy wall more (0.0047 to 0.047: three coupled patches within the tolerance by the network's test that the kernel's triangulated check puts 1.08 and 1.12 tolerances from the skin). No run loses its validity, closedness or read-back; where the coupled steps run they take one to four times the sweeps' time, and elsewhere the time is the baseline's.
+
 ### Flooded inside test in `octree_mesh`
 
 The winding numbers of the lattice points away from a closed skin dominated the time of a uniformly fine `octree_mesh`; they are now flooded through the leaves the skin does not cut ([inside and outside](octree_mesh.md#inside-and-outside)). Measured on 2026-10-27 in the Python package (Release, STL backend, four threads of an Intel Xeon), the best of two runs with the flood switched off and on:

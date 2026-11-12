@@ -7152,6 +7152,26 @@ typedef enum mio_fit_cad_local_refine {
     MIO_LOCAL_REFINE_THB = 1
 } mio_fit_cad_local_refine;
 
+/** FitCadFreeformFitSchedule's values (unreleased). */
+typedef enum mio_fit_cad_fit_schedule {
+    MIO_FIT_SCHEDULE_LEGACY = 0,
+    MIO_FIT_SCHEDULE_CONTINUATION = 1
+} mio_fit_cad_fit_schedule;
+
+/** FitCadFreeformObjective's values (unreleased). */
+typedef enum mio_fit_cad_objective {
+    MIO_OBJECTIVE_DEFAULT = 0,
+    MIO_OBJECTIVE_PDM = 1,
+    MIO_OBJECTIVE_TDM = 2,
+    MIO_OBJECTIVE_SDM = 3
+} mio_fit_cad_objective;
+
+/** FitCadNetworkG1Solve's values (unreleased). */
+typedef enum mio_fit_cad_g1_solve {
+    MIO_G1_SOLVE_SWEEPS = 0,
+    MIO_G1_SOLVE_COUPLED = 1
+} mio_fit_cad_g1_solve;
+
 /** FitCadDemotionReason's values: column 4 of the "fit_cad:face_table" field data. */
 typedef enum mio_fit_cad_demotion_reason {
     MIO_DEMOTION_NONE = 0,
@@ -7199,8 +7219,31 @@ typedef struct mio_fit_cad_opts_ex2 {
      *  still passes its fit. Both backends; 0 (the default) leaves every
      *  primitive as fitted on its own (unreleased). */
     int32_t constrain_primitives;
-    int32_t reserved32;  /**< must be zero */
-    int64_t reserved[7]; /**< must be zero; room for additive growth */
+    /** Nonzero: the built solid is measured against the skin (two-sided
+     *  sampled distance, normal deviation, the STEP file read back), reported
+     *  in mio_fit_cad_report_ex4; the solid is the same either way. Takes the
+     *  former `reserved32`; 0 (the default) measures nothing (unreleased). */
+    int32_t validation_report;
+    /** Nonzero: every freeform face is also held to those measures before it
+     *  is accepted. Takes the front of the former reserved[0] (unreleased). */
+    int32_t validation_acceptance;
+    /** The freeform B-spline fit's schedule, a mio_fit_cad_fit_schedule; 0
+     *  (legacy) is the fit as before. Takes the former `reserved32`
+     *  (unreleased). */
+    int32_t freeform_fit_schedule;
+    /** Its objective, a mio_fit_cad_objective; 0 (default) as before. Takes
+     *  the front of the former reserved[0] (unreleased). */
+    int32_t freeform_objective;
+    /** Nonzero: a patch no primitive explains is first tried as a kinematic
+     *  surface (a surface of linear extrusion, of revolution or a helical
+     *  surface, fit_cad:type 11, 12 and 8). Takes the former `reserved32`;
+     *  0 (the default) tries none (unreleased). */
+    int32_t kinematic_surfaces;
+    /** How the patch network reaches G1, a mio_fit_cad_g1_solve; 0 (sweeps)
+     *  as before. Takes the front of the former reserved[0] (unreleased). */
+    int32_t freeform_g1_solve;
+    int32_t reserved32b; /**< must be zero */
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts_ex2;
 
 /** Initialize the freeform-mode options to fit_cad's defaults (legacy mode). */
@@ -7253,6 +7296,63 @@ MIO_API mio_mesh* mio_fit_cad3(const mio_mesh* mesh, const char* step_path,
                                const mio_fit_cad_opts_ex2* opts_ex2, mio_fit_cad_report* report,
                                mio_fit_cad_report_ex* report_ex, mio_fit_cad_report_ex2* report_ex2,
                                mio_fit_cad_report_ex3* report_ex3);
+
+/**
+ * What mio_fit_cad4 reports beyond mio_fit_cad_report_ex3 (unreleased,
+ * doc/fit_cad_freeform_plan.md): with opts_ex2->validation_report, the solid
+ * measured against the skin. The distances are NaN, and the flags 0, when
+ * nothing was measured. 272 bytes; later fields take the reserved tail.
+ */
+typedef struct mio_fit_cad_report_ex4 {
+    int32_t validation_reported;     /**< 1 when the solid was measured */
+    int32_t step_round_trip_checked; /**< 1 when the STEP file was read back */
+    int32_t step_round_trip_valid;   /**< 1 when it was a valid closed solid */
+    int32_t reserved32;
+    /** The largest, 95th- and 99th-percentile distance of the faces' samples
+     *  from the skin. */
+    double cad_to_mesh_max;
+    double cad_to_mesh_p95;
+    double cad_to_mesh_p99;
+    /** The same of the skin's vertices and facet centres from the solid. */
+    double mesh_to_cad_max;
+    double mesh_to_cad_p95;
+    double mesh_to_cad_p99;
+    /** The largest and 95th-percentile facet-normal deviation, in degrees. */
+    double normal_deviation_max_deg;
+    double normal_deviation_p95_deg;
+    /** The read-back solid's volume over the skin's. */
+    double step_round_trip_volume_ratio;
+    /** The control points of the faces no primitive is. */
+    int64_t total_freeform_control_points;
+    /** With opts_ex2->kinematic_surfaces: the surfaces of linear extrusion
+     *  and of revolution, and the helical faces the kinematic stage built.
+     *  Take the front of the former reserved tail (unreleased). */
+    int64_t num_extrusion;
+    int64_t num_revolution;
+    int64_t num_kinematic_helical;
+    /** Outside the legacy mode: the largest G1 angle between network faces
+     *  away from the extraordinary vertices and next to them only, in
+     *  degrees; with freeform_g1_solve, the regions whose coupled solve was
+     *  kept (unreleased). */
+    double max_g1_angle_away_deg;
+    double max_g1_angle_at_ev_deg;
+    int64_t num_coupled_regions;
+    int64_t reserved[16]; /**< zero; room for additive growth */
+} mio_fit_cad_report_ex4;
+
+/**
+ * mio_fit_cad3 with the validation report (unreleased). mio_fit_cad3(...) is
+ * mio_fit_cad4(..., NULL report_ex4). With opts_ex2->validation_report the
+ * result carries the "fit_cad:face_deviation" field data: per face, the
+ * columns cad_to_mesh_max, cad_to_mesh_p95, mesh_to_cad_max,
+ * normal_max_deg and num_samples.
+ */
+MIO_API mio_mesh* mio_fit_cad4(const mio_mesh* mesh, const char* step_path,
+                               const mio_fit_cad_opts* opts, const mio_fit_cad_opts_ex* opts_ex,
+                               const mio_fit_cad_opts_ex2* opts_ex2, mio_fit_cad_report* report,
+                               mio_fit_cad_report_ex* report_ex, mio_fit_cad_report_ex2* report_ex2,
+                               mio_fit_cad_report_ex3* report_ex3,
+                               mio_fit_cad_report_ex4* report_ex4);
 
 /* ---------------------------------------------------------------------
  * Isogeometric layer (v16.43.0): evaluate, refine and sample the NURBS model

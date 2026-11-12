@@ -369,10 +369,14 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
         for (std::size_t r = 0; r < rows.size(); ++r) {
             const bool freeform = rows[r].mType == 6;
             rows[r].mAnalytic = rows[r].mAccepted && present[r] && (freeform || worst[r] <= tol);
+            // A surface of revolution's parameters run (angle, profile), its
+            // B-spline's (profile, angle): the normals are opposite.
             rows[r].mSense =
                 freeform
-                    ? (*rOptions.mFreeform)[static_cast<std::size_t>(rows[r].mFreeform)].mSense !=
-                          (reversed[r] != 0)
+                    ? ((*rOptions.mFreeform)[static_cast<std::size_t>(rows[r].mFreeform)].mSense !=
+                       (reversed[r] != 0)) !=
+                          ((*rOptions.mFreeform)[static_cast<std::size_t>(rows[r].mFreeform)]
+                               .mType == 12)
                     : agree[r] >= 0.0;
             if (rows[r].mAccepted && present[r] && !rows[r].mAnalytic) {
                 ++res.mCounts.mNumDemoted;
@@ -908,19 +912,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             if (found != surface_of.end())
                 return found->second;
             const SbRow* row = &rows[static_cast<std::size_t>(G)];
-            const BsplineSurface& bs =
-                (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)].mSurface;
-            std::string grid;
-            for (std::size_t i = 0; i < bs.mNu; ++i) {
-                std::string line;
-                for (std::size_t j = 0; j < bs.mNv; ++j) {
-                    const std::int64_t q =
-                        st.Ent("CARTESIAN_POINT(''," +
-                               StepStream::Triple(&bs.mPoles[3 * (i + bs.mNu * j)]) + ")");
-                    line += (j == 0 ? "" : ",") + StepStream::Ref(q);
-                }
-                grid += (i == 0 ? "(" : ",(") + line + ")";
-            }
+            const StepFreeformFace& ff =
+                (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)];
             const auto knots = [](const std::vector<double>& rK, std::string& rMults,
                                   std::string& rValues) {
                 std::size_t i = 0;
@@ -933,6 +926,51 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                     i = j;
                 }
             };
+            if (ff.mType == 11 || ff.mType == 12) {
+                // The exact kinematic surface: its profile as a 3-D curve in
+                // the frame, swept along or about the axis.
+                const StepFreeformFace::Kinematic& kin = ff.mKinematic;
+                std::string poles;
+                for (const PatchVec& q : kin.mSwept.mPoles) {
+                    const std::int64_t id =
+                        st.Ent("CARTESIAN_POINT(''," + StepStream::Triple(q.data()) + ")");
+                    poles += (poles.empty() ? "" : ",") + StepStream::Ref(id);
+                }
+                std::string cm, ck;
+                knots(kin.mSwept.mKnots, cm, ck);
+                const std::int64_t curve = st.Ent(
+                    "B_SPLINE_CURVE_WITH_KNOTS(''," + std::to_string(kin.mSwept.mDegree) + ",(" +
+                    poles + "),.UNSPECIFIED.,.F.,.F.,(" + cm + "),(" + ck + "),.UNSPECIFIED.)");
+                const std::int64_t axis = direction(kin.mAxis.data());
+                std::int64_t id = 0;
+                if (ff.mType == 11) {
+                    const std::int64_t vec =
+                        st.Ent("VECTOR(''," + StepStream::Ref(axis) + "," + step_real(1.0) + ")");
+                    id = st.Ent("SURFACE_OF_LINEAR_EXTRUSION(''," + StepStream::Ref(curve) + "," +
+                                StepStream::Ref(vec) + ")");
+                } else {
+                    const std::int64_t at = st.Ent("CARTESIAN_POINT(''," +
+                                                   StepStream::Triple(kin.mOrigin.data()) + ")");
+                    const std::int64_t place = st.Ent("AXIS1_PLACEMENT(''," + StepStream::Ref(at) +
+                                                      "," + StepStream::Ref(axis) + ")");
+                    id = st.Ent("SURFACE_OF_REVOLUTION(''," + StepStream::Ref(curve) + "," +
+                                StepStream::Ref(place) + ")");
+                }
+                surface_of.emplace(G, id);
+                return id;
+            }
+            const BsplineSurface& bs = ff.mSurface;
+            std::string grid;
+            for (std::size_t i = 0; i < bs.mNu; ++i) {
+                std::string line;
+                for (std::size_t j = 0; j < bs.mNv; ++j) {
+                    const std::int64_t q =
+                        st.Ent("CARTESIAN_POINT(''," +
+                               StepStream::Triple(&bs.mPoles[3 * (i + bs.mNu * j)]) + ")");
+                    line += (j == 0 ? "" : ",") + StepStream::Ref(q);
+                }
+                grid += (i == 0 ? "(" : ",(") + line + ")";
+            }
             std::string um, uk, vm, vk;
             knots(bs.mKnotsU, um, uk);
             knots(bs.mKnotsV, vm, vk);
@@ -1267,7 +1305,21 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                         ++res.mCounts.mNumCone;
                         break;
                     case 6:
-                        ++res.mNumBspline;
+                        switch (
+                            (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)].mType) {
+                            case 8:
+                                ++res.mNumHelical;
+                                break;
+                            case 11:
+                                ++res.mNumExtrusion;
+                                break;
+                            case 12:
+                                ++res.mNumRevolution;
+                                break;
+                            default:
+                                ++res.mNumBspline;
+                                break;
+                        }
                         break;
                     default:
                         ++res.mCounts.mNumTorus;
@@ -1418,11 +1470,21 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                             srf.mRadius = p[6];
                             srf.mMinor = p[7];
                             break;
-                        case 6:
-                            srf.pBspline =
-                                &(*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)]
-                                     .mSurface;
+                        case 6: {
+                            const StepFreeformFace& ff =
+                                (*rOptions.mFreeform)[static_cast<std::size_t>(row->mFreeform)];
+                            srf.pBspline = &ff.mSurface;
+                            if (ff.mType == 12) {
+                                // Exactly rational about the axis.
+                                srf.mKind = 12;
+                                srf.mOrigin = ff.mKinematic.mOrigin;
+                                srf.mX = ff.mKinematic.mE1;
+                                srf.mY = ff.mKinematic.mE2;
+                                srf.mZ = ff.mKinematic.mAxis;
+                                srf.pProfile = &ff.mKinematic.mProfile;
+                            }
                             break;
+                        }
                         default:
                             frame(srf, p, p + 3);
                             break;
@@ -1570,8 +1632,11 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
             if (analytic_group(g)) {
                 const SbRow& row = rows[static_cast<std::size_t>(g)];
                 res.mTypeOfFacet[f] = row.mType;
-                if (row.mType == 6)
+                if (row.mType == 6) {
+                    res.mTypeOfFacet[f] =
+                        (*rOptions.mFreeform)[static_cast<std::size_t>(row.mFreeform)].mType;
                     continue;  // its fit measured it
+                }
                 for (std::int64_t k = start[f]; k < start[f + 1]; ++k)
                     res.mMaxDeviation = std::max(
                         res.mMaxDeviation,

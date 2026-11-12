@@ -4999,6 +4999,12 @@ def _register_gated(server: FastMCP) -> None:
         layout_snap_to_features: bool = True,
         validate_by_surface_sampling: bool = True,
         constrain_primitives: bool = False,
+        validation_report: bool = False,
+        validation_acceptance: bool = False,
+        freeform_fit_schedule: str = "legacy",
+        freeform_objective: str = "default",
+        kinematic_surfaces: bool = False,
+        freeform_g1_solve: str = "sweeps",
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -5091,7 +5097,23 @@ def _register_gated(server: FastMCP) -> None:
         backend: coaxial cylinders, cones, tori and spheres share one axis,
         parallel and perpendicular planes and nearly equal radii are made
         exact, each change kept only where its patch still passes its fit;
-        adds num_constrained_primitives and num_constraint_groups."""
+        adds num_constrained_primitives and num_constraint_groups.
+        validation_report (off) measures the solid against the skin both ways
+        (cad_to_mesh_max/_p95/_p99, mesh_to_cad_max/_p95/_p99), the normal
+        deviation (normal_deviation_max_deg, normal_deviation_p95_deg) and
+        the STEP file read back (step_round_trip_checked, _valid,
+        _volume_ratio), with total_freeform_control_points;
+        validation_acceptance (off) holds every freeform face to them.
+        freeform_fit_schedule ("legacy" or "continuation") and
+        freeform_objective ("default", "pdm", "tdm" or "sdm") choose how the
+        adaptive and general freeform faces' B-spline fit runs.
+        kinematic_surfaces (off) first tries a patch no primitive explains as
+        a surface of linear extrusion, of revolution or a helical surface
+        (fit_cad:type 11, 12, 8) and adds num_extrusion, num_revolution and
+        num_kinematic_helical. freeform_g1_solve ("sweeps" or "coupled")
+        picks how the patch network reaches G1; outside the legacy mode the
+        report adds max_g1_angle_away_deg, max_g1_angle_at_ev_deg and
+        num_coupled_regions."""
 
     @server.tool()
     @_forward(_tools.tool_data_export)

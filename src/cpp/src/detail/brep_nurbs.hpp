@@ -114,7 +114,11 @@ BrepCurve brep_curve_bspline(const BsplineCurve& rC);
 
 /// What a face's surface is (`fit_cad:type` numbering).
 struct BrepNurbsSurface {
-    int mKind = 1;  ///< 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, 6 B-spline
+    /// 1 plane, 2 sphere, 3 cylinder, 4 cone, 5 torus, 6 B-spline, 12 a
+    /// surface of revolution of `pProfile` (`fit_cad`'s kinematic faces):
+    /// its parameters the angle about `mZ` from `mX` and the profile's own,
+    /// the patch exactly rational.
+    int mKind = 1;
     /// The frame: the origin (a sphere's or torus's centre, a cone's apex, a
     /// point of the plane or of the cylinder's axis) and orthonormal axes, `mZ`
     /// the axis of revolution or the plane's normal.
@@ -126,6 +130,8 @@ struct BrepNurbsSurface {
     double mMinor = 0.0;         ///< a torus's minor radius
     double mTanHalfAngle = 0.0;  ///< a cone's: radius per height above the apex
     const BsplineSurface* pBspline = nullptr;
+    /// Kind 12: the profile, `(rho, z, 0)` in the frame's meridian half-plane.
+    const BsplineCurve* pProfile = nullptr;
 };
 
 /// One trim of a loop, along the loop.

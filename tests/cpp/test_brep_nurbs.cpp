@@ -444,3 +444,75 @@ TEST(BrepNurbs, HalfTorusWindsRoundTheTube) {
     const double area = 2 * kPi * kPi * 3.0 * 1.0;
     EXPECT_NEAR(sampled_area(one_face(face)), area, 0.01 * area);
 }
+
+// A surface of revolution of a B-spline profile (fit_cad's kinematic faces,
+// kind 12) is written as an exactly rational patch: every point of it lies on
+// the profile turned about the axis, to 1e-9.
+TEST(BrepNurbs, RevolvedProfileIsExactlyRational) {
+    // The profile: rho = 1 + 0.2 t^2 - 0.1 t, z = t (t in [0, 1]), as a cubic.
+    std::vector<PatchVec> poly;
+    for (int i = 0; i <= 20; ++i) {
+        const double t = i / 20.0;
+        poly.push_back({1.0 + 0.2 * t * t - 0.1 * t, t, 0.0});
+    }
+    meshioplusplus::detail::CurveFitOptions co;
+    co.mTolerance = 1e-7;
+    const auto fit = meshioplusplus::detail::bspline_curve_fit(poly, co);
+    ASSERT_TRUE(fit.mOk);
+    const meshioplusplus::detail::BsplineCurve& prof = fit.mCurve;
+    BrepNurbsSurface s;
+    s.mKind = 12;
+    s.mOrigin = {0.5, -0.25, 1.0};
+    s.mX = {0.0, 1.0, 0.0};
+    s.mY = {0.0, 0.0, 1.0};
+    s.mZ = {1.0, 0.0, 0.0};
+    s.pProfile = &prof;
+    const auto at = [&](double A, double T) {
+        const PatchVec q = meshioplusplus::detail::bspline_curve_eval(prof, T);
+        PatchVec p;
+        for (std::size_t k = 0; k < 3; ++k)
+            p[k] = s.mOrigin[k] + q[0] * (std::cos(A) * s.mX[k] + std::sin(A) * s.mY[k]) +
+                   q[1] * s.mZ[k];
+        return p;
+    };
+    // A quarter turn between 0.2 and 0.8 of the profile.
+    const double t0 = prof.T0() + 0.2 * (prof.T1() - prof.T0());
+    const double t1 = prof.T0() + 0.8 * (prof.T1() - prof.T0());
+    const double c[5][2] = {{0.1, t0}, {1.6, t0}, {1.6, t1}, {0.1, t1}, {0.1, t0}};
+    std::vector<std::vector<BrepNurbsTrim>> loops(1);
+    for (int i = 0; i < 4; ++i) {
+        BrepNurbsTrim t;
+        for (int k = 0; k <= 16; ++k) {
+            const double f = k / 16.0;
+            t.mPoints.push_back(
+                at(c[i][0] + (c[i + 1][0] - c[i][0]) * f, c[i][1] + (c[i + 1][1] - c[i][1]) * f));
+        }
+        loops[0].push_back(t);
+    }
+    BrepNurbsFace face;
+    std::string why;
+    ASSERT_TRUE(meshioplusplus::detail::brep_nurbs_face(s, loops, true, 1e-4, face, why)) << why;
+    EXPECT_TRUE(face.mFace.mRational);
+    const auto& patch = face.mPatch;
+    const auto& ku = patch.mKnots[0];
+    const auto& kv = patch.mKnots[1];
+    const double u0 = ku[static_cast<std::size_t>(patch.mDegrees[0])],
+                 u1 = ku[ku.size() - 1 - static_cast<std::size_t>(patch.mDegrees[0])];
+    const double v0 = kv[static_cast<std::size_t>(patch.mDegrees[1])],
+                 v1 = kv[kv.size() - 1 - static_cast<std::size_t>(patch.mDegrees[1])];
+    double worst = 0.0;
+    for (int i = 0; i <= 24; ++i)
+        for (int j = 0; j <= 24; ++j) {
+            const PatchVec p = meshioplusplus::detail::nurbs_patch_point(
+                patch, u0 + (u1 - u0) * i / 24.0, v0 + (v1 - v0) * j / 24.0);
+            // On the surface: its distance from the axis is the profile's
+            // rho at its height's parameter.
+            const PatchVec d{p[0] - s.mOrigin[0], p[1] - s.mOrigin[1], p[2] - s.mOrigin[2]};
+            const double z = d[0] * s.mZ[0] + d[1] * s.mZ[1] + d[2] * s.mZ[2];
+            const double rho = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - z * z);
+            double t = 0.0;
+            worst = std::max(worst,
+                             meshioplusplus::detail::bspline_curve_project(prof, {rho, z, 0.0}, t));
+        }
+    EXPECT_LT(worst, 1e-9);
+}

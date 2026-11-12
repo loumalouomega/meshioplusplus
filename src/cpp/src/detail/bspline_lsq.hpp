@@ -106,6 +106,24 @@ struct BsplineEval {
  */
 void bspline_eval(const BsplineSurface& rS, double U, double V, int NDer, BsplineEval& rOut);
 
+/// A surface point's principal curvatures and directions (unreleased).
+struct BsplineCurvature {
+    double mN[3] = {0.0, 0.0, 0.0};   ///< the unit normal, along `Su x Sv`
+    double mK1 = 0.0, mK2 = 0.0;      ///< the curvatures, `mK1 <= mK2`
+    double mT1[3] = {0.0, 0.0, 0.0};  ///< the unit direction of `mK1`
+    double mT2[3] = {0.0, 0.0, 0.0};  ///< the unit direction of `mK2`
+};
+
+/**
+ * @brief The principal curvatures and directions at a point evaluated with
+ * second derivatives (@p rE from `bspline_eval(..., 2, ...)`), from the first
+ * and second fundamental forms. A curvature is positive where the surface
+ * bends towards the normal: its centre of curvature lies at `S + n / k`. At
+ * an umbilic the directions are `Su` and `n x Su`. False where the
+ * parametrisation is singular (`Su x Sv` vanishes).
+ */
+bool bspline_principal_curvatures(const BsplineEval& rE, BsplineCurvature& rOut);
+
 /**
  * @brief The collocation row of a sample at `(U, V)`: the `(p + 1)(q + 1)`
  * pole indices whose basis functions are non-zero there, and those values.

@@ -3303,6 +3303,8 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                           {"g1-tolerance", {}, true},
                                           {"extraordinary-vertex", {}, true},
                                           {"local-refine", {}, true},
+                                          {"freeform-fit-schedule", {}, true},
+                                          {"freeform-objective", {}, true},
                                           {"freeform-max-control-points", {}, true},
                                           {"layout-target-patch-size", {}, true},
                                           {"layout-max-valence-deviation", {}, true},
@@ -3310,6 +3312,10 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                           {"no-layout-snap-to-features", {}, false},
                                           {"no-validate-by-surface-sampling", {}, false},
                                           {"constrain-primitives", {}, false},
+                                          {"validation-report", {}, false},
+                                          {"validation-acceptance", {}, false},
+                                          {"kinematic-surfaces", {}, false},
+                                          {"freeform-g1-solve", {}, true},
                                           {"mesh-out", {}, true},
                                           {"cad-json", {}, true}},
                                          report_flag_specs()}));
@@ -3425,6 +3431,15 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     if (has_opt(p, "local-refine"))
         options.mLocalRefine = static_cast<meshioplusplus::FitCadLocalRefine>(
             keyword("local-refine", {"knots", "thb"}));
+    if (has_opt(p, "freeform-fit-schedule"))
+        options.mFreeformFitSchedule = static_cast<meshioplusplus::FitCadFreeformFitSchedule>(
+            keyword("freeform-fit-schedule", {"legacy", "continuation"}));
+    if (has_opt(p, "freeform-objective"))
+        options.mFreeformObjective = static_cast<meshioplusplus::FitCadFreeformObjective>(
+            keyword("freeform-objective", {"default", "pdm", "tdm", "sdm"}));
+    if (has_opt(p, "freeform-g1-solve"))
+        options.mFreeformG1Solve = static_cast<meshioplusplus::FitCadNetworkG1Solve>(
+            keyword("freeform-g1-solve", {"sweeps", "coupled"}));
     cli_opt_double(p, "g1-tolerance", options.mFreeformG1ToleranceDeg);
     cli_opt_int64(p, "freeform-max-control-points", options.mFreeformMaxControlPoints);
     cli_opt_double(p, "layout-target-patch-size", options.mLayoutTargetPatchSize);
@@ -3433,6 +3448,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     options.mLayoutSnapToFeatures = !has_flag(p, "no-layout-snap-to-features");
     options.mValidateBySurfaceSampling = !has_flag(p, "no-validate-by-surface-sampling");
     options.mConstrainPrimitives = has_flag(p, "constrain-primitives");
+    options.mValidationReport = has_flag(p, "validation-report");
+    options.mValidationAcceptance = has_flag(p, "validation-acceptance");
+    options.mKinematicSurfaces = has_flag(p, "kinematic-surfaces");
     const bool modes = options.mFreeformMode != meshioplusplus::FitCadFreeformMode::Legacy;
     static const char* const kModes[] = {"legacy", "adaptive", "network", "auto"};
     meshioplusplus::FitCadResult r = meshioplusplus::fit_cad(mesh, p.positionals[1], options);
@@ -3504,6 +3522,26 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
             json.Field("num_constrained_primitives", r.mNumConstrainedPrimitives);
             json.Field("num_constraint_groups", r.mNumConstraintGroups);
         }
+        if (options.mValidationReport) {
+            json.Field("validation_reported", r.mValidationReported);
+            json.Field("cad_to_mesh_max", r.mCadToMeshMax);
+            json.Field("cad_to_mesh_p95", r.mCadToMeshP95);
+            json.Field("cad_to_mesh_p99", r.mCadToMeshP99);
+            json.Field("mesh_to_cad_max", r.mMeshToCadMax);
+            json.Field("mesh_to_cad_p95", r.mMeshToCadP95);
+            json.Field("mesh_to_cad_p99", r.mMeshToCadP99);
+            json.Field("normal_deviation_max_deg", r.mNormalDeviationMaxDeg);
+            json.Field("normal_deviation_p95_deg", r.mNormalDeviationP95Deg);
+            json.Field("step_round_trip_checked", r.mStepRoundTripChecked);
+            json.Field("step_round_trip_valid", r.mStepRoundTripValid);
+            json.Field("step_round_trip_volume_ratio", r.mStepRoundTripVolumeRatio);
+            json.Field("total_freeform_control_points", r.mTotalFreeformControlPoints);
+        }
+        if (options.mKinematicSurfaces) {
+            json.Field("num_extrusion", r.mNumExtrusion);
+            json.Field("num_revolution", r.mNumRevolution);
+            json.Field("num_kinematic_helical", r.mNumKinematicHelical);
+        }
         // The freeform modes report only outside the legacy mode.
         if (modes) {
             static const char* const kParams[] = {"none", "plane",      "cylinder",
@@ -3529,6 +3567,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
             json.Field("num_escalations", r.mNumEscalations);
             json.Field("facet_area_fraction", r.mFacetAreaFraction);
             json.Field("max_g1_angle_deg", r.mMaxG1AngleDeg);
+            json.Field("max_g1_angle_away_deg", r.mMaxG1AngleAwayDeg);
+            json.Field("max_g1_angle_at_ev_deg", r.mMaxG1AngleAtEvDeg);
+            json.Field("num_coupled_regions", r.mNumCoupledRegions);
             json.Field("max_freeform_distance", r.mMaxFreeformDistance);
             json.Field("rms_freeform_distance", r.mRmsFreeformDistance);
             json.Key("faces");
@@ -3604,6 +3645,17 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
         if (options.mConstrainPrimitives)
             std::cout << "  constrained: " << r.mNumConstrainedPrimitives << " primitive(s) in "
                       << r.mNumConstraintGroups << " group(s)\n";
+        if (options.mValidationReport)
+            std::cout << "  validation: CAD to mesh " << r.mCadToMeshMax << " (P95 "
+                      << r.mCadToMeshP95 << "), mesh to CAD " << r.mMeshToCadMax << " (P95 "
+                      << r.mMeshToCadP95 << "), normals " << r.mNormalDeviationMaxDeg
+                      << " deg; STEP read back: "
+                      << (r.mStepRoundTripChecked ? (r.mStepRoundTripValid ? "valid" : "NOT valid")
+                                                  : "not checked")
+                      << "\n";
+        if (options.mKinematicSurfaces)
+            std::cout << "  kinematic: " << r.mNumExtrusion << " extrusion(s), " << r.mNumRevolution
+                      << " revolution(s), " << r.mNumKinematicHelical << " helical face(s)\n";
         if (modes)
             std::cout << "  freeform (" << kModes[static_cast<int>(r.mFreeformMode) & 3]
                       << "): " << r.mNumFreeformAdaptive << " adaptive face(s), "

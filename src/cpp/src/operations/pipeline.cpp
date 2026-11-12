@@ -1982,6 +1982,10 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             keyword("ExtraordinaryVertex", "g1x", {"g0", "g1", "g1x", "g1xx"}));
         opts.mLocalRefine =
             static_cast<FitCadLocalRefine>(keyword("LocalRefine", "knots", {"knots", "thb"}));
+        opts.mFreeformFitSchedule = static_cast<FitCadFreeformFitSchedule>(
+            keyword("FreeformFitSchedule", "legacy", {"legacy", "continuation"}));
+        opts.mFreeformObjective = static_cast<FitCadFreeformObjective>(
+            keyword("FreeformObjective", "default", {"default", "pdm", "tdm", "sdm"}));
         opts.mFreeformG1ToleranceDeg = pipe_number(rStep, "FreeformG1ToleranceDeg", 1.0);
         opts.mFreeformMaxControlPoints =
             static_cast<std::int64_t>(pipe_number(rStep, "FreeformMaxControlPoints", 400.0));
@@ -1993,6 +1997,11 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mLayoutSnapToFeatures = pipe_flag(rStep, "LayoutSnapToFeatures", true);
         opts.mValidateBySurfaceSampling = pipe_flag(rStep, "ValidateBySurfaceSampling", true);
         opts.mConstrainPrimitives = pipe_flag(rStep, "ConstrainPrimitives", false);
+        opts.mValidationReport = pipe_flag(rStep, "ValidationReport", false);
+        opts.mValidationAcceptance = pipe_flag(rStep, "ValidationAcceptance", false);
+        opts.mKinematicSurfaces = pipe_flag(rStep, "KinematicSurfaces", false);
+        opts.mFreeformG1Solve = static_cast<FitCadNetworkG1Solve>(
+            keyword("FreeformG1Solve", "sweeps", {"sweeps", "coupled"}));
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -2047,6 +2056,21 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             counters.emplace_back("NumConstraintGroups",
                                   static_cast<double>(cr.mNumConstraintGroups));
         }
+        if (opts.mValidationReport) {
+            counters.emplace_back("CadToMeshMax", cr.mCadToMeshMax);
+            counters.emplace_back("CadToMeshP95", cr.mCadToMeshP95);
+            counters.emplace_back("MeshToCadMax", cr.mMeshToCadMax);
+            counters.emplace_back("MeshToCadP95", cr.mMeshToCadP95);
+            counters.emplace_back("NormalDeviationMaxDeg", cr.mNormalDeviationMaxDeg);
+            counters.emplace_back("StepRoundTripChecked", cr.mStepRoundTripChecked ? 1.0 : 0.0);
+            counters.emplace_back("StepRoundTripValid", cr.mStepRoundTripValid ? 1.0 : 0.0);
+        }
+        if (opts.mKinematicSurfaces) {
+            counters.emplace_back("NumExtrusion", static_cast<double>(cr.mNumExtrusion));
+            counters.emplace_back("NumRevolution", static_cast<double>(cr.mNumRevolution));
+            counters.emplace_back("NumKinematicHelical",
+                                  static_cast<double>(cr.mNumKinematicHelical));
+        }
         // The freeform modes (v17.12.0) report only outside the legacy mode.
         if (opts.mFreeformMode != FitCadFreeformMode::Legacy) {
             counters.emplace_back("BrepChecked", cr.mBrepChecked ? 1.0 : 0.0);
@@ -2060,6 +2084,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             counters.emplace_back("NumResegmented", static_cast<double>(cr.mNumResegmented));
             counters.emplace_back("NumEscalations", static_cast<double>(cr.mNumEscalations));
             counters.emplace_back("MaxG1AngleDeg", cr.mMaxG1AngleDeg);
+            counters.emplace_back("MaxG1AngleAwayDeg", cr.mMaxG1AngleAwayDeg);
+            counters.emplace_back("MaxG1AngleAtEvDeg", cr.mMaxG1AngleAtEvDeg);
+            counters.emplace_back("NumCoupledRegions", static_cast<double>(cr.mNumCoupledRegions));
         }
         pipe_push_step(rReport, rStep, std::move(counters));
         // The fitted solid is the model the rest of the run carries, when the

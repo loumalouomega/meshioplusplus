@@ -85,6 +85,9 @@ _FREEFORM_MODES = ("legacy", "adaptive", "network", "auto")
 _PARAMETERIZATIONS = ("auto", "projection", "lscm", "harmonic")
 _EXTRAORDINARY_VERTEX = ("g0", "g1", "g1x", "g1xx")
 _LOCAL_REFINE = ("knots", "thb")
+_FIT_SCHEDULES = ("legacy", "continuation")
+_OBJECTIVES = ("default", "pdm", "tdm", "sdm")
+_G1_SOLVES = ("sweeps", "coupled")
 _MODE_DEFAULTS = {
     "freeform_mode": "legacy",
     "freeform_parameterization": "auto",
@@ -97,6 +100,9 @@ _MODE_DEFAULTS = {
     "resegment_rounds": 2,
     "layout_snap_to_features": True,
     "validate_by_surface_sampling": True,
+    "freeform_fit_schedule": "legacy",
+    "freeform_objective": "default",
+    "freeform_g1_solve": "sweeps",
 }
 _MODE_INTS = (
     "num_freeform_adaptive",
@@ -105,12 +111,32 @@ _MODE_INTS = (
     "num_extraordinary_vertices",
     "num_resegmented",
     "num_escalations",
+    "num_coupled_regions",
 )
 _MODE_FLOATS = (
     "facet_area_fraction",
     "max_g1_angle_deg",
+    "max_g1_angle_away_deg",
+    "max_g1_angle_at_ev_deg",
     "max_freeform_distance",
     "rms_freeform_distance",
+)
+# The validation report's keys (unreleased), only with ``validation_report``.
+_VALIDATION_FLOATS = (
+    "cad_to_mesh_max",
+    "cad_to_mesh_p95",
+    "cad_to_mesh_p99",
+    "mesh_to_cad_max",
+    "mesh_to_cad_p95",
+    "mesh_to_cad_p99",
+    "normal_deviation_max_deg",
+    "normal_deviation_p95_deg",
+    "step_round_trip_volume_ratio",
+)
+_VALIDATION_BOOLS = (
+    "validation_reported",
+    "step_round_trip_checked",
+    "step_round_trip_valid",
 )
 
 
@@ -210,6 +236,12 @@ def fit_cad(
     layout_snap_to_features: bool = True,
     validate_by_surface_sampling: bool = True,
     constrain_primitives: bool = False,
+    validation_report: bool = False,
+    validation_acceptance: bool = False,
+    freeform_fit_schedule: str = "legacy",
+    freeform_objective: str = "default",
+    kinematic_surfaces: bool = False,
+    freeform_g1_solve: str = "sweeps",
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -363,10 +395,58 @@ def fit_cad(
         equal, each change kept only where its patch still passes its fit.
         The report then holds ``num_constrained_primitives`` and
         ``num_constraint_groups``.
+    :param validation_report: measure the built solid against the skin: the
+        two-sided distance between its trimmed NURBS faces and the skin (each
+        face sampled densely inside its trims; the skin's vertices and facet
+        centres projected onto the faces), the normal deviation at those foot
+        points and, where OpenCASCADE is available and a STEP file was
+        written, the file read back and checked. The report then holds
+        ``validation_reported``, ``cad_to_mesh_max``, ``cad_to_mesh_p95``,
+        ``cad_to_mesh_p99``, ``mesh_to_cad_max``, ``mesh_to_cad_p95``,
+        ``mesh_to_cad_p99``, ``normal_deviation_max_deg``,
+        ``normal_deviation_p95_deg``, ``step_round_trip_checked``,
+        ``step_round_trip_valid``, ``step_round_trip_volume_ratio`` and
+        ``total_freeform_control_points``, and the mesh the
+        ``fit_cad:face_deviation`` field data. The solid is the same either
+        way.
+    :param validation_acceptance: also hold every freeform face to those
+        measures before it is accepted: its surface sampled inside its trim
+        within the tolerance of the skin, and its normal at the patch's facet
+        centres within 30 degrees of theirs unless the patch shows noise.
+    :param freeform_fit_schedule: how the adaptive and general freeform
+        faces' B-spline fit spends its iterations: ``"legacy"`` (as before)
+        or ``"continuation"`` (a thin-plate weight that starts high and falls
+        as parameter correction stalls, knots placed at the residual-weighted
+        median of a span's bad samples, and knots removed once the targets are
+        met while they still are).
+    :param freeform_objective: the error that fit minimises: ``"default"``
+        (point distance, a tangent-distance step when it stalls), ``"pdm"``
+        (point distance only), ``"tdm"`` (a tangent-distance step first every
+        iteration) or ``"sdm"`` (a squared-distance step by the principal
+        curvatures at the foot points, first every iteration).
+    :param kinematic_surfaces: first try a patch no primitive explains as a
+        kinematic surface, the sweep of a fitted planar profile: a surface of
+        linear extrusion (``fit_cad:type`` 11), of revolution (12) or a
+        helical surface (8). A patch closed round (a band) is cut into two
+        discs first. The extrusion and the revolution are exact (the native
+        STEP writer names them ``SURFACE_OF_LINEAR_EXTRUSION`` and
+        ``SURFACE_OF_REVOLUTION``; a revolution's NURBS form is rational).
+        The report then holds ``num_extrusion``, ``num_revolution`` and
+        ``num_kinematic_helical``.
+    :param freeform_g1_solve: how the patch network makes its patches G1:
+        ``"sweeps"`` (each patch against its neighbours in turn, the shared
+        edge curves fixed, as before) or ``"coupled"`` (one least-squares
+        solve over each region per step, the shared edge curves free too,
+        kept unless it fits less of the region or leaves a larger angle).
+        Outside the legacy mode the report holds ``max_g1_angle_away_deg``
+        and ``max_g1_angle_at_ev_deg`` (the largest angle away from the
+        extraordinary vertices and next to them, which tensor-product patches
+        cannot make G1) and ``num_coupled_regions``.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
-        chamfer, else as ``fit:type``) and
+        chamfer, 11 a surface of linear extrusion, 12 a surface of
+        revolution, else as ``fit:type``) and
         ``fit_cad:patch``, and the solid as NURBS faces,
         loops and edges in ``mesh.info["brep"]`` (face ``i`` of
         ``fit_cad:face`` has id ``i + 1``), so writing it as ``.cad.json`` gives
@@ -500,12 +580,18 @@ def fit_cad(
         "resegment_rounds": int(resegment_rounds),
         "layout_snap_to_features": bool(layout_snap_to_features),
         "validate_by_surface_sampling": bool(validate_by_surface_sampling),
+        "freeform_fit_schedule": str(freeform_fit_schedule),
+        "freeform_objective": str(freeform_objective),
+        "freeform_g1_solve": str(freeform_g1_solve),
     }
     for key, words in (
         ("freeform_mode", _FREEFORM_MODES),
         ("freeform_parameterization", _PARAMETERIZATIONS),
         ("extraordinary_vertex", _EXTRAORDINARY_VERTEX),
         ("local_refine", _LOCAL_REFINE),
+        ("freeform_fit_schedule", _FIT_SCHEDULES),
+        ("freeform_objective", _OBJECTIVES),
+        ("freeform_g1_solve", _G1_SOLVES),
     ):
         if modes[key] not in words:
             raise ValueError(
@@ -556,6 +642,9 @@ def fit_cad(
         **{k: v for k, v in modes.items() if v != _MODE_DEFAULTS[k]},
         # Off by default, passed only when on, like the options above.
         **({"constrain_primitives": True} if constrain_primitives else {}),
+        **({"validation_report": True} if validation_report else {}),
+        **({"validation_acceptance": True} if validation_acceptance else {}),
+        **({"kinematic_surfaces": True} if kinematic_surfaces else {}),
     )
     out = res["mesh"]
     info = out.info if isinstance(getattr(out, "info", None), dict) else {}
@@ -593,6 +682,15 @@ def fit_cad(
     if constrain_primitives:
         report["num_constrained_primitives"] = int(res["num_constrained_primitives"])
         report["num_constraint_groups"] = int(res["num_constraint_groups"])
+    if validation_report:
+        report.update({k: bool(res[k]) for k in _VALIDATION_BOOLS})
+        report.update({k: float(res[k]) for k in _VALIDATION_FLOATS})
+        report["total_freeform_control_points"] = int(
+            res["total_freeform_control_points"]
+        )
+    if kinematic_surfaces:
+        for key in ("num_extrusion", "num_revolution", "num_kinematic_helical"):
+            report[key] = int(res[key])
     return out, report
 
 

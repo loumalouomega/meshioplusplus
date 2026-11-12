@@ -34,6 +34,7 @@
 
 #include "thread_sweep.hpp"
 
+#include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/step.hpp"
@@ -115,6 +116,43 @@ TEST(FitCadModes, OptionsAreValidated) {
     refused([](FitCadOptions& o) { o.mLayoutMaxValenceDeviation = 4; },
             "layout_max_valence_deviation");
     refused([](FitCadOptions& o) { o.mResegmentRounds = -1; }, "resegment_rounds");
+    refused([](FitCadOptions& o) { o.mFreeformG1Solve = static_cast<FitCadNetworkG1Solve>(2); },
+            "freeform_g1_solve");
+}
+
+// The coupled G1 solve (doc/fit_cad_freeform_plan.md step 7), natively: the
+// hood's network is G1 within the tolerance the sweeps miss, no facet more,
+// the STEP file read back valid where a kernel can check it, and the angles
+// away from and at the extraordinary vertices reported apart.
+TEST(FitCadModes, NativeCoupledG1Solve) {
+    for (const fcfix::FreeformFixture& f : fcfix::freeform_fixtures(false)) {
+        if (f.mName != "hood" && f.mName != "cc_valence3")
+            continue;
+        SCOPED_TRACE(f.mName);
+        FitCadOptions o;
+        o.mBackend = FitCadBackend::Native;
+        o.mTolerance = f.mTolerance;
+        o.mFreeformMode = FitCadFreeformMode::Network;
+        const FitCadResult sw = fit_cad(f.mMesh, "", o);
+        o.mFreeformG1Solve = FitCadNetworkG1Solve::Coupled;
+        o.mValidationReport = true;
+        const std::string path =
+            (std::filesystem::temp_directory_path() / (f.mName + "_coupled.step")).string();
+        const FitCadResult cp = fit_cad(f.mMesh, path, o);
+        EXPECT_TRUE(cp.mValid);
+        EXPECT_LE(cp.mFacetAreaFraction, sw.mFacetAreaFraction);
+        EXPECT_GE(cp.mNumCoupledRegions, 1);
+        EXPECT_LT(cp.mMaxG1AngleAwayDeg, sw.mMaxG1AngleAwayDeg);
+        EXPECT_LE(cp.mMaxG1AngleAwayDeg, o.mFreeformG1ToleranceDeg);
+        if (f.mName == "cc_valence3")
+            EXPECT_GT(cp.mMaxG1AngleAtEvDeg, 0.0);
+        else
+            EXPECT_EQ(cp.mMaxG1AngleAtEvDeg, 0.0);
+        if (cp.mStepRoundTripChecked && sw.mFacetAreaFraction == 0.0)
+            EXPECT_TRUE(cp.mStepRoundTripValid);
+        // Off, nothing is coupled.
+        EXPECT_EQ(sw.mNumCoupledRegions, 0);
+    }
 }
 
 // The native backend records every fitted patch, measures the facet area and
@@ -573,6 +611,56 @@ TEST(FitCadModes, NetworkOnAGenusTwoSkin) {
     EXPECT_LT(net.mFacetAreaFraction, adaptive.mFacetAreaFraction);
 }
 
+// Kinematic surfaces (doc/fit_cad_freeform_plan.md step 5), natively: the
+// lobed prism's wall is two surfaces of linear extrusion and the wavy wall two
+// of revolution, written exactly, read back by a CAD kernel where there is
+// one; with the option off nothing changes.
+TEST(FitCadModes, NativeKinematicSurfaces) {
+    struct Case {
+        const char* mName;
+        Mesh (*pMake)();  // a function: a KRATOS mesh is not copyable
+        std::int64_t FitCadResult::*pCount;
+    };
+    for (Case& c : std::vector<Case>{{"extruded_lobe", [] { return analytic::extruded_lobe(); },
+                                      &FitCadResult::mNumExtrusion},
+                                     {"wavy_capped", [] { return analytic::wavy_capped(); },
+                                      &FitCadResult::mNumRevolution}}) {
+        const Mesh skin = c.pMake();
+        const double tol = 2e-3 * fcfix::diagonal(skin);
+        const Mesh fitted = fcfix::fitted_abs(skin, tol);
+        FitCadOptions o;
+        o.mBackend = FitCadBackend::Native;
+        o.mTolerance = tol;
+        const FitCadResult off = fit_cad(fitted, "", o);
+        EXPECT_EQ(off.*c.pCount, 0) << c.mName;
+        o.mKinematicSurfaces = true;
+        o.mValidationReport = true;
+        const std::string path = temp_step((std::string(c.mName) + "_kinematic.step").c_str());
+        const FitCadResult r = fit_cad(fitted, path, o);
+        EXPECT_EQ(r.*c.pCount, 2) << c.mName;
+        EXPECT_TRUE(r.mValid) << c.mName;
+        EXPECT_EQ(r.mFacetAreaFraction, 0.0) << c.mName;
+        EXPECT_LE(r.mMeshToCadMax, tol) << c.mName;
+        EXPECT_LE(r.mCadToMeshMax, tol) << c.mName;
+        if (r.mStepRoundTripChecked) {
+            EXPECT_TRUE(r.mStepRoundTripValid) << c.mName;
+            EXPECT_NEAR(r.mStepRoundTripVolumeRatio, 1.0, 1e-2) << c.mName;
+        }
+        // The file names the exact surfaces.
+        auto in = meshioplusplus::detail::make_classic_ifstream(path);
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        EXPECT_NE(text.find(r.mNumExtrusion > 0 ? "SURFACE_OF_LINEAR_EXTRUSION"
+                                                : "SURFACE_OF_REVOLUTION"),
+                  std::string::npos)
+            << c.mName;
+        // Deterministic.
+        const FitCadResult again = fit_cad(fitted, "", o);
+        EXPECT_EQ(again.mCounts.mNumFaces, r.mCounts.mNumFaces);
+        EXPECT_EQ(again.mMeshToCadMax, r.mMeshToCadMax);
+    }
+}
+
 #ifdef MESHIOPLUSPLUS_HAS_OCCT
 
 // The adaptive mode through OpenCASCADE: checked B-spline faces, no more facet
@@ -661,6 +749,16 @@ TEST(FitCadModes, OcctNetworkBuildsTheCage) {
                 EXPECT_TRUE(std::isfinite(rec.mMaxG1AngleDeg));
             }
         }
+        // The coupled solve through OpenCASCADE: still every face, checked,
+        // G1 away from the extraordinary vertices within the tolerance.
+        o.mFreeformMode = FitCadFreeformMode::Network;
+        o.mFreeformG1Solve = FitCadNetworkG1Solve::Coupled;
+        const FitCadResult cp = fit_cad(f.mMesh, "", o);
+        EXPECT_TRUE(cp.mValid);
+        EXPECT_TRUE(cp.mBrepChecked);
+        EXPECT_EQ(cp.mFacetAreaFraction, 0.0);
+        EXPECT_GE(cp.mNumCoupledRegions, 1);
+        EXPECT_LE(cp.mMaxG1AngleAwayDeg, o.mFreeformG1ToleranceDeg);
     }
 }
 
@@ -727,6 +825,33 @@ TEST(FitCadModes, OcctUnfittedPatchHasAReason) {
     if (r.mNumBspline == 0) {
         EXPECT_TRUE(demoted);
         EXPECT_GT(r.mFacetAreaFraction, 0.0);
+    }
+}
+
+// The kinematic surfaces through OpenCASCADE: the walls the legacy build
+// leaves as facets become exact surfaces of extrusion and revolution.
+TEST(FitCadModes, OcctKinematicSurfaces) {
+    struct Case {
+        const char* mName;
+        Mesh (*pMake)();  // a function: a KRATOS mesh is not copyable
+        std::int64_t FitCadResult::*pCount;
+    };
+    for (Case& c : std::vector<Case>{{"extruded_lobe", [] { return analytic::extruded_lobe(); },
+                                      &FitCadResult::mNumExtrusion},
+                                     {"wavy_capped", [] { return analytic::wavy_capped(); },
+                                      &FitCadResult::mNumRevolution}}) {
+        const Mesh skin = c.pMake();
+        const double tol = 2e-3 * fcfix::diagonal(skin);
+        FitCadOptions o;
+        o.mTolerance = tol;
+        o.mKinematicSurfaces = true;
+        o.mValidationReport = true;
+        const FitCadResult r = fit_cad(fcfix::fitted_abs(skin, tol), "", o);
+        EXPECT_TRUE(r.mBrepChecked) << c.mName;
+        EXPECT_TRUE(r.mValid) << c.mName;
+        EXPECT_EQ(r.*c.pCount, 2) << c.mName;
+        EXPECT_EQ(r.mFacetAreaFraction, 0.0) << c.mName;
+        EXPECT_LE(r.mMeshToCadMax, tol) << c.mName;
     }
 }
 

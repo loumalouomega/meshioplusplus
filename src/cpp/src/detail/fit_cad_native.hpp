@@ -44,6 +44,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/refine_patches.hpp"
+#include "meshioplusplus/providers.hpp"
 
 namespace meshioplusplus::detail {
 
@@ -124,5 +125,9 @@ MESHIOPLUSPLUS_API std::unordered_map<std::int64_t, std::int64_t> native_refine_
 /// The OpenCASCADE backend (providers/occt/fit_cad_occt.cpp).
 FitCadResult occt_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                           const FitCadOptions& rOptions);
+
+/// A STEP file read back by OpenCASCADE and checked (fit_cad's validation
+/// report; providers/occt/fit_cad_occt.cpp).
+CadStepCheck occt_check_step(const std::string& rPath);
 
 }  // namespace meshioplusplus::detail

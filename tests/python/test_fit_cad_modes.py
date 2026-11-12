@@ -27,6 +27,7 @@ from .analytic_surfaces import (
     organic_torus,
     s_band_box,
     sphere_with_handle,
+    wavy_capped,
 )
 
 HAS_OCCT = _fit_cad.has_occt()
@@ -358,3 +359,51 @@ def test_resegmentation_cuts_a_missed_crease():
     assert off["facet_area_fraction"] > 0.04
     assert on["facet_area_fraction"] < 0.01
     assert on["num_faces"] < off["num_faces"]
+
+
+@needs_core
+@pytest.mark.parametrize("backend", ["native", "occt"])
+def test_kinematic_surfaces_make_the_wavy_wall_two_revolutions(tmp_path, backend):
+    # doc/fit_cad_freeform_plan.md step 5: the wall waving along its axis is
+    # two exact surfaces of revolution; off, the report has no such keys.
+    if backend == "occt" and not HAS_OCCT:
+        pytest.skip("needs OpenCASCADE")
+    skin = wavy_capped()
+    tol = 2e-3 * _diag(skin)
+    fitted = _fitted_abs(skin, tol)
+    kw = dict(backend=backend, tolerance=tol, return_report=True)
+    _, off = mio.fit_cad(fitted, **kw)
+    assert "num_revolution" not in off
+    out, on = mio.fit_cad(
+        fitted,
+        str(tmp_path / "wavy.step"),
+        kinematic_surfaces=True,
+        validation_report=True,
+        **kw,
+    )
+    assert on["num_revolution"] == 2
+    assert on["num_extrusion"] == 0
+    assert on["valid"]
+    assert on["mesh_to_cad_max"] <= tol
+    assert 12 in set(np.concatenate(out.cell_data["fit_cad:type"]).tolist())
+
+
+@needs_core
+def test_coupled_g1_solve_on_the_hood():
+    # doc/fit_cad_freeform_plan.md step 7: the coupled solve brings the
+    # hood's network within the G1 tolerance the sweeps miss.
+    skin = hood_box(16)
+    tol = 2e-3 * _diag(skin)
+    fitted = _fitted_abs(skin, tol)
+    kw = dict(
+        backend="native", tolerance=tol, freeform_mode="network", return_report=True
+    )
+    _, sweeps = mio.fit_cad(fitted, **kw)
+    _, coupled = mio.fit_cad(fitted, freeform_g1_solve="coupled", **kw)
+    assert sweeps["num_coupled_regions"] == 0
+    assert coupled["num_coupled_regions"] >= 1
+    assert coupled["max_g1_angle_away_deg"] <= sweeps["max_g1_angle_away_deg"]
+    assert coupled["max_g1_angle_at_ev_deg"] == 0.0
+    assert coupled["facet_area_fraction"] <= sweeps["facet_area_fraction"]
+    with pytest.raises(ValueError, match="freeform_g1_solve"):
+        mio.fit_cad(fitted, freeform_g1_solve="jacobi", **kw)

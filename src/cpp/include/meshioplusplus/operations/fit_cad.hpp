@@ -199,6 +199,13 @@ inline constexpr std::int64_t kFitCadVertexBlendType = 9;
 /// `fit_cad:type` of a chamfer: a blend of straight cross-sections, of
 /// constant or varying width, that is no plane or cone (v17.2.0).
 inline constexpr std::int64_t kFitCadChamferType = 10;
+/// `fit_cad:type` of a surface of linear extrusion: a planar profile no line
+/// or circle explains, swept along a direction (`mKinematicSurfaces`,
+/// unreleased).
+inline constexpr std::int64_t kFitCadExtrusionType = 11;
+/// `fit_cad:type` of a surface of revolution: a planar profile no line or
+/// circle explains, turned about an axis (`mKinematicSurfaces`, unreleased).
+inline constexpr std::int64_t kFitCadRevolutionType = 12;
 /// Field data outside `FitCadFreeformMode::Legacy`: one row per patch tried
 /// as a surface, the columns of `FitCadFaceRecord` in declaration order as
 /// float64 (`(n, 13)`, v17.12.0).
@@ -296,6 +303,46 @@ struct FitCadFaceRecord {
     double mReverseMaxDist = std::numeric_limits<double>::quiet_NaN();
     /// The largest normal jump to a neighbouring network face, in degrees.
     double mMaxG1AngleDeg = std::numeric_limits<double>::quiet_NaN();
+};
+
+/// How a freeform face's B-spline fit spends its iterations (unreleased,
+/// doc/fit_cad_freeform_plan.md step 3).
+enum class FitCadFreeformFitSchedule : std::int32_t {
+    /// The fit as before the option existed (the default).
+    Legacy = 0,
+    /// A thin-plate weight that starts high and falls two decades whenever
+    /// parameter correction stalls, knots inserted at the residual-weighted
+    /// median of a span's bad samples, and knots removed once the targets are
+    /// met while they still are.
+    Continuation = 1,
+};
+
+/// The error a freeform face's B-spline fit minimises (unreleased, step 4).
+enum class FitCadFreeformObjective : std::int32_t {
+    /// Point distance with parameter correction, a tangent-distance step
+    /// when it stalls: as before the option existed (the default).
+    Default = 0,
+    /// Point distance with parameter correction only.
+    Pdm = 1,
+    /// A tangent-distance step first every iteration.
+    Tdm = 2,
+    /// A squared-distance step first every iteration (Wang, Pottmann and Liu
+    /// 2006, by the principal curvatures at each foot point).
+    Sdm = 3,
+};
+
+/// How the patch network makes its patches G1 across their shared edges
+/// (unreleased, doc/fit_cad_freeform_plan.md step 7).
+enum class FitCadNetworkG1Solve : std::int32_t {
+    /// Each patch refitted against its neighbours' current surfaces in turn,
+    /// the shared edge curves fixed: as before the option existed (the
+    /// default).
+    Sweeps = 0,
+    /// One least-squares solve over each region per step: every interior
+    /// pole and every free pole of the shared edge curves, the G1 rows
+    /// linearised at the current surfaces; kept unless its accepted patches
+    /// cover less of the region than the sweeps'.
+    Coupled = 1,
 };
 
 /// Which engine `fit_cad` builds the solid with (since v17.9.0).
@@ -441,7 +488,58 @@ struct FitCadOptions {
     /// change kept only where its patch still passes its fit (unreleased).
     /// Both backends; off by default.
     bool mConstrainPrimitives = false;
+    /// Whether the built solid is measured against the skin (unreleased,
+    /// doc/fit_cad_freeform_plan.md): the two-sided distance between its
+    /// trimmed NURBS faces and the skin, by dense sampling of each face's
+    /// trimmed domain and by projecting the skin's vertices and facet centres
+    /// onto the faces, the normal deviation at those foot points, and, where
+    /// a CAD kernel is available and a STEP file was written, the file read
+    /// back and checked. Fills the `mValidation*`, `mCadToMesh*`,
+    /// `mMeshToCad*`, `mNormalDeviation*` and `mStepRoundTrip*` members and
+    /// the `fit_cad:face_deviation` field data. Measures only: the solid is
+    /// the same either way. Both backends; off by default.
+    bool mValidationReport = false;
+    /// Whether a freeform face must also pass the validation measures before
+    /// it is accepted (unreleased): every freeform fit is checked by sampling
+    /// its surface inside its trim against the skin (as
+    /// `mValidateBySurfaceSampling` does in the freeform modes, here in every
+    /// mode), and its normal at the patch's facet centres must lie within
+    /// `kFitCadValidationNormalDeg` of the facets' unless the patch shows
+    /// noise. Both backends; off by default.
+    bool mValidationAcceptance = false;
+    /// The schedule of the adaptive and general freeform faces' B-spline fit
+    /// (unreleased); `Legacy` keeps every output as it was. The patch
+    /// network and the hierarchical refinement keep their own.
+    FitCadFreeformFitSchedule mFreeformFitSchedule = FitCadFreeformFitSchedule::Legacy;
+    /// The objective of that fit (unreleased); `Default` keeps every output
+    /// as it was.
+    FitCadFreeformObjective mFreeformObjective = FitCadFreeformObjective::Default;
+    /// Whether a patch no primitive explains is first tried as a kinematic
+    /// surface (unreleased, doc/fit_cad_freeform_plan.md step 5): a surface
+    /// of linear extrusion (`kFitCadExtrusionType`), of revolution
+    /// (`kFitCadRevolutionType`) or a helical surface (`kFitCadHelicalType`),
+    /// each the sweep of a fitted planar profile; a patch closed round (a
+    /// band) is cut into two discs first. The extrusion and the revolution
+    /// are written exactly (`SURFACE_OF_LINEAR_EXTRUSION`,
+    /// `SURFACE_OF_REVOLUTION`; a revolution's NURBS form is rational). Both
+    /// backends; off by default.
+    bool mKinematicSurfaces = false;
+    /// How the patch network reaches G1 (unreleased): `Sweeps` keeps every
+    /// output as it was.
+    FitCadNetworkG1Solve mFreeformG1Solve = FitCadNetworkG1Solve::Sweeps;
 };
+
+/// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,
+/// between a freeform face's normal and a facet's at the facet's centre
+/// (unreleased).
+inline constexpr double kFitCadValidationNormalDeg = 30.0;
+
+/// Field data with `FitCadOptions::mValidationReport` (unreleased): per face
+/// (`fit_cad:face` order) the largest and the 95th-percentile distance of the
+/// face's samples from the skin, the largest distance of the skin's vertices
+/// and facet centres it is nearest to from it, the largest normal deviation
+/// there in degrees, and its sample count, an `(n, 5)` float64 array.
+inline constexpr const char* kFitCadFaceDeviationName = "fit_cad:face_deviation";
 
 /// The re-meshed solid and what was built.
 struct FitCadResult {
@@ -562,6 +660,46 @@ struct FitCadResult {
     /// families and equal-radius sets of two or more it formed (unreleased).
     std::int64_t mNumConstrainedPrimitives = 0;
     std::int64_t mNumConstraintGroups = 0;
+    /// With `mValidationReport` (unreleased): whether the solid was measured
+    /// (false when it was not asked for, or the solid had no face to sample).
+    bool mValidationReported = false;
+    /// The largest, 95th- and 99th-percentile distance of the faces' samples
+    /// from the skin (CAD to mesh), NaN when not measured.
+    double mCadToMeshMax = std::numeric_limits<double>::quiet_NaN();
+    double mCadToMeshP95 = std::numeric_limits<double>::quiet_NaN();
+    double mCadToMeshP99 = std::numeric_limits<double>::quiet_NaN();
+    /// The same of the skin's vertices and facet centres from the solid
+    /// (mesh to CAD).
+    double mMeshToCadMax = std::numeric_limits<double>::quiet_NaN();
+    double mMeshToCadP95 = std::numeric_limits<double>::quiet_NaN();
+    double mMeshToCadP99 = std::numeric_limits<double>::quiet_NaN();
+    /// The largest and the 95th-percentile angle, in degrees, between a
+    /// facet's normal and the solid's at the facet centre's foot point.
+    double mNormalDeviationMaxDeg = std::numeric_limits<double>::quiet_NaN();
+    double mNormalDeviationP95Deg = std::numeric_limits<double>::quiet_NaN();
+    /// Whether the written STEP file was read back and checked by a CAD kernel,
+    /// whether it then was a valid closed solid, and its volume over the
+    /// skin's (NaN when not checked).
+    bool mStepRoundTripChecked = false;
+    bool mStepRoundTripValid = false;
+    double mStepRoundTripVolumeRatio = std::numeric_limits<double>::quiet_NaN();
+    /// The control points of the faces that are not planes, spheres,
+    /// cylinders, cones or tori, summed over the solid as NURBS.
+    std::int64_t mTotalFreeformControlPoints = 0;
+    /// With `mKinematicSurfaces` (unreleased): the surfaces of linear
+    /// extrusion and of revolution, and the helical faces the kinematic stage
+    /// built (also counted in `mNumHelical`).
+    std::int64_t mNumExtrusion = 0;
+    std::int64_t mNumRevolution = 0;
+    std::int64_t mNumKinematicHelical = 0;
+    /// The largest G1 angle between network faces away from the
+    /// extraordinary vertices and next to them only, in degrees (0 without
+    /// a network): tensor-product patches cannot be G1 at a vertex of valence
+    /// other than four (unreleased). And, with `FitCadNetworkG1Solve::Coupled`,
+    /// the regions whose coupled solve was kept.
+    double mMaxG1AngleAwayDeg = 0.0;
+    double mMaxG1AngleAtEvDeg = 0.0;
+    std::int64_t mNumCoupledRegions = 0;
 };
 
 /**

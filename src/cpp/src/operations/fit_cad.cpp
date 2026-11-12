@@ -34,19 +34,23 @@
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
+#include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/step.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/refine_patches.hpp"
+#include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/segment.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/brep_deviation.hpp"
 #include "../detail/closed_facets.hpp"
 #include "../detail/fit_cad_native.hpp"
 #include "../detail/cut_graph.hpp"
 #include "../detail/freeform_adaptive.hpp"
+#include "../detail/kinematic_fit.hpp"
 #include "../detail/patch_flatten.hpp"
 #include "../detail/patch_network.hpp"
 #include "../detail/primitive_constraints.hpp"
@@ -104,6 +108,126 @@ double fcn_facet_area_fraction(const std::vector<double>& rXyz,
             facet += area;
     }
     return total > 0.0 ? facet / total : 0.0;
+}
+
+// The facets fanned into triangles, three point ids each, in facet order.
+std::vector<std::int64_t> fcn_fan(const detail::ClosedFacets& rFc) {
+    std::vector<std::int64_t> tri;
+    for (std::size_t f = 0; f < rFc.NumFacets(); ++f)
+        for (std::int64_t k = rFc.mStart[f] + 1; k + 1 < rFc.mStart[f + 1]; ++k)
+            tri.insert(tri.end(), {rFc.mNodes[static_cast<std::size_t>(rFc.mStart[f])],
+                                   rFc.mNodes[static_cast<std::size_t>(k)],
+                                   rFc.mNodes[static_cast<std::size_t>(k + 1)]});
+    return tri;
+}
+
+// The validation report (`FitCadOptions::mValidationReport`): @p rBrep, the
+// solid as trimmed NURBS faces in `fit_cad:face` order, measured against the
+// skin of @p rFc both ways; the STEP file at @p rStepPath, when one was
+// written and a kernel can read it, read back and checked. Only `rResult`'s
+// validation members and `fit_cad:face_deviation` change.
+void fcn_validate(const detail::ClosedFacets& rFc, const BrepInfo& rBrep,
+                  const std::string& rStepPath, FitCadResult& rResult) {
+    const std::vector<std::int64_t> tri = fcn_fan(rFc);
+    // Each skin triangle's face: that of the nearest triangle of the result
+    // mesh (the skin itself from the native backend, the solid re-meshed
+    // from OpenCASCADE), so a point is measured to the face it stands for.
+    std::vector<std::int64_t> tri_face;
+    if (rResult.mMesh.HasCellData(kFitCadFaceName) && !tri.empty()) {
+        const detail::TriangleSoup soup = detail::build_triangle_soup(rResult.mMesh, "");
+        if (soup.NumTriangles() > 0) {
+            SurfaceDistanceOptions dopt;
+            dopt.mSign = SdfSign::Unsigned;
+            dopt.mWatertightCheck = SdfWatertightCheck::Off;
+            const detail::DistanceQuery query = detail::build_distance_query(soup, dopt);
+            std::vector<detail::Vec3> centres;
+            for (std::size_t t = 0; t + 2 < tri.size(); t += 3) {
+                detail::Vec3 c{0.0, 0.0, 0.0};
+                for (std::size_t k = 0; k < 3; ++k)
+                    for (std::size_t d = 0; d < 3; ++d)
+                        c[d] += rFc.mXyz[static_cast<std::size_t>(tri[t + k]) * 3 + d] / 3.0;
+                centres.push_back(c);
+            }
+            const std::vector<detail::ClosestPointHit> hits =
+                detail::query_closest_points(query, centres);
+            const std::vector<std::int64_t> bases = detail::block_bases(rResult.mMesh);
+            std::vector<std::int64_t> cell_face(
+                static_cast<std::size_t>(detail::total_cells(bases)), -1);
+            for (std::size_t b = 0; b < rResult.mMesh.NumCellBlocks(); ++b) {
+                const NDArray& fa = rResult.mMesh.CellData(kFitCadFaceName, b);
+                for (std::size_t c = 0; c < fa.Size(); ++c)
+                    cell_face[static_cast<std::size_t>(bases[b]) + c] = detail::read_int(fa, c);
+            }
+            tri_face.reserve(hits.size());
+            for (const detail::ClosestPointHit& h : hits)
+                tri_face.push_back(h.mFound && h.mSourceCell >= 0 &&
+                                           static_cast<std::size_t>(h.mSourceCell) <
+                                               cell_face.size()
+                                       ? cell_face[static_cast<std::size_t>(h.mSourceCell)]
+                                       : -1);
+        }
+    }
+    const detail::BrepDeviation dev =
+        detail::brep_deviation(rBrep, rFc.mXyz, tri, {}, tri_face.empty() ? nullptr : &tri_face);
+    if (dev.mOk) {
+        rResult.mValidationReported = true;
+        rResult.mCadToMeshMax = dev.mCadToMeshMax;
+        rResult.mCadToMeshP95 = dev.mCadToMeshP95;
+        rResult.mCadToMeshP99 = dev.mCadToMeshP99;
+        rResult.mMeshToCadMax = dev.mMeshToCadMax;
+        rResult.mMeshToCadP95 = dev.mMeshToCadP95;
+        rResult.mMeshToCadP99 = dev.mMeshToCadP99;
+        rResult.mNormalDeviationMaxDeg = dev.mNormalMaxDeg;
+        rResult.mNormalDeviationP95Deg = dev.mNormalP95Deg;
+        constexpr std::size_t kCols = 5;
+        NDArray a = NDArray::Uninit(DType::Float64, {dev.mFaces.size(), kCols});
+        for (std::size_t i = 0; i < dev.mFaces.size(); ++i) {
+            const detail::BrepFaceDeviation& f = dev.mFaces[i];
+            const double row[kCols] = {f.mCadToMeshMax, f.mCadToMeshP95, f.mMeshToCadMax,
+                                       f.mNormalMaxDeg, static_cast<double>(f.mNumSamples)};
+            std::copy(row, row + kCols, a.As<double>() + i * kCols);
+        }
+        rResult.mMesh.AddFieldData(kFitCadFaceDeviationName, std::move(a));
+    } else {
+        log::warn("fit_cad: the solid could not be measured against the skin: {}", dev.mWhy);
+    }
+    // The control points of the faces no primitive is: per B-rep face, its
+    // type from the cells that carry it.
+    if (rResult.mMesh.HasCellData(kFitCadFaceName) && rResult.mMesh.HasCellData(kFitCadTypeName)) {
+        std::vector<std::int64_t> type_of(rBrep.mFaces.size(), -1);
+        for (std::size_t b = 0; b < rResult.mMesh.NumCellBlocks(); ++b) {
+            const NDArray& fa = rResult.mMesh.CellData(kFitCadFaceName, b);
+            const NDArray& ta = rResult.mMesh.CellData(kFitCadTypeName, b);
+            for (std::size_t c = 0; c < std::min(fa.Size(), ta.Size()); ++c) {
+                const std::int64_t f = detail::read_int(fa, c);
+                if (f >= 0 && static_cast<std::size_t>(f) < type_of.size() &&
+                    type_of[static_cast<std::size_t>(f)] < 0)
+                    type_of[static_cast<std::size_t>(f)] = detail::read_int(ta, c);
+            }
+        }
+        std::int64_t total = 0;
+        for (std::size_t f = 0; f < rBrep.mFaces.size(); ++f) {
+            const std::int64_t t = type_of[f];
+            const std::int64_t p = rBrep.mFaces[f].mPatch;
+            if (t == 0 || (t >= 1 && t <= 5) || p < 0 ||
+                static_cast<std::size_t>(p) >= rBrep.mPatches.size())
+                continue;
+            const NurbsPatch& patch = rBrep.mPatches[static_cast<std::size_t>(p)];
+            total += patch.mControlPoints.Shape().size() >= 1
+                         ? static_cast<std::int64_t>(patch.mControlPoints.Shape()[0])
+                         : 0;
+        }
+        rResult.mTotalFreeformControlPoints = total;
+    }
+    // The file read back.
+    const auto p_kernel = cad_kernel();
+    if (!rStepPath.empty() && p_kernel && p_kernel->mCheckStep) {
+        const CadStepCheck check = p_kernel->mCheckStep(rStepPath);
+        rResult.mStepRoundTripChecked = true;
+        rResult.mStepRoundTripValid = check.mRead && check.mValid && check.mClosed;
+        if (check.mRead && std::isfinite(check.mVolume) && rResult.mSkinVolume != 0.0)
+            rResult.mStepRoundTripVolumeRatio = check.mVolume / rResult.mSkinVolume;
+    }
 }
 
 // `fit_cad:face_table`: one row per record, the `FitCadFaceRecord` columns in
@@ -270,6 +394,9 @@ struct FcnFreeform {
     std::int64_t mNumNetworkEdges = 0;
     std::int64_t mNumExtraordinary = 0;
     double mMaxG1AngleDeg = 0.0;
+    double mMaxG1AngleAwayDeg = 0.0;
+    double mMaxG1AngleAtEvDeg = 0.0;
+    std::int64_t mNumCoupledRegions = 0;
 };
 
 // The tolerance the native writer will apply: as `step_brep_write` takes it.
@@ -345,6 +472,12 @@ detail::FreeformAdaptiveOptions fcn_adaptive_options(const FitCadOptions& rOptio
     o.mParameterization = static_cast<detail::ParamLadder>(rOptions.mFreeformParameterization);
     o.mValidate = rOptions.mValidateBySurfaceSampling;
     o.mThb = rOptions.mLocalRefine == FitCadLocalRefine::Thb;
+    if (rOptions.mValidationAcceptance) {
+        o.mValidate = true;
+        o.mMaxNormalDeg = kFitCadValidationNormalDeg;
+    }
+    o.mSchedule = static_cast<int>(rOptions.mFreeformFitSchedule);
+    o.mObjective = static_cast<int>(rOptions.mFreeformObjective);
     return o;
 }
 
@@ -461,7 +594,10 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         no.mMaxTotalPoles = static_cast<std::size_t>(rOptions.mFreeformMaxControlPoints);
         no.mG1ToleranceDeg = rOptions.mFreeformG1ToleranceDeg;
         no.mExtraordinary = rOptions.mExtraordinaryVertex;
-        no.mValidate = rOptions.mValidateBySurfaceSampling;
+        no.mValidate = rOptions.mValidateBySurfaceSampling || rOptions.mValidationAcceptance;
+        if (rOptions.mValidationAcceptance)
+            no.mMaxNormalDeg = kFitCadValidationNormalDeg;
+        no.mCoupled = rOptions.mFreeformG1Solve == FitCadNetworkG1Solve::Coupled;
         reg.mNet = detail::patch_network_fit(reg.mPts, reg.mTris, reg.mLayout, no);
         // The tangent-plane treatment of the extraordinary vertices kept only
         // where it does better there than leaving them alone (`g0`) and fits
@@ -922,15 +1058,118 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
                     out.mNumNetworkEdges += static_cast<std::int64_t>(net.mNumEdges);
                     out.mNumExtraordinary += static_cast<std::int64_t>(net.mNumExtraordinary);
                     out.mMaxG1AngleDeg = std::max(out.mMaxG1AngleDeg, net.mMaxG1AngleDeg);
+                    out.mMaxG1AngleAwayDeg =
+                        std::max(out.mMaxG1AngleAwayDeg, net.mMaxG1AngleAwayDeg);
+                    out.mMaxG1AngleAtEvDeg =
+                        std::max(out.mMaxG1AngleAtEvDeg, net.mMaxG1AngleAtEvDeg);
+                    out.mNumCoupledRegions += net.mCoupledKept ? 1 : 0;
                 }
             }
             return left;
         };
 
+    // Kinematic surfaces first (`mKinematicSurfaces`): a patch fitted as a
+    // surface of linear extrusion, of revolution or a helical surface is a
+    // face and leaves the freeform work; a band (a wall closed round) is cut
+    // into two discs, both of which must fit.
+    std::vector<std::int64_t> cands = rCandidates;
+    if (rOptions.mKinematicSurfaces) {
+        detail::KinematicOptions ko;
+        ko.mTolerance = Tol;
+        const auto try_patch = [&](const std::vector<std::size_t>& rFacets, std::int64_t Label,
+                                   std::vector<detail::StepFreeformFace>& rFaces,
+                                   std::vector<FitCadFaceRecord>& rRecs) {
+            std::vector<detail::PatchVec> pts;
+            std::vector<detail::PatchTri> tris;
+            std::vector<std::size_t> tri_facet;
+            fcn_local_triangles(rFc, rFacets, pts, tris, tri_facet, nullptr);
+            const detail::KinematicFit fit = detail::kinematic_fit(pts, tris, ko);
+            log::debug("fit_cad: kinematic fit of patch {} ({} triangles): {}", Label, tris.size(),
+                       fit.mOk ? "type " + std::to_string(static_cast<int>(fit.mKind)) : fit.mWhy);
+            if (!fit.mOk)
+                return false;
+            detail::StepFreeformFace face;
+            face.mLabel = Label;
+            face.mType = static_cast<int>(fit.mKind);
+            face.mSurface = fit.mSurface;
+            face.mSense = fcn_sense(rFc, fit.mSurface, tris, tri_facet, fit.mU, fit.mV);
+            face.mKinematic.mProfile = fit.mProfile;
+            face.mKinematic.mSwept = fit.SweptCurve();
+            face.mKinematic.mOrigin = fit.mOrigin;
+            face.mKinematic.mAxis = fit.mAxis;
+            face.mKinematic.mE1 = fit.mE1;
+            face.mKinematic.mE2 = fit.mE2;
+            rFaces.push_back(std::move(face));
+            FitCadFaceRecord rec;
+            rec.mPatch = Label;
+            rec.mNumControl = static_cast<std::int64_t>(fit.mKind == detail::KinematicKind::Helical
+                                                            ? fit.mSurface.NumPoles()
+                                                            : fit.mProfile.mPoles.size());
+            rec.mMaxDist = fit.mMaxDist;
+            rec.mRmsDist = fit.mRmsDist;
+            rec.mReverseMaxDist = fit.mReverseMaxDist;
+            rRecs.push_back(rec);
+            return true;
+        };
+        std::vector<std::int64_t> left;
+        for (std::int64_t label : rCandidates) {
+            const auto it = facets_of.find(label);
+            if (it == facets_of.end()) {
+                left.push_back(label);
+                continue;
+            }
+            std::vector<detail::PatchVec> pts;
+            std::vector<detail::PatchTri> tris;
+            std::vector<std::size_t> tri_facet;
+            fcn_local_triangles(rFc, it->second, pts, tris, tri_facet, nullptr);
+            std::vector<detail::StepFreeformFace> faces;
+            std::vector<FitCadFaceRecord> recs;
+            bool ok = false;
+            std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> halves;
+            if (detail::kinematic_is_band(tris)) {
+                std::size_t num = 0;
+                const std::vector<std::int64_t> piece =
+                    detail::patch_split_to_discs(pts, tris, 24, num);
+                if (num == 2) {
+                    std::vector<std::vector<std::size_t>> pf(2);
+                    for (std::size_t t = 0; t < tris.size(); ++t) {
+                        if (t > 0 && tri_facet[t] == tri_facet[t - 1])
+                            continue;
+                        pf[static_cast<std::size_t>(piece[t])].push_back(tri_facet[t]);
+                    }
+                    ok = true;
+                    for (std::size_t h = 0; h < 2 && ok; ++h) {
+                        halves.emplace_back(next_label + static_cast<std::int64_t>(h), pf[h]);
+                        ok = try_patch(pf[h], halves.back().first, faces, recs);
+                    }
+                }
+            } else {
+                ok = try_patch(it->second, label, faces, recs);
+            }
+            if (!ok) {
+                left.push_back(label);
+                continue;
+            }
+            if (!halves.empty()) {
+                next_label += 2;
+                ++out.mNumSplit;
+                for (auto& h : halves)
+                    pieces.emplace_back(h.first, std::move(h.second));
+            }
+            for (std::size_t k = 0; k < faces.size(); ++k) {
+                out.mRecords[faces[k].mLabel] = recs[k];
+                out.mFaces.push_back(std::move(faces[k]));
+            }
+        }
+        cands = std::move(left);
+    }
+    if (!rOptions.mFreeform || rOptions.mFreeformMode == FitCadFreeformMode::Legacy)
+        cands.clear();
+
     std::vector<Item> work;
     if (rOptions.mFreeformMode == FitCadFreeformMode::Network) {
         std::vector<std::pair<std::int64_t, std::vector<std::size_t>>> items;
-        for (std::int64_t label : rCandidates) {
+        for (std::int64_t label : cands) {
             const auto it = facets_of.find(label);
             if (it != facets_of.end())
                 items.emplace_back(label, it->second);
@@ -938,7 +1177,7 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
         for (auto& it : network(items))
             work.push_back({it.first, std::move(it.second), 0, 1, rOptions.mResegmentRounds});
     } else {
-        for (std::int64_t label : rCandidates) {
+        for (std::int64_t label : cands) {
             const auto it = facets_of.find(label);
             if (it != facets_of.end())
                 work.push_back({label, it->second, 0, 0});
@@ -1198,8 +1437,9 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     // type 0, or a refinement's freeform or facets verdict; not a type left
     // out of `mTypes`) are tried as adaptive freeform faces (v17.12.0).
     FcnFreeform freeform;
-    if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy && work.HasFieldData("fit:patch_id") &&
-        work.HasFieldData("fit:patch_type")) {
+    // The kinematic surfaces, in every mode.
+    if ((rOptions.mFreeformMode != FitCadFreeformMode::Legacy || rOptions.mKinematicSurfaces) &&
+        work.HasFieldData("fit:patch_id") && work.HasFieldData("fit:patch_type")) {
         const std::unordered_map<std::int64_t, std::int64_t> proxy_of = fcn_refine_proxy(work);
         const NDArray& ids = work.FieldData("fit:patch_id");
         const NDArray& types = work.FieldData("fit:patch_type");
@@ -1213,7 +1453,7 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
                   k->second == static_cast<std::int64_t>(RefineProxy::Freeform))))
                 candidates.push_back(label);
         }
-        if (rOptions.mFreeform && !candidates.empty()) {
+        if ((rOptions.mFreeform || rOptions.mKinematicSurfaces) && !candidates.empty()) {
             const double wtol = fcn_tolerance(*pSource, fc, rOptions.mTolerance);
             freeform = fcn_freeform(*pSource, fc, candidates, rOptions, wtol);
             if (freeform.mSplit)
@@ -1224,15 +1464,20 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     opts.mFaces = StepFaces::Fitted;
     opts.mTolerance = rOptions.mTolerance;
     detail::StepBrepResult brep;
-    detail::write_step_report(rStepPath, *pSource, opts, &brep,
-                              freeform.mFaces.empty() ? nullptr : &freeform.mFaces,
-                              freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves,
-                              rOptions.mFreeformMode != FitCadFreeformMode::Legacy);
+    detail::write_step_report(
+        rStepPath, *pSource, opts, &brep, freeform.mFaces.empty() ? nullptr : &freeform.mFaces,
+        freeform.mEdgeCurves.empty() ? nullptr : &freeform.mEdgeCurves,
+        rOptions.mFreeformMode != FitCadFreeformMode::Legacy || rOptions.mValidationReport);
 
     FitCadResult result;
     result.mBackend = FitCadBackend::Native;
     // Outside the legacy mode, the solid as NURBS too (v17.12.0), for
     // `write_cad_json`; empty, with a warning, where a face cannot be one.
+    // The NURBS form the validation report measures; the legacy mode built it
+    // for that alone and does not return it.
+    BrepInfo measured;
+    if (rOptions.mValidationReport && rOptions.mFreeformMode == FitCadFreeformMode::Legacy)
+        measured = std::move(brep.mBrep);
     if (rOptions.mFreeformMode != FitCadFreeformMode::Legacy) {
         result.mBrep = std::move(brep.mBrep);
         if (!brep.mBrepWhy.empty())
@@ -1248,9 +1493,16 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mCounts = brep.mCounts;
     result.mNumBspline = brep.mNumBspline;
     result.mNumFreeformAdaptive = brep.mNumBspline;
+    result.mNumExtrusion = brep.mNumExtrusion;
+    result.mNumRevolution = brep.mNumRevolution;
+    result.mNumKinematicHelical = brep.mNumHelical;
+    result.mNumHelical = brep.mNumHelical;
     result.mNumNetworkEdges = freeform.mNumNetworkEdges;
     result.mNumExtraordinaryVertices = freeform.mNumExtraordinary;
     result.mMaxG1AngleDeg = freeform.mMaxG1AngleDeg;
+    result.mMaxG1AngleAwayDeg = freeform.mMaxG1AngleAwayDeg;
+    result.mMaxG1AngleAtEvDeg = freeform.mMaxG1AngleAtEvDeg;
+    result.mNumCoupledRegions = freeform.mNumCoupledRegions;
     result.mNumSplitPatches = freeform.mNumSplit;
     result.mNumResegmented = freeform.mNumResegmented;
     result.mNumExactEdges = brep.mNumLineEdges + brep.mNumCircleEdges;
@@ -1376,6 +1628,13 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
         log::info("fit_cad: {} fitted patch(es) written as coplanar facets",
                   result.mCounts.mNumDemoted);
     fcn_report_refined(refined, work, result);
+    if (rOptions.mValidationReport) {
+        if (!brep.mBrepWhy.empty())
+            log::warn("fit_cad: the native solid has no NURBS form to measure ({})", brep.mBrepWhy);
+        fcn_validate(fc,
+                     rOptions.mFreeformMode == FitCadFreeformMode::Legacy ? measured : result.mBrep,
+                     rStepPath, result);
+    }
     return result;
 }
 
@@ -1504,6 +1763,15 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
                                     "layout_max_valence_deviation must be 1 to 3");
     if (rOptions.mResegmentRounds < 0)
         throw std::invalid_argument(std::string(kFcnPrefix) + "resegment_rounds must be >= 0");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformFitSchedule) > 1u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_fit_schedule must be 'legacy' or 'continuation'");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformObjective) > 3u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_objective must be 'default', 'pdm', 'tdm' or 'sdm'");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformG1Solve) > 1u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_g1_solve must be 'sweeps' or 'coupled'");
     // The freeform modes build on the general fit, and their faces run on
     // past their patches so an edge with an analytic neighbour is still an
     // intersection.
@@ -1515,8 +1783,14 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
         return fit_cad_build(rMesh, rStepPath, general);
     }
     const auto p_kernel = cad_kernel();
-    if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad)
-        return p_kernel->mFitCad(rMesh, rStepPath, rOptions);
+    if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad) {
+        FitCadResult kernel = p_kernel->mFitCad(rMesh, rStepPath, rOptions);
+        if (rOptions.mValidationReport) {
+            const detail::ClosedFacets fc = detail::closed_facets(rMesh, kFcnPrefix);
+            fcn_validate(fc, kernel.mBrep, rStepPath, kernel);
+        }
+        return kernel;
+    }
     if (rOptions.mBackend == FitCadBackend::Occt)
         throw Unsupported(
             "fit_cad: no OpenCASCADE backend is available (the release binaries carry it and "

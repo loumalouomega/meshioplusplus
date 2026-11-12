@@ -655,8 +655,14 @@ module meshioplusplus
         integer(c_int32_t) :: layout_snap_to_features = 1
         integer(c_int32_t) :: validate_by_surface_sampling = 1
         integer(c_int32_t) :: constrain_primitives = 0
-        integer(c_int32_t) :: reserved32 = 0
-        integer(c_int64_t) :: reserved(7) = 0
+        integer(c_int32_t) :: validation_report = 0
+        integer(c_int32_t) :: validation_acceptance = 0
+        integer(c_int32_t) :: freeform_fit_schedule = 0
+        integer(c_int32_t) :: freeform_objective = 0
+        integer(c_int32_t) :: kinematic_surfaces = 0
+        integer(c_int32_t) :: freeform_g1_solve = 0
+        integer(c_int32_t) :: reserved32b = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_report_ex3` (v17.12.0, 184 bytes).
@@ -678,6 +684,32 @@ module meshioplusplus
         integer(c_int64_t) :: num_constrained_primitives = 0
         integer(c_int64_t) :: num_constraint_groups = 0
         integer(c_int64_t) :: reserved(8) = 0
+    end type
+
+    !> Interop mirror of C `mio_fit_cad_report_ex4` (unreleased, 272 bytes):
+    !> the validation report.
+    type, bind(c) :: mio_fit_cad_report_ex4_t
+        integer(c_int32_t) :: validation_reported = 0
+        integer(c_int32_t) :: step_round_trip_checked = 0
+        integer(c_int32_t) :: step_round_trip_valid = 0
+        integer(c_int32_t) :: reserved32 = 0
+        real(c_double) :: cad_to_mesh_max = 0.0_c_double
+        real(c_double) :: cad_to_mesh_p95 = 0.0_c_double
+        real(c_double) :: cad_to_mesh_p99 = 0.0_c_double
+        real(c_double) :: mesh_to_cad_max = 0.0_c_double
+        real(c_double) :: mesh_to_cad_p95 = 0.0_c_double
+        real(c_double) :: mesh_to_cad_p99 = 0.0_c_double
+        real(c_double) :: normal_deviation_max_deg = 0.0_c_double
+        real(c_double) :: normal_deviation_p95_deg = 0.0_c_double
+        real(c_double) :: step_round_trip_volume_ratio = 0.0_c_double
+        integer(c_int64_t) :: total_freeform_control_points = 0
+        integer(c_int64_t) :: num_extrusion = 0
+        integer(c_int64_t) :: num_revolution = 0
+        integer(c_int64_t) :: num_kinematic_helical = 0
+        real(c_double) :: max_g1_angle_away_deg = 0.0_c_double
+        real(c_double) :: max_g1_angle_at_ev_deg = 0.0_c_double
+        integer(c_int64_t) :: num_coupled_regions = 0
+        integer(c_int64_t) :: reserved(16) = 0
     end type
 
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
@@ -4152,11 +4184,12 @@ module meshioplusplus
             type(mio_fit_cad_opts_ex2_t), intent(out) :: opts
         end subroutine
 
-        function c_mio_fit_cad3(h, path, opts, opts_ex, opts_ex2, report, report_ex, &
-                                report_ex2, report_ex3) bind(c, name="mio_fit_cad3") result(r)
+        function c_mio_fit_cad4(h, path, opts, opts_ex, opts_ex2, report, report_ex, &
+                                report_ex2, report_ex3, report_ex4) &
+                bind(c, name="mio_fit_cad4") result(r)
             import :: c_ptr, mio_fit_cad_opts_t, mio_fit_cad_opts_ex_t, mio_fit_cad_opts_ex2_t, &
                       mio_fit_cad_report_t, mio_fit_cad_report_ex_t, mio_fit_cad_report_ex2_t, &
-                      mio_fit_cad_report_ex3_t
+                      mio_fit_cad_report_ex3_t, mio_fit_cad_report_ex4_t
             type(c_ptr), value :: h, path
             type(mio_fit_cad_opts_t), intent(in) :: opts
             type(mio_fit_cad_opts_ex_t), intent(in) :: opts_ex
@@ -4165,6 +4198,7 @@ module meshioplusplus
             type(mio_fit_cad_report_ex_t), intent(out) :: report_ex
             type(mio_fit_cad_report_ex2_t), intent(out) :: report_ex2
             type(mio_fit_cad_report_ex3_t), intent(out) :: report_ex3
+            type(mio_fit_cad_report_ex4_t), intent(out) :: report_ex4
             type(c_ptr) :: r
         end function
 
@@ -10819,7 +10853,17 @@ contains
                           num_extraordinary_vertices, num_resegmented, num_escalations, &
                           max_g1_angle_deg, max_freeform_distance, rms_freeform_distance, &
                           num_face_records, constrain_primitives, &
-                          num_constrained_primitives, num_constraint_groups) result(out)
+                          num_constrained_primitives, num_constraint_groups, &
+                          validation_report, validation_acceptance, validation_reported, &
+                          cad_to_mesh_max, cad_to_mesh_p95, cad_to_mesh_p99, &
+                          mesh_to_cad_max, mesh_to_cad_p95, mesh_to_cad_p99, &
+                          normal_deviation_max_deg, normal_deviation_p95_deg, &
+                          step_round_trip_checked, step_round_trip_valid, &
+                          step_round_trip_volume_ratio, total_freeform_control_points, &
+                          freeform_fit_schedule, freeform_objective, kinematic_surfaces, &
+                          num_extrusion, num_revolution, num_kinematic_helical, &
+                          freeform_g1_solve, max_g1_angle_away_deg, max_g1_angle_at_ev_deg, &
+                          num_coupled_regions) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -10880,12 +10924,27 @@ contains
         integer(int64), intent(out), optional :: num_face_records
         logical, intent(in), optional :: constrain_primitives
         integer(int64), intent(out), optional :: num_constrained_primitives, num_constraint_groups
+        logical, intent(in), optional :: validation_report, validation_acceptance
+        logical, intent(out), optional :: validation_reported, step_round_trip_checked
+        logical, intent(out), optional :: step_round_trip_valid
+        real(real64), intent(out), optional :: cad_to_mesh_max, cad_to_mesh_p95, cad_to_mesh_p99
+        real(real64), intent(out), optional :: mesh_to_cad_max, mesh_to_cad_p95, mesh_to_cad_p99
+        real(real64), intent(out), optional :: normal_deviation_max_deg, normal_deviation_p95_deg
+        real(real64), intent(out), optional :: step_round_trip_volume_ratio
+        integer(int64), intent(out), optional :: total_freeform_control_points
+        character(*), intent(in), optional :: freeform_fit_schedule, freeform_objective
+        logical, intent(in), optional :: kinematic_surfaces
+        integer(int64), intent(out), optional :: num_extrusion, num_revolution, &
+                                                 num_kinematic_helical, num_coupled_regions
+        character(*), intent(in), optional :: freeform_g1_solve
+        real(real64), intent(out), optional :: max_g1_angle_away_deg, max_g1_angle_at_ev_deg
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
         type(mio_fit_cad_opts_ex_t) :: opts_ex
         type(mio_fit_cad_opts_ex2_t) :: opts_ex2
         type(mio_fit_cad_report_ex3_t) :: report_ex3
+        type(mio_fit_cad_report_ex4_t) :: report_ex4
         integer :: code
         type(mio_fit_cad_report_t) :: report
         type(mio_fit_cad_report_ex_t) :: report_ex
@@ -10935,6 +10994,25 @@ contains
             end if
             opts_ex2%local_refine = int(code, c_int32_t)
         end if
+        if (present(freeform_fit_schedule)) then
+            code = keyword_index(freeform_fit_schedule, [character(12) :: 'legacy', 'continuation'])
+            if (code < 0) then
+                call handle_failure('fit_cad', &
+                    "freeform_fit_schedule must be 'legacy' or 'continuation'", stat, errmsg)
+                return
+            end if
+            opts_ex2%freeform_fit_schedule = int(code, c_int32_t)
+        end if
+        if (present(freeform_objective)) then
+            code = keyword_index(freeform_objective, [character(7) :: 'default', 'pdm', 'tdm', &
+                                                      'sdm'])
+            if (code < 0) then
+                call handle_failure('fit_cad', &
+                    "freeform_objective must be 'default', 'pdm', 'tdm' or 'sdm'", stat, errmsg)
+                return
+            end if
+            opts_ex2%freeform_objective = int(code, c_int32_t)
+        end if
         if (present(freeform_g1_tolerance_deg)) &
             opts_ex2%freeform_g1_tolerance_deg = real(freeform_g1_tolerance_deg, c_double)
         if (present(freeform_max_control_points)) &
@@ -10951,6 +11029,21 @@ contains
             merge(1_c_int32_t, 0_c_int32_t, validate_by_surface_sampling)
         if (present(constrain_primitives)) opts_ex2%constrain_primitives = &
             merge(1_c_int32_t, 0_c_int32_t, constrain_primitives)
+        if (present(validation_report)) opts_ex2%validation_report = &
+            merge(1_c_int32_t, 0_c_int32_t, validation_report)
+        if (present(validation_acceptance)) opts_ex2%validation_acceptance = &
+            merge(1_c_int32_t, 0_c_int32_t, validation_acceptance)
+        if (present(kinematic_surfaces)) opts_ex2%kinematic_surfaces = &
+            merge(1_c_int32_t, 0_c_int32_t, kinematic_surfaces)
+        if (present(freeform_g1_solve)) then
+            code = keyword_index(freeform_g1_solve, [character(7) :: 'sweeps', 'coupled'])
+            if (code < 0) then
+                call handle_failure('fit_cad', &
+                    "freeform_g1_solve must be 'sweeps' or 'coupled'", stat, errmsg)
+                return
+            end if
+            opts_ex2%freeform_g1_solve = int(code, c_int32_t)
+        end if
         if (present(refine_segmentation)) &
             opts_ex%refine_segmentation = merge(1_c_int32_t, 0_c_int32_t, refine_segmentation)
         if (present(max_refine_iterations)) &
@@ -11020,8 +11113,8 @@ contains
                 return
             end select
         end if
-        res = c_mio_fit_cad3(self%handle, path_ptr, opts, opts_ex, opts_ex2, report, report_ex, &
-                             report_ex2, report_ex3)
+        res = c_mio_fit_cad4(self%handle, path_ptr, opts, opts_ex, opts_ex2, report, report_ex, &
+                             report_ex2, report_ex3, report_ex4)
         if (.not. c_associated(res)) then
             call handle_failure('fit_cad', mio_error_message(), stat, errmsg)
             return
@@ -11092,6 +11185,35 @@ contains
             num_constrained_primitives = int(report_ex3%num_constrained_primitives, int64)
         if (present(num_constraint_groups)) &
             num_constraint_groups = int(report_ex3%num_constraint_groups, int64)
+        if (present(validation_reported)) validation_reported = report_ex4%validation_reported /= 0
+        if (present(cad_to_mesh_max)) cad_to_mesh_max = real(report_ex4%cad_to_mesh_max, real64)
+        if (present(cad_to_mesh_p95)) cad_to_mesh_p95 = real(report_ex4%cad_to_mesh_p95, real64)
+        if (present(cad_to_mesh_p99)) cad_to_mesh_p99 = real(report_ex4%cad_to_mesh_p99, real64)
+        if (present(mesh_to_cad_max)) mesh_to_cad_max = real(report_ex4%mesh_to_cad_max, real64)
+        if (present(mesh_to_cad_p95)) mesh_to_cad_p95 = real(report_ex4%mesh_to_cad_p95, real64)
+        if (present(mesh_to_cad_p99)) mesh_to_cad_p99 = real(report_ex4%mesh_to_cad_p99, real64)
+        if (present(normal_deviation_max_deg)) &
+            normal_deviation_max_deg = real(report_ex4%normal_deviation_max_deg, real64)
+        if (present(normal_deviation_p95_deg)) &
+            normal_deviation_p95_deg = real(report_ex4%normal_deviation_p95_deg, real64)
+        if (present(step_round_trip_checked)) &
+            step_round_trip_checked = report_ex4%step_round_trip_checked /= 0
+        if (present(step_round_trip_valid)) &
+            step_round_trip_valid = report_ex4%step_round_trip_valid /= 0
+        if (present(step_round_trip_volume_ratio)) &
+            step_round_trip_volume_ratio = real(report_ex4%step_round_trip_volume_ratio, real64)
+        if (present(total_freeform_control_points)) &
+            total_freeform_control_points = int(report_ex4%total_freeform_control_points, int64)
+        if (present(num_extrusion)) num_extrusion = int(report_ex4%num_extrusion, int64)
+        if (present(num_revolution)) num_revolution = int(report_ex4%num_revolution, int64)
+        if (present(num_kinematic_helical)) &
+            num_kinematic_helical = int(report_ex4%num_kinematic_helical, int64)
+        if (present(max_g1_angle_away_deg)) &
+            max_g1_angle_away_deg = real(report_ex4%max_g1_angle_away_deg, real64)
+        if (present(max_g1_angle_at_ev_deg)) &
+            max_g1_angle_at_ev_deg = real(report_ex4%max_g1_angle_at_ev_deg, real64)
+        if (present(num_coupled_regions)) &
+            num_coupled_regions = int(report_ex4%num_coupled_regions, int64)
         call clear_status(stat, errmsg)
     end function
 
@@ -11119,15 +11241,17 @@ contains
         type(mio_fit_cad_report_ex2_t) :: report_ex2
         type(mio_fit_cad_opts_ex2_t) :: opts_ex2
         type(mio_fit_cad_report_ex3_t) :: report_ex3
+        type(mio_fit_cad_report_ex4_t) :: report_ex4
         if (checked) return
         checked = .true.
         if (c_sizeof(opts) /= 144_c_size_t .or. c_sizeof(report) /= 192_c_size_t .or. &
             c_sizeof(opts_ex) /= 280_c_size_t .or. c_sizeof(report_ex2) /= 176_c_size_t .or. &
-            c_sizeof(opts_ex2) /= 128_c_size_t .or. c_sizeof(report_ex3) /= 184_c_size_t) then
-            write (error_unit, '(a,6(i0,1x),a)') &
+            c_sizeof(opts_ex2) /= 128_c_size_t .or. c_sizeof(report_ex3) /= 184_c_size_t .or. &
+            c_sizeof(report_ex4) /= 272_c_size_t) then
+            write (error_unit, '(a,7(i0,1x),a)') &
                 'meshio++: refine_patches layout mismatch (', c_sizeof(opts), c_sizeof(report), &
                 c_sizeof(opts_ex), c_sizeof(report_ex2), c_sizeof(opts_ex2), &
-                c_sizeof(report_ex3), 'bytes)'
+                c_sizeof(report_ex3), c_sizeof(report_ex4), 'bytes)'
             error stop 1
         end if
     end subroutine

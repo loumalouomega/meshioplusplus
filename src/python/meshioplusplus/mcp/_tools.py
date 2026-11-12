@@ -4061,6 +4061,12 @@ def tool_fit_cad(
     layout_snap_to_features=True,
     validate_by_surface_sampling=True,
     constrain_primitives=False,
+    validation_report=False,
+    validation_acceptance=False,
+    freeform_fit_schedule="legacy",
+    freeform_objective="default",
+    kinematic_surfaces=False,
+    freeform_g1_solve="sweeps",
 ):
     """Turn the fitted patches of a closed skin into a CAD solid with analytic
     faces (and, through OpenCASCADE, rolling-ball fillet, thread flank and
@@ -4100,7 +4106,22 @@ def tool_fit_cad(
     cylinders, cones, tori and spheres share one axis, parallel and
     perpendicular planes and nearly equal radii are made exact, each change
     kept only where its patch still passes its fit -- and adds
-    num_constrained_primitives and num_constraint_groups."""
+    num_constrained_primitives and num_constraint_groups. validation_report
+    (off) measures the solid against the skin both ways (cad_to_mesh_max,
+    _p95, _p99; mesh_to_cad_max, _p95, _p99), the normal deviation
+    (normal_deviation_max_deg, _p95_deg), the STEP file read back
+    (step_round_trip_checked, step_round_trip_valid,
+    step_round_trip_volume_ratio) and total_freeform_control_points;
+    validation_acceptance (off) holds every freeform face to those measures.
+    freeform_fit_schedule ("legacy" or "continuation") and freeform_objective
+    ("default", "pdm", "tdm" or "sdm") choose how the adaptive and general
+    freeform faces' B-spline fit runs. kinematic_surfaces (off) first tries
+    a patch no primitive explains as a surface of linear extrusion, of
+    revolution or a helical surface (fit_cad:type 11, 12, 8) and adds
+    num_extrusion, num_revolution and num_kinematic_helical.
+    freeform_g1_solve ("sweeps" or "coupled") picks how the patch network
+    reaches G1; outside the legacy mode the report adds
+    max_g1_angle_away_deg, max_g1_angle_at_ev_deg and num_coupled_regions."""
     from .._fit_cad import has_occt
 
     occt = has_occt()
@@ -4181,6 +4202,12 @@ def tool_fit_cad(
         layout_snap_to_features=layout_snap_to_features,
         validate_by_surface_sampling=validate_by_surface_sampling,
         constrain_primitives=constrain_primitives,
+        validation_report=validation_report,
+        validation_acceptance=validation_acceptance,
+        freeform_fit_schedule=freeform_fit_schedule,
+        freeform_objective=freeform_objective,
+        kinematic_surfaces=kinematic_surfaces,
+        freeform_g1_solve=freeform_g1_solve,
     )
     _cache_invalidate(step_path)
     extra = {"step_path": step_path, "occt_available": occt, **report}

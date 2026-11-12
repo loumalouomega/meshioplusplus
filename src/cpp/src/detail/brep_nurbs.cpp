@@ -303,7 +303,7 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
                      BrepNurbsFace& rOut, std::string& rWhy) {
     rOut = BrepNurbsFace{};
     const int kind = rSurface.mKind;
-    const bool revolution = kind >= 2 && kind <= 5;
+    const bool revolution = (kind >= 2 && kind <= 5) || kind == 12;
     const bool periodic[2] = {revolution, kind == 5};
     if (rLoops.empty()) {
         rWhy = "a face without loops";
@@ -311,6 +311,10 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
     }
     if (kind == 6 && rSurface.pBspline == nullptr) {
         rWhy = "a B-spline face without its surface";
+        return false;
+    }
+    if (kind == 12 && rSurface.pProfile == nullptr) {
+        rWhy = "a surface of revolution without its profile";
         return false;
     }
 
@@ -407,6 +411,8 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
         pX[0] = std::atan2(dy, dx);
         if (kind == 3 || kind == 4) {
             pX[1] = dz;
+        } else if (kind == 12) {
+            bspline_curve_project(*rSurface.pProfile, {rho, dz, 0.0}, pX[1]);
         } else if (kind == 2) {
             pX[1] = std::atan2(dz, rho);
             if (std::fabs(pX[1]) > 0.5 * kBnPi - 1e-6)
@@ -789,6 +795,12 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
             const double r1 = kind == 3 ? rSurface.mRadius : dhi[1] * t;
             profile = {{r0, dlo[1], 1.0}, {r1, dhi[1], 1.0}};
             profile_knots = {dlo[1], dlo[1], dhi[1], dhi[1]};
+        } else if (kind == 12) {
+            // A profile curve's own poles, at weight 1: exact.
+            profile_degree = rSurface.pProfile->mDegree;
+            profile_knots = rSurface.pProfile->mKnots;
+            for (const PatchVec& q : rSurface.pProfile->mPoles)
+                profile.push_back({q[0], q[1], 1.0});
         } else {
             arc_v = unit_arc(dlo[1], dhi[1]);
             profile_degree = 2;
@@ -819,7 +831,7 @@ bool brep_nurbs_face(const BrepNurbsSurface& rSurface,
         if (!revolution)
             return {rS.mX[0], rS.mX[1]};
         const double u = unit_arc_param(arc_u, std::min(std::max(rS.mX[0], dlo[0]), dhi[0]));
-        const double v = (kind == 3 || kind == 4)
+        const double v = (kind == 3 || kind == 4 || kind == 12)
                              ? rS.mX[1]
                              : unit_arc_param(arc_v, std::min(std::max(rS.mX[1], dlo[1]), dhi[1]));
         return {u, v};

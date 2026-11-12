@@ -1601,6 +1601,8 @@ def _apply_step(mesh, step, steps, warnings):
             freeform_parameterization=_text(step, "FreeformParameterization", "auto"),
             extraordinary_vertex=_text(step, "ExtraordinaryVertex", "g1x"),
             local_refine=_text(step, "LocalRefine", "knots"),
+            freeform_fit_schedule=_text(step, "FreeformFitSchedule", "legacy"),
+            freeform_objective=_text(step, "FreeformObjective", "default"),
             freeform_g1_tolerance_deg=_number(step, "FreeformG1ToleranceDeg", 1.0),
             freeform_max_control_points=int(
                 _number(step, "FreeformMaxControlPoints", 400.0)
@@ -1613,6 +1615,10 @@ def _apply_step(mesh, step, steps, warnings):
             layout_snap_to_features=_flag(step, "LayoutSnapToFeatures", True),
             validate_by_surface_sampling=_flag(step, "ValidateBySurfaceSampling", True),
             constrain_primitives=_flag(step, "ConstrainPrimitives", False),
+            validation_report=_flag(step, "ValidationReport", False),
+            validation_acceptance=_flag(step, "ValidationAcceptance", False),
+            kinematic_surfaces=_flag(step, "KinematicSurfaces", False),
+            freeform_g1_solve=_text(step, "FreeformG1Solve", "sweeps"),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1657,6 +1663,22 @@ def _apply_step(mesh, step, steps, warnings):
         if "num_constrained_primitives" in report:
             entry["NumConstrainedPrimitives"] = report["num_constrained_primitives"]
             entry["NumConstraintGroups"] = report["num_constraint_groups"]
+        if "validation_reported" in report:
+            entry["CadToMeshMax"] = report["cad_to_mesh_max"]
+            entry["CadToMeshP95"] = report["cad_to_mesh_p95"]
+            entry["MeshToCadMax"] = report["mesh_to_cad_max"]
+            entry["MeshToCadP95"] = report["mesh_to_cad_p95"]
+            entry["NormalDeviationMaxDeg"] = report["normal_deviation_max_deg"]
+            entry["StepRoundTripChecked"] = (
+                1.0 if report["step_round_trip_checked"] else 0.0
+            )
+            entry["StepRoundTripValid"] = (
+                1.0 if report["step_round_trip_valid"] else 0.0
+            )
+        if "num_extrusion" in report:
+            entry["NumExtrusion"] = report["num_extrusion"]
+            entry["NumRevolution"] = report["num_revolution"]
+            entry["NumKinematicHelical"] = report["num_kinematic_helical"]
         # The freeform modes (v17.12.0) report only outside the legacy mode.
         if "freeform_mode" in report:
             entry["BrepChecked"] = 1.0 if report["brep_checked"] else 0.0
@@ -1668,6 +1690,9 @@ def _apply_step(mesh, step, steps, warnings):
             entry["NumResegmented"] = report["num_resegmented"]
             entry["NumEscalations"] = report["num_escalations"]
             entry["MaxG1AngleDeg"] = report["max_g1_angle_deg"]
+            entry["MaxG1AngleAwayDeg"] = report["max_g1_angle_away_deg"]
+            entry["MaxG1AngleAtEvDeg"] = report["max_g1_angle_at_ev_deg"]
+            entry["NumCoupledRegions"] = report["num_coupled_regions"]
     elif op == "RefinePatches":
         # A data step: the `segment:patch` labels are refined, the cells never move.
         types = _svec(step, "Types") if "Types" in step else None

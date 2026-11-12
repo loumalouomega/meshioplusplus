@@ -227,6 +227,36 @@ RollingBallSection rolling_ball_section(const RollingBallFit& rFit, const Closes
                                         const ClosestPoint& rS2, double T, const PatchVec& rTangent,
                                         double Scale);
 
+/// The screw motion a patch's normals are most nearly tangent to (Pottmann
+/// and Randrup 1998): the linear line complex of its normal lines, by the
+/// smallest eigenvector of the area-weighted moment `S = A - B C^-1 B^T`
+/// (unreleased; `helical_fit`'s estimate, shared with the kinematic fits).
+struct ScrewEstimate {
+    bool mOk = false;
+    PatchVec mAxis{0.0, 0.0, 0.0};    ///< unit
+    PatchVec mCbar{0.0, 0.0, 0.0};    ///< the complex's moment part, in scaled units
+    PatchVec mOrigin{0.0, 0.0, 0.0};  ///< a point on the axis
+    double mK = 0.0;                  ///< the advance per radian; ~0 for a rotation
+    double mEigen[3] = {0.0, 0.0, 0.0};
+};
+
+/**
+ * @brief The screw estimate over the vertices @p rLive, with unit normals
+ * @p rNormals, weights @p rArea, the points taken relative to @p centre
+ * and divided by @p scale. Not ok when the normals' moment is singular (an
+ * extrusion: every normal perpendicular to one direction) or more than one
+ * screw fits (a plane, cylinder or sphere).
+ */
+ScrewEstimate screw_estimate(const std::vector<PatchVec>& rPts,
+                             const std::vector<PatchVec>& rNormals,
+                             const std::vector<double>& rArea, const std::vector<std::size_t>& rLive,
+                             const PatchVec& centre, double scale);
+
+/// Area-weighted unit vertex normals of a patch, and whether each vertex is
+/// interior (`helical_fit`'s own, shared).
+void feature_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
+                            std::vector<PatchVec>& rNormals, std::vector<std::uint8_t>& rInterior);
+
 /**
  * @brief A helical surface of any profile: the profile curve, in the plane
  * through the axis, swept by the screw motion of advance `K` per radian,

@@ -285,6 +285,20 @@ def add_args(parser):
         help="how a freeform patch is refined (thb is experimental)",
     )
     parser.add_argument(
+        "--freeform-fit-schedule",
+        choices=["legacy", "continuation"],
+        default="legacy",
+        help="the freeform B-spline fit's schedule: continuation lowers the "
+        "smoothing as it converges, places knots where the residual is and removes "
+        "the knots the target does not need",
+    )
+    parser.add_argument(
+        "--freeform-objective",
+        choices=["default", "pdm", "tdm", "sdm"],
+        default="default",
+        help="the error the freeform B-spline fit minimises",
+    )
+    parser.add_argument(
         "--freeform-max-control-points",
         type=int,
         default=400,
@@ -323,6 +337,30 @@ def add_args(parser):
         action="store_true",
         help="fit related primitives together: coaxial surfaces share one axis, "
         "parallel and perpendicular planes and nearly equal radii are made exact",
+    )
+    parser.add_argument(
+        "--validation-report",
+        action="store_true",
+        help="measure the solid against the skin both ways (sampled faces, projected "
+        "skin points), the normal deviation and the STEP file read back",
+    )
+    parser.add_argument(
+        "--validation-acceptance",
+        action="store_true",
+        help="hold every freeform face to the validation measures before accepting it",
+    )
+    parser.add_argument(
+        "--freeform-g1-solve",
+        choices=["sweeps", "coupled"],
+        default="sweeps",
+        help="how the patch network reaches G1: each patch in turn (sweeps) or one "
+        "solve over each region, its shared edge curves free too (coupled)",
+    )
+    parser.add_argument(
+        "--kinematic-surfaces",
+        action="store_true",
+        help="first try a patch no primitive explains as a surface of linear "
+        "extrusion, of revolution or a helical surface",
     )
     parser.add_argument(
         "--mesh-out", type=str, default=None, help="also write the re-meshed solid here"
@@ -403,6 +441,8 @@ def to_cad_cmd(args):
         freeform_parameterization=args.freeform_parameterization,
         extraordinary_vertex=args.extraordinary_vertex,
         local_refine=args.local_refine,
+        freeform_fit_schedule=args.freeform_fit_schedule,
+        freeform_objective=args.freeform_objective,
         freeform_g1_tolerance_deg=args.g1_tolerance,
         freeform_max_control_points=args.freeform_max_control_points,
         layout_target_patch_size=args.layout_target_patch_size,
@@ -411,6 +451,10 @@ def to_cad_cmd(args):
         layout_snap_to_features=not args.no_layout_snap_to_features,
         validate_by_surface_sampling=not args.no_validate_by_surface_sampling,
         constrain_primitives=args.constrain_primitives,
+        validation_report=args.validation_report,
+        validation_acceptance=args.validation_acceptance,
+        kinematic_surfaces=args.kinematic_surfaces,
+        freeform_g1_solve=args.freeform_g1_solve,
     )
     if args.mesh_out:
         write(args.mesh_out, out)
@@ -463,6 +507,24 @@ def to_cad_cmd(args):
             print(
                 f"  constrained: {report['num_constrained_primitives']} primitive(s) "
                 f"in {report['num_constraint_groups']} group(s)"
+            )
+        if args.validation_report:
+            print(
+                f"  validation: CAD to mesh {report['cad_to_mesh_max']:.6g} "
+                f"(P95 {report['cad_to_mesh_p95']:.6g}), mesh to CAD "
+                f"{report['mesh_to_cad_max']:.6g} (P95 {report['mesh_to_cad_p95']:.6g}), "
+                f"normals {report['normal_deviation_max_deg']:.4g} deg; STEP read back: "
+                + (
+                    ("valid" if report["step_round_trip_valid"] else "NOT valid")
+                    if report["step_round_trip_checked"]
+                    else "not checked"
+                )
+            )
+        if args.kinematic_surfaces:
+            print(
+                f"  kinematic: {report['num_extrusion']} extrusion(s), "
+                f"{report['num_revolution']} revolution(s), "
+                f"{report['num_kinematic_helical']} helical face(s)"
             )
         if report.get("refined"):
             print(

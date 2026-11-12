@@ -1137,8 +1137,10 @@ static int32_t oc_fit_cad_keyword(const mxArray *value, const char *name,
  *         freeform_g1_tolerance_deg, freeform_max_control_points,
  *         layout_target_patch_size, layout_max_valence_deviation,
  *         resegment_rounds, layout_snap_to_features,
- *         validate_by_surface_sampling, constrain_primitives) -- 46 arguments,
- * R's order exactly. */
+ *         validate_by_surface_sampling, constrain_primitives, validation_report,
+ *         validation_acceptance, freeform_fit_schedule, freeform_objective,
+ *         kinematic_surfaces, freeform_g1_solve) -- 52
+ *         arguments, R's order exactly. */
 static mxArray *O_mio_fit_cad(const mxArray **a) {
     mio_fit_cad_opts opts;
     mio_fit_cad_opts_ex opts_ex;
@@ -1147,10 +1149,14 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
     mio_fit_cad_report_ex report_ex;
     mio_fit_cad_report_ex2 report_ex2;
     mio_fit_cad_report_ex3 report_ex3;
+    mio_fit_cad_report_ex4 report_ex4;
     static const char *const modes[] = {"legacy", "adaptive", "network", "auto", NULL};
     static const char *const params[] = {"auto", "projection", "lscm", "harmonic", NULL};
     static const char *const evs[] = {"g0", "g1", "g1x", "g1xx", NULL};
     static const char *const refines[] = {"knots", "thb", NULL};
+    static const char *const schedules[] = {"legacy", "continuation", NULL};
+    static const char *const objectives[] = {"default", "pdm", "tdm", "sdm", NULL};
+    static const char *const g1_solves[] = {"sweeps", "coupled", NULL};
 
     mio_fit_cad_opts_init(&opts);
     mio_fit_cad_opts_ex_init(&opts_ex);
@@ -1160,6 +1166,10 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
         oc_fit_cad_keyword(a[35], "freeform_parameterization", params);
     opts_ex2.extraordinary_vertex = oc_fit_cad_keyword(a[36], "extraordinary_vertex", evs);
     opts_ex2.local_refine = oc_fit_cad_keyword(a[37], "local_refine", refines);
+    opts_ex2.freeform_fit_schedule = oc_fit_cad_keyword(a[48], "freeform_fit_schedule", schedules);
+    opts_ex2.freeform_objective = oc_fit_cad_keyword(a[49], "freeform_objective", objectives);
+    opts_ex2.kinematic_surfaces = mio_o_bool(a[50], "kinematic_surfaces") ? 1 : 0;
+    opts_ex2.freeform_g1_solve = oc_fit_cad_keyword(a[51], "freeform_g1_solve", g1_solves);
     opts_ex2.freeform_g1_tolerance_deg = mio_o_double(a[38], "freeform_g1_tolerance_deg");
     opts_ex2.freeform_max_control_points = mio_o_int64(a[39], "freeform_max_control_points");
     opts_ex2.layout_target_patch_size = mio_o_double(a[40], "layout_target_patch_size");
@@ -1169,6 +1179,8 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
     opts_ex2.validate_by_surface_sampling =
         mio_o_bool(a[44], "validate_by_surface_sampling") ? 1 : 0;
     opts_ex2.constrain_primitives = mio_o_bool(a[45], "constrain_primitives") ? 1 : 0;
+    opts_ex2.validation_report = mio_o_bool(a[46], "validation_report") ? 1 : 0;
+    opts_ex2.validation_acceptance = mio_o_bool(a[47], "validation_acceptance") ? 1 : 0;
     opts_ex.refine_segmentation = mio_o_bool(a[15], "refine_segmentation") ? 1 : 0;
     opts_ex.refine.max_iterations = mio_o_int64(a[16], "max_refine_iterations");
     opts_ex.refine.epsilon = mio_o_double(a[17], "refine_epsilon");
@@ -1213,9 +1225,9 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
                         "meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\"");
     }
 
-    mio_mesh *out = mio_fit_cad3(mio_o_mesh(a[0]), mio_o_string(a[1], "step_path"), &opts,
+    mio_mesh *out = mio_fit_cad4(mio_o_mesh(a[0]), mio_o_string(a[1], "step_path"), &opts,
                                  &opts_ex, &opts_ex2, &report, &report_ex, &report_ex2,
-                                 &report_ex3);
+                                 &report_ex3, &report_ex4);
     if (out == NULL) mio_o_fail("fit_cad");
     const char *names[] = {"mesh",
                            "valid",
@@ -1278,7 +1290,26 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
                            "rms_freeform_distance",
                            "num_face_records",
                            "num_constrained_primitives",
-                           "num_constraint_groups"};
+                           "num_constraint_groups",
+                           "validation_reported",
+                           "cad_to_mesh_max",
+                           "cad_to_mesh_p95",
+                           "cad_to_mesh_p99",
+                           "mesh_to_cad_max",
+                           "mesh_to_cad_p95",
+                           "mesh_to_cad_p99",
+                           "normal_deviation_max_deg",
+                           "normal_deviation_p95_deg",
+                           "step_round_trip_checked",
+                           "step_round_trip_valid",
+                           "step_round_trip_volume_ratio",
+                           "total_freeform_control_points",
+                           "num_extrusion",
+                           "num_revolution",
+                           "num_kinematic_helical",
+                           "max_g1_angle_away_deg",
+                           "max_g1_angle_at_ev_deg",
+                           "num_coupled_regions"};
     mxArray *values[] = {
         mio_o_wrap_mesh(out),
         mio_o_logical(report.valid != 0),
@@ -1343,8 +1374,27 @@ static mxArray *O_mio_fit_cad(const mxArray **a) {
         mio_o_scalar(report_ex3.rms_freeform_distance),
         mio_o_scalar((double)report_ex3.num_face_records),
         mio_o_scalar((double)report_ex3.num_constrained_primitives),
-        mio_o_scalar((double)report_ex3.num_constraint_groups)};
-    return mio_o_struct(62, names, values);
+        mio_o_scalar((double)report_ex3.num_constraint_groups),
+        mio_o_logical(report_ex4.validation_reported != 0),
+        mio_o_scalar(report_ex4.cad_to_mesh_max),
+        mio_o_scalar(report_ex4.cad_to_mesh_p95),
+        mio_o_scalar(report_ex4.cad_to_mesh_p99),
+        mio_o_scalar(report_ex4.mesh_to_cad_max),
+        mio_o_scalar(report_ex4.mesh_to_cad_p95),
+        mio_o_scalar(report_ex4.mesh_to_cad_p99),
+        mio_o_scalar(report_ex4.normal_deviation_max_deg),
+        mio_o_scalar(report_ex4.normal_deviation_p95_deg),
+        mio_o_logical(report_ex4.step_round_trip_checked != 0),
+        mio_o_logical(report_ex4.step_round_trip_valid != 0),
+        mio_o_scalar(report_ex4.step_round_trip_volume_ratio),
+        mio_o_scalar((double)report_ex4.total_freeform_control_points),
+        mio_o_scalar((double)report_ex4.num_extrusion),
+        mio_o_scalar((double)report_ex4.num_revolution),
+        mio_o_scalar((double)report_ex4.num_kinematic_helical),
+        mio_o_scalar(report_ex4.max_g1_angle_away_deg),
+        mio_o_scalar(report_ex4.max_g1_angle_at_ev_deg),
+        mio_o_scalar((double)report_ex4.num_coupled_regions)};
+    return mio_o_struct(81, names, values);
 }
 
 /* --- interfaces between regions ------------------------------------------ */
@@ -2125,7 +2175,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_fit_primitives, 14),
     MIO_O_ENTRY(mio_has_occt, 0),
     MIO_O_ENTRY(mio_refine_patches, 13),
-    MIO_O_ENTRY(mio_fit_cad, 46),
+    MIO_O_ENTRY(mio_fit_cad, 52),
     MIO_O_ENTRY(mio_region_adjacency, 2),
     MIO_O_ENTRY(mio_find_interface, 9),
     MIO_O_ENTRY(mio_contact_pairs, 6),

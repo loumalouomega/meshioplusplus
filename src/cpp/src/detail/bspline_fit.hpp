@@ -100,6 +100,26 @@ struct BsplineFitOptions {
     /// The weight of a triangle's centroid against a vertex's in the fits: a
     /// flat facet's centroid lies its chordal sag off a smooth surface.
     double mCentroidWeight = 0.25;
+    /// The schedule (unreleased, doc/fit_cad_freeform_plan.md step 3). 0 (the
+    /// default) is the fit as before. 1, continuation: the thin-plate weight
+    /// starts at `mContinuationStart` times the sample count and falls two
+    /// decades at a time to `mSmoothing` whenever parameter correction stops
+    /// gaining 10%, before any knot is inserted (the falls are not counted
+    /// against `mMaxIterations`); a knot goes in at the
+    /// residual-weighted median of a span's bad samples, not its middle; and
+    /// once the targets are met, interior knots are removed, the least loaded
+    /// first, while the refitted surface still meets them.
+    int mSchedule = 0;
+    /// The thin-plate weight a continuation starts from, relative to the
+    /// sample count.
+    double mContinuationStart = 1e-4;
+    /// The objective (unreleased, step 4). 0 (the default) as before: point
+    /// distance minimisation with parameter correction, a tangent-distance
+    /// step when it stalls. 1 point distance only. 2 a tangent-distance step
+    /// tried first every iteration. 3 a squared-distance step (Wang, Pottmann
+    /// and Liu 2006, extended to surfaces by the principal curvatures at each
+    /// foot point) tried first every iteration.
+    int mObjective = 0;
 };
 
 /// The fitted surface and how it got there.
@@ -111,6 +131,7 @@ struct BsplineFitResult {
     double mRmsError = 0.0;
     int mIterations = 0;
     int mRefinements = 0;  ///< knot insertion rounds
+    int mRemovals = 0;     ///< knots removed (`mSchedule` 1)
     /// The largest sample distance after each kept state, non-increasing.
     std::vector<double> mHistory;
     /// The vertices' foot-point parameters on the final surface.

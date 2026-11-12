@@ -1809,6 +1809,23 @@ def test_refine_patches_tool_segments_then_refines(tmp_path):
     assert constrained["num_constrained_primitives"] >= 0
     assert constrained["num_constraint_groups"] >= 0
     assert constrained["num_demoted"] == 0
+    # The validation report, likewise only when asked for.
+    assert "cad_to_mesh_max" not in plain
+    validated = _dump(
+        _tools.call_tool(
+            "fit_cad",
+            {
+                "input_path": src,
+                "output_path": str(tmp_path / "v.step"),
+                "backend": "native",
+                "validation_report": True,
+            },
+        )
+    )
+    assert validated["validation_reported"] is True
+    assert validated["cad_to_mesh_max"] >= validated["cad_to_mesh_p95"] >= 0.0
+    assert validated["mesh_to_cad_max"] >= validated["mesh_to_cad_p95"] >= 0.0
+    assert 0.0 <= validated["normal_deviation_max_deg"] <= 90.0
 
 
 def test_cad_json_brep_rides_through_convert(tmp_path):

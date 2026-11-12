@@ -236,3 +236,84 @@ TEST(BsplineFit, RefusesDegenerateInput) {
     o.mTolerance = 0.0;
     EXPECT_FALSE(bspline_fit_patch(g.mPts, g.mTris, g.mU, g.mV, o).mOk);
 }
+
+// The schedule and objectives of doc/fit_cad_freeform_plan.md (steps 3 and 4).
+
+TEST(BsplineFit, PrincipalCurvaturesOfAParaboloidAndACylinder) {
+    // z = (x^2 + y^2) / 2 at the origin: both curvatures 1, bending towards
+    // +z, the normal.
+    BsplineEval e;
+    e.mSu[0] = 1.0;
+    e.mSv[1] = 1.0;
+    e.mSuu[2] = 1.0;
+    e.mSvv[2] = 1.0;
+    BsplineCurvature k;
+    ASSERT_TRUE(bspline_principal_curvatures(e, k));
+    EXPECT_NEAR(k.mK1, 1.0, 1e-14);
+    EXPECT_NEAR(k.mK2, 1.0, 1e-14);
+    EXPECT_NEAR(k.mN[2], 1.0, 1e-14);
+    // z = -x^2 / 2: a cylinder bending away from the normal along x, straight
+    // along y.
+    e.mSuu[2] = -1.0;
+    e.mSvv[2] = 0.0;
+    ASSERT_TRUE(bspline_principal_curvatures(e, k));
+    EXPECT_NEAR(k.mK1, -1.0, 1e-14);
+    EXPECT_NEAR(k.mK2, 0.0, 1e-14);
+    EXPECT_NEAR(std::abs(k.mT1[0]), 1.0, 1e-12);
+    EXPECT_NEAR(std::abs(k.mT2[1]), 1.0, 1e-12);
+    // A singular point.
+    BsplineEval z;
+    EXPECT_FALSE(bspline_principal_curvatures(z, k));
+}
+
+// Continuation reaches the target on the wavy sheet (with more poles than the
+// default schedule there: a smooth sinusoid suits mid-span knots, which is
+// what the KPI table records) and is reproducible.
+TEST(BsplineFit, ContinuationMeetsTheTarget) {
+    const Grid g = wavy(40);
+    BsplineFitOptions o;
+    o.mTolerance = 5e-4;
+    o.mStartPoles = 4;
+    o.mSchedule = 1;
+    const BsplineFitResult cont = bspline_fit_patch(g.mPts, g.mTris, g.mU, g.mV, o);
+    ASSERT_TRUE(cont.mOk);
+    EXPECT_LE(cont.mMaxVertexError, 5e-4);
+    for (std::size_t i = 1; i < cont.mHistory.size(); ++i)
+        EXPECT_LE(cont.mHistory[i], cont.mHistory[i - 1]);
+    // Reproducible.
+    const BsplineFitResult again = bspline_fit_patch(g.mPts, g.mTris, g.mU, g.mV, o);
+    EXPECT_EQ(again.mSurface.mPoles, cont.mSurface.mPoles);
+    EXPECT_EQ(again.mSurface.mKnotsU, cont.mSurface.mKnotsU);
+}
+
+TEST(BsplineFit, KnotRemovalKeepsTheTarget) {
+    // A quadric needs few knots: a fit started with too many poles drops
+    // knots and stays within the target.
+    const Grid g = saddle(24);
+    BsplineFitOptions o;
+    o.mTolerance = 1e-3;
+    o.mStartPoles = 10;
+    o.mSchedule = 1;
+    const BsplineFitResult r = bspline_fit_patch(g.mPts, g.mTris, g.mU, g.mV, o);
+    ASSERT_TRUE(r.mOk);
+    EXPECT_GT(r.mRemovals, 0);
+    EXPECT_LT(r.mSurface.NumPoles(), 100u);
+    EXPECT_LE(r.mMaxVertexError, 1e-3);
+}
+
+TEST(BsplineFit, EveryObjectiveMeetsTheTarget) {
+    const Grid g = wavy(40);
+    for (int objective : {1, 2, 3}) {
+        BsplineFitOptions o;
+        o.mTolerance = 5e-4;
+        o.mStartPoles = 4;
+        o.mObjective = objective;
+        const BsplineFitResult r = bspline_fit_patch(g.mPts, g.mTris, g.mU, g.mV, o);
+        EXPECT_TRUE(r.mOk) << objective;
+        EXPECT_LE(r.mMaxVertexError, 5e-4) << objective;
+        for (std::size_t i = 1; i < r.mHistory.size(); ++i)
+            EXPECT_LE(r.mHistory[i], r.mHistory[i - 1]) << objective;
+        const BsplineFitResult again = bspline_fit_patch(g.mPts, g.mTris, g.mU, g.mV, o);
+        EXPECT_EQ(again.mSurface.mPoles, r.mSurface.mPoles) << objective;
+    }
+}

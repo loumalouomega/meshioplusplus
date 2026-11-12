@@ -50,7 +50,13 @@ mio_fit_cad(
   resegment_rounds = 2L,
   layout_snap_to_features = TRUE,
   validate_by_surface_sampling = TRUE,
-  constrain_primitives = FALSE
+  constrain_primitives = FALSE,
+  validation_report = FALSE,
+  validation_acceptance = FALSE,
+  freeform_fit_schedule = "legacy",
+  freeform_objective = "default",
+  kinematic_surfaces = FALSE,
+  freeform_g1_solve = "sweeps"
 )
 }
 \arguments{
@@ -173,6 +179,27 @@ sampled against the skin too, outside the legacy mode.}
 on either backend: coaxial cylinders, cones, tori and spheres share one
 axis, parallel and perpendicular planes and nearly equal radii are made
 exact, each change kept only where its patch still passes its fit.}
+
+\item{validation_report}{Whether the built solid is measured against the
+skin: the two-sided distance (faces sampled inside their trims; skin
+points projected onto the faces), the normal deviation and, with
+OpenCASCADE and a STEP file, the file read back and checked.}
+
+\item{validation_acceptance}{Whether every freeform face is also held to
+those measures before it is accepted.}
+
+\item{freeform_fit_schedule}{The adaptive and general freeform faces'
+B-spline fit schedule, `"legacy"` or `"continuation"`.}
+
+\item{freeform_objective}{Its objective, `"default"`, `"pdm"`, `"tdm"` or
+`"sdm"`.}
+
+\item{kinematic_surfaces}{Whether a patch no primitive explains is first
+tried as a surface of linear extrusion, of revolution or a helical
+surface.}
+
+\item{freeform_g1_solve}{How the patch network reaches G1, `"sweeps"` or
+`"coupled"`.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -200,8 +227,19 @@ A list of `mesh` (the solid re-meshed, with cell data
   `num_escalations`, `max_g1_angle_deg`, `max_freeform_distance`,
   `rms_freeform_distance`, `num_face_records` (the rows of the
   `fit_cad:face_table` field data the mesh carries outside the legacy
-  mode), and `num_constrained_primitives` and `num_constraint_groups`
-  (what `constrain_primitives` changed).
+  mode), `num_constrained_primitives` and `num_constraint_groups`
+  (what `constrain_primitives` changed), and the validation report
+  (`validation_reported`, `cad_to_mesh_max`, `cad_to_mesh_p95`,
+  `cad_to_mesh_p99`, `mesh_to_cad_max`, `mesh_to_cad_p95`,
+  `mesh_to_cad_p99`, `normal_deviation_max_deg`,
+  `normal_deviation_p95_deg`, `step_round_trip_checked`,
+  `step_round_trip_valid`, `step_round_trip_volume_ratio` and
+  `total_freeform_control_points`; `NaN` and `FALSE` unless
+  `validation_report` measured them), and `num_extrusion`,
+  `num_revolution` and `num_kinematic_helical` (the kinematic faces),
+  `max_g1_angle_away_deg`, `max_g1_angle_at_ev_deg` and
+  `num_coupled_regions` (the network's G1 apart from and at the
+  extraordinary vertices).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the

@@ -2977,6 +2977,22 @@ step('the stays-out set is exactly what this artifact reports (roadmap 6.2.4)', 
     assert.equal(constrained.numFaces, 6);
     assert.equal(constrained.numDemoted, 0);
     assert.ok(constrained.numConstrainedPrimitives >= 0 && constrained.numConstrainedPrimitives <= 6);
+    assert.equal(plain.validationReported, false);
+    const validated = m.fitCad(cubeSurface, { backend: 'native', validationReport: true });
+    assert.equal(validated.validationReported, true);
+    assert.ok(validated.cadToMeshMax >= 0 && validated.cadToMeshMax <= 1e-9);
+    assert.ok(validated.meshToCadMax >= validated.meshToCadP95);
+    const scheduled = m.fitCad(cubeSurface, {
+        backend: 'native', freeformFitSchedule: 'continuation', freeformObjective: 'sdm',
+    });
+    assert.equal(scheduled.numFaces, 6);
+    assert.throws(() => m.fitCad(cubeSurface, { freeformObjective: 'nope' }), /freeformObjective/);
+    const kinematic = m.fitCad(cubeSurface, { backend: 'native', kinematicSurfaces: true });
+    assert.equal(kinematic.numExtrusion, 0);
+    assert.equal(kinematic.numRevolution, 0);
+    const coupled = m.fitCad(cubeSurface, { backend: 'native', freeformG1Solve: 'coupled' });
+    assert.equal(coupled.numCoupledRegions, 0);
+    assert.throws(() => m.fitCad(cubeSurface, { freeformG1Solve: 'nope' }), /freeformG1Solve/);
     assert.throws(() => m.fitCad(cubeSurface, { maxFreeformPoles: 3 }), /max_freeform_poles/);
     assert.throws(() => m.fitCad(cubeSurface, { sewTolerance: -1 }), /sew_tolerance/);
     if (m.hasOcct()) {
