@@ -1134,8 +1134,11 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                 patch_base[i] = ncol;
                 ncol += (patches[i].mSurface.mNu - 2) * (patches[i].mSurface.mNv - 2);
             }
-            // Each active patch's pole maps.
+            // Each active patch's pole maps, probed on scratch chains: the
+            // patch's own chains zeroed, the others untouched (its sides do
+            // not read them).
             std::vector<std::vector<PnPoleMap>> maps(np);
+            std::vector<BsplineCurve> scratch = out.mChains;
             for (std::size_t i = 0; i < np; ++i) {
                 if (!active[i])
                     continue;
@@ -1154,9 +1157,14 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                         used.push_back(seg.mChain);
                 std::sort(used.begin(), used.end());
                 used.erase(std::unique(used.begin(), used.end()), used.end());
+                // Only what builds the surface is copied: a patch's
+                // parameters span the whole region.
                 const auto boundary = [&](const std::vector<BsplineCurve>& rChains,
                                           BsplineSurface& rOut) {
-                    PnPatch probe = p;
+                    PnPatch probe;
+                    probe.mSides = p.mSides;
+                    probe.mExtraU = p.mExtraU;
+                    probe.mExtraV = p.mExtraV;
                     rebuild_sides(probe, rChains);
                     if (!pn_build_surface(probe, std::numeric_limits<std::size_t>::max(),
                                           std::numeric_limits<std::size_t>::max()))
@@ -1166,16 +1174,14 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                     rOut = std::move(probe.mSurface);
                     return true;
                 };
-                std::vector<BsplineCurve> base = out.mChains;
                 for (std::size_t c : used)
                     for (std::size_t k = 0; k < chain_free[c].size(); ++k)
                         if (chain_free[c][k])
-                            base[c].mPoles[k] = {0.0, 0.0, 0.0};
+                            scratch[c].mPoles[k] = {0.0, 0.0, 0.0};
                 BsplineSurface b0;
-                bool good = boundary(base, b0);
-                std::vector<BsplineCurve> unit = out.mChains;
+                bool good = boundary(scratch, b0);
                 for (std::size_t c : used)
-                    for (PatchVec& q : unit[c].mPoles)
+                    for (PatchVec& q : scratch[c].mPoles)
                         q = {0.0, 0.0, 0.0};
                 const auto on_boundary = [&](std::size_t Pole) {
                     const std::size_t q = Pole % nu, j = Pole / nu;
@@ -1189,10 +1195,10 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                     for (std::size_t k = 0; good && k < chain_free[c].size(); ++k) {
                         if (!chain_free[c][k])
                             continue;
-                        unit[c].mPoles[k] = {1.0, 0.0, 0.0};
+                        scratch[c].mPoles[k] = {1.0, 0.0, 0.0};
                         BsplineSurface bk;
-                        good = boundary(unit, bk);
-                        unit[c].mPoles[k] = {0.0, 0.0, 0.0};
+                        good = boundary(scratch, bk);
+                        scratch[c].mPoles[k] = {0.0, 0.0, 0.0};
                         if (!good)
                             break;
                         for (std::size_t pole = 0; pole < nu * nv; ++pole) {
@@ -1203,6 +1209,8 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                         }
                     }
                 }
+                for (std::size_t c : used)
+                    scratch[c].mPoles = out.mChains[c].mPoles;
                 if (!good)
                     return;  // the sides do not rebuild: keep what Phase A made
             }
@@ -1316,7 +1324,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             for (std::size_t i = 0; i < np; ++i)
                 keep_ref[i] = out.mPatches[i].mRefinements;
             const SparseSolveReport rep =
-                csr_pcg(a, rhs.data(), x.data(), 1e-13, 20 * 3 * ncol + 200);
+                csr_pcg(a, rhs.data(), x.data(), 1e-9, 20 * 3 * ncol + 200);
             // Write the solution back: the chains, each patch's sides and
             // poles (its boundary rows through its map), its parameters.
             for (std::size_t c = 0; c < nc; ++c)
@@ -1432,7 +1440,8 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
         return out;
     }
     // Both, from the same accurate start: the coupled result is kept unless
-    // its accepted patches cover fewer triangles than the sweeps'.
+    // its accepted patches cover fewer triangles than the sweeps' or its
+    // worst angle is larger.
     std::vector<std::size_t> patches_tris(np);
     for (std::size_t i = 0; i < np; ++i)
         patches_tris[i] = patches[i].mTris.size();
@@ -1449,6 +1458,13 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                 t += patches_tris[i];
         return t;
     };
+    log::debug("pn: the sweeps leave G1 {} degrees, {} triangles covered", out.mMaxG1AngleDeg,
+               covered(out));
+    // Nothing to gain where the sweeps meet the target, or where no pair of
+    // accepted patches misses it (a region whose patches the data reject:
+    // the coupled steps would not make them fit).
+    if (out.mMaxG1AngleDeg <= rOptions.mG1ToleranceDeg)
+        return out;
     PatchNetwork swept = std::move(out);
     patches = start_patches;
     out = start_out;
