@@ -206,7 +206,8 @@ TEST(BrepDeviation, FitCadValidationReport) {
     EXPECT_TRUE(std::isnan(plain.mCadToMeshMax));
     EXPECT_FALSE(plain.mMesh.HasFieldData(kFitCadFaceDeviationName));
     o.mValidationReport = true;
-    FitCadResult ref;
+    // The one-thread values (a result holds a mesh, which a KRATOS build cannot copy).
+    double ref_c2m = 0.0, ref_m2c = 0.0, ref_normal = 0.0;
     for (int threads : {1, 4}) {
 #if MESHIOPLUSPLUS_TEST_THREAD_SWEEP
         mio_test::set_threads(threads);
@@ -227,11 +228,13 @@ TEST(BrepDeviation, FitCadValidationReport) {
         EXPECT_EQ(table.Shape()[0], static_cast<std::size_t>(r.mCounts.mNumFaces));
         EXPECT_EQ(table.Shape()[1], 5u);
         if (threads == 1) {
-            ref = r;
+            ref_c2m = r.mCadToMeshMax;
+            ref_m2c = r.mMeshToCadMax;
+            ref_normal = r.mNormalDeviationMaxDeg;
         } else {
-            EXPECT_EQ(r.mCadToMeshMax, ref.mCadToMeshMax);
-            EXPECT_EQ(r.mMeshToCadMax, ref.mMeshToCadMax);
-            EXPECT_EQ(r.mNormalDeviationMaxDeg, ref.mNormalDeviationMaxDeg);
+            EXPECT_EQ(r.mCadToMeshMax, ref_c2m);
+            EXPECT_EQ(r.mMeshToCadMax, ref_m2c);
+            EXPECT_EQ(r.mNormalDeviationMaxDeg, ref_normal);
         }
     }
 #if MESHIOPLUSPLUS_TEST_THREAD_SWEEP

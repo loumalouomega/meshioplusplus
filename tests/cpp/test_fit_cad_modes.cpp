@@ -618,14 +618,16 @@ TEST(FitCadModes, NetworkOnAGenusTwoSkin) {
 TEST(FitCadModes, NativeKinematicSurfaces) {
     struct Case {
         const char* mName;
-        Mesh mSkin;
+        Mesh (*pMake)();  // a function: a KRATOS mesh is not copyable
         std::int64_t FitCadResult::*pCount;
     };
-    for (Case& c : std::vector<Case>{
-             {"extruded_lobe", analytic::extruded_lobe(), &FitCadResult::mNumExtrusion},
-             {"wavy_capped", analytic::wavy_capped(), &FitCadResult::mNumRevolution}}) {
-        const double tol = 2e-3 * fcfix::diagonal(c.mSkin);
-        const Mesh fitted = fcfix::fitted_abs(c.mSkin, tol);
+    for (Case& c : std::vector<Case>{{"extruded_lobe", [] { return analytic::extruded_lobe(); },
+                                      &FitCadResult::mNumExtrusion},
+                                     {"wavy_capped", [] { return analytic::wavy_capped(); },
+                                      &FitCadResult::mNumRevolution}}) {
+        const Mesh skin = c.pMake();
+        const double tol = 2e-3 * fcfix::diagonal(skin);
+        const Mesh fitted = fcfix::fitted_abs(skin, tol);
         FitCadOptions o;
         o.mBackend = FitCadBackend::Native;
         o.mTolerance = tol;
@@ -831,18 +833,20 @@ TEST(FitCadModes, OcctUnfittedPatchHasAReason) {
 TEST(FitCadModes, OcctKinematicSurfaces) {
     struct Case {
         const char* mName;
-        Mesh mSkin;
+        Mesh (*pMake)();  // a function: a KRATOS mesh is not copyable
         std::int64_t FitCadResult::*pCount;
     };
-    for (Case& c : std::vector<Case>{
-             {"extruded_lobe", analytic::extruded_lobe(), &FitCadResult::mNumExtrusion},
-             {"wavy_capped", analytic::wavy_capped(), &FitCadResult::mNumRevolution}}) {
-        const double tol = 2e-3 * fcfix::diagonal(c.mSkin);
+    for (Case& c : std::vector<Case>{{"extruded_lobe", [] { return analytic::extruded_lobe(); },
+                                      &FitCadResult::mNumExtrusion},
+                                     {"wavy_capped", [] { return analytic::wavy_capped(); },
+                                      &FitCadResult::mNumRevolution}}) {
+        const Mesh skin = c.pMake();
+        const double tol = 2e-3 * fcfix::diagonal(skin);
         FitCadOptions o;
         o.mTolerance = tol;
         o.mKinematicSurfaces = true;
         o.mValidationReport = true;
-        const FitCadResult r = fit_cad(fcfix::fitted_abs(c.mSkin, tol), "", o);
+        const FitCadResult r = fit_cad(fcfix::fitted_abs(skin, tol), "", o);
         EXPECT_TRUE(r.mBrepChecked) << c.mName;
         EXPECT_TRUE(r.mValid) << c.mName;
         EXPECT_EQ(r.*c.pCount, 2) << c.mName;
