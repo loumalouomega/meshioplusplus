@@ -117,6 +117,7 @@ The raw element records (`EMS`, `ENG`, `EGR`, `EFX`, `EMN`, `ENL`, `EPT`, `ECT`,
 
 ## Not read
 
+- **Records flagged both bit-sparse and windowed-sparse** (three files of Ansys' DPF example data hold some) are refused, naming the record pointer and the flags: their layout is neither form's, and decoding them as one gave wrong values silently ([roadmap 1.1](../roadmap.md#correctness-debts)).
 - **zlib-compressed records** (`/FCOMP,RST,1` or higher) are refused, naming `/FCOMP,RST,0`: no compressed file was available to check the record framing against.
 - The other element records (`ELF`, `ECD`, `EHC`, `ESF`, `EDI`, `ETB`, `EXY`, `EBA`, `MNL`).
 - The full rotor of an analysis other than a static or modal one.

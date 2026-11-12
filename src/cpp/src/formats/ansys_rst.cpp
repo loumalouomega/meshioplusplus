@@ -111,6 +111,10 @@ public:
                      " runs past the end of the file");
         if (flags & kRstZlib)
             rst_fail("zlib-compressed records are not supported; write the file with /FCOMP,RST,0");
+        if ((flags & kRstBsparse) && (flags & kRstWsparse))
+            rst_fail("the record at word " + std::to_string(Ptr) +
+                     " has both the bit-sparse and windowed-sparse flags (" +
+                     std::to_string(flags) + "); that layout is not known");
         const bool is_int = (flags & kRstInt) != 0, prec = (flags & kRstPrec) != 0;
         const std::size_t item = is_int ? (prec ? 2 : 4) : (prec ? 4 : 8);
         const char* raw = mSource.Data() + (Ptr + 2) * 4;

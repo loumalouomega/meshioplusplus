@@ -936,6 +936,19 @@ def test_refusals(engine, tmp_path, options, match):
         engine.read(cut)
 
 
+def test_both_sparse_flags_refused(engine, tmp_path):
+    """A record flagged bit-sparse and windowed-sparse has a layout nobody
+    knows: it is refused by name, not decoded as one of them (roadmap 1.1.1)."""
+    w = _Writer()
+    w.raw([12], 0x80 | 0x08 | 0x10)
+    path = tmp_path / "both.rst"
+    w.save(path)
+    with pytest.raises(
+        meshioplusplus.ReadError, match="both the bit-sparse and windowed-sparse"
+    ):
+        engine.read(path)
+
+
 @pytest.mark.parametrize("ext", ["vtu", "xdmf"])
 def test_element_results_are_writable(tmp_path, ext):
     """Per-element-node arrays are rectangular and as wide in every block
