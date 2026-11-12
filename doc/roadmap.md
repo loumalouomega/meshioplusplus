@@ -186,7 +186,7 @@ A CFD mesh arrives without its boundary conditions, its zone interfaces or its s
   - **2.3.1.5 Further bases.** Bases after the first are ignored with a warning (`cgns.cpp` lines 1492–1493). Add a `base` read option (name or index, the `region=` precedent of OpenFOAM) through `ReadOptions`; reading all into one mesh stays out, since bases may differ in dimension. **S**
   - **2.3.1.6 ADF without cgnslib.** Out of scope: ADF is a bespoke binary container and cgnslib is the route; state it on the page and correct the comments that still say polyhedra need cgnslib (`CMakeLists.txt` lines 374–386, `registry.cpp` lines 1254–1258, `cgns/__init__.py` lines 8–12). **S**
 - **Tests and fixtures.** `tests/python/test_cgns.py`, `tests/cpp/test_cgns.cpp`, `tests/cpp/test_hdf5_formats.cpp`; fixtures in `tests/python/meshes/cgns/`. The CGNS example set (`cgns.github.io` "Example files", public domain†) has multi-zone structured files with BCs: take two, with the README of step 2 of [recording a run](#awaiting-a-licensed-run).
-- **Done when.** `yf17.cgns` and `bump.cgns`-class examples read with their BC regions in both engines, and `meshioplusplus info` lists them.
+- **Done when.** `yf17.cgns` and `bump.cgns`-class examples read with their BC regions in both engines, and `meshioplusplus info` lists them. `cgnscheck` (CGNS's own checker†) reports no error on a file meshio++ wrote. The layout written for polyhedra is CGNS 4.x's `ElementStartOffset` form; the 3.x inline-length layout stays refused by name, as today.
 
 #### 2.3.2 Exodus II
 
@@ -199,8 +199,9 @@ Global variables, set variables, polyhedral blocks and assemblies. Consumers: MO
   - **2.3.2.2 `NSIDED` and `NFACED`.** `NSIDED`: `connect{k}` with `ebepecnt{k}` node counts per element, to a ragged `polygon` block. `NFACED`: `fbconn{k}`/`fbepecnt{k}` (faces as node lists) and `facconn{k}`/`ebepecnt{k}` (elements as face lists), to a `polyhedron` block through the `Face` accessors. Write both; core only if the Python twin cannot stay byte-identical, as CGNS's polyhedra are (then a `PARTIAL_ENGINE_EXEMPT` entry). **M**
   - **2.3.2.3 Set variables.** `vals_nset_var{v}ns{s}` is a value per node of a node set: scatter into a point array `<name>` that is NaN off the set, or keep as `field_data["exodus:nset:<set>:<name>"]` in set order; decide with 8.4, which gives side-set values (`vals_sset_var{v}ss{s}`) their home. Until 8.4, read both into the `field_data` form and write them back. **S–M**
   - **2.3.2.4 Assemblies.** Exodus 8 `assembly` groups name a tree of blocks and sets: read into the hierarchy convention 8.5 decides; until then keep the tree in `ExodusInfo` so the writer returns it. **S**
+  - **2.3.2.5 QA and information records on write.** *Verify first* what `write_exodus` emits (`ExodusInfo` holds `mInfoRecords` only): write the `qa_records` (code name, version, date, time) and keep `info_records` through a round trip, so `ncdump -h` and Exodus' own tools show the producing code. **S**
 - **Tests and fixtures.** `tests/python/test_exodus.py`, `test_exodus_writer_parity.py`, `tests/cpp/test_netcdf_formats.cpp`. Fixtures: generate with `netCDF4` in `tests/python/exodus_fixture.py` for 2.3.2.1 and 2.3.2.3; a MOOSE polyhedral output or a file from SEACAS' test data (BSD†) for 2.3.2.2.
-- **Done when.** `ncdump -h` of a file written back lists the same global and set variable names as the source.
+- **Done when.** `ncdump -h` of a file written back lists the same global and set variable names as the source. `exodiff`† (SEACAS) reports no difference between a file and its round trip, with the QA records excluded.
 
 #### 2.3.3 EnSight Gold
 
@@ -241,7 +242,8 @@ Sets, particle clouds, and compressed writes beyond Python and C++. **S–M**
   - **2.3.5.1 `polyMesh/sets`.** `cellSet`, `faceSet` and `pointSet` are `labelList`s like zones: parse with `parse_zone_file_binary` (line 624) and the ASCII zone path into regions `set:<name>` (face sets to side regions through the face owner, as face zones). Write regions of that prefix back as sets. **S**
   - **2.3.5.2 `lagrangian` clouds.** `<time>/lagrangian/<cloud>/positions` (barycentric `positions` since v1806, or Cartesian `coordinates`) and the per-particle fields: a vertex block with point data, returned as a second mesh through a `cloud=` read option, since a particle is not a node of the mesh. Read only; a `positions` file needs the owning cell, which a writer would have to locate (9.3). **M**
   - **2.3.5.3 Compressed writes on the flat surfaces.** The gzip write reaches only Python and C++, like the label and scalar widths: the registry's `registry_write_ex` (`write_options.cpp`, the `openfoam` branch) builds `OpenFoamWriteOptions` from `WriteOptions`, which has no compression field. Add one (an ABI change to `WriteOptions`, and `mio_write_opts` from its reserved tail), then `--compression gzip` in both CLIs and the WASM and flat-binding write options. **S**
-- **Done when.** A tutorial case's `sets` and a `lagrangian` cloud read in the core, and a `blockMesh` + `simpleFoam` case written by OpenFOAM with `writeCompression on` reads equal to its uncompressed twin (the synthetic gzipped cases of `OpenFoamCompressed` in `tests/cpp/test_openfoam.cpp` stand in until one is committed).
+  - **2.3.5.4 The collated `processors<N>/` layout.** *Verify first* (nothing in `openfoam.cpp` or the page names `decomposedBlockData`): newer OpenFOAM writes one `processors<N>/` directory holding a single collated file per field instead of `processorN/` directories; parse its block framing and feed the blocks to `reconstruct_decomposed` (`openfoam.cpp`), which already reads the `*ProcAddressing` lists. The reader already honours the `arch` header's label and scalar widths (`FoamFile` parsing near `openfoam.cpp` line 165). **M**
+- **Done when.** A tutorial case's `sets` and a `lagrangian` cloud read in the core, and a `blockMesh` + `simpleFoam` case written by OpenFOAM with `writeCompression on` reads equal to its uncompressed twin (the synthetic gzipped cases of `OpenFoamCompressed` in `tests/cpp/test_openfoam.cpp` stand in until one is committed). An optional `checkMesh` job (ESI and Foundation containers) is clean on a case meshio++ wrote.
 
 #### 2.3.6 Gmsh
 
@@ -249,6 +251,7 @@ Sets, particle clouds, and compressed writes beyond Python and C++. **S–M**
 - **Steps.**
   - **2.3.6.1 `$ElementNodeData`.** A value per element per node (discontinuous fields: what Gmsh's own post-processing and GetDP write). Parse with the tag reader `read_data` (`gmsh.cpp` near line 943; `common._read_data` in Python) and store as cell data of shape `(cells, nodes × components)` under the convention 8.3 decides; until then under `gmsh:element_node:<name>` with the layout in `field_data`, the form `abaqus:layout:` uses. Write it back. **S–M, after 8.3's design pass**
   - **2.3.6.2 `$GhostElements`.** To `cell_data["partition:ghost"]`, the name `partition`'s ghost layers use. **S**
+  - **2.3.6.3 The other MSH 4.1 sections.** `gmsh.cpp` parses `$Entities` (and `$Periodic`) but no `$PartitionedEntities`, `$Parametrizations` or parametric node coordinates (`u, v, w` after the point in a node record): keep each as `field_data` under a `gmsh:` prefix and write it back, so a Gmsh-partitioned model survives a round trip; the Gmsh 5.0 development manual's `$Polytopes`, `$Edges` and `$Faces` are a watch item until a release defines them†. **S–M**
   - **2.3.6.3 `$InterpolationScheme`.** Kept only as an opaque `GmshInfo` member so a round trip does not lose it. **S**
 - **Done when.** Gmsh's `tutorials/view*.msh`-class file with element-node data round-trips in both engines.
 
@@ -261,6 +264,7 @@ Sets, particle clouds, and compressed writes beyond Python and C++. **S–M**
   - **2.3.7.2 `OverlappingAMR`.** Levels of boxes with a refinement ratio: read as one hexahedral block per level with `vtkhdf:amr:level` cell data and the coarse cells under finer boxes blanked into a `uint8` mask; no hanging-node closure. `HyperTreeGrid` stays refused: it is a tree encoding with no cell list. **M**
   - **2.3.7.3 `.pvts`, `.pvtr`, `.pvti`.** Add three rows to `pvtu_info`, reading pieces with the serial readers and placing each by its `Extent` in the `WholeExtent` so shared planes are one layer of points (the existing merge does not weld). Writers split by `partition:part` only if the parts are boxes; otherwise refuse by name. **M**
   - **2.3.7.4 The round trip** is 8.6's: with its annotation, a mesh read from `vts` writes back as `vts`, and the three conformance declarations change from `error` to a note.
+  - **2.3.7.5 Composites with time, and a gate.** [VTKHDF](./formats/vtkhdf.md) flattens `MultiBlockDataSet` and has no time on composites, and refuses `Table` and `HyperTreeGrid`: write a temporal composite as the format's `Steps` group per block, check the `Version` attribute against what the content needs (it already writes the oldest that covers it), and add a `pvpython` CI job† that opens every written variant in a VTK of the pinned version. **M**
 - **Done when.** VTK's `Testing/Data` structured `.vtkhdf` and `.pvti` samples read to the same point and cell counts as `vtkXMLReader` reports.
 
 #### 2.3.8 Decomposed files, read whole without MPI
@@ -285,6 +289,8 @@ Each is the parity decision's "unwritten feature" if the format can hold it; whe
 - **2.3.9.5 Medit normals.** `Normals`, `NormalAtVertices`, `Tangents` and `TangentAtVertices` are discarded (`kMeditCountedSkips`, `medit.cpp` lines 570–579; `medit/_medit.py` lines 438–448 and 497–505). `NormalAtVertices` maps vertices to rows of `Normals`: read to `point_data["medit:normal"]` and write back. The engines also disagree on the skip itself, which is 3.4.12.
 - **2.3.9.6 Regions and data dropped on write.** `mphtxt` drops point and side regions (`mphtxt.cpp` lines 702–705) and all data (line 874); MED side regions (`med.cpp` lines 901–904); `frd` regions and non-nodal arrays (`frd.cpp` lines 1093–1097 and 1287). For each, decide from the format's documentation whether it has a slot (COMSOL boundary selections; MED families on face elements; CalculiX has none) and write it or state the fact on the page.
 - **2.3.9.7 LS-DYNA `*ELEMENT_SOLID_H20`.** Skipped as unsupported (`lsdyna.cpp` lines 419–422, `lsdyna/_lsdyna.py` lines 266–267); the two-line layout reads at most ten nodes. Read 20 nodes to `hexahedron20` through the [node-ordering registry](./node_ordering.md).
+- **2.3.9.8 glTF extensions and compression.** Neither `EXT_mesh_features`, Draco (`KHR_draco_mesh_compression`) nor meshopt (`EXT_meshopt_compression`) is named anywhere: read both compressions (a decoder dependency, optional and feature-gated, as zlib is) and write neither until a consumer asks; map `EXT_mesh_features` feature IDs to `point_data`/`cell_data` and the property table to `field_data`. Specifications†: the Khronos glTF registry. **M**
+- **2.3.9.9 OpenUSD completeness.** *Verify first* against [USD](./formats/usd.md) (a Python-only format by [decision](#non-goals-and-decisions-taken)): `GeomSubset`s as regions, `primvars` as point and cell data by interpolation, and `timeSamples` as steps. **M**
 
 ### 2.4 New formats {#new-formats}
 
@@ -367,6 +373,13 @@ Reopened: [`parameterize`](./parameterize.md) now produces texture coordinates, 
 - **State today.** Texture coordinates already round-trip: `uv` (`kUvName`, `operations/parameterize.hpp` line 70) to OBJ `vt` with `f v/vt` corners (`obj.cpp` lines 225–303) and to glTF `TEXCOORD_0` with `v` flipped (`gltf.cpp` lines 939–971). Missing: OBJ writes no `mtllib`/`usemtl` and reads none; glTF writes one fixed `baseColorFactor` material and no image (lines 1308–1340) and skips textures on read (`gltf_read.cpp` lines 835–836). A PNG encoder exists (`png_encode_rgba`, `detail/png_write.hpp` line 49); there is no PNG decoder.
 - **Steps.** (1) glTF: a `texture=` write option taking an RGBA array or a PNG path, embedded as a buffer view in `.glb` and referenced as `baseColorTexture`; on read, keep the image bytes in a side channel (`GltfInfo`) and its texture index, undecoded, so a round trip returns it. (2) OBJ: write `mtllib` and one `usemtl` with a sibling `.mtl` (`map_Kd`) and the PNG beside it; read `usemtl` groups as cell regions and the `.mtl`'s `Kd` and `map_Kd` into `field_data`. (3) A `bake_texture(mesh, array, size)` helper that rasterizes a point or cell array through `uv` with the existing rasterizer and colormaps (`detail/raster`), so a field becomes an image: Python and the core, by [checklist O](#landing-checklists). No material model beyond base colour.
 - **Done when.** `gltf-validator` (the `gltf-validator` CI job) accepts a textured `.glb`, and a parameterized mesh with a baked field opens textured in Blender.
+
+#### 2.4.9 A format detection report {#detect-report}
+
+`sniff_format` returns one name or `""` (`_sniff.py`, `_core.sniff_format`): a caller cannot tell a sure answer from a guess, nor that `.msh`, `.mesh`, `.inp` and `.xml` are ambiguous extensions. **S–M**
+
+- **Steps.** `detect(path)` returning `[(format, confidence, reason)]` ranked, built on the registry's sniffers (`registry.cpp`'s extension table and content probes): confidence `certain` (a magic number or header matched), `likely` (extension plus a structural check) or `guess` (extension only); the C API as `mio_detect` with a reserved-tail option struct, the CLI as `meshioplusplus detect`, an MCP tool, the WASM and flat bindings through [checklist O](#landing-checklists)'s steps 3 to 7; `sniff_format` stays and returns the first `certain` or `likely` entry.
+- **Done when.** A test set of ambiguous files (an Abaqus `.inp` and a Calculix one, a Gmsh `.msh` 2.2 and 4.1, a Medit `.mesh` and a Netgen one, a VTK XML `.xml`) resolves to the right format or reports `ambiguous` with both candidates.
 
 ---
 
@@ -600,6 +613,13 @@ Publishing already uses OIDC for PyPI and (with a token fallback, `wasm.yml` lin
   - **3.19.2 A table of widths** in [formats](./formats.md): for each format, the widest node and cell id it stores (MSH 4.1's sizes, Exodus' `int64` mode, CGNS' `cgsize_t`, VTKHDF, VTU's header types), generated from a test that writes an id above 2³¹ to each and records the outcome as the conformance matrix does.
 - **Done when.** A mesh with a tag of 2³¹ + 5 either round-trips or fails with the format's name, for every registered writer.
 
+### 3.20 A corpus manifest and an unfetched-fixture check {#corpus-manifest}
+
+Reference fixtures live in Git LFS (`tests/python/meshes/`, [AGENTS.md](https://github.com/loumalouomega/meshioplusplus/blob/main/AGENTS.md)), and the CI checkouts use `lfs: false` (`ci.yml` line 71 and the corpus workflows): a checkout that skipped the fetch hands a reader a three-line pointer, and the failure reads as a parse error in the format under test (**this was observed**: a local run of `test_ansys_rst.py` failed 216 tests on pointers before `git lfs pull`). **S**
+
+- **Steps.** 3.20.1 A session-scoped fixture check in `tests/python/conftest.py`: a file under `tests/python/meshes/` or `input/` that starts with `version https://git-lfs.github.com/spec/v1` fails collection with one message naming `git lfs pull --include=<dir>`, instead of failing every test in its format. 3.20.2 `tests/python/meshes/MANIFEST.json`, generated by `tools/gen_corpus_manifest.py`: per fixture its producer tool and version, its licence, its SHA-256 and its source URL where one exists (the README tables hold these today, per directory, in prose); a test that every fixture is listed and every entry exists, so the `CITATION.cff` paragraphs and the manifest cannot drift.
+- **Done when.** `pytest tests/python/test_ansys_rst.py` in a checkout without LFS stops at one message, and the manifest test fails when a fixture is added without a row.
+
 ---
 
 ## 4. Ecosystem reach {#ecosystem-reach}
@@ -618,7 +638,7 @@ Mostly logistics, and all blocking real adoption; the effort is small per target
 | 4.1.4 | Blender Extensions Platform | Zips built and attached to every release; only the listing remains. |
 | 4.1.5 | ConanCenter, the vcpkg registry | Recipes are CI-validated but in self-hosted shape, not upstream shape. |
 | 4.1.6 | A ParaView plugin index | Bundles ship on every release and load in Kitware's binaries; only a listing remains. |
-| 4.1.7 | Homebrew, Nix | Not started. |
+| 4.1.7 | Homebrew, Nix, winget, Scoop | Not started. |
 | 4.1.8 | A container image | Not started. |
 | 4.1.9 | Octave Packages index, MATLAB File Exchange | Not started. |
 
@@ -630,7 +650,7 @@ Spack is upstream already (`meshioplusplus` and `py-meshioplusplus` in `spack/sp
 - **4.1.4 Blender.** `src/blender/blender_manifest.toml.in` (`id meshioplusplus`, `license ["SPDX:MIT"]`, `blender_version_min 4.2.0`), built per platform by `wheels.yml`'s `blender_extension` job with `cp311` wheels. Submit at extensions.blender.org; the review asks for the bundled wheels' licences (the base wheel is MIT with static permissive libraries: point to `LICENSE-BINARIES.md`). Add the listing to [Blender](./blender.md).
 - **4.1.5 ConanCenter and vcpkg.** Conan: the real recipe is the root `conanfile.py`, which uses `exports_sources` with local paths; `packages/conan/` is the test package. ConanCenter needs `recipes/meshioplusplus/all/{conanfile.py,conandata.yml,test_package/}` with `source()` calling `get(**self.conan_data["sources"][version])` on the release tarball and its `sha256`, and dependencies as ConanCenter requirements rather than vendored. vcpkg: `packages/vcpkg/meshioplusplus/portfile.cmake` has `SHA512 0` and `HEAD_REF main`, and a private overlay port `packages/vcpkg/libaec/`; upstream needs the real hash, a `versions/` entry (`vcpkg x-add-version`), and either the upstream `libaec` or a pull request fixing it there first. Both recipes force Eigen and JSON off, which is right for a registry build. Generate both upstream forms from the self-hosted ones in the release job, so they cannot drift.
 - **4.1.6 ParaView.** `tools/paraview-meshioplusplus-plugin.py` with the bundles of `src/paraview/build_bundle.py`. There is no central index; the listing is a page on the ParaView Discourse "Plugins" category and an entry in Kitware's community-plugin list, with the install lines of [ParaView plugin](./paraview_plugin.md#installation).
-- **4.1.7 Homebrew, Nix.** A formula in a tap first (`loumalouomega/homebrew-meshioplusplus`: the native CLI and the C and C++ libraries, `depends_on "hdf5"`, `"netcdf"`, `"cmake" => :build`), homebrew-core once it has users; a `flake.nix` at the repository root exposing the CLI and the Python package, then nixpkgs. The release binaries cover the CLI meanwhile.
+- **4.1.7 Homebrew, Nix.** A formula in a tap first (`loumalouomega/homebrew-meshioplusplus`: the native CLI and the C and C++ libraries, `depends_on "hdf5"`, `"netcdf"`, `"cmake" => :build`), homebrew-core once it has users; a `flake.nix` at the repository root exposing the CLI and the Python package, then nixpkgs. The release binaries cover the CLI meanwhile. Add **winget and Scoop** manifests for the Windows CLI archive in the same step (a `winget-pkgs` pull request and a Scoop bucket; the `cli.yml` Windows leg is the source), and state in [CLI](./cli.md) which verbs match upstream meshio's CLI (`convert`, `info`, `binary`, `ascii`, `compress`, `decompress`, `increase-order`, `decrease-order`) so a script of its calls runs unchanged: *verify first* by running each.
 - **4.1.8 A container image.** `ghcr.io/loumalouomega/meshioplusplus:<version>`: a slim Python base with `pip install "meshioplusplus[all,addons]"` and the native CLI archive, built and pushed by a job in `wheels.yml` after publishing, with 3.14.5's attestation; for CI pipelines and HPC (Apptainer pulls it). Only the OSS-Fuzz Dockerfile exists today.
 - **4.1.9 Octave and MATLAB.** `pkg install` takes a tarball built by hand ([Octave / MATLAB](./octave.md)). Attach `meshioplusplus-octave-<version>.tar.gz` to the release (a step in `wheels.yml`: `tar -C bindings/octave -czf …`), then a pull request to `gnu-octave/packages` with the package's YAML. MATLAB itself has never been run in CI: add a `matlab-actions/setup-matlab` leg to the `octave` job running the same test directory before listing on File Exchange.
 
@@ -753,7 +773,20 @@ Reopened from the [non-goal](#non-goals-and-decisions-taken) that keeps `pmsh`, 
 - **State today.** `zarr/_zarr.py` writes the PhysicsNeMo layout with zarr-python 3 only (Zarr v3): root attributes (`physicsnemo_mesh_type`, `__tensordict__`, provenance), arrays `points` and `cells`, groups `point_data`, `cell_data`, `global_data`, chunks of at most 200,000 rows, Zstandard level 3 or none (lines 81–166). `write_dataset`'s store (`_ml.py` near lines 617–650) writes one group per entry with whichever zarr major is installed and its default codecs (Blosc under v2). `pmsh/_pmsh.py` writes a tensordict memory-map tree: `meta.json` files and raw little-endian blobs. In the core: the JSON DOM (`detail/json_value.hpp`), `vtk_codec_decompress_block` for zlib, LZ4, Zstandard and LZMA (`detail/vtu_binary.hpp` lines 107–157), but Zstandard and LZ4 are off by default (`CMakeLists.txt` lines 264–265; on in the wheels and the full WASM artifact) and there is no Blosc.
 - **Decisions to take first.** (1) Scope: `pmsh` first (JSON and raw blobs: no codec, days of work) and Zarr v3 with the two codecs the `zarr` writer itself uses; Zarr v2 and Blosc stores are refused by name, with `write_dataset` changed to write v3 with Zstandard so that everything meshio++ writes is readable. (2) Local directories only: no object-store client in the core; the browser reads a picked directory through the existing workspace layer. (3) A build without Zstandard reads uncompressed stores and refuses compressed ones naming the option, the TecIO pattern.
 - **Steps.** By [checklist F](#landing-checklists): `formats/pmsh.{hpp,cpp}` and `formats/zarr.{hpp,cpp}` (directory formats: the registry's directory sniffing, as OpenFOAM and Elmer); the Python packages become shims with the current code as the twin (`plain_shims`); writers too, by the parity decision; conformance declarations; remove the Python-only notes on the binding pages.
+- **Sharding and codecs.** After reading `zarr/_zarr.py`: say which Zarr v3 codecs and whether sharding (`sharding_indexed`) are in the native reader's scope, so a store written with default zarr-python 3 chunking and one written with sharding both read, and a codec the reader lacks is refused by name. Specification†: Zarr v3 core.
 - **Probe.** `meshioplusplus info store.zarr` in the native CLI, and the dataset manager opening a `.pmsh` entry.
+
+### 4.16 Solver adapters beyond DOLFINx {#solver-adapters}
+
+Zero-copy or one-copy bridges to the solver libraries whose meshes a user already holds, after 4.3's DOLFINx and in its pattern ([interop](./interop.md)). **L, design pass first**
+
+- **State today.** Open3D and DOLFINx are 4.3; scikit-fem and xarray are 4.10; deal.II is a [non-goal](#format-reach) (it reads and writes formats meshio++ reads). No item names PETSc DMPlex, MFEM's in-memory `Mesh`, Kratos' `ModelPart`, libMesh or preCICE (**verify first**: the Kratos mesh *backend* exists, `--mesh-backend KRATOS`, which is not an adapter to a `ModelPart` of a running Kratos).
+- **Decisions to take first.** Per library: the data model (DMPlex's cone/support and `DMPlexCreateFromCellListPetsc`; MFEM's `Mesh` from vertices and elements; a `ModelPart`'s nodes, elements and conditions; preCICE's `setMeshVertices` and `setMeshTriangles`†), whether the bridge is Python (a gated test and an extra, as 4.3) or a provider, and which of them has a pip or conda package a CI job can install.
+- **Done when.** Each adapter that lands solves a Poisson problem on a mesh meshio++ read, in a job using that library's package or container; the rest stay listed here. References†: the PETSc DMPlex manual, MFEM's mesh format page, preCICE's API reference.
+
+### 4.17 A nanobind spike {#nanobind-spike}
+
+*Spike.* Nothing in this file or in the docs names nanobind; pybind11 is the binding layer (`bindings/python/_core.cpp`, `np_conversions.hpp`). Measure before deciding: import time of `meshioplusplus._core`, wheel size, and the per-call overhead of a small getter, on a branch that ports one translation unit's worth of definitions (`core_def_*` helpers) to nanobind†; the decision, with the numbers, goes to [spikes](./spikes.md) and either closes this item or opens a migration. Free-threaded builds (3.15.1) are the other reason to look: nanobind's support for them is a documented feature†. **M, spike**
 
 ---
 
@@ -849,6 +882,14 @@ Reopened from the decision against SIMD intrinsics and `-march` flags, whose rea
 - **Steps.** (1) Measure: `perf record` on the tier L rows `read_vtu_ascii`, a base64 `vtu` read and write, a big-endian legacy VTK read, `distance_to_surface`, and report each candidate's share in [benchmarks](./benchmarks.md). (2) A kernel qualifies only if its vector form is bit-identical to the scalar one: byte and integer kernels are; the floating-point box tests are comparisons, which are; reductions (the centroid sums) are not and stay scalar. (3) For the two largest shares: a `detail/dispatch.hpp` (`MIO_TARGET_CLONES("avx2", "default")` on GCC and Clang for x86-64; NEON is baseline on arm64 and needs no dispatch; a manual `cpuid` function pointer for MSVC; `-msimd128` for the full WASM artifact only), with the scalar body unchanged and the vector body written with the compiler's vector extensions or Highway (Apache-2.0) if the extensions do not reach. (4) A test that runs each kernel's variants against the scalar one on random input, and the determinism check across the dispatch levels (an environment override `MESHIOPLUSPLUS_SIMD=off`).
 - **Done when.** The measured rows gain what (1) predicted with identical digests, or the measurement shows no kernel above a few percent and the non-goal stands.
 
+### 5.16 Streaming writers for one large mesh {#streaming-writers}
+
+The [sequence driver](./sequences.md) already keeps one mesh alive at a time (5.11); a *single* mesh of 10⁸ cells is held whole before any writer sees it. **L, design pass first**
+
+- **State today.** `write` takes a whole `Mesh`; the VTU `appended` mode (since v16.21.0) streams arrays into one section but from memory ([VTU](./formats/vtu.md)). *Verify first* which writers could emit a block at a time without a second pass (VTU appended, VTKHDF, XDMF with heavy data in HDF5, Exodus).
+- **Steps.** A `BlockWriter` interface (`Begin(header)`, `AddCellBlock`, `AddPointChunk`, `End`) beside `SeqSink`'s writers (`operations/sequence.cpp`), implemented first for VTKHDF and VTU-appended; the in-memory `write` becomes its one-chunk special case, with output byte-identical to today's (`tools/bench_ops.sh … --hash`).
+- **Done when.** A 10⁸-cell write peaks at no more than twice one chunk plus the mesh the caller holds, and is byte-identical to the in-memory writer's. An [ABI](./abi.md) addition: a review row.
+
 ---
 
 ## 6. Code duplication {#code-duplication}
@@ -883,6 +924,7 @@ What the pass could not settle here, because only a scan shows it. Configuration
 - **7.1 Confirm the third pass on the next `master` scan.** The scan of `015e109` (November 2026) left 25 bugs and 7 vulnerabilities, all closed by the second pass (`9b1b757`), whose full re-analysis reopened four older ones and kept four code smells. The third pass replaced `xdmf.cpp`'s tail `memset` by a fill over the array's own size (`cpp:S3519`), put `providers.cpp`'s two `cpp:S8462` markers back on the reported lines, and recorded per file the number formatters of `detail/fast_number.hpp` (`cppsecurity:S5145`) and the embedded viewer's focusable splitter and scroll region (`Web:S6845`). Steps: query `https://sonarcloud.io/api/issues/search?componentKeys=loumalouomega_meshioplusplus&resolved=false&ps=500` (and `api/measures/component` for the ratings), list what remains by rule in this section, and for each either fix it or add its `multicriteria` entry with the reason ([false positives](./static_analysis.md#false-positives)). Done when the query returns none that is not listed here. **S**
 - **7.2 Coverage on new code.** The `coverage` job uploads the `coverage-reports` artifact (`coverage.xml`, `cpp-coverage-sonar.xml`; `ci.yml` lines 1706–1715), which `sonarcloud.yml` finds through `workflow_run` (lines 67–110) and passes as `sonar.python.coverage.reportPaths` and `sonar.coverageReportPaths`. The quality gate's *Coverage on New Code* condition (80%) is then measured rather than failed outright. If the gate stays red, the uncovered new lines it names are the work, or the condition is set to what the suites reach; 3.11.1 puts the same number on pull requests, where it can be acted on before merging. **S**
 - **7.3 The viewer's built page is stale.** `src/viewer/src/features/shell.ts` line 39 sets the splitter's `aria-valuenow` when it moves, but the committed `src/python/meshioplusplus/_viewer_assets/viewer.html` holds the attribute once, the static one: its minified `setWidth` predates the change. Rebuilding needs the WebAssembly package (`npm run build:embed` in `src/viewer`, then copy `dist-embed/index.html` over the asset, `src/viewer/README.md` lines 44–108). CI's only check is a size drift of at most 10% (`ci.yml` lines 2171–2190), which cannot see this: add to the `viewer-web` job, which builds the package anyway, a step that runs `build:embed` and fails when the result differs from the committed asset (or commits it from a scheduled job), so the embedded page cannot fall behind again. 4.6 and 4.12 need the rebuild too. **S**
+- **7.4 Make the gates required.** *Verify first* in the repository settings (not readable from the tree): the quality gate of `sonarcloud.yml` and the `tools/dup_report.py` ratchet are advisory until named as required status checks on `master`; 3.5, 3.9 and 3.10 already say "required" for their own gates. List the gates that are required today in [static analysis](./static_analysis.md) and make the Sonar gate and the duplication ratchet required once 7.1 and 7.2 show a clean new-code gate. **S**
 
 ---
 
@@ -1118,6 +1160,14 @@ After 11.2. A `MeshLike` concept (what `registry_write` needs from a type) so an
 - **Steps.** A `--stats` option on `add` filling each entry from `read_metadata` (no full read; `_cli/_dataset.py`), and `--resume`, which skips an entry whose file digest is already in the manifest.
 - **Done when.** Interrupting and re-running a 100-file `add --resume` reads no file twice.
 
+### 12.4 A resource-limit audit of every reader {#resource-limits}
+
+`max_cells`-style caps exist (the parse guards of `detail/parse_guard.hpp`, the windowed-sparse bound of `ansys_rst.cpp`, the per-reader limits [fuzzing](./fuzzing.md) lists); what is not stated anywhere is whether every reader has all of them. **M**
+
+- **Steps.** A table in [fuzzing](./fuzzing.md) per reader: cap on points and cells declared in a header, on any single allocation, on a decompression ratio (gzip, zlib, zstd, lzma, lz4 inside VTU, HDF5 filters), on XML include or entity depth (`pugixml` options of the VTK XML family: external entities refused), and on HDF5 external links and virtual datasets (refused unless an option allows them); a reader missing a cap gets it through `detail/parse_guard.hpp`, with its minimized input under `tests/fuzz/regressions/<format>/` and the same refusal in the Python twin.
+- **MCP.** Cross-check [MCP](./mcp.md)'s sandbox against 4.9: output and temporary files created with restrictive modes and inside the allowed directory only (*verify first* in `mcp/_tools.py`'s path handling).
+- **Done when.** The table has no empty cell, and a `tests/fuzz/` decompression-bomb seed is refused by every codec-bearing reader without allocating more than the cap.
+
 ---
 
 ## Non-goals and decisions taken
@@ -1204,3 +1254,54 @@ Open work only; what shipped is in `CHANGELOG.md`.
 11. **Operations ([§9](#operations))** — the boolean backend's measurement first (9.1.1, 9.1.2), since it decides a non-goal and two parked features; then the small ones a user notices missing (mass properties 9.4, ray casting and point location 9.3, point-cloud conditioning 9.9, the IGA list 9.8), then subdivision and elevation (9.2, 9.5), the partitioner providers (9.7) and repeated green refinement (9.6.1). Only 9.10.2 and 9.6.2 wait on a decision.
 12. **Data model ([§8](#data-model))** — design passes only until one says otherwise. The two whose recommended form is a convention and days of work, and which close losses already listed on format pages: complex pairs (8.1) and the structured annotation (8.6). Strings (8.2) before hierarchy (8.5), which uses them. Integration-point data (8.3) is the largest and the one most formats wait on (2.3.6.1, MED ELGA, the result readers); side data (8.4) unblocks 2.3.1.4 and 2.3.2.3. The format items that wait on each say so.
 13. **In-situ interchange, the modern C++ surface and provenance ([§10](#in-situ-interchange) to [§12](#provenance-remote))** — after everything above, in this order by dependency: the Conduit bridge (10.1) in Python first, since it needs no core change, and the ghost conventions (10.4) with 2.3.8.1, which wants the same names; errors as values and views (11.1, 11.2) together in one ABI change, then the concepts on top (11.3); PROV and RO-Crate (12.1), the `dataset add` statistics (12.3) and the remote-read decision (12.2) are small and independent. The upstream-meshio run (3.18) and the identifier-width audit (3.19) belong with the tooling of item 4. §10 to §12 came from a proposed revision of this file in November 2026: what the revision listed that the tree or this file already had (supply chain, hardening, the ABI diff, the C++ module, Zarr and pmsh in the core, the dataset manifests, the PyG dataset, partition ghosts and the `pvtu` writer, node-order tables, fsspec URLs, the mutation-testing and engine-differential spikes) was not repeated.
+14. **The remaining proposal-derived items** — corpus manifest and unfetched-fixture check (3.20) with the tooling of item 4; `detect` (2.4.9), the MSH 4.1 sections (2.3.6.3), QA records (2.3.2.5), collated OpenFOAM (2.3.5.4), VTKHDF composites (2.3.7.5) and glTF and OpenUSD completeness (2.3.9.8, 2.3.9.9) with format reach; the nanobind spike (4.17) beside 3.15.1; solver adapters (4.16) after 4.3 and 4.10; streaming writers (5.16) after 5.11; the resource-limit audit (12.4) beside 3.12; required gates (7.4) after 7.1 and 7.2.
+
+### Dependency overview
+
+An arrow means the item on the right needs the one on the left. Numbers are this file's.
+
+```
+2.3.8.1 merge by global id ──► 2.3.8.2 Nemesis      10.4 ghost/id names ──► 2.3.8.1 (takes them as input)
+11.2 mesh views ──► 11.3 concepts, 5.16 streaming writers, 10.1 Conduit (native provider only)
+11.1 errors as values ──► 4.9.2 the core MCP server (its error mapping), 4.2 Rust crate (status codes)
+10.1 Conduit bridge ──► 10.2 Catalyst and Ascent consumers
+2.3.7.1 VTKHDF ImageData ──► 2.3.7.5 temporal composites     8.6 structured annotation ──► 2.3.7.4, 2.3.1.3
+3.20.1 unfetched-fixture check ──► every fixture-driven item (do it first)
+3.14.6 SBOM ──► 12.2 (a vendored remote-read client is a new dependency)
+7.1, 7.2 clean new-code scan ──► 7.4 required gates
+4.3 DOLFINx, 4.10 scikit-fem ──► 4.16 solver adapters
+```
+
+### Milestones
+
+By theme, not by version number: the project bumps its major version on an ABI change, so a version here would be a guess.
+
+| Milestone | Content | Exit criterion |
+| --- | --- | --- |
+| Format leftovers | 1.1.2, 2.3.1 to 2.3.6, 2.3.9, 3.20 | `cgnscheck`, `exodiff` and `checkMesh` clean on written files; no fixture fails as a pointer |
+| A stable C++ surface | 11.1, 11.2 in one ABI change, then 11.3, 2.4.9 | `try_read` on junk bytes returns an `Error` for every registered format under ASan |
+| In-situ and large data | 10.1, 10.2, 10.4, 2.3.7.5, 5.16, 12.4 | Blueprint `verify` passes for every cell type; a 10⁸-cell streamed write stays under its memory bound |
+| Reach | 4.1, 4.8, 4.16, 3.18, 12.1 to 12.3 | upstream meshio's suite runs with a known-failures file; a Poisson solve per landed adapter |
+| Research | 4.17, 3.11.3, the long spikes of [spikes](./spikes.md) | a written decision per spike |
+
+### Specification index
+
+Every link is quoted from memory and marked †: open it before relying on it (the legend of [format reach](#format-reach)).
+
+| Topic | Where to read † |
+| --- | --- |
+| meshio (upstream) | github.com/nschloe/meshio |
+| VTK legacy and XML, VTKHDF | docs.vtk.org, *VTK file formats* and *VTKHDF file format* |
+| Gmsh MSH 2.2 and 4.1 | gmsh.info, *Gmsh file formats* |
+| CGNS SIDS and MLL | cgns.github.io |
+| Exodus, Nemesis, `exodiff` | SEACAS documentation (sandialabs.github.io/seacas-docs) |
+| OpenFOAM mesh and collated I/O | openfoam.com and cfd.direct user guides |
+| libMeshb (`.meshb`) | github.com/LoicMarechal/libMeshb |
+| glTF and its extensions | registry.khronos.org/glTF |
+| OpenUSD | openusd.org |
+| Conduit Blueprint, Catalyst, Ascent | llnl-conduit.readthedocs.io, catalyst-in-situ.readthedocs.io, ascent.readthedocs.io |
+| ADIOS2 and Fides | adios2.readthedocs.io, fides.readthedocs.io |
+| Zarr v3 | zarr-specs.readthedocs.io |
+| W3C PROV, RO-Crate | w3.org/TR/prov-overview, researchobject.org/ro-crate |
+| `std::expected`, `std::mdspan` | en.cppreference.com |
+| nanobind | github.com/wjakob/nanobind |
