@@ -1185,7 +1185,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                    SEXP layout_snap_to_features, SEXP validate_by_surface_sampling,
                    SEXP constrain_primitives, SEXP validation_report,
                    SEXP validation_acceptance, SEXP freeform_fit_schedule,
-                   SEXP freeform_objective, SEXP kinematic_surfaces) {
+                   SEXP freeform_objective, SEXP kinematic_surfaces,
+                   SEXP freeform_g1_solve) {
     mio_fit_cad_opts opts;
     mio_fit_cad_opts_ex opts_ex;
     mio_fit_cad_opts_ex2 opts_ex2;
@@ -1201,6 +1202,7 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     static const char* const refines[] = {"knots", "thb", NULL};
     static const char* const schedules[] = {"legacy", "continuation", NULL};
     static const char* const objectives[] = {"default", "pdm", "tdm", "sdm", NULL};
+    static const char* const g1_solves[] = {"sweeps", "coupled", NULL};
 
     mio_fit_cad_opts_init(&opts);
     mio_fit_cad_opts_ex_init(&opts_ex);
@@ -1216,6 +1218,8 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
     opts_ex2.freeform_objective =
         ops_fit_cad_keyword(freeform_objective, "freeform_objective", objectives);
     opts_ex2.kinematic_surfaces = mio_r_bool(kinematic_surfaces, "kinematic_surfaces") ? 1 : 0;
+    opts_ex2.freeform_g1_solve =
+        ops_fit_cad_keyword(freeform_g1_solve, "freeform_g1_solve", g1_solves);
     opts_ex2.freeform_g1_tolerance_deg =
         mio_r_double(freeform_g1_tolerance_deg, "freeform_g1_tolerance_deg");
     opts_ex2.freeform_max_control_points =
@@ -1373,7 +1377,10 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            "total_freeform_control_points",
                            "num_extrusion",
                            "num_revolution",
-                           "num_kinematic_helical"};
+                           "num_kinematic_helical",
+                           "max_g1_angle_away_deg",
+                           "max_g1_angle_at_ev_deg",
+                           "num_coupled_regions"};
     const SEXP values[] = {mo,         valid, NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
                            NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
                            NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, NULL,
@@ -1382,7 +1389,7 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                            NULL,       kept,  checked, mode, NULL, NULL, NULL,    NULL, NULL,
                            NULL,       NULL,  g1,   NULL,   NULL, NULL, NULL,     NULL, measured,
                            NULL,       NULL,  NULL, NULL,   NULL, NULL, NULL,     NULL, rt_checked,
-                           rt_valid,   NULL,  NULL, NULL, NULL, NULL};
+                           rt_valid,   NULL,  NULL, NULL, NULL, NULL, NULL, NULL, NULL};
     const double numbers[] = {report.tolerance, report.volume, report.skin_volume,
                               report.volume_ratio, report.max_deviation, (double)report.num_faces,
                               (double)report.num_plane, (double)report.num_sphere,
@@ -1426,8 +1433,11 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                               (double)report_ex4.total_freeform_control_points,
                               (double)report_ex4.num_extrusion,
                               (double)report_ex4.num_revolution,
-                              (double)report_ex4.num_kinematic_helical};
-    SEXP res = mio_r_report_list(78, names, values, numbers);
+                              (double)report_ex4.num_kinematic_helical,
+                              report_ex4.max_g1_angle_away_deg,
+                              report_ex4.max_g1_angle_at_ev_deg,
+                              (double)report_ex4.num_coupled_regions};
+    SEXP res = mio_r_report_list(81, names, values, numbers);
     UNPROTECT(12);
     return res;
 }

@@ -3315,6 +3315,7 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
                                           {"validation-report", {}, false},
                                           {"validation-acceptance", {}, false},
                                           {"kinematic-surfaces", {}, false},
+                                          {"freeform-g1-solve", {}, true},
                                           {"mesh-out", {}, true},
                                           {"cad-json", {}, true}},
                                          report_flag_specs()}));
@@ -3436,6 +3437,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
     if (has_opt(p, "freeform-objective"))
         options.mFreeformObjective = static_cast<meshioplusplus::FitCadFreeformObjective>(
             keyword("freeform-objective", {"default", "pdm", "tdm", "sdm"}));
+    if (has_opt(p, "freeform-g1-solve"))
+        options.mFreeformG1Solve = static_cast<meshioplusplus::FitCadNetworkG1Solve>(
+            keyword("freeform-g1-solve", {"sweeps", "coupled"}));
     cli_opt_double(p, "g1-tolerance", options.mFreeformG1ToleranceDeg);
     cli_opt_int64(p, "freeform-max-control-points", options.mFreeformMaxControlPoints);
     cli_opt_double(p, "layout-target-patch-size", options.mLayoutTargetPatchSize);
@@ -3563,6 +3567,9 @@ int cmd_to_cad(const std::vector<std::string>& rArgs) {
             json.Field("num_escalations", r.mNumEscalations);
             json.Field("facet_area_fraction", r.mFacetAreaFraction);
             json.Field("max_g1_angle_deg", r.mMaxG1AngleDeg);
+            json.Field("max_g1_angle_away_deg", r.mMaxG1AngleAwayDeg);
+            json.Field("max_g1_angle_at_ev_deg", r.mMaxG1AngleAtEvDeg);
+            json.Field("num_coupled_regions", r.mNumCoupledRegions);
             json.Field("max_freeform_distance", r.mMaxFreeformDistance);
             json.Field("rms_freeform_distance", r.mRmsFreeformDistance);
             json.Key("faces");

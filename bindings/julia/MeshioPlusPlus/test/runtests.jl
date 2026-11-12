@@ -2117,6 +2117,10 @@ end
     kinematic = fit_cad(cube; backend="native", kinematic_surfaces=true)
     @test kinematic.num_extrusion == 0 && kinematic.num_revolution == 0
     close(kinematic.mesh)
+    coupled = fit_cad(cube; backend="native", freeform_g1_solve="coupled")
+    @test coupled.num_coupled_regions == 0
+    close(coupled.mesh)
+    @test_throws ArgumentError fit_cad(cube; backend="native", freeform_g1_solve="nope")
     if has_occt()
         snapped = fit_cad(cube; snap_junctions=true, face_deviation=true)
         @test snapped.valid && snapped.closed

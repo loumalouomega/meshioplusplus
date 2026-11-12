@@ -2532,6 +2532,8 @@ mio_has_occt <- function() {
 #' @param kinematic_surfaces Whether a patch no primitive explains is first
 #'   tried as a surface of linear extrusion, of revolution or a helical
 #'   surface.
+#' @param freeform_g1_solve How the patch network reaches G1, `"sweeps"` or
+#'   `"coupled"`.
 #' @return A list of `mesh` (the solid re-meshed, with cell data
 #'   `fit_cad:face`, `fit_cad:type` and `fit_cad:patch`), `valid`,
 #'   `tolerance`, `volume`, `skin_volume`, `volume_ratio`, `max_deviation`,
@@ -2566,7 +2568,10 @@ mio_has_occt <- function() {
 #'   `step_round_trip_valid`, `step_round_trip_volume_ratio` and
 #'   `total_freeform_control_points`; `NaN` and `FALSE` unless
 #'   `validation_report` measured them), and `num_extrusion`,
-#'   `num_revolution` and `num_kinematic_helical` (the kinematic faces).
+#'   `num_revolution` and `num_kinematic_helical` (the kinematic faces),
+#'   `max_g1_angle_away_deg`, `max_g1_angle_at_ev_deg` and
+#'   `num_coupled_regions` (the network's G1 apart from and at the
+#'   extraordinary vertices).
 #' @export
 mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         types = c("plane", "sphere", "cylinder", "cone", "torus"),
@@ -2592,7 +2597,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
                         validate_by_surface_sampling = TRUE,
                         constrain_primitives = FALSE, validation_report = FALSE,
                         validation_acceptance = FALSE, freeform_fit_schedule = "legacy",
-                        freeform_objective = "default", kinematic_surfaces = FALSE) {
+                        freeform_objective = "default", kinematic_surfaces = FALSE,
+                        freeform_g1_solve = "sweeps") {
   known <- c("plane", "sphere", "cylinder", "cone", "torus")
   bad <- setdiff(types, known)
   if (length(bad) > 0) {
@@ -2621,7 +2627,8 @@ mio_fit_cad <- function(mesh, step_path = "", tolerance = 0, exact_edges = TRUE,
     isTRUE(layout_snap_to_features), isTRUE(validate_by_surface_sampling),
     isTRUE(constrain_primitives), isTRUE(validation_report),
     isTRUE(validation_acceptance), as.character(freeform_fit_schedule),
-    as.character(freeform_objective), isTRUE(kinematic_surfaces)
+    as.character(freeform_objective), isTRUE(kinematic_surfaces),
+    as.character(freeform_g1_solve)
   )
 }
 

@@ -8363,6 +8363,7 @@ TEST(CApi, FitCad3FreeformModes) {
     EXPECT_EQ(ex2.freeform_fit_schedule, MIO_FIT_SCHEDULE_LEGACY);
     EXPECT_EQ(ex2.freeform_objective, MIO_OBJECTIVE_DEFAULT);
     EXPECT_EQ(ex2.kinematic_surfaces, 0);
+    EXPECT_EQ(ex2.freeform_g1_solve, MIO_G1_SOLVE_SWEEPS);
     mio_fit_cad_report_ex4 report_ex4;
     skin = mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr,
                         &report_ex4);
@@ -8392,6 +8393,20 @@ TEST(CApi, FitCad3FreeformModes) {
     EXPECT_EQ(report_ex4.num_kinematic_helical, 0);
     mio_mesh_free(skin);
     ex2.kinematic_surfaces = 0;
+    // The coupled G1 solve (unreleased): accepted; a box has no network.
+    ex2.freeform_g1_solve = MIO_G1_SOLVE_COUPLED;
+    skin = mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr,
+                        &report_ex4);
+    ASSERT_NE(skin, nullptr) << mio_last_error();
+    EXPECT_EQ(report_ex4.num_coupled_regions, 0);
+    EXPECT_EQ(report_ex4.max_g1_angle_away_deg, 0.0);
+    mio_mesh_free(skin);
+    ex2.freeform_g1_solve = 2;
+    EXPECT_EQ(
+        mio_fit_cad4(m, nullptr, &opts, nullptr, &ex2, nullptr, nullptr, nullptr, nullptr, nullptr),
+        nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("freeform_g1_solve"), std::string::npos);
+    ex2.freeform_g1_solve = MIO_G1_SOLVE_SWEEPS;
     // The fit's schedule and objective (unreleased): in range they reach the
     // core, out of range they are refused by name.
     ex2.freeform_fit_schedule = MIO_FIT_SCHEDULE_CONTINUATION;

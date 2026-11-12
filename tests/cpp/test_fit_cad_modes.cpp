@@ -116,6 +116,43 @@ TEST(FitCadModes, OptionsAreValidated) {
     refused([](FitCadOptions& o) { o.mLayoutMaxValenceDeviation = 4; },
             "layout_max_valence_deviation");
     refused([](FitCadOptions& o) { o.mResegmentRounds = -1; }, "resegment_rounds");
+    refused([](FitCadOptions& o) { o.mFreeformG1Solve = static_cast<FitCadNetworkG1Solve>(2); },
+            "freeform_g1_solve");
+}
+
+// The coupled G1 solve (doc/fit_cad_freeform_plan.md step 7), natively: the
+// hood's network is G1 within the tolerance the sweeps miss, no facet more,
+// the STEP file read back valid where a kernel can check it, and the angles
+// away from and at the extraordinary vertices reported apart.
+TEST(FitCadModes, NativeCoupledG1Solve) {
+    for (const fcfix::FreeformFixture& f : fcfix::freeform_fixtures(false)) {
+        if (f.mName != "hood" && f.mName != "cc_valence3")
+            continue;
+        SCOPED_TRACE(f.mName);
+        FitCadOptions o;
+        o.mBackend = FitCadBackend::Native;
+        o.mTolerance = f.mTolerance;
+        o.mFreeformMode = FitCadFreeformMode::Network;
+        const FitCadResult sw = fit_cad(f.mMesh, "", o);
+        o.mFreeformG1Solve = FitCadNetworkG1Solve::Coupled;
+        o.mValidationReport = true;
+        const std::string path =
+            (std::filesystem::temp_directory_path() / (f.mName + "_coupled.step")).string();
+        const FitCadResult cp = fit_cad(f.mMesh, path, o);
+        EXPECT_TRUE(cp.mValid);
+        EXPECT_LE(cp.mFacetAreaFraction, sw.mFacetAreaFraction);
+        EXPECT_GE(cp.mNumCoupledRegions, 1);
+        EXPECT_LT(cp.mMaxG1AngleAwayDeg, sw.mMaxG1AngleAwayDeg);
+        EXPECT_LE(cp.mMaxG1AngleAwayDeg, o.mFreeformG1ToleranceDeg);
+        if (f.mName == "cc_valence3")
+            EXPECT_GT(cp.mMaxG1AngleAtEvDeg, 0.0);
+        else
+            EXPECT_EQ(cp.mMaxG1AngleAtEvDeg, 0.0);
+        if (cp.mStepRoundTripChecked && sw.mFacetAreaFraction == 0.0)
+            EXPECT_TRUE(cp.mStepRoundTripValid);
+        // Off, nothing is coupled.
+        EXPECT_EQ(sw.mNumCoupledRegions, 0);
+    }
 }
 
 // The native backend records every fitted patch, measures the facet area and
@@ -710,6 +747,16 @@ TEST(FitCadModes, OcctNetworkBuildsTheCage) {
                 EXPECT_TRUE(std::isfinite(rec.mMaxG1AngleDeg));
             }
         }
+        // The coupled solve through OpenCASCADE: still every face, checked,
+        // G1 away from the extraordinary vertices within the tolerance.
+        o.mFreeformMode = FitCadFreeformMode::Network;
+        o.mFreeformG1Solve = FitCadNetworkG1Solve::Coupled;
+        const FitCadResult cp = fit_cad(f.mMesh, "", o);
+        EXPECT_TRUE(cp.mValid);
+        EXPECT_TRUE(cp.mBrepChecked);
+        EXPECT_EQ(cp.mFacetAreaFraction, 0.0);
+        EXPECT_GE(cp.mNumCoupledRegions, 1);
+        EXPECT_LE(cp.mMaxG1AngleAwayDeg, o.mFreeformG1ToleranceDeg);
     }
 }
 

@@ -239,6 +239,7 @@ OP_TABLE = {
         "FreeformFitSchedule",
         "FreeformObjective",
         "KinematicSurfaces",
+        "FreeformG1Solve",
     ),
     "RefinePatches": (
         "Tolerance",
@@ -1391,6 +1392,7 @@ KEY_DEFAULTS = {
         ("FreeformFitSchedule", "text", "legacy"),
         ("FreeformObjective", "text", "default"),
         ("KinematicSurfaces", "flag", False),
+        ("FreeformG1Solve", "text", "sweeps"),
     ),
     "RefinePatches": (
         ("Tolerance", "number", 0.001),

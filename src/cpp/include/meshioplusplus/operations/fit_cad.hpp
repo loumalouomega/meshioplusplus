@@ -331,6 +331,20 @@ enum class FitCadFreeformObjective : std::int32_t {
     Sdm = 3,
 };
 
+/// How the patch network makes its patches G1 across their shared edges
+/// (unreleased, doc/fit_cad_freeform_plan.md step 7).
+enum class FitCadNetworkG1Solve : std::int32_t {
+    /// Each patch refitted against its neighbours' current surfaces in turn,
+    /// the shared edge curves fixed: as before the option existed (the
+    /// default).
+    Sweeps = 0,
+    /// One least-squares solve over each region per step: every interior
+    /// pole and every free pole of the shared edge curves, the G1 rows
+    /// linearised at the current surfaces; kept unless its accepted patches
+    /// cover less of the region than the sweeps'.
+    Coupled = 1,
+};
+
 /// Which engine `fit_cad` builds the solid with (since v17.9.0).
 enum class FitCadBackend : std::int32_t {
     /// OpenCASCADE when the build carries it, else `Native`.
@@ -510,6 +524,9 @@ struct FitCadOptions {
     /// `SURFACE_OF_REVOLUTION`; a revolution's NURBS form is rational). Both
     /// backends; off by default.
     bool mKinematicSurfaces = false;
+    /// How the patch network reaches G1 (unreleased): `Sweeps` keeps every
+    /// output as it was.
+    FitCadNetworkG1Solve mFreeformG1Solve = FitCadNetworkG1Solve::Sweeps;
 };
 
 /// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,
@@ -675,6 +692,14 @@ struct FitCadResult {
     std::int64_t mNumExtrusion = 0;
     std::int64_t mNumRevolution = 0;
     std::int64_t mNumKinematicHelical = 0;
+    /// The largest G1 angle between network faces away from the
+    /// extraordinary vertices and next to them only, in degrees (0 without
+    /// a network): tensor-product patches cannot be G1 at a vertex of valence
+    /// other than four (unreleased). And, with `FitCadNetworkG1Solve::Coupled`,
+    /// the regions whose coupled solve was kept.
+    double mMaxG1AngleAwayDeg = 0.0;
+    double mMaxG1AngleAtEvDeg = 0.0;
+    std::int64_t mNumCoupledRegions = 0;
 };
 
 /**

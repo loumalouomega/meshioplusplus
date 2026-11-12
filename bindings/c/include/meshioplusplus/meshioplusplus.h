@@ -7166,6 +7166,12 @@ typedef enum mio_fit_cad_objective {
     MIO_OBJECTIVE_SDM = 3
 } mio_fit_cad_objective;
 
+/** FitCadNetworkG1Solve's values (unreleased). */
+typedef enum mio_fit_cad_g1_solve {
+    MIO_G1_SOLVE_SWEEPS = 0,
+    MIO_G1_SOLVE_COUPLED = 1
+} mio_fit_cad_g1_solve;
+
 /** FitCadDemotionReason's values: column 4 of the "fit_cad:face_table" field data. */
 typedef enum mio_fit_cad_demotion_reason {
     MIO_DEMOTION_NONE = 0,
@@ -7233,7 +7239,11 @@ typedef struct mio_fit_cad_opts_ex2 {
      *  surface, fit_cad:type 11, 12 and 8). Takes the former `reserved32`;
      *  0 (the default) tries none (unreleased). */
     int32_t kinematic_surfaces;
-    int64_t reserved[5]; /**< must be zero; room for additive growth */
+    /** How the patch network reaches G1, a mio_fit_cad_g1_solve; 0 (sweeps)
+     *  as before. Takes the front of the former reserved[0] (unreleased). */
+    int32_t freeform_g1_solve;
+    int32_t reserved32b; /**< must be zero */
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_fit_cad_opts_ex2;
 
 /** Initialize the freeform-mode options to fit_cad's defaults (legacy mode). */
@@ -7320,7 +7330,14 @@ typedef struct mio_fit_cad_report_ex4 {
     int64_t num_extrusion;
     int64_t num_revolution;
     int64_t num_kinematic_helical;
-    int64_t reserved[19]; /**< zero; room for additive growth */
+    /** Outside the legacy mode: the largest G1 angle between network faces
+     *  away from the extraordinary vertices and next to them only, in
+     *  degrees; with freeform_g1_solve, the regions whose coupled solve was
+     *  kept (unreleased). */
+    double max_g1_angle_away_deg;
+    double max_g1_angle_at_ev_deg;
+    int64_t num_coupled_regions;
+    int64_t reserved[16]; /**< zero; room for additive growth */
 } mio_fit_cad_report_ex4;
 
 /**

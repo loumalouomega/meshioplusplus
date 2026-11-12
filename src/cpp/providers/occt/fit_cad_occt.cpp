@@ -3357,7 +3357,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     std::vector<std::uint8_t> network_row(m, 0), network_tried(m, 0);
     std::vector<detail::StepEdgeCurve> network_curves;
     std::int64_t num_network_edges = 0, num_network_ev = 0;
-    double network_g1 = 0.0;
+    double network_g1 = 0.0, network_g1_away = 0.0, network_g1_ev = 0.0;
+    std::int64_t network_coupled = 0;
     const auto occt_network = [&](const std::vector<std::size_t>& rRows, bool AsFacets) {
         std::vector<std::size_t> failed;
         std::vector<std::vector<std::size_t>> items;
@@ -3454,6 +3455,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 num_network_edges += static_cast<std::int64_t>(reg.mNet.mNumEdges);
                 num_network_ev += static_cast<std::int64_t>(reg.mNet.mNumExtraordinary);
                 network_g1 = std::max(network_g1, reg.mNet.mMaxG1AngleDeg);
+                network_g1_away = std::max(network_g1_away, reg.mNet.mMaxG1AngleAwayDeg);
+                network_g1_ev = std::max(network_g1_ev, reg.mNet.mMaxG1AngleAtEvDeg);
+                network_coupled += reg.mNet.mCoupledKept ? 1 : 0;
             }
         }
         return failed;
@@ -4492,6 +4496,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         result.mNumNetworkEdges = num_network_edges;
         result.mNumExtraordinaryVertices = num_network_ev;
         result.mMaxG1AngleDeg = network_g1;
+        result.mMaxG1AngleAwayDeg = network_g1_away;
+        result.mMaxG1AngleAtEvDeg = network_g1_ev;
+        result.mNumCoupledRegions = network_coupled;
     }
     result.mFreeformMode = rOptions.mFreeformMode;
     {

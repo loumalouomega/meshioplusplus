@@ -350,6 +350,13 @@ def add_args(parser):
         help="hold every freeform face to the validation measures before accepting it",
     )
     parser.add_argument(
+        "--freeform-g1-solve",
+        choices=["sweeps", "coupled"],
+        default="sweeps",
+        help="how the patch network reaches G1: each patch in turn (sweeps) or one "
+        "solve over each region, its shared edge curves free too (coupled)",
+    )
+    parser.add_argument(
         "--kinematic-surfaces",
         action="store_true",
         help="first try a patch no primitive explains as a surface of linear "
@@ -447,6 +454,7 @@ def to_cad_cmd(args):
         validation_report=args.validation_report,
         validation_acceptance=args.validation_acceptance,
         kinematic_surfaces=args.kinematic_surfaces,
+        freeform_g1_solve=args.freeform_g1_solve,
     )
     if args.mesh_out:
         write(args.mesh_out, out)

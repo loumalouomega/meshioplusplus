@@ -1688,7 +1688,9 @@ struct _CFitCadOptsEx2
     freeform_fit_schedule::Int32
     freeform_objective::Int32
     kinematic_surfaces::Int32
-    reserved::NTuple{5,Int64}
+    freeform_g1_solve::Int32
+    reserved32b::Int32
+    reserved::NTuple{4,Int64}
 end
 
 """Mirror of C `mio_fit_cad_report_ex3` (v17.12.0)."""
@@ -1731,7 +1733,10 @@ struct _CFitCadReportEx4
     num_extrusion::Int64
     num_revolution::Int64
     num_kinematic_helical::Int64
-    reserved::NTuple{19,Int64}
+    max_g1_angle_away_deg::Cdouble
+    max_g1_angle_at_ev_deg::Cdouble
+    num_coupled_regions::Int64
+    reserved::NTuple{16,Int64}
 end
 
 """Mirror of C `mio_render_opts` (v16.34.0; cut-aways v16.36.0). ABI; fill it through [`render`](@ref),

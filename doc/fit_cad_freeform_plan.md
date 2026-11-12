@@ -90,7 +90,9 @@ Departures: the revolution block stays inline and kind 12 is one more profile fo
 
 `freeform_g1_solve="coupled"` fits each network region as one sparse system: the interior poles of every patch and of every shared edge curve are unknowns (so both patches still take the same boundary row and G0 holds), the tangent-plane conditions on shared edges are penalty rows whose weight rises in steps, solved by the deterministic conjugate gradients and alternated with parameter correction. A region whose coupled fit passes fewer patches than the sweeps keeps the sweeps. The largest G1 angle is reported away from and at extraordinary vertices separately: tensor-product cubics cannot hold G1 exactly at a vertex of valence other than four, and the page says so rather than claiming it.
 
-- [ ] Coupled solve, tests, KPI on the hood box and the cube cage.
+- [x] Coupled solve (`freeform_g1_solve="coupled"`), the angles away from and at extraordinary vertices reported apart (`max_g1_angle_away_deg`, `max_g1_angle_at_ev_deg`, `num_coupled_regions`), tests, every binding, KPI. See [the coupled G1 solve](./fit_cad.md#the-coupled-g1-solve).
+
+Departures: the G1 rows aim both sides at the plane halfway between their normals rather than each at its neighbour's (solved together, each side turned to the other's present plane and the angle only swapped sides). A shared curve with a T-junction on it stays fixed, as does every curve on the region's boundary: the other chain ending on it must keep meeting it. A free curve is held to its Phase A points at its vertices' parameters (a sample whose foot lies on a patch's side is left to the side's curve, so no data held it). The penalty weight rises as the sweeps' does, and a step that leaves a patch out of tolerance is retried with knots, then at half the weight; the sweeps then polish the result. The region keeps the coupled result unless it covers less or its largest angle is larger. The solve is Jacobi-preconditioned conjugate gradients, as everywhere else in the network.
 
 ### Steps 8 and 9, if time allows
 

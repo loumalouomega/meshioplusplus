@@ -5004,6 +5004,7 @@ def _register_gated(server: FastMCP) -> None:
         freeform_fit_schedule: str = "legacy",
         freeform_objective: str = "default",
         kinematic_surfaces: bool = False,
+        freeform_g1_solve: str = "sweeps",
     ) -> dict:
         """Turn a closed triangle skin into a CAD solid with analytic faces,
         written to output_path as AP214 STEP -- the last step of skin to CAD
@@ -5109,7 +5110,10 @@ def _register_gated(server: FastMCP) -> None:
         kinematic_surfaces (off) first tries a patch no primitive explains as
         a surface of linear extrusion, of revolution or a helical surface
         (fit_cad:type 11, 12, 8) and adds num_extrusion, num_revolution and
-        num_kinematic_helical."""
+        num_kinematic_helical. freeform_g1_solve ("sweeps" or "coupled")
+        picks how the patch network reaches G1; outside the legacy mode the
+        report adds max_g1_angle_away_deg, max_g1_angle_at_ev_deg and
+        num_coupled_regions."""
 
     @server.tool()
     @_forward(_tools.tool_data_export)

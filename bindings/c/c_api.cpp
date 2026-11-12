@@ -9162,8 +9162,13 @@ static_assert(offsetof(mio_fit_cad_opts_ex2, freeform_objective) == 80,
               "mio_fit_cad_opts_ex2: freeform_objective left the reserved tail's start");
 static_assert(offsetof(mio_fit_cad_opts_ex2, kinematic_surfaces) == 84,
               "mio_fit_cad_opts_ex2: kinematic_surfaces left the former reserved32");
-static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 88,
+static_assert(offsetof(mio_fit_cad_opts_ex2, freeform_g1_solve) == 88,
+              "mio_fit_cad_opts_ex2: freeform_g1_solve left the reserved tail's start");
+static_assert(offsetof(mio_fit_cad_opts_ex2, reserved) == 96,
               "mio_fit_cad_opts_ex2: the reserved tail moved");
+static_assert(MIO_G1_SOLVE_COUPLED ==
+                  static_cast<int>(meshioplusplus::FitCadNetworkG1Solve::Coupled),
+              "mio_fit_cad_g1_solve must match FitCadNetworkG1Solve");
 static_assert(MIO_OBJECTIVE_SDM == static_cast<int>(meshioplusplus::FitCadFreeformObjective::Sdm),
               "mio_fit_cad_objective must match FitCadFreeformObjective");
 static_assert(MIO_FIT_SCHEDULE_CONTINUATION ==
@@ -9173,7 +9178,9 @@ static_assert(sizeof(mio_fit_cad_report_ex4) == 272,
               "mio_fit_cad_report_ex4 grew outside its reserved tail");
 static_assert(offsetof(mio_fit_cad_report_ex4, num_extrusion) == 96,
               "mio_fit_cad_report_ex4: the kinematic counts left the reserved tail's start");
-static_assert(offsetof(mio_fit_cad_report_ex4, reserved) == 120,
+static_assert(offsetof(mio_fit_cad_report_ex4, max_g1_angle_away_deg) == 120,
+              "mio_fit_cad_report_ex4: the G1 measures left the reserved tail's start");
+static_assert(offsetof(mio_fit_cad_report_ex4, reserved) == 144,
               "mio_fit_cad_report_ex4: the reserved tail moved");
 static_assert(offsetof(mio_fit_cad_report_ex3, num_constrained_primitives) == 104,
               "mio_fit_cad_report_ex3: the counts left the reserved tail's start");
@@ -11037,6 +11044,9 @@ mio_mesh* mio_fit_cad4(const mio_mesh* mesh, const char* step_path, const mio_fi
             options.mFreeformObjective =
                 static_cast<meshioplusplus::FitCadFreeformObjective>(opts_ex2->freeform_objective);
             options.mKinematicSurfaces = opts_ex2->kinematic_surfaces != 0;
+            // Out of range is refused by fit_cad, naming the option.
+            options.mFreeformG1Solve =
+                static_cast<meshioplusplus::FitCadNetworkG1Solve>(opts_ex2->freeform_g1_solve);
         }
         meshioplusplus::FitCadResult r =
             meshioplusplus::fit_cad(mesh->mMesh, step_path ? step_path : "", options);
@@ -11134,6 +11144,9 @@ mio_mesh* mio_fit_cad4(const mio_mesh* mesh, const char* step_path, const mio_fi
             report_ex4->num_extrusion = r.mNumExtrusion;
             report_ex4->num_revolution = r.mNumRevolution;
             report_ex4->num_kinematic_helical = r.mNumKinematicHelical;
+            report_ex4->max_g1_angle_away_deg = r.mMaxG1AngleAwayDeg;
+            report_ex4->max_g1_angle_at_ev_deg = r.mMaxG1AngleAtEvDeg;
+            report_ex4->num_coupled_regions = r.mNumCoupledRegions;
         }
         return new mio_mesh{std::move(r.mMesh)};
     });

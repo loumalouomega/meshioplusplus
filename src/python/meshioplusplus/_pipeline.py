@@ -1618,6 +1618,7 @@ def _apply_step(mesh, step, steps, warnings):
             validation_report=_flag(step, "ValidationReport", False),
             validation_acceptance=_flag(step, "ValidationAcceptance", False),
             kinematic_surfaces=_flag(step, "KinematicSurfaces", False),
+            freeform_g1_solve=_text(step, "FreeformG1Solve", "sweeps"),
         )
         entry["Valid"] = 1.0 if report["valid"] else 0.0
         entry["Native"] = 1.0 if report["backend"] == "native" else 0.0
@@ -1689,6 +1690,9 @@ def _apply_step(mesh, step, steps, warnings):
             entry["NumResegmented"] = report["num_resegmented"]
             entry["NumEscalations"] = report["num_escalations"]
             entry["MaxG1AngleDeg"] = report["max_g1_angle_deg"]
+            entry["MaxG1AngleAwayDeg"] = report["max_g1_angle_away_deg"]
+            entry["MaxG1AngleAtEvDeg"] = report["max_g1_angle_at_ev_deg"]
+            entry["NumCoupledRegions"] = report["num_coupled_regions"]
     elif op == "RefinePatches":
         # A data step: the `segment:patch` labels are refined, the cells never move.
         types = _svec(step, "Types") if "Types" in step else None

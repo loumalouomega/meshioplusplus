@@ -4528,7 +4528,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
             layout_snap_to_features=true, validate_by_surface_sampling=true,
             constrain_primitives=false, validation_report=false,
             validation_acceptance=false, freeform_fit_schedule="legacy",
-            freeform_objective="default", kinematic_surfaces=false)
+            freeform_objective="default", kinematic_surfaces=false,
+            freeform_g1_solve="sweeps")
         -> (; mesh, backend, valid, closed, tolerance, volume, skin_volume, volume_ratio,
              max_deviation, num_faces, num_plane, num_sphere, num_cylinder,
              num_cone, num_torus, num_faceted_faces, num_patches, num_demoted,
@@ -4549,7 +4550,8 @@ has_occt() = ccall(_sym(:mio_has_occt), Cint, ()) != 0
              normal_deviation_max_deg, normal_deviation_p95_deg, step_round_trip_checked,
              step_round_trip_valid, step_round_trip_volume_ratio,
              total_freeform_control_points, num_extrusion, num_revolution,
-             num_kinematic_helical)
+             num_kinematic_helical, max_g1_angle_away_deg, max_g1_angle_at_ev_deg,
+             num_coupled_regions)
 
 Build a CAD solid from the fitted patches of a closed skin through the
 OpenCASCADE backend: accepted fits become analytic faces, a patch no primitive
@@ -4620,6 +4622,10 @@ holds every freeform face to those measures. `freeform_fit_schedule`
 faces' B-spline fit runs. `kinematic_surfaces` first tries a patch no
 primitive explains as a surface of linear extrusion, of revolution or a
 helical surface (`num_extrusion`, `num_revolution`, `num_kinematic_helical`).
+`freeform_g1_solve` (`"sweeps"` or `"coupled"`) picks how the patch network
+reaches G1 (`num_coupled_regions`); `max_g1_angle_away_deg` and
+`max_g1_angle_at_ev_deg` split its largest angle at the extraordinary
+vertices.
 See `doc/fit_cad.md`.
 """
 function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
@@ -4651,7 +4657,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                  validation_acceptance::Bool=false,
                  freeform_fit_schedule::AbstractString="legacy",
                  freeform_objective::AbstractString="default",
-                 kinematic_surfaces::Bool=false)
+                 kinematic_surfaces::Bool=false,
+                 freeform_g1_solve::AbstractString="sweeps")
     pick(name, value, words) = begin
         k = findfirst(==(String(value)), words)
         k === nothing && throw(ArgumentError("meshio++: fit_cad: $(name) must be one of " *
@@ -4665,6 +4672,7 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
     refine_c = pick("local_refine", local_refine, ("knots", "thb"))
     schedule_c = pick("freeform_fit_schedule", freeform_fit_schedule, ("legacy", "continuation"))
     objective_c = pick("freeform_objective", freeform_objective, ("default", "pdm", "tdm", "sdm"))
+    g1_solve_c = pick("freeform_g1_solve", freeform_g1_solve, ("sweeps", "coupled"))
     backend_c = backend == "auto" ? Int32(0) : backend == "occt" ? Int32(1) :
                 backend == "native" ? Int32(2) :
                 throw(ArgumentError("meshio++: fit_cad: backend must be \"auto\", \"occt\" or \"native\""))
@@ -4705,8 +4713,8 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
                                Int32(validate_by_surface_sampling),
                                Int32(constrain_primitives), Int32(validation_report),
                                Int32(validation_acceptance), schedule_c, objective_c,
-                               Int32(kinematic_surfaces),
-                               ntuple(_ -> Int64(0), 5))
+                               Int32(kinematic_surfaces), g1_solve_c, Int32(0),
+                               ntuple(_ -> Int64(0), 4))
     ptr = ccall(_sym(:mio_fit_cad4), Ptr{Cvoid},
                 (Ptr{Cvoid}, Cstring, Ref{_CFitCadOpts}, Ref{_CFitCadOptsEx},
                  Ref{_CFitCadOptsEx2}, Ptr{_CFitCadReport}, Ptr{_CFitCadReportEx},
@@ -4771,7 +4779,10 @@ function fit_cad(m::Mesh; step_path::AbstractString="", tolerance::Real=0.0,
      step_round_trip_volume_ratio=ex4.step_round_trip_volume_ratio,
      total_freeform_control_points=Int(ex4.total_freeform_control_points),
      num_extrusion=Int(ex4.num_extrusion), num_revolution=Int(ex4.num_revolution),
-     num_kinematic_helical=Int(ex4.num_kinematic_helical))
+     num_kinematic_helical=Int(ex4.num_kinematic_helical),
+     max_g1_angle_away_deg=ex4.max_g1_angle_away_deg,
+     max_g1_angle_at_ev_deg=ex4.max_g1_angle_at_ev_deg,
+     num_coupled_regions=Int(ex4.num_coupled_regions))
 end
 
 """

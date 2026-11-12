@@ -231,7 +231,8 @@
       {"name": "ValidationAcceptance", "kind": "flag", "default": false},
       {"name": "FreeformFitSchedule", "kind": "text", "default": "legacy"},
       {"name": "FreeformObjective", "kind": "text", "default": "default"},
-      {"name": "KinematicSurfaces", "kind": "flag", "default": false}
+      {"name": "KinematicSurfaces", "kind": "flag", "default": false},
+      {"name": "FreeformG1Solve", "kind": "text", "default": "sweeps"}
     ]},
     {"op": "RefinePatches", "keys": [
       {"name": "Tolerance", "kind": "number", "default": 0.001},

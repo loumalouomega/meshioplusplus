@@ -87,6 +87,7 @@ _EXTRAORDINARY_VERTEX = ("g0", "g1", "g1x", "g1xx")
 _LOCAL_REFINE = ("knots", "thb")
 _FIT_SCHEDULES = ("legacy", "continuation")
 _OBJECTIVES = ("default", "pdm", "tdm", "sdm")
+_G1_SOLVES = ("sweeps", "coupled")
 _MODE_DEFAULTS = {
     "freeform_mode": "legacy",
     "freeform_parameterization": "auto",
@@ -101,6 +102,7 @@ _MODE_DEFAULTS = {
     "validate_by_surface_sampling": True,
     "freeform_fit_schedule": "legacy",
     "freeform_objective": "default",
+    "freeform_g1_solve": "sweeps",
 }
 _MODE_INTS = (
     "num_freeform_adaptive",
@@ -109,10 +111,13 @@ _MODE_INTS = (
     "num_extraordinary_vertices",
     "num_resegmented",
     "num_escalations",
+    "num_coupled_regions",
 )
 _MODE_FLOATS = (
     "facet_area_fraction",
     "max_g1_angle_deg",
+    "max_g1_angle_away_deg",
+    "max_g1_angle_at_ev_deg",
     "max_freeform_distance",
     "rms_freeform_distance",
 )
@@ -236,6 +241,7 @@ def fit_cad(
     freeform_fit_schedule: str = "legacy",
     freeform_objective: str = "default",
     kinematic_surfaces: bool = False,
+    freeform_g1_solve: str = "sweeps",
 ):
     """Build a CAD solid from the fitted patches of a closed skin.
 
@@ -427,6 +433,15 @@ def fit_cad(
         ``SURFACE_OF_REVOLUTION``; a revolution's NURBS form is rational).
         The report then holds ``num_extrusion``, ``num_revolution`` and
         ``num_kinematic_helical``.
+    :param freeform_g1_solve: how the patch network makes its patches G1:
+        ``"sweeps"`` (each patch against its neighbours in turn, the shared
+        edge curves fixed, as before) or ``"coupled"`` (one least-squares
+        solve over each region per step, the shared edge curves free too,
+        kept unless it fits less of the region or leaves a larger angle).
+        Outside the legacy mode the report holds ``max_g1_angle_away_deg``
+        and ``max_g1_angle_at_ev_deg`` (the largest angle away from the
+        extraordinary vertices and next to them, which tensor-product patches
+        cannot make G1) and ``num_coupled_regions``.
     :returns: the solid re-meshed as triangles with cell data ``fit_cad:face``,
         ``fit_cad:type`` (0 a facet, 6 a freeform B-spline, 7 a fillet,
         blend or conic blend, 8 a helical thread face, 9 a vertex blend, 10 a
@@ -567,6 +582,7 @@ def fit_cad(
         "validate_by_surface_sampling": bool(validate_by_surface_sampling),
         "freeform_fit_schedule": str(freeform_fit_schedule),
         "freeform_objective": str(freeform_objective),
+        "freeform_g1_solve": str(freeform_g1_solve),
     }
     for key, words in (
         ("freeform_mode", _FREEFORM_MODES),
@@ -575,6 +591,7 @@ def fit_cad(
         ("local_refine", _LOCAL_REFINE),
         ("freeform_fit_schedule", _FIT_SCHEDULES),
         ("freeform_objective", _OBJECTIVES),
+        ("freeform_g1_solve", _G1_SOLVES),
     ):
         if modes[key] not in words:
             raise ValueError(

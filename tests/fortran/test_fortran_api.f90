@@ -3268,6 +3268,12 @@ contains
                            num_extrusion=nkin, stat=ierr)
         call check(ierr == 0 .and. nkin == 0_int64, 'a cube has no kinematic surface')
         call solid%free()
+        solid = sq%fit_cad(backend='native', freeform_g1_solve='coupled', &
+                           num_coupled_regions=nkin, stat=ierr)
+        call check(ierr == 0 .and. nkin == 0_int64, 'a cube has no network to couple')
+        call solid%free()
+        solid = sq%fit_cad(backend='native', freeform_g1_solve='nope', stat=ierr)
+        call check(ierr /= 0, 'fit_cad refuses an unknown G1 solve')
         ! The Phase 3 options (v17.11.0): closed on every backend, nothing
         ! measured is NaN, and an option out of range is refused.
         solid = sq%fit_cad(backend='native', closed=was_closed, hausdorff_max=hmax, &

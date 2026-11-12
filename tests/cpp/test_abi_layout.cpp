@@ -610,7 +610,8 @@ static_assert(offsetof(meshioplusplus::FitPrimitivesOptions, mUsedPoints) == 184
 // mValidationReport and mValidationAcceptance in the tail padding (same size,
 // new members) and grew FitCadResult by the validation report, then appended
 // mFreeformFitSchedule and mFreeformObjective: 288 -> 296, and
-// mKinematicSurfaces: 296 -> 304.
+// mKinematicSurfaces: 296 -> 304, and mFreeformG1Solve in its tail padding
+// (still 304).
 MIO_ABI_LAYOUT(meshioplusplus::FitCadOptions, 304, 8);
 MIO_ABI_LAYOUT(meshioplusplus::FitCadFaceRecord, 96, 8);
 static_assert(offsetof(meshioplusplus::FitCadOptions, mMergeFaces) == 51,
@@ -649,6 +650,8 @@ static_assert(offsetof(meshioplusplus::FitCadOptions, mFreeformObjective) == 292
               "FitCadOptions::mFreeformObjective moved");
 static_assert(offsetof(meshioplusplus::FitCadOptions, mKinematicSurfaces) == 296,
               "FitCadOptions::mKinematicSurfaces moved");
+static_assert(offsetof(meshioplusplus::FitCadOptions, mFreeformG1Solve) == 300,
+              "FitCadOptions::mFreeformG1Solve moved");
 // refine_patches' options (operations/refine_patches.hpp, ABI 32).
 MIO_ABI_LAYOUT(meshioplusplus::RefinePatchesOptions, 96, 8);
 // The kernel-free STEP writer's options (formats/step.hpp), from ABI 31.

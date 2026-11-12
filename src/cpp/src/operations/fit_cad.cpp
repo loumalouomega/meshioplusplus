@@ -394,6 +394,9 @@ struct FcnFreeform {
     std::int64_t mNumNetworkEdges = 0;
     std::int64_t mNumExtraordinary = 0;
     double mMaxG1AngleDeg = 0.0;
+    double mMaxG1AngleAwayDeg = 0.0;
+    double mMaxG1AngleAtEvDeg = 0.0;
+    std::int64_t mNumCoupledRegions = 0;
 };
 
 // The tolerance the native writer will apply: as `step_brep_write` takes it.
@@ -594,6 +597,7 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         no.mValidate = rOptions.mValidateBySurfaceSampling || rOptions.mValidationAcceptance;
         if (rOptions.mValidationAcceptance)
             no.mMaxNormalDeg = kFitCadValidationNormalDeg;
+        no.mCoupled = rOptions.mFreeformG1Solve == FitCadNetworkG1Solve::Coupled;
         reg.mNet = detail::patch_network_fit(reg.mPts, reg.mTris, reg.mLayout, no);
         // The tangent-plane treatment of the extraordinary vertices kept only
         // where it does better there than leaving them alone (`g0`) and fits
@@ -1054,6 +1058,11 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
                     out.mNumNetworkEdges += static_cast<std::int64_t>(net.mNumEdges);
                     out.mNumExtraordinary += static_cast<std::int64_t>(net.mNumExtraordinary);
                     out.mMaxG1AngleDeg = std::max(out.mMaxG1AngleDeg, net.mMaxG1AngleDeg);
+                    out.mMaxG1AngleAwayDeg =
+                        std::max(out.mMaxG1AngleAwayDeg, net.mMaxG1AngleAwayDeg);
+                    out.mMaxG1AngleAtEvDeg =
+                        std::max(out.mMaxG1AngleAtEvDeg, net.mMaxG1AngleAtEvDeg);
+                    out.mNumCoupledRegions += net.mCoupledKept ? 1 : 0;
                 }
             }
             return left;
@@ -1491,6 +1500,9 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mNumNetworkEdges = freeform.mNumNetworkEdges;
     result.mNumExtraordinaryVertices = freeform.mNumExtraordinary;
     result.mMaxG1AngleDeg = freeform.mMaxG1AngleDeg;
+    result.mMaxG1AngleAwayDeg = freeform.mMaxG1AngleAwayDeg;
+    result.mMaxG1AngleAtEvDeg = freeform.mMaxG1AngleAtEvDeg;
+    result.mNumCoupledRegions = freeform.mNumCoupledRegions;
     result.mNumSplitPatches = freeform.mNumSplit;
     result.mNumResegmented = freeform.mNumResegmented;
     result.mNumExactEdges = brep.mNumLineEdges + brep.mNumCircleEdges;
@@ -1757,6 +1769,9 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
     if (static_cast<std::uint32_t>(rOptions.mFreeformObjective) > 3u)
         throw std::invalid_argument(std::string(kFcnPrefix) +
                                     "freeform_objective must be 'default', 'pdm', 'tdm' or 'sdm'");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformG1Solve) > 1u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_g1_solve must be 'sweeps' or 'coupled'");
     // The freeform modes build on the general fit, and their faces run on
     // past their patches so an edge with an analytic neighbour is still an
     // intersection.

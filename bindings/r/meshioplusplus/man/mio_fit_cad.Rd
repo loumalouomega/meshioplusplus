@@ -55,7 +55,8 @@ mio_fit_cad(
   validation_acceptance = FALSE,
   freeform_fit_schedule = "legacy",
   freeform_objective = "default",
-  kinematic_surfaces = FALSE
+  kinematic_surfaces = FALSE,
+  freeform_g1_solve = "sweeps"
 )
 }
 \arguments{
@@ -196,6 +197,9 @@ B-spline fit schedule, `"legacy"` or `"continuation"`.}
 \item{kinematic_surfaces}{Whether a patch no primitive explains is first
 tried as a surface of linear extrusion, of revolution or a helical
 surface.}
+
+\item{freeform_g1_solve}{How the patch network reaches G1, `"sweeps"` or
+`"coupled"`.}
 }
 \value{
 A list of `mesh` (the solid re-meshed, with cell data
@@ -232,7 +236,10 @@ A list of `mesh` (the solid re-meshed, with cell data
   `step_round_trip_valid`, `step_round_trip_volume_ratio` and
   `total_freeform_control_points`; `NaN` and `FALSE` unless
   `validation_report` measured them), and `num_extrusion`,
-  `num_revolution` and `num_kinematic_helical` (the kinematic faces).
+  `num_revolution` and `num_kinematic_helical` (the kinematic faces),
+  `max_g1_angle_away_deg`, `max_g1_angle_at_ev_deg` and
+  `num_coupled_regions` (the network's G1 apart from and at the
+  extraordinary vertices).
 }
 \description{
 Builds a CAD solid from the fitted patches of a closed skin through the

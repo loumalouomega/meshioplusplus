@@ -2000,6 +2000,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mValidationReport = pipe_flag(rStep, "ValidationReport", false);
         opts.mValidationAcceptance = pipe_flag(rStep, "ValidationAcceptance", false);
         opts.mKinematicSurfaces = pipe_flag(rStep, "KinematicSurfaces", false);
+        opts.mFreeformG1Solve = static_cast<FitCadNetworkG1Solve>(
+            keyword("FreeformG1Solve", "sweeps", {"sweeps", "coupled"}));
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -2082,6 +2084,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             counters.emplace_back("NumResegmented", static_cast<double>(cr.mNumResegmented));
             counters.emplace_back("NumEscalations", static_cast<double>(cr.mNumEscalations));
             counters.emplace_back("MaxG1AngleDeg", cr.mMaxG1AngleDeg);
+            counters.emplace_back("MaxG1AngleAwayDeg", cr.mMaxG1AngleAwayDeg);
+            counters.emplace_back("MaxG1AngleAtEvDeg", cr.mMaxG1AngleAtEvDeg);
+            counters.emplace_back("NumCoupledRegions", static_cast<double>(cr.mNumCoupledRegions));
         }
         pipe_push_step(rReport, rStep, std::move(counters));
         // The fitted solid is the model the rest of the run carries, when the

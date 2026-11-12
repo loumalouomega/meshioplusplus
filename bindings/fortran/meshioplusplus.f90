@@ -660,7 +660,9 @@ module meshioplusplus
         integer(c_int32_t) :: freeform_fit_schedule = 0
         integer(c_int32_t) :: freeform_objective = 0
         integer(c_int32_t) :: kinematic_surfaces = 0
-        integer(c_int64_t) :: reserved(5) = 0
+        integer(c_int32_t) :: freeform_g1_solve = 0
+        integer(c_int32_t) :: reserved32b = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_fit_cad_report_ex3` (v17.12.0, 184 bytes).
@@ -704,7 +706,10 @@ module meshioplusplus
         integer(c_int64_t) :: num_extrusion = 0
         integer(c_int64_t) :: num_revolution = 0
         integer(c_int64_t) :: num_kinematic_helical = 0
-        integer(c_int64_t) :: reserved(19) = 0
+        real(c_double) :: max_g1_angle_away_deg = 0.0_c_double
+        real(c_double) :: max_g1_angle_at_ev_deg = 0.0_c_double
+        integer(c_int64_t) :: num_coupled_regions = 0
+        integer(c_int64_t) :: reserved(16) = 0
     end type
 
     !> Interop mirror of C `mio_iga_opts` (the subdivisions default to 1 and
@@ -10856,7 +10861,9 @@ contains
                           step_round_trip_checked, step_round_trip_valid, &
                           step_round_trip_volume_ratio, total_freeform_control_points, &
                           freeform_fit_schedule, freeform_objective, kinematic_surfaces, &
-                          num_extrusion, num_revolution, num_kinematic_helical) result(out)
+                          num_extrusion, num_revolution, num_kinematic_helical, &
+                          freeform_g1_solve, max_g1_angle_away_deg, max_g1_angle_at_ev_deg, &
+                          num_coupled_regions) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in), optional :: step_path
         real(real64), intent(in), optional :: tolerance, mesh_deflection
@@ -10928,7 +10935,9 @@ contains
         character(*), intent(in), optional :: freeform_fit_schedule, freeform_objective
         logical, intent(in), optional :: kinematic_surfaces
         integer(int64), intent(out), optional :: num_extrusion, num_revolution, &
-                                                 num_kinematic_helical
+                                                 num_kinematic_helical, num_coupled_regions
+        character(*), intent(in), optional :: freeform_g1_solve
+        real(real64), intent(out), optional :: max_g1_angle_away_deg, max_g1_angle_at_ev_deg
         type(mio_mesh) :: out
         type(c_ptr) :: res, path_ptr
         type(mio_fit_cad_opts_t) :: opts
@@ -11026,6 +11035,15 @@ contains
             merge(1_c_int32_t, 0_c_int32_t, validation_acceptance)
         if (present(kinematic_surfaces)) opts_ex2%kinematic_surfaces = &
             merge(1_c_int32_t, 0_c_int32_t, kinematic_surfaces)
+        if (present(freeform_g1_solve)) then
+            code = keyword_index(freeform_g1_solve, [character(7) :: 'sweeps', 'coupled'])
+            if (code < 0) then
+                call handle_failure('fit_cad', &
+                    "freeform_g1_solve must be 'sweeps' or 'coupled'", stat, errmsg)
+                return
+            end if
+            opts_ex2%freeform_g1_solve = int(code, c_int32_t)
+        end if
         if (present(refine_segmentation)) &
             opts_ex%refine_segmentation = merge(1_c_int32_t, 0_c_int32_t, refine_segmentation)
         if (present(max_refine_iterations)) &
@@ -11190,6 +11208,12 @@ contains
         if (present(num_revolution)) num_revolution = int(report_ex4%num_revolution, int64)
         if (present(num_kinematic_helical)) &
             num_kinematic_helical = int(report_ex4%num_kinematic_helical, int64)
+        if (present(max_g1_angle_away_deg)) &
+            max_g1_angle_away_deg = real(report_ex4%max_g1_angle_away_deg, real64)
+        if (present(max_g1_angle_at_ev_deg)) &
+            max_g1_angle_at_ev_deg = real(report_ex4%max_g1_angle_at_ev_deg, real64)
+        if (present(num_coupled_regions)) &
+            num_coupled_regions = int(report_ex4%num_coupled_regions, int64)
         call clear_status(stat, errmsg)
     end function
 

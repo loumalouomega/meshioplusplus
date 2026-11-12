@@ -136,6 +136,11 @@ bool kpi_option(FitCadOptions& rO, const std::string& rKey, const std::string& r
                                             ? meshioplusplus::FitCadFreeformObjective::Sdm
                                             : meshioplusplus::FitCadFreeformObjective::Default;
              }},
+            {"freeform_g1_solve",
+             [](FitCadOptions& o, const std::string& v, bool) {
+                 o.mFreeformG1Solve = v == "coupled" ? meshioplusplus::FitCadNetworkG1Solve::Coupled
+                                                     : meshioplusplus::FitCadNetworkG1Solve::Sweeps;
+             }},
             {"kinematic_surfaces",
              [](FitCadOptions& o, const std::string&, bool b) { o.mKinematicSurfaces = b; }},
             {"resegment_rounds", [](FitCadOptions& o, const std::string& v,
@@ -236,7 +241,8 @@ int main(int argc, char** argv) {
            "num_bspline,num_fillet,num_helical,num_faceted_faces,num_demoted,"
            "num_network_patches,total_ctrl,mesh_to_cad_max,mesh_to_cad_p95,cad_to_mesh_max,"
            "cad_to_mesh_p95,normal_max_deg,normal_p95_deg,max_g1_deg,step_round_trip,"
-           "step_volume_ratio,seconds,num_extrusion,num_revolution\n";
+           "step_volume_ratio,seconds,num_extrusion,num_revolution,max_g1_away_deg,max_g1_ev_deg,"
+           "num_coupled_regions\n";
     for (const KpiFixture& f : fixtures)
         for (const std::string& backend : backends)
             for (const std::string& mode : modes) {
@@ -270,7 +276,7 @@ int main(int argc, char** argv) {
                     line, sizeof line,
                     "%s,%s,%s,%s,%s,%d,%d,%d,%.6g,%.6g,%.6g,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
                     "%lld,%lld,%lld,%lld,%lld,%lld,%.6g,%.6g,%.6g,%.6g,%.4g,%.4g,%.4g,%d,%.6g,"
-                    "%.3f,%lld,%lld\n",
+                    "%.3f,%lld,%lld,%.4g,%.4g,%lld\n",
                     tag.c_str(), f.mSet.c_str(), f.mName.c_str(), backend.c_str(),
                     kpi_mode_name(o.mFreeformMode), r.mValid ? 1 : 0, r.mClosed ? 1 : 0,
                     r.mBrepChecked ? 1 : 0, r.mTolerance, r.mVolumeRatio, r.mFacetAreaFraction,
@@ -290,7 +296,8 @@ int main(int argc, char** argv) {
                     r.mNormalDeviationP95Deg, r.mMaxG1AngleDeg,
                     r.mStepRoundTripChecked ? (r.mStepRoundTripValid ? 1 : 0) : -1,
                     r.mStepRoundTripVolumeRatio, secs, static_cast<long long>(r.mNumExtrusion),
-                    static_cast<long long>(r.mNumRevolution));
+                    static_cast<long long>(r.mNumRevolution), r.mMaxG1AngleAwayDeg,
+                    r.mMaxG1AngleAtEvDeg, static_cast<long long>(r.mNumCoupledRegions));
                 out << line;
                 out.flush();
                 std::cerr << f.mName << " " << backend << " " << mode << ": facets "

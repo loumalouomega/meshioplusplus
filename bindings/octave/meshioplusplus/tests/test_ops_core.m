@@ -511,6 +511,10 @@ function t_fit_cad()
     kn = mio.fit_cad(m, 'backend', 'native', 'kinematic_surfaces', true);
     expect_equal(kn.num_extrusion, 0);
     expect_equal(kn.num_revolution, 0);
+    cp = mio.fit_cad(m, 'backend', 'native', 'freeform_g1_solve', 'coupled');
+    expect_equal(cp.num_coupled_regions, 0);
+    expect_error(@() mio.fit_cad(m, 'backend', 'native', 'freeform_g1_solve', 'nope'), ...
+        'freeform_g1_solve');
     % A STEP file is written on request.
     step = [tempname() '.step'];
     cleanup = onCleanup(@() delete_if(step));

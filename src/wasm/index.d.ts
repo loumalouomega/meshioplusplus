@@ -5847,6 +5847,8 @@ export interface FitCadOptions {
    * extrusion, of revolution or a helical surface (default false, unreleased).
    */
   kinematicSurfaces?: boolean;
+  /** How the patch network reaches G1 (default 'sweeps', unreleased). */
+  freeformG1Solve?: 'sweeps' | 'coupled';
 }
 
 /** One patch {@link MeshioPlusPlusModule.fitCad} tried as a surface (v17.12.0). */
@@ -6220,6 +6222,9 @@ export interface FitCadResult {
   numResegmented: number;
   numEscalations: number;
   maxG1AngleDeg: number;
+  /** Its largest angle away from the extraordinary vertices and next to them only (unreleased). */
+  maxG1AngleAwayDeg: number;
+  maxG1AngleAtEvDeg: number;
   maxFreeformDistance: number;
   rmsFreeformDistance: number;
   /** With `constrainPrimitives`: the patches whose primitive took a shared axis, normal or radius. */
@@ -6249,6 +6254,8 @@ export interface FitCadResult {
   numExtrusion: number;
   numRevolution: number;
   numKinematicHelical: number;
+  /** The regions whose coupled G1 solve was kept (with `freeformG1Solve: 'coupled'`). */
+  numCoupledRegions: number;
   /** Outside the legacy mode: one record per patch tried as a surface. */
   faces?: FitCadFaceRecord[];
   /** The solid's B-rep, for `writeMesh(path, mesh, 'cad_json', {info})`. */

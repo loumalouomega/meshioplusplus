@@ -30788,6 +30788,20 @@ enum class FitCadFreeformObjective : std::int32_t {
     Sdm = 3,
 };
 
+/// How the patch network makes its patches G1 across their shared edges
+/// (unreleased, doc/fit_cad_freeform_plan.md step 7).
+enum class FitCadNetworkG1Solve : std::int32_t {
+    /// Each patch refitted against its neighbours' current surfaces in turn,
+    /// the shared edge curves fixed: as before the option existed (the
+    /// default).
+    Sweeps = 0,
+    /// One least-squares solve over each region per step: every interior
+    /// pole and every free pole of the shared edge curves, the G1 rows
+    /// linearised at the current surfaces; kept unless its accepted patches
+    /// cover less of the region than the sweeps'.
+    Coupled = 1,
+};
+
 /// Which engine `fit_cad` builds the solid with (since v17.9.0).
 enum class FitCadBackend : std::int32_t {
     /// OpenCASCADE when the build carries it, else `Native`.
@@ -30967,6 +30981,9 @@ struct FitCadOptions {
     /// `SURFACE_OF_REVOLUTION`; a revolution's NURBS form is rational). Both
     /// backends; off by default.
     bool mKinematicSurfaces = false;
+    /// How the patch network reaches G1 (unreleased): `Sweeps` keeps every
+    /// output as it was.
+    FitCadNetworkG1Solve mFreeformG1Solve = FitCadNetworkG1Solve::Sweeps;
 };
 
 /// With `FitCadOptions::mValidationAcceptance`: the largest angle, in degrees,
@@ -31132,6 +31149,14 @@ struct FitCadResult {
     std::int64_t mNumExtrusion = 0;
     std::int64_t mNumRevolution = 0;
     std::int64_t mNumKinematicHelical = 0;
+    /// The largest G1 angle between network faces away from the
+    /// extraordinary vertices and next to them only, in degrees (0 without
+    /// a network): tensor-product patches cannot be G1 at a vertex of valence
+    /// other than four (unreleased). And, with `FitCadNetworkG1Solve::Coupled`,
+    /// the regions whose coupled solve was kept.
+    double mMaxG1AngleAwayDeg = 0.0;
+    double mMaxG1AngleAtEvDeg = 0.0;
+    std::int64_t mNumCoupledRegions = 0;
 };
 
 /**
@@ -51665,6 +51690,28 @@ QuadLayoutFailure quad_layout_check(const QuadLayout& rLayout, const std::vector
  *     exactly, so its neighbours do not change), within `mMaxTotalPoles` and
  *     `mMaxRefinements`; each patch is then held to `freeform_accept`, the
  *     adaptive faces' test.
+ *  7. **Coupled solve** (`mCoupled`, `fit_cad`'s `freeform_g1_solve=
+ *     "coupled"`, unreleased). Instead of the sweeps, each step solves one
+ *     system over the region: every interior pole and every free pole of the
+ *     shared edge curves (a curve inside the region with no T-junction on
+ *     it; its ends and, at an extraordinary vertex, its tangent-plane pole
+ *     fixed). A patch's boundary rows are linear in its curves' poles
+ *     (segments, joins and knot refinement keep the knots), the map found by
+ *     building the rows from each free pole alone; so both patches beside a
+ *     curve take their rows from the same poles and G0 stays exact. The G1
+ *     rows ask both sides for the plane halfway between their present
+ *     normals (each side aimed at the other's would only swap them), a free
+ *     curve is held to its Phase A points at its vertices' parameters, and
+ *     the weight doubles as the sweeps' does. A step that pushes a patch out
+ *     of the tolerance is undone and retried, with knots where it misses or
+ *     at half the weight; the sweeps then polish. The region keeps the
+ *     result unless its accepted patches cover fewer triangles or its largest
+ *     angle exceeds the sweeps'.
+ *
+ * The largest angle is also reported away from the extraordinary vertices
+ * and at them only (`mMaxG1AngleAwayDeg`, `mMaxG1AngleAtEvDeg`):
+ * tensor-product patches cannot be G1 at a vertex of valence other than
+ * four, so the two say different things.
  *
  * A **core-private** header: nothing installed names it. Serial and
  * deterministic.
@@ -51698,6 +51745,11 @@ struct PatchNetworkOptions {
     /// facet-normal deviation a patch may show
     /// (`surface_normal_deviation_deg`); 0 does not look.
     double mMaxNormalDeg = 0.0;
+    /// With `fit_cad`'s `freeform_g1_solve="coupled"` (unreleased): G1 by
+    /// one solve over the region, its edge curves free too, kept unless its
+    /// accepted patches cover fewer triangles than the sweeps' (see the
+    /// file comment); false sweeps, as before.
+    bool mCoupled = false;
 };
 
 /// One fitted patch.
@@ -51733,6 +51785,14 @@ struct PatchNetwork {
     /// to extraordinary vertices included, whatever the mode: the measure
     /// two modes are compared by.
     double mMaxG1AngleEvDeg = 0.0;
+    /// The largest G1 angle over the accepted patches away from the
+    /// extraordinary vertices (their first spans excluded), and at them
+    /// only: tensor-product patches cannot be G1 at a vertex of valence
+    /// other than four, so the two are reported apart.
+    double mMaxG1AngleAwayDeg = 0.0;
+    double mMaxG1AngleAtEvDeg = 0.0;
+    /// With `mCoupled`: whether the coupled solve's result was kept.
+    bool mCoupledKept = false;
     /// Chains shared by two patches.
     std::size_t mNumEdges = 0;
     std::size_t mNumExtraordinary = 0;
@@ -63404,7 +63464,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
           "FreeformG1ToleranceDeg", "FreeformMaxControlPoints", "LayoutTargetPatchSize",
           "LayoutMaxValenceDeviation", "ResegmentRounds", "LayoutSnapToFeatures",
           "ValidateBySurfaceSampling", "ConstrainPrimitives", "ValidationReport",
-          "ValidationAcceptance", "FreeformFitSchedule", "FreeformObjective", "KinematicSurfaces"}},
+          "ValidationAcceptance", "FreeformFitSchedule", "FreeformObjective", "KinematicSurfaces",
+          "FreeformG1Solve"}},
         {"RefinePatches",
          {"Tolerance", "Relative", "NormalWeight", "Epsilon", "FeatureAngle", "MaxIterations",
           "MinPatchCells", "RansacSeed", "Types", "AllowSplit", "AllowMerge", "Prefix"}},
@@ -107268,6 +107329,7 @@ struct PnSegment {
 struct PnSide {
     BsplineCurve mCurve;
     std::vector<PnSegment> mSegments;
+    std::vector<double> mLengths;  ///< the segments' mesh lengths, for the join
 };
 
 // A patch while it is fitted.
@@ -107671,6 +107733,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                 side.mSegments[k].mS1 = at;
             }
             side.mCurve = bspline_curve_join(parts, lengths);
+            side.mLengths = lengths;
         }
         // G1xx: a double knot in the middle of the first span towards each
         // extraordinary corner.
@@ -107782,10 +107845,12 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             }
         return out_s;
     };
-    const auto g1_angle = [&](std::size_t I, bool SkipEv) {
+    // The largest G1 angle of patch `I`: every sample (`Which` 0), those
+    // away from extraordinary corners (1) or next to them only (2).
+    const auto g1_angle_of = [&](std::size_t I, int Which) {
         double worst = 0.0;
         for (const PnG1Sample& g : g1_samples(I)) {
-            if (SkipEv && g.mNearEv)
+            if ((Which == 1 && g.mNearEv) || (Which == 2 && !g.mNearEv))
                 continue;
             const PatchVec n = pn_normal(patches[I].mSurface, g.mU, g.mV);
             // The angle between the tangent planes: two patches whose
@@ -107796,15 +107861,26 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
         }
         return worst;
     };
+    const auto g1_angle = [&](std::size_t I, bool SkipEv) {
+        return g1_angle_of(I, SkipEv ? 1 : 0);
+    };
 
-    // Fit patch `I`'s interior poles.
-    const auto fit = [&](std::size_t I, bool WithG1) {
+    // The normal equations of patch `I`'s rows (data, smoothing, the
+    // extraordinary corners' twist poles and, with `WithG1`, G1 against the
+    // neighbours' current surfaces): over its interior poles, the boundary
+    // rows moved to the right-hand side, or, with `AllPoles`, over every
+    // pole (the coupled solve maps them onto its own unknowns). `rSamples`
+    // receives the number of data samples.
+    const auto assemble = [&](std::size_t I, bool WithG1, bool AllPoles, std::size_t& rSamples) {
         PnPatch& p = patches[I];
         BsplineSurface& s = p.mSurface;
         const std::size_t nu = s.mNu, nv = s.mNv;
         const std::size_t mi = nu - 2;
-        // The scalar unknown of an interior pole, or -1 on the boundary.
+        // The scalar unknown of a pole, or -1 on the boundary (unless every
+        // pole is one).
         const auto scalar = [&](std::size_t Pole) -> std::ptrdiff_t {
+            if (AllPoles)
+                return static_cast<std::ptrdiff_t>(Pole);
             const std::size_t i = Pole % nu, j = Pole / nu;
             if (i == 0 || j == 0 || i + 1 == nu || j + 1 == nv)
                 return -1;
@@ -107814,9 +107890,10 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             const std::ptrdiff_t k = scalar(Pole);
             return k < 0 ? -1 : 3 * k + static_cast<std::ptrdiff_t>(C);
         };
+        // The weights stay normalised by the interior poles either way.
         const std::size_t nint = mi * (nv - 2);
-        const std::size_t dim = 3 * nint;
-        PnNormal ne(nint);
+        const std::size_t ncols = AllPoles ? nu * nv : nint;
+        PnNormal ne(ncols);
         std::vector<std::size_t> cols;
         std::vector<double> vals;
         std::vector<std::size_t> rc;
@@ -107824,7 +107901,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
         // Data: the vertices, the facet centres and the edges' middles; per
         // interior pole, how much data holds it.
         std::size_t nsamples = 0;
-        std::vector<double> support(nint, 0.0);
+        std::vector<double> support(ncols, 0.0);
         const auto data = [&](double U, double V, const PatchVec& rX) {
             // A foot on the domain's boundary is a point the fixed boundary
             // curve answers for (or one across a smooth edge, which belongs
@@ -107875,7 +107952,10 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                               static_cast<double>(std::max<std::size_t>(1, nint));
         const auto starved = [&](std::size_t Pole) {
             const std::ptrdiff_t k = scalar(Pole);
-            if (k < 0)
+            const std::size_t pi = Pole % nu, pj = Pole / nu;
+            // A boundary pole is held by the edge curve, not by data (the
+            // coupled solve's poles include it).
+            if (k < 0 || pi == 0 || pj == 0 || pi + 1 == nu || pj + 1 == nv)
                 return 0.0;
             const double sup = support[static_cast<std::size_t>(k)];
             return sup >= 1.0 ? 0.0 : 1.0 - sup;
@@ -107963,6 +108043,23 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                 const double dl = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
                 if (!(dl > 0.0))
                     continue;
+                // Solved together, both sides would each turn to the other's
+                // present plane and swap: the coupled solve aims both at the
+                // plane between them instead.
+                PatchVec target = g.mNormal;
+                if (AllPoles) {
+                    PatchVec own =
+                        vec3_cross({e.mSu[0], e.mSu[1], e.mSu[2]}, {e.mSv[0], e.mSv[1], e.mSv[2]});
+                    const double ol = vec3_norm(own);
+                    if (ol > 0.0) {
+                        const double sg = vec3_dot(own, g.mNormal) < 0.0 ? -1.0 : 1.0;
+                        PatchVec m{own[0] / ol + sg * g.mNormal[0], own[1] / ol + sg * g.mNormal[1],
+                                   own[2] / ol + sg * g.mNormal[2]};
+                        const double ml = vec3_norm(m);
+                        if (ml > 0.0)
+                            target = {m[0] / ml, m[1] / ml, m[2] / ml};
+                    }
+                }
                 rc.clear();
                 rv.clear();
                 double rhs = 0.0;
@@ -107975,7 +108072,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                             continue;
                         const std::size_t pole = pi + nu * pj;
                         for (std::size_t c = 0; c < 3; ++c) {
-                            const double v = coef * g.mNormal[c] / dl;
+                            const double v = coef * target[c] / dl;
                             const std::ptrdiff_t x = unknown(pole, c);
                             if (x < 0) {
                                 rhs -= v * s.mPoles[3 * pole + c];
@@ -107989,6 +108086,18 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
                     ne.Coupled(rc, rv, rhs, w);
             }
         }
+        rSamples = nsamples;
+        return ne;
+    };
+    // Fit patch `I`'s interior poles.
+    const auto fit = [&](std::size_t I, bool WithG1) {
+        PnPatch& p = patches[I];
+        BsplineSurface& s = p.mSurface;
+        const std::size_t nu = s.mNu, nv = s.mNv;
+        const std::size_t mi = nu - 2;
+        const std::size_t dim = 3 * mi * (nv - 2);
+        std::size_t nsamples = 0;
+        PnNormal ne = assemble(I, WithG1, false, nsamples);
         const SparseCsr a = ne.Matrix();
         std::vector<double> x(dim, 0.0);
         for (std::size_t j = 1; j + 1 < nv; ++j)
@@ -108179,76 +108288,458 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
     }
     out.mSweeps = 1;
 
-    // B. G1 sweeps on top: a patch a sweep pushes out of the tolerance keeps
-    // its accurate surface (accuracy before smoothness).
-    double worst_g1 = 0.0;
-    for (std::size_t i = 0; i < np; ++i)
-        if (active[i])
-            worst_g1 = std::max(worst_g1, g1_angle(i, !g1_ev));
-    for (int sweep = 1; sweep < rOptions.mMaxSweeps && worst_g1 > rOptions.mG1ToleranceDeg;
-         ++sweep) {
-        out.mSweeps = sweep + 1;
-        for (std::size_t i = 0; i < np; ++i) {
-            if (!active[i])
-                continue;
-            const BsplineSurface keep = patches[i].mSurface;
-            const std::vector<double> ku = patches[i].mU, kv = patches[i].mV;
-            const std::int64_t kr = out.mPatches[i].mRefinements;
-            fit(i, true);
-            // A smooth fit that leaves the tolerance gets knots where it
-            // misses before it is given up: next to an extraordinary vertex
-            // G1 needs more freedom than accuracy alone asked for.
-            while (ok[i] && !accept(i, false) &&
-                   out.mPatches[i].mRefinements < rOptions.mMaxRefinements && refine(i))
-                fit(i, true);
-            if (ok[i] && !accept(i, false)) {
-                patches[i].mSurface = keep;
-                patches[i].mU = ku;
-                patches[i].mV = kv;
-                out.mPatches[i].mRefinements = kr;
-            }
-        }
-        const double before = worst_g1;
-        worst_g1 = 0.0;
+    // B. G1 on top, by sweeps (each patch against its neighbours' current
+    // surfaces in turn) or, with `mCoupled`, by one solve over the whole
+    // region (see `coupled` below).
+    const auto sweeps = [&]() {
+        // B. G1 sweeps on top: a patch a sweep pushes out of the tolerance keeps
+        // its accurate surface (accuracy before smoothness).
+        double worst_g1 = 0.0;
         for (std::size_t i = 0; i < np; ++i)
             if (active[i])
                 worst_g1 = std::max(worst_g1, g1_angle(i, !g1_ev));
-        if (!(worst_g1 < before))
-            g1_weight = std::min(g1_weight * 2.0, base_g1 * 8.0);
-    }
-    out.mMaxG1AngleDeg = worst_g1;
+        for (int sweep = 1; sweep < rOptions.mMaxSweeps && worst_g1 > rOptions.mG1ToleranceDeg;
+             ++sweep) {
+            out.mSweeps = sweep + 1;
+            for (std::size_t i = 0; i < np; ++i) {
+                if (!active[i])
+                    continue;
+                const BsplineSurface keep = patches[i].mSurface;
+                const std::vector<double> ku = patches[i].mU, kv = patches[i].mV;
+                const std::int64_t kr = out.mPatches[i].mRefinements;
+                fit(i, true);
+                // A smooth fit that leaves the tolerance gets knots where it
+                // misses before it is given up: next to an extraordinary vertex
+                // G1 needs more freedom than accuracy alone asked for.
+                while (ok[i] && !accept(i, false) &&
+                       out.mPatches[i].mRefinements < rOptions.mMaxRefinements && refine(i))
+                    fit(i, true);
+                if (ok[i] && !accept(i, false)) {
+                    patches[i].mSurface = keep;
+                    patches[i].mU = ku;
+                    patches[i].mV = kv;
+                    out.mPatches[i].mRefinements = kr;
+                }
+            }
+            const double before = worst_g1;
+            worst_g1 = 0.0;
+            for (std::size_t i = 0; i < np; ++i)
+                if (active[i])
+                    worst_g1 = std::max(worst_g1, g1_angle(i, !g1_ev));
+            if (!(worst_g1 < before))
+                g1_weight = std::min(g1_weight * 2.0, base_g1 * 8.0);
+        }
+        out.mMaxG1AngleDeg = worst_g1;
+    };
 
-    // The final test, with surface sampling; the G1 measure then over the
-    // accepted patches only (a rejected one is no face).
-    out.mOk = true;
-    out.mMaxG1AngleDeg = 0.0;
-    for (std::size_t i = 0; i < np; ++i) {
-        NetworkPatch& r = out.mPatches[i];
-        if (!active[i]) {
-            out.mOk = false;
+    // C. The coupled solve (`mCoupled`): every interior pole of every patch
+    // and every free pole of the shared edge curves are the unknowns of one
+    // least-squares system, so an edge curve moves with both patches it
+    // bounds and both still take their boundary rows from it (G0 exact).
+    // A patch's boundary rows are linear in its chains' poles (segments,
+    // joins and knot refinement keep the knots), and that map is found by
+    // probing: the rows built from each free pole alone at 1. The G1 rows
+    // are bilinear (each patch's cross derivative against its neighbour's
+    // normal); the neighbours' normals are frozen in each outer step, a
+    // Gauss-Newton iteration, whose weight doubles while the worst angle
+    // does not fall, as the sweeps' does.
+    //
+    // A chain is free when it is shared inside the region and runs between
+    // two layout vertices only (a T-junction on it, a point another chain
+    // ends at, must stay where it is); its end poles are fixed, and so is a
+    // pole next to an extraordinary vertex, held in its tangent plane.
+    std::vector<std::vector<std::uint8_t>> chain_free(nc);
+    for (std::size_t c = 0; c < nc; ++c) {
+        const std::size_t n = out.mChains[c].mPoles.size();
+        chain_free[c].assign(n, 0);
+        if (rLayout.mChains[c].mOnBoundary || n < 3 || held[c].size() > 2)
             continue;
+        for (std::size_t k = 1; k + 1 < n; ++k)
+            chain_free[c][k] = 1;
+        const std::vector<std::size_t>& cv = rLayout.mChains[c].mVerts;
+        if (g1_ev && n >= 4) {
+            if (ev_normal.count(cv.front()))
+                chain_free[c][1] = 0;
+            if (ev_normal.count(cv.back()))
+                chain_free[c][n - 2] = 0;
         }
-        r.mOk = accept(i, rOptions.mValidate);
-        if (!r.mOk) {
-            r.mReason = out.mPatches[i].mRefinements >= rOptions.mMaxRefinements
-                            ? FitCadDemotionReason::HausdorffExceeded
-                            : FitCadDemotionReason::BudgetExceeded;
-            out.mOk = false;
-        }
-        r.mSurface = patches[i].mSurface;
-        r.mU = patches[i].mU;
-        r.mV = patches[i].mV;
     }
+    // Patch `I`'s side curves rebuilt from the chains `rChains`.
+    const auto rebuild_sides = [&](PnPatch& rP, const std::vector<BsplineCurve>& rChains) {
+        for (PnSide& side : rP.mSides) {
+            std::vector<BsplineCurve> parts;
+            for (const PnSegment& seg : side.mSegments)
+                parts.push_back(bspline_curve_segment(rChains[seg.mChain], seg.mTb, seg.mTe));
+            side.mCurve = bspline_curve_join(parts, side.mLengths);
+        }
+    };
+    // A pole's map onto the unknowns: (scalar column, coefficient) pairs
+    // and a constant.
+    struct PnPoleMap {
+        std::vector<std::pair<std::size_t, double>> mTerms;
+        PatchVec mConst{0.0, 0.0, 0.0};
+    };
+    const auto coupled = [&]() {
+        // The free chains' points at their vertices' parameters, as Phase A
+        // left them: where the coupled steps hold them.
+        std::vector<std::vector<PatchVec>> chain_anchor(nc);
+        for (std::size_t c = 0; c < nc; ++c)
+            for (double t : out.mChainParams[c])
+                chain_anchor[c].push_back(bspline_curve_eval(out.mChains[c], t));
+        double worst = 0.0;
+        for (std::size_t i = 0; i < np; ++i)
+            if (active[i])
+                worst = std::max(worst, g1_angle(i, !g1_ev));
+        out.mSweeps = 1;
+        int retries = 0;
+        for (int step = 1; step < rOptions.mMaxSweeps && worst > rOptions.mG1ToleranceDeg; ++step) {
+            out.mSweeps = step + 1;
+            // The unknowns: the free chain poles, then each active patch's
+            // interior poles.
+            std::vector<std::vector<std::ptrdiff_t>> chain_col(nc);
+            std::size_t ncol = 0;
+            for (std::size_t c = 0; c < nc; ++c) {
+                chain_col[c].assign(chain_free[c].size(), -1);
+                for (std::size_t k = 0; k < chain_free[c].size(); ++k)
+                    if (chain_free[c][k])
+                        chain_col[c][k] = static_cast<std::ptrdiff_t>(ncol++);
+            }
+            std::vector<std::size_t> patch_base(np, 0);
+            for (std::size_t i = 0; i < np; ++i) {
+                if (!active[i])
+                    continue;
+                patch_base[i] = ncol;
+                ncol += (patches[i].mSurface.mNu - 2) * (patches[i].mSurface.mNv - 2);
+            }
+            // Each active patch's pole maps.
+            std::vector<std::vector<PnPoleMap>> maps(np);
+            for (std::size_t i = 0; i < np; ++i) {
+                if (!active[i])
+                    continue;
+                const PnPatch& p = patches[i];
+                const std::size_t nu = p.mSurface.mNu, nv = p.mSurface.mNv;
+                std::vector<PnPoleMap>& m = maps[i];
+                m.assign(nu * nv, PnPoleMap{});
+                for (std::size_t j = 1; j + 1 < nv; ++j)
+                    for (std::size_t q = 1; q + 1 < nu; ++q)
+                        m[q + nu * j].mTerms.push_back(
+                            {patch_base[i] + (q - 1) + (nu - 2) * (j - 1), 1.0});
+                // The boundary rows with every free pole at 0: the constants.
+                std::vector<std::size_t> used;
+                for (const PnSide& side : p.mSides)
+                    for (const PnSegment& seg : side.mSegments)
+                        used.push_back(seg.mChain);
+                std::sort(used.begin(), used.end());
+                used.erase(std::unique(used.begin(), used.end()), used.end());
+                const auto boundary = [&](const std::vector<BsplineCurve>& rChains,
+                                          BsplineSurface& rOut) {
+                    PnPatch probe = p;
+                    rebuild_sides(probe, rChains);
+                    if (!pn_build_surface(probe, std::numeric_limits<std::size_t>::max(),
+                                          std::numeric_limits<std::size_t>::max()))
+                        return false;
+                    if (probe.mSurface.mNu != nu || probe.mSurface.mNv != nv)
+                        return false;
+                    rOut = std::move(probe.mSurface);
+                    return true;
+                };
+                std::vector<BsplineCurve> base = out.mChains;
+                for (std::size_t c : used)
+                    for (std::size_t k = 0; k < chain_free[c].size(); ++k)
+                        if (chain_free[c][k])
+                            base[c].mPoles[k] = {0.0, 0.0, 0.0};
+                BsplineSurface b0;
+                bool good = boundary(base, b0);
+                std::vector<BsplineCurve> unit = out.mChains;
+                for (std::size_t c : used)
+                    for (PatchVec& q : unit[c].mPoles)
+                        q = {0.0, 0.0, 0.0};
+                const auto on_boundary = [&](std::size_t Pole) {
+                    const std::size_t q = Pole % nu, j = Pole / nu;
+                    return q == 0 || j == 0 || q + 1 == nu || j + 1 == nv;
+                };
+                for (std::size_t pole = 0; good && pole < nu * nv; ++pole)
+                    if (on_boundary(pole))
+                        for (std::size_t k = 0; k < 3; ++k)
+                            m[pole].mConst[k] = b0.mPoles[3 * pole + k];
+                for (std::size_t c : used) {
+                    for (std::size_t k = 0; good && k < chain_free[c].size(); ++k) {
+                        if (!chain_free[c][k])
+                            continue;
+                        unit[c].mPoles[k] = {1.0, 0.0, 0.0};
+                        BsplineSurface bk;
+                        good = boundary(unit, bk);
+                        unit[c].mPoles[k] = {0.0, 0.0, 0.0};
+                        if (!good)
+                            break;
+                        for (std::size_t pole = 0; pole < nu * nv; ++pole) {
+                            const double w = bk.mPoles[3 * pole];
+                            if (on_boundary(pole) && std::fabs(w) > 1e-14)
+                                m[pole].mTerms.push_back(
+                                    {static_cast<std::size_t>(chain_col[c][k]), w});
+                        }
+                    }
+                }
+                if (!good)
+                    return;  // the sides do not rebuild: keep what Phase A made
+            }
+            // The global normal equations: each patch's local ones, over all
+            // its poles, mapped onto the unknowns (A = T' A_l T, b = T' (b_l
+            // - A_l t0)).
+            std::vector<SparseTriplet> trip;
+            std::vector<double> rhs(3 * ncol, 0.0);
+            for (std::size_t i = 0; i < np; ++i) {
+                if (!active[i])
+                    continue;
+                std::size_t ns = 0;
+                PnNormal ne = assemble(i, true, true, ns);
+                const std::vector<PnPoleMap>& m = maps[i];
+                const std::size_t n = ne.mN;
+                // b_l - A_l t0.
+                std::vector<double> bl = ne.mB;
+                for (std::size_t a2 = 0; a2 < n; ++a2)
+                    for (std::size_t b2 = 0; b2 < n; ++b2) {
+                        const double v = ne.mS[a2 * n + b2];
+                        if (v != 0.0)
+                            for (std::size_t c = 0; c < 3; ++c)
+                                bl[3 * a2 + c] -= v * m[b2].mConst[c];
+                    }
+                for (const SparseTriplet& t : ne.mCoupled)
+                    bl[t.mRow] -= t.mValue * m[t.mCol / 3].mConst[t.mCol % 3];
+                for (std::size_t a2 = 0; a2 < n; ++a2)
+                    for (const auto& ta : m[a2].mTerms)
+                        for (std::size_t c = 0; c < 3; ++c)
+                            rhs[3 * ta.first + c] += ta.second * bl[3 * a2 + c];
+                for (std::size_t a2 = 0; a2 < n; ++a2)
+                    for (std::size_t b2 = 0; b2 < n; ++b2) {
+                        const double v = ne.mS[a2 * n + b2];
+                        if (v == 0.0)
+                            continue;
+                        for (const auto& ta : m[a2].mTerms)
+                            for (const auto& tb : m[b2].mTerms)
+                                for (std::size_t c = 0; c < 3; ++c)
+                                    trip.push_back({3 * ta.first + c, 3 * tb.first + c,
+                                                    v * ta.second * tb.second});
+                    }
+                for (const SparseTriplet& t : ne.mCoupled) {
+                    const std::size_t ra = t.mRow / 3, ca = t.mRow % 3;
+                    const std::size_t rb = t.mCol / 3, cb = t.mCol % 3;
+                    for (const auto& ta : m[ra].mTerms)
+                        for (const auto& tb : m[rb].mTerms)
+                            trip.push_back({3 * ta.first + ca, 3 * tb.first + cb,
+                                            t.mValue * ta.second * tb.second});
+                }
+            }
+            // Each free chain held to where Phase A put it, at its own
+            // vertices' parameters: no patch's data does (a sample whose
+            // foot lies on a patch's side is left to the side's curve).
+            for (std::size_t c = 0; c < nc; ++c) {
+                bool any = false;
+                for (std::uint8_t f : chain_free[c])
+                    any = any || f;
+                if (!any)
+                    continue;
+                const BsplineCurve& cv = out.mChains[c];
+                const std::size_t n = cv.mPoles.size();
+                const std::size_t p3 = static_cast<std::size_t>(cv.mDegree);
+                double bt[kBsplineMaxDegree + 1];
+                for (std::size_t k = 0; k < chain_anchor[c].size(); ++k) {
+                    const double t = out.mChainParams[c][k];
+                    const std::size_t sp = nurbs_find_span(cv.mDegree, cv.mKnots, n, t);
+                    bspline_basis_ders(sp, t, cv.mDegree, 0, cv.mKnots, bt);
+                    double r[3] = {chain_anchor[c][k][0], chain_anchor[c][k][1],
+                                   chain_anchor[c][k][2]};
+                    std::vector<std::pair<std::size_t, double>> cols;
+                    for (std::size_t a2 = 0; a2 <= p3; ++a2) {
+                        const std::size_t pole = sp - p3 + a2;
+                        if (chain_col[c][pole] >= 0)
+                            cols.push_back({static_cast<std::size_t>(chain_col[c][pole]), bt[a2]});
+                        else
+                            for (std::size_t d = 0; d < 3; ++d)
+                                r[d] -= bt[a2] * cv.mPoles[pole][d];
+                    }
+                    for (const auto& ca : cols) {
+                        for (std::size_t d = 0; d < 3; ++d)
+                            rhs[3 * ca.first + d] += ca.second * r[d];
+                        for (const auto& cb : cols)
+                            for (std::size_t d = 0; d < 3; ++d)
+                                trip.push_back(
+                                    {3 * ca.first + d, 3 * cb.first + d, ca.second * cb.second});
+                    }
+                }
+            }
+            const SparseCsr a = csr_from_triplets(3 * ncol, 3 * ncol, std::move(trip));
+            // The current poles, to start from and to restore.
+            std::vector<double> x(3 * ncol, 0.0);
+            for (std::size_t c = 0; c < nc; ++c)
+                for (std::size_t k = 0; k < chain_col[c].size(); ++k)
+                    if (chain_col[c][k] >= 0)
+                        for (std::size_t d = 0; d < 3; ++d)
+                            x[3 * static_cast<std::size_t>(chain_col[c][k]) + d] =
+                                out.mChains[c].mPoles[k][d];
+            for (std::size_t i = 0; i < np; ++i) {
+                if (!active[i])
+                    continue;
+                const BsplineSurface& sf = patches[i].mSurface;
+                for (std::size_t j = 1; j + 1 < sf.mNv; ++j)
+                    for (std::size_t q = 1; q + 1 < sf.mNu; ++q)
+                        for (std::size_t d = 0; d < 3; ++d)
+                            x[3 * (patch_base[i] + (q - 1) + (sf.mNu - 2) * (j - 1)) + d] =
+                                sf.mPoles[3 * (q + sf.mNu * j) + d];
+            }
+            const std::vector<PnPatch> keep_patches = patches;
+            const std::vector<BsplineCurve> keep_chains = out.mChains;
+            std::vector<std::int64_t> keep_ref(np);
+            for (std::size_t i = 0; i < np; ++i)
+                keep_ref[i] = out.mPatches[i].mRefinements;
+            const SparseSolveReport rep =
+                csr_pcg(a, rhs.data(), x.data(), 1e-13, 20 * 3 * ncol + 200);
+            // Write the solution back: the chains, each patch's sides and
+            // poles (its boundary rows through its map), its parameters.
+            for (std::size_t c = 0; c < nc; ++c)
+                for (std::size_t k = 0; k < chain_col[c].size(); ++k)
+                    if (chain_col[c][k] >= 0)
+                        for (std::size_t d = 0; d < 3; ++d)
+                            out.mChains[c].mPoles[k][d] =
+                                x[3 * static_cast<std::size_t>(chain_col[c][k]) + d];
+            for (std::size_t i = 0; i < np; ++i) {
+                if (!active[i])
+                    continue;
+                PnPatch& p = patches[i];
+                rebuild_sides(p, out.mChains);
+                BsplineSurface& sf = p.mSurface;
+                for (std::size_t pole = 0; pole < sf.mNu * sf.mNv; ++pole)
+                    for (std::size_t d = 0; d < 3; ++d) {
+                        double v = maps[i][pole].mConst[d];
+                        for (const auto& t : maps[i][pole].mTerms)
+                            v += t.second * x[3 * t.first + d];
+                        sf.mPoles[3 * pole + d] = v;
+                    }
+                out.mPatches[i].mIterations += 1;
+                for (std::size_t v : p.mVerts)
+                    bspline_project(sf, rPts[v].data(), p.mU[v], p.mV[v]);
+            }
+            // A patch that was within the tolerance and is no longer: the
+            // step is undone; once, the failing patches are refined and the
+            // step retried, else the solve stops here.
+            std::vector<std::size_t> failed;
+            for (std::size_t i = 0; i < np; ++i)
+                if (active[i] && ok[i] && !accept(i, false))
+                    failed.push_back(i);
+            if (!failed.empty()) {
+                log::debug("pn: coupled step {}: {} patch(es) leave the tolerance", step,
+                           failed.size());
+                patches = keep_patches;
+                out.mChains = keep_chains;
+                for (std::size_t i = 0; i < np; ++i)
+                    out.mPatches[i].mRefinements = keep_ref[i];
+                // Retried at most three times: with knots where the failing
+                // patches miss, else at half the G1 weight (accuracy first).
+                if (++retries > 3)
+                    break;
+                bool any = false;
+                for (std::size_t i : failed)
+                    if (out.mPatches[i].mRefinements < rOptions.mMaxRefinements && refine(i)) {
+                        // A refined patch's interior restarts from its
+                        // boundary; fit it to the data again first.
+                        fit(i, false);
+                        any = true;
+                    }
+                if (!any)
+                    g1_weight *= 0.5;
+                --step;  // the same step, retried
+                continue;
+            }
+            retries = 0;
+            const double before = worst;
+            worst = 0.0;
+            for (std::size_t i = 0; i < np; ++i)
+                if (active[i])
+                    worst = std::max(worst, g1_angle(i, !g1_ev));
+            log::debug(
+                "pn: coupled step {}: {} unknowns, solve {} ({} iterations, residual {}), "
+                "G1 {} -> {} degrees",
+                step, 3 * ncol, rep.mConverged ? "converged" : "stopped", rep.mIterations,
+                rep.mRelativeResidual, before, worst);
+            if (!(worst < before))
+                g1_weight = std::min(g1_weight * 2.0, base_g1 * 8.0);
+        }
+        out.mMaxG1AngleDeg = worst;
+    };
+
+    // D. The final test, with surface sampling; the G1 measures then over
+    // the accepted patches only (a rejected one is no face).
+    const auto verdict = [&]() {
+        out.mOk = true;
+        out.mMaxG1AngleDeg = 0.0;
+        for (std::size_t i = 0; i < np; ++i) {
+            NetworkPatch& r = out.mPatches[i];
+            if (!active[i]) {
+                out.mOk = false;
+                continue;
+            }
+            r.mOk = accept(i, rOptions.mValidate);
+            if (!r.mOk) {
+                r.mReason = out.mPatches[i].mRefinements >= rOptions.mMaxRefinements
+                                ? FitCadDemotionReason::HausdorffExceeded
+                                : FitCadDemotionReason::BudgetExceeded;
+                out.mOk = false;
+            }
+            r.mSurface = patches[i].mSurface;
+            r.mU = patches[i].mU;
+            r.mV = patches[i].mV;
+        }
+        for (std::size_t i = 0; i < np; ++i)
+            active[i] = out.mPatches[i].mOk ? 1 : 0;
+        for (std::size_t i = 0; i < np; ++i) {
+            if (!active[i])
+                continue;
+            NetworkPatch& r = out.mPatches[i];
+            r.mMaxG1AngleDeg = g1_angle(i, !g1_ev);
+            out.mMaxG1AngleDeg = std::max(out.mMaxG1AngleDeg, r.mMaxG1AngleDeg);
+            out.mMaxG1AngleEvDeg = std::max(out.mMaxG1AngleEvDeg, g1_angle(i, false));
+            out.mMaxG1AngleAwayDeg = std::max(out.mMaxG1AngleAwayDeg, g1_angle_of(i, 1));
+            out.mMaxG1AngleAtEvDeg = std::max(out.mMaxG1AngleAtEvDeg, g1_angle_of(i, 2));
+        }
+    };
+
+    if (!rOptions.mCoupled) {
+        sweeps();
+        verdict();
+        return out;
+    }
+    // Both, from the same accurate start: the coupled result is kept unless
+    // its accepted patches cover fewer triangles than the sweeps'.
+    std::vector<std::size_t> patches_tris(np);
     for (std::size_t i = 0; i < np; ++i)
-        active[i] = out.mPatches[i].mOk ? 1 : 0;
-    for (std::size_t i = 0; i < np; ++i) {
-        if (!active[i])
-            continue;
-        NetworkPatch& r = out.mPatches[i];
-        r.mMaxG1AngleDeg = g1_angle(i, !g1_ev);
-        out.mMaxG1AngleDeg = std::max(out.mMaxG1AngleDeg, r.mMaxG1AngleDeg);
-        out.mMaxG1AngleEvDeg = std::max(out.mMaxG1AngleEvDeg, g1_angle(i, false));
-    }
+        patches_tris[i] = patches[i].mTris.size();
+    const std::vector<PnPatch> start_patches = patches;
+    const PatchNetwork start_out = out;
+    const std::vector<std::uint8_t> start_active = active, start_ok = ok;
+    const double start_weight = g1_weight;
+    sweeps();
+    verdict();
+    const auto covered = [&](const PatchNetwork& rN) {
+        std::size_t t = 0;
+        for (std::size_t i = 0; i < np; ++i)
+            if (rN.mPatches[i].mOk)
+                t += patches_tris[i];
+        return t;
+    };
+    PatchNetwork swept = std::move(out);
+    patches = start_patches;
+    out = start_out;
+    active = start_active;
+    ok = start_ok;
+    g1_weight = start_weight;
+    coupled();
+    // The sweeps polish what the coupled steps left (from their weight).
+    if (out.mMaxG1AngleDeg > rOptions.mG1ToleranceDeg)
+        sweeps();
+    verdict();
+    if (covered(out) < covered(swept) || out.mMaxG1AngleDeg > swept.mMaxG1AngleDeg)
+        return swept;
+    out.mCoupledKept = true;
     return out;
 }
 
@@ -245988,6 +246479,9 @@ struct FcnFreeform {
     std::int64_t mNumNetworkEdges = 0;
     std::int64_t mNumExtraordinary = 0;
     double mMaxG1AngleDeg = 0.0;
+    double mMaxG1AngleAwayDeg = 0.0;
+    double mMaxG1AngleAtEvDeg = 0.0;
+    std::int64_t mNumCoupledRegions = 0;
 };
 
 // The tolerance the native writer will apply: as `step_brep_write` takes it.
@@ -246188,6 +246682,7 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         no.mValidate = rOptions.mValidateBySurfaceSampling || rOptions.mValidationAcceptance;
         if (rOptions.mValidationAcceptance)
             no.mMaxNormalDeg = kFitCadValidationNormalDeg;
+        no.mCoupled = rOptions.mFreeformG1Solve == FitCadNetworkG1Solve::Coupled;
         reg.mNet = detail::patch_network_fit(reg.mPts, reg.mTris, reg.mLayout, no);
         // The tangent-plane treatment of the extraordinary vertices kept only
         // where it does better there than leaving them alone (`g0`) and fits
@@ -246648,6 +247143,11 @@ FcnFreeform fcn_freeform(const Mesh& rSource, const detail::ClosedFacets& rFc,
                     out.mNumNetworkEdges += static_cast<std::int64_t>(net.mNumEdges);
                     out.mNumExtraordinary += static_cast<std::int64_t>(net.mNumExtraordinary);
                     out.mMaxG1AngleDeg = std::max(out.mMaxG1AngleDeg, net.mMaxG1AngleDeg);
+                    out.mMaxG1AngleAwayDeg =
+                        std::max(out.mMaxG1AngleAwayDeg, net.mMaxG1AngleAwayDeg);
+                    out.mMaxG1AngleAtEvDeg =
+                        std::max(out.mMaxG1AngleAtEvDeg, net.mMaxG1AngleAtEvDeg);
+                    out.mNumCoupledRegions += net.mCoupledKept ? 1 : 0;
                 }
             }
             return left;
@@ -247085,6 +247585,9 @@ FitCadResult fcn_native_fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     result.mNumNetworkEdges = freeform.mNumNetworkEdges;
     result.mNumExtraordinaryVertices = freeform.mNumExtraordinary;
     result.mMaxG1AngleDeg = freeform.mMaxG1AngleDeg;
+    result.mMaxG1AngleAwayDeg = freeform.mMaxG1AngleAwayDeg;
+    result.mMaxG1AngleAtEvDeg = freeform.mMaxG1AngleAtEvDeg;
+    result.mNumCoupledRegions = freeform.mNumCoupledRegions;
     result.mNumSplitPatches = freeform.mNumSplit;
     result.mNumResegmented = freeform.mNumResegmented;
     result.mNumExactEdges = brep.mNumLineEdges + brep.mNumCircleEdges;
@@ -247351,6 +247854,9 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
     if (static_cast<std::uint32_t>(rOptions.mFreeformObjective) > 3u)
         throw std::invalid_argument(std::string(kFcnPrefix) +
                                     "freeform_objective must be 'default', 'pdm', 'tdm' or 'sdm'");
+    if (static_cast<std::uint32_t>(rOptions.mFreeformG1Solve) > 1u)
+        throw std::invalid_argument(std::string(kFcnPrefix) +
+                                    "freeform_g1_solve must be 'sweeps' or 'coupled'");
     // The freeform modes build on the general fit, and their faces run on
     // past their patches so an edge with an analytic neighbour is still an
     // intersection.
@@ -274379,6 +274885,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mValidationReport = pipe_flag(rStep, "ValidationReport", false);
         opts.mValidationAcceptance = pipe_flag(rStep, "ValidationAcceptance", false);
         opts.mKinematicSurfaces = pipe_flag(rStep, "KinematicSurfaces", false);
+        opts.mFreeformG1Solve = static_cast<FitCadNetworkG1Solve>(
+            keyword("FreeformG1Solve", "sweeps", {"sweeps", "coupled"}));
         FitCadResult cr = fit_cad(mesh, pipe_text(rStep, "Path", ""), opts);
         std::vector<std::pair<std::string, double>> counters = {
             {"Valid", cr.mValid ? 1.0 : 0.0},
@@ -274461,6 +274969,9 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
             counters.emplace_back("NumResegmented", static_cast<double>(cr.mNumResegmented));
             counters.emplace_back("NumEscalations", static_cast<double>(cr.mNumEscalations));
             counters.emplace_back("MaxG1AngleDeg", cr.mMaxG1AngleDeg);
+            counters.emplace_back("MaxG1AngleAwayDeg", cr.mMaxG1AngleAwayDeg);
+            counters.emplace_back("MaxG1AngleAtEvDeg", cr.mMaxG1AngleAtEvDeg);
+            counters.emplace_back("NumCoupledRegions", static_cast<double>(cr.mNumCoupledRegions));
         }
         pipe_push_step(rReport, rStep, std::move(counters));
         // The fitted solid is the model the rest of the run carries, when the
@@ -312947,22 +313458,41 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         skin.mPatches[R].mAccepted = true;
         feature[R] = Feature;
     };
-    // Kinematic surfaces (`mKinematicSurfaces`): a patch no primitive
-    // explains fitted as a surface of linear extrusion or of revolution
-    // before the fillets and threads (a chamfer's straight sections would
-    // claim an extruded wall), and as a helical surface after them (a
-    // thread's own fit knows its neighbours), by `detail::kinematic_fit` as
-    // the native backend does. A band (a wall closed round) is cut into two
-    // discs, appended as rows, both of which must fit.
+    // Kinematic surfaces (`mKinematicSurfaces`), by `detail::kinematic_fit`
+    // as the native backend does. Before the fillets and threads, a patch no
+    // primitive explains is tried as a surface of linear extrusion or of
+    // revolution unless it is a blend's: between two primitives along most
+    // of its boundary, other than two parallel planes, which meet nowhere (a
+    // chamfer's straight sections would claim the wall between them and
+    // fail). A band (a wall closed round) is cut into two discs, appended as
+    // rows, both of which must fit. After the threads (whose own fit knows
+    // their neighbours), what is left is tried as any of the three.
     std::vector<std::uint8_t> kinematic_row(skin.mPatches.size(), 0);
     std::int64_t next_label = 0;
     for (const FcPatch& p : skin.mPatches)
         next_label = std::max(next_label, p.mLabel + 1);
-    const auto kinematic_pass = [&](bool Helical) {
+    const auto blend_like = [&](std::size_t R) {
+        double perimeter = 0.0;
+        const std::vector<std::pair<double, std::int64_t>> by_length = neighbours(R, perimeter);
+        if (by_length.size() < 2)
+            return false;
+        const std::size_t q1 = static_cast<std::size_t>(by_length[0].second);
+        const std::size_t q2 = static_cast<std::size_t>(by_length[1].second);
+        if (!is_primitive(q1) || !is_primitive(q2) ||
+            -(by_length[0].first + by_length[1].first) < 0.6 * perimeter)
+            return false;
+        const FcPatch& a = skin.mPatches[q1];
+        const FcPatch& b = skin.mPatches[q2];
+        if (a.mType != 1 || b.mType != 1)
+            return true;
+        const gp_Vec na(a.mParams[3], a.mParams[4], a.mParams[5]);
+        const gp_Vec nb(b.mParams[3], b.mParams[4], b.mParams[5]);
+        return na.Crossed(nb).Magnitude() > 1e-6 * na.Magnitude() * nb.Magnitude();
+    };
+    const auto kinematic_pass = [&](bool Late) {
         detail::KinematicOptions ko;
         ko.mTolerance = tol;
-        ko.mExtrusion = ko.mRevolution = !Helical;
-        ko.mHelical = Helical;
+        ko.mHelical = Late;
         // The patch's triangles and the facet each came from.
         const auto tri_facets = [&](std::size_t R) {
             std::vector<std::size_t> out;
@@ -313041,7 +313571,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
             for (double x : skin.mPatches[r].mParams)
                 finite = finite && std::isfinite(x);
             const std::int32_t type = skin.mPatches[r].mType;
-            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite))
+            if (facets_of[r].empty() || analytic[r] || (type >= 1 && type <= 5 && finite) ||
+                (!Late && blend_like(r)))
                 continue;
             std::vector<gp_Pnt> pts;
             std::vector<std::array<std::size_t, 3>> tris;
@@ -313053,7 +313584,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                     take(r, k);
                 continue;
             }
-            if (Helical)
+            if (Late)
                 continue;  // a band was cut before the threads
             std::size_t num = 0;
             const std::vector<std::int64_t> piece =
@@ -313366,7 +313897,8 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
     std::vector<std::uint8_t> network_row(m, 0), network_tried(m, 0);
     std::vector<detail::StepEdgeCurve> network_curves;
     std::int64_t num_network_edges = 0, num_network_ev = 0;
-    double network_g1 = 0.0;
+    double network_g1 = 0.0, network_g1_away = 0.0, network_g1_ev = 0.0;
+    std::int64_t network_coupled = 0;
     const auto occt_network = [&](const std::vector<std::size_t>& rRows, bool AsFacets) {
         std::vector<std::size_t> failed;
         std::vector<std::vector<std::size_t>> items;
@@ -313463,6 +313995,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
                 num_network_edges += static_cast<std::int64_t>(reg.mNet.mNumEdges);
                 num_network_ev += static_cast<std::int64_t>(reg.mNet.mNumExtraordinary);
                 network_g1 = std::max(network_g1, reg.mNet.mMaxG1AngleDeg);
+                network_g1_away = std::max(network_g1_away, reg.mNet.mMaxG1AngleAwayDeg);
+                network_g1_ev = std::max(network_g1_ev, reg.mNet.mMaxG1AngleAtEvDeg);
+                network_coupled += reg.mNet.mCoupledKept ? 1 : 0;
             }
         }
         return failed;
@@ -313655,7 +314190,7 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         return true;
     };
 
-    // The helical kinematic faces, after the threads (see above).
+    // The kinematic faces after the threads (see above).
     if (rOptions.mKinematicSurfaces)
         kinematic_pass(true);
 
@@ -314501,6 +315036,9 @@ FitCadResult fc_occt_fit_cad_once(const Mesh& rMesh, const std::string& rStepPat
         result.mNumNetworkEdges = num_network_edges;
         result.mNumExtraordinaryVertices = num_network_ev;
         result.mMaxG1AngleDeg = network_g1;
+        result.mMaxG1AngleAwayDeg = network_g1_away;
+        result.mMaxG1AngleAtEvDeg = network_g1_ev;
+        result.mNumCoupledRegions = network_coupled;
     }
     result.mFreeformMode = rOptions.mFreeformMode;
     {

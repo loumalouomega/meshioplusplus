@@ -63,6 +63,28 @@
  *     exactly, so its neighbours do not change), within `mMaxTotalPoles` and
  *     `mMaxRefinements`; each patch is then held to `freeform_accept`, the
  *     adaptive faces' test.
+ *  7. **Coupled solve** (`mCoupled`, `fit_cad`'s `freeform_g1_solve=
+ *     "coupled"`, unreleased). Instead of the sweeps, each step solves one
+ *     system over the region: every interior pole and every free pole of the
+ *     shared edge curves (a curve inside the region with no T-junction on
+ *     it; its ends and, at an extraordinary vertex, its tangent-plane pole
+ *     fixed). A patch's boundary rows are linear in its curves' poles
+ *     (segments, joins and knot refinement keep the knots), the map found by
+ *     building the rows from each free pole alone; so both patches beside a
+ *     curve take their rows from the same poles and G0 stays exact. The G1
+ *     rows ask both sides for the plane halfway between their present
+ *     normals (each side aimed at the other's would only swap them), a free
+ *     curve is held to its Phase A points at its vertices' parameters, and
+ *     the weight doubles as the sweeps' does. A step that pushes a patch out
+ *     of the tolerance is undone and retried, with knots where it misses or
+ *     at half the weight; the sweeps then polish. The region keeps the
+ *     result unless its accepted patches cover fewer triangles or its largest
+ *     angle exceeds the sweeps'.
+ *
+ * The largest angle is also reported away from the extraordinary vertices
+ * and at them only (`mMaxG1AngleAwayDeg`, `mMaxG1AngleAtEvDeg`):
+ * tensor-product patches cannot be G1 at a vertex of valence other than
+ * four, so the two say different things.
  *
  * A **core-private** header: nothing installed names it. Serial and
  * deterministic.
@@ -100,6 +122,11 @@ struct PatchNetworkOptions {
     /// facet-normal deviation a patch may show
     /// (`surface_normal_deviation_deg`); 0 does not look.
     double mMaxNormalDeg = 0.0;
+    /// With `fit_cad`'s `freeform_g1_solve="coupled"` (unreleased): G1 by
+    /// one solve over the region, its edge curves free too, kept unless its
+    /// accepted patches cover fewer triangles than the sweeps' (see the
+    /// file comment); false sweeps, as before.
+    bool mCoupled = false;
 };
 
 /// One fitted patch.
@@ -135,6 +162,14 @@ struct PatchNetwork {
     /// to extraordinary vertices included, whatever the mode: the measure
     /// two modes are compared by.
     double mMaxG1AngleEvDeg = 0.0;
+    /// The largest G1 angle over the accepted patches away from the
+    /// extraordinary vertices (their first spans excluded), and at them
+    /// only: tensor-product patches cannot be G1 at a vertex of valence
+    /// other than four, so the two are reported apart.
+    double mMaxG1AngleAwayDeg = 0.0;
+    double mMaxG1AngleAtEvDeg = 0.0;
+    /// With `mCoupled`: whether the coupled solve's result was kept.
+    bool mCoupledKept = false;
     /// Chains shared by two patches.
     std::size_t mNumEdges = 0;
     std::size_t mNumExtraordinary = 0;

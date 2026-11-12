@@ -1750,6 +1750,11 @@ test_that("feature edges, Hausdorff, region edits and periodic pairs", {
   on.exit(mio_release(kn$mesh), add = TRUE)
   expect_equal(kn$num_extrusion, 0)
   expect_equal(kn$num_revolution, 0)
+  cp <- mio_fit_cad(m, backend = "native", freeform_g1_solve = "coupled")
+  on.exit(mio_release(cp$mesh), add = TRUE)
+  expect_equal(cp$num_coupled_regions, 0)
+  expect_error(mio_fit_cad(m, backend = "native", freeform_g1_solve = "nope"),
+               "freeform_g1_solve")
   if (mio_has_occt()) {
     sc <- mio_fit_cad(m, snap_junctions = TRUE, face_deviation = TRUE)
     on.exit(mio_release(sc$mesh), add = TRUE)

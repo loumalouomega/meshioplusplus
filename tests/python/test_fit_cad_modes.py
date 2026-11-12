@@ -386,3 +386,24 @@ def test_kinematic_surfaces_make_the_wavy_wall_two_revolutions(tmp_path, backend
     assert on["valid"]
     assert on["mesh_to_cad_max"] <= tol
     assert 12 in set(np.concatenate(out.cell_data["fit_cad:type"]).tolist())
+
+
+@needs_core
+def test_coupled_g1_solve_on_the_hood():
+    # doc/fit_cad_freeform_plan.md step 7: the coupled solve brings the
+    # hood's network within the G1 tolerance the sweeps miss.
+    skin = hood_box(16)
+    tol = 2e-3 * _diag(skin)
+    fitted = _fitted_abs(skin, tol)
+    kw = dict(
+        backend="native", tolerance=tol, freeform_mode="network", return_report=True
+    )
+    _, sweeps = mio.fit_cad(fitted, **kw)
+    _, coupled = mio.fit_cad(fitted, freeform_g1_solve="coupled", **kw)
+    assert sweeps["num_coupled_regions"] == 0
+    assert coupled["num_coupled_regions"] >= 1
+    assert coupled["max_g1_angle_away_deg"] <= sweeps["max_g1_angle_away_deg"]
+    assert coupled["max_g1_angle_at_ev_deg"] == 0.0
+    assert coupled["facet_area_fraction"] <= sweeps["facet_area_fraction"]
+    with pytest.raises(ValueError, match="freeform_g1_solve"):
+        mio.fit_cad(fitted, freeform_g1_solve="jacobi", **kw)

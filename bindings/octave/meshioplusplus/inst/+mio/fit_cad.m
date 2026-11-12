@@ -29,9 +29,9 @@ function r = fit_cad(mesh, varargin)
 %     'constrain_primitives' (false), 'validation_report' (false),
 %     'validation_acceptance' (false), 'freeform_fit_schedule' ('legacy' or
 %     'continuation'), 'freeform_objective' ('default', 'pdm', 'tdm' or
-%     'sdm') and 'kinematic_surfaces' (false: true first tries a patch no
+%     'sdm'), 'kinematic_surfaces' (false: true first tries a patch no
 %     primitive explains as a surface of linear extrusion, of revolution or a
-%     helical surface).
+%     helical surface) and 'freeform_g1_solve' ('sweeps' or 'coupled').
 %   Returns a struct: mesh (with cell data 'fit_cad:face', 'fit_cad:type' and
 %   'fit_cad:patch'), valid, tolerance, volume, skin_volume, volume_ratio,
 %   max_deviation, num_faces, num_plane, num_sphere, num_cylinder, num_cone,
@@ -56,7 +56,8 @@ function r = fit_cad(mesh, varargin)
 %   step_round_trip_checked, step_round_trip_valid,
 %   step_round_trip_volume_ratio and total_freeform_control_points (NaN and
 %   false unless 'validation_report' measured them), num_extrusion,
-%   num_revolution and num_kinematic_helical.
+%   num_revolution, num_kinematic_helical, max_g1_angle_away_deg,
+%   max_g1_angle_at_ev_deg and num_coupled_regions.
 
     o = mio.internal.opts(varargin, {'step_path', '', 'tolerance', 0, 'exact_edges', true, ...
         'types', {'plane', 'sphere', 'cylinder', 'cone', 'torus'}, 'mesh_deflection', 0, ...
@@ -77,7 +78,7 @@ function r = fit_cad(mesh, varargin)
         'validate_by_surface_sampling', true, 'constrain_primitives', false, ...
         'validation_report', false, 'validation_acceptance', false, ...
         'freeform_fit_schedule', 'legacy', 'freeform_objective', 'default', ...
-        'kinematic_surfaces', false}, 'mio.fit_cad');
+        'kinematic_surfaces', false, 'freeform_g1_solve', 'sweeps'}, 'mio.fit_cad');
     if isempty(o.ransac_seed)
         seed = [];
     else
@@ -107,7 +108,8 @@ function r = fit_cad(mesh, varargin)
         logical(o.validation_report), logical(o.validation_acceptance), ...
         mio.internal.str(o.freeform_fit_schedule, 'freeform_fit_schedule'), ...
         mio.internal.str(o.freeform_objective, 'freeform_objective'), ...
-        logical(o.kinematic_surfaces));
+        logical(o.kinematic_surfaces), ...
+        mio.internal.str(o.freeform_g1_solve, 'freeform_g1_solve'));
 end
 
 function mask = types_mask(types, fname)

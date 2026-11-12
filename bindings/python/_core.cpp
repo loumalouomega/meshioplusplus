@@ -6254,7 +6254,8 @@ PYBIND11_MODULE(_core, m) {
            std::int64_t resegment_rounds, bool layout_snap_to_features,
            bool validate_by_surface_sampling, bool constrain_primitives, bool validation_report,
            bool validation_acceptance, const std::string& freeform_fit_schedule,
-           const std::string& freeform_objective, bool kinematic_surfaces) {
+           const std::string& freeform_objective, bool kinematic_surfaces,
+           const std::string& freeform_g1_solve) {
             // A keyword option's position in its list, or a ValueError naming it.
             const auto keyword = [](const std::string& rValue, const char* pName,
                                     std::initializer_list<const char*> Words) {
@@ -6337,6 +6338,8 @@ PYBIND11_MODULE(_core, m) {
             options.mFreeformObjective =
                 static_cast<meshioplusplus::FitCadFreeformObjective>(keyword(
                     freeform_objective, "freeform_objective", {"default", "pdm", "tdm", "sdm"}));
+            options.mFreeformG1Solve = static_cast<meshioplusplus::FitCadNetworkG1Solve>(
+                keyword(freeform_g1_solve, "freeform_g1_solve", {"sweeps", "coupled"}));
             meshioplusplus::FitCadResult r =
                 core_nogil([&] { return meshioplusplus::fit_cad(cpp, path, options); });
             py::dict out;
@@ -6414,6 +6417,9 @@ PYBIND11_MODULE(_core, m) {
             out["num_resegmented"] = r.mNumResegmented;
             out["num_escalations"] = r.mNumEscalations;
             out["max_g1_angle_deg"] = r.mMaxG1AngleDeg;
+            out["max_g1_angle_away_deg"] = r.mMaxG1AngleAwayDeg;
+            out["max_g1_angle_at_ev_deg"] = r.mMaxG1AngleAtEvDeg;
+            out["num_coupled_regions"] = r.mNumCoupledRegions;
             out["max_freeform_distance"] = r.mMaxFreeformDistance;
             out["rms_freeform_distance"] = r.mRmsFreeformDistance;
             out["num_constrained_primitives"] = r.mNumConstrainedPrimitives;
@@ -6481,7 +6487,7 @@ PYBIND11_MODULE(_core, m) {
         py::arg("validate_by_surface_sampling") = true, py::arg("constrain_primitives") = false,
         py::arg("validation_report") = false, py::arg("validation_acceptance") = false,
         py::arg("freeform_fit_schedule") = "legacy", py::arg("freeform_objective") = "default",
-        py::arg("kinematic_surfaces") = false);
+        py::arg("kinematic_surfaces") = false, py::arg("freeform_g1_solve") = "sweeps");
 
     // Conforming shared facets between named Cell regions. `regions` is an
     // optional list of strings or selector dictionaries. See
