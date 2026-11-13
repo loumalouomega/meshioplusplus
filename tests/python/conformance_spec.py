@@ -1888,6 +1888,18 @@ SPEC: dict[str, dict] = {
 _GAP = "Tracked gap, roadmap §{item}: no writer yet. {why}"
 _RESULT = "{tool}'s result file; the writer is the physics-ML loop's missing half."
 READ_ONLY = {
+    "pvti": (
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): a parallel index of structured pieces; "
+        "meshio++ writes the whole lattice as one `.vti` and places the pieces of an existing index by their `Extent` on read."
+    ),
+    "pvtr": (
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): a parallel index of structured pieces; "
+        "meshio++ writes the whole lattice as one `.vtr` and places the pieces of an existing index by their `Extent` on read."
+    ),
+    "pvts": (
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): a parallel index of structured pieces; "
+        "meshio++ writes the whole lattice as one `.vts` and places the pieces of an existing index by their `Extent` on read."
+    ),
     "iges": (
         "Exempt, not a gap: a CAD exchange format read through "
         "OpenCASCADE (roadmap non-goals: every format reads and writes); STEP is the CAD format meshio++ writes."

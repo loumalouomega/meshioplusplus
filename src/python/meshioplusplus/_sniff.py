@@ -344,9 +344,9 @@ def _sniff_format_py(path) -> str:
                 (b"Collection", "pvd"),
                 (b"PUnstructuredGrid", "pvtu"),
                 (b"PPolyData", "pvtp"),
-                (b"PImageData", ""),
-                (b"PStructuredGrid", ""),
-                (b"PRectilinearGrid", ""),
+                (b"PImageData", "pvti"),
+                (b"PStructuredGrid", "pvts"),
+                (b"PRectilinearGrid", "pvtr"),
             ):
                 if b"type=" + quote + value + quote in head:
                     return name

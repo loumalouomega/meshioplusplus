@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** `.pvts`, `.pvtr` and `.pvti` readers (Python): the parallel indexes of structured pieces, each placed by its `Extent` in `WholeExtent` so shared planes are one layer of points, one `piece_<i>` region per piece (roadmap 2.3.7.3; the C++ reader remains).
+
+
 The first steps of the [freeform fit CAD plan](doc/fit_cad_freeform_plan.md). Everything is off by default, so no default output changes: the `fit_cad` golden digests are as they were.
 
 - **OpenFOAM lagrangian clouds** (roadmap 2.3.5.2, [OpenFOAM](doc/formats/openfoam.md#lagrangian-clouds)): `openfoam.read(case, cloud="name")` (C++ `read_openfoam_cloud`) reads a cloud's particles as `vertex` cells with their ASCII per-particle fields as `point_data`; barycentric-only clouds are refused. Core only.

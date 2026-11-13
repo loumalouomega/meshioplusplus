@@ -187,7 +187,7 @@ def test_every_read_only_page_links_its_reason(fmt):
 # Engine parity per direction (roadmap 3.4.13) ---------------------------------
 
 _TWIN = re.compile(r"\b_(?:py|main)_(read|write)\b")
-_PYTHON_ONLY_LAYERS = {"pmsh", "zarr", "cae", "usd"}
+_PYTHON_ONLY_LAYERS = {"pmsh", "zarr", "cae", "usd", "pvti", "pvtr", "pvts"}
 # Registered names that share a package with another format.
 _ENGINE_ALIASES = {"ansys_rst_cyclic": "ansys_rst", "vtk42": "vtk", "vtk51": "vtk"}
 

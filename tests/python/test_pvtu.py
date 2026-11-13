@@ -547,10 +547,10 @@ def test_generic_io_and_sniffing(tmp_path):
         ("PUnstructuredGrid", "pvtu"),
         ("PPolyData", "pvtp"),
         ("Collection", "pvd"),
-        # refused outright rather than mistaken for a serial twin
-        ("PImageData", ""),
-        ("PStructuredGrid", ""),
-        ("PRectilinearGrid", ""),
+        # structured parallel indexes (Python only), never mistaken for a serial twin
+        ("PImageData", "pvti"),
+        ("PStructuredGrid", "pvts"),
+        ("PRectilinearGrid", "pvtr"),
         # the serial types still sniff as themselves
         ("UnstructuredGrid", "vtu"),
         ("PolyData", "vtp"),

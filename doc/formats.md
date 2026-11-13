@@ -76,6 +76,9 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`pmsh`](./formats/pmsh.md) | `.pmsh` | ✓ | ✓ | — | [1/8 cells · data PCF](./conformance.md#pmsh) |
 | [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvd) |
 | [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — | [4/8 cells · data PCF · regions CP](./conformance.md#pvtp) |
+| [`pvti`](./formats/pvti.md) | `.pvti` | ✓ | — | — | [read-only](./conformance.md#pvti) |
+| [`pvtr`](./formats/pvtr.md) | `.pvtr` | ✓ | — | — | [read-only](./conformance.md#pvtr) |
+| [`pvts`](./formats/pvts.md) | `.pvts` | ✓ | — | — | [read-only](./conformance.md#pvts) |
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvtu) |
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#radioss) |
 | [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | ✓ | — | [8/8 cells · data PC · regions C](./conformance.md#radioss-anim) |
