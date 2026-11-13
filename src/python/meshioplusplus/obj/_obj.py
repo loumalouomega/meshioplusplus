@@ -23,6 +23,7 @@ def read_buffer(f):
     texture_coords = []
     face_groups = []
     face_vts = []
+    face_vns = []
     face_group_ids = []
     face_group_id = -1
     while True:
@@ -50,21 +51,25 @@ def read_buffer(f):
             pass
         elif split[0] == "f":
             dat = [int(item.split("/")[0]) for item in split[1:]]
-            vts = [_vt_index(item) for item in split[1:]]
+            vts = [_corner_index(item, 1) for item in split[1:]]
+            vns = [_corner_index(item, 2) for item in split[1:]]
             if len(face_groups) == 0 or (
                 len(face_groups[-1]) > 0 and len(face_groups[-1][-1]) != len(dat)
             ):
                 face_groups.append([])
                 face_vts.append([])
+                face_vns.append([])
                 face_group_ids.append([])
 
             face_groups[-1].append(dat)
             face_vts[-1].append(vts)
+            face_vns[-1].append(vns)
             face_group_ids[-1].append(face_group_id)
         elif split[0] == "g":
             # new group
             face_groups.append([])
             face_vts.append([])
+            face_vns.append([])
             face_group_ids.append([])
             face_group_id += 1
         else:
@@ -74,6 +79,7 @@ def read_buffer(f):
     # There may be empty groups, too. <https://github.com/nschloe/meshio/issues/770>
     # Remove them.
     face_vts = [v for f, v in zip(face_groups, face_vts) if len(f) > 0]
+    face_vns = [v for f, v in zip(face_groups, face_vns) if len(f) > 0]
     face_groups = [f for f in face_groups if len(f) > 0]
     face_group_ids = [g for g in face_group_ids if len(g) > 0]
 
@@ -84,8 +90,10 @@ def read_buffer(f):
 
     # convert to numpy arrays
     face_groups = [np.array(f) for f in face_groups]
-    uv, parent = _corner_uv(points, texture_coords, face_groups, face_vts)
-    if uv is not None and len(parent) > num_in:
+    uv, corner_vn, parent = _corner_uv(
+        points, texture_coords, vertex_normals, face_groups, face_vts, face_vns
+    )
+    if parent is not None and len(parent) > num_in:
         points = points[parent]
 
     point_data = {}
@@ -94,22 +102,25 @@ def read_buffer(f):
     # ``uv`` holds the texture coordinates, ``vt`` rows that are not one per
     # point (a seamed file's) say nothing more and are left out.
     def raw_rows(rows):
-        if uv is None or len(parent) == num_in or len(rows) != num_in:
+        if parent is None or len(parent) == num_in or len(rows) != num_in:
             return rows
         return rows[parent]
 
     if len(texture_coords) > 0 and (uv is None or len(texture_coords) == num_in):
         point_data["obj:vt"] = raw_rows(texture_coords)
-    if len(vertex_normals) > 0:
+    if corner_vn is not None:
+        point_data["obj:vn"] = corner_vn
+    elif len(vertex_normals) > 0:
         point_data["obj:vn"] = raw_rows(vertex_normals)
     if uv is not None:
         point_data["uv"] = uv
+    if parent is not None:
         if len(parent) > num_in:
             point_data["obj:parent_point"] = np.asarray(parent, dtype=np.int64)
     cell_data = {"obj:group_ids": []}
     cells = []
     for f, gid in zip(face_groups, face_group_ids):
-        conn = f if uv is not None else f - 1
+        conn = f if parent is not None else f - 1
         if f.shape[1] == 3:
             cells.append(CellBlock("triangle", conn))
         elif f.shape[1] == 4:
@@ -121,61 +132,88 @@ def read_buffer(f):
     return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
 
 
-def _vt_index(token):
-    """The 0-based ``vt`` index of a face corner (``v/vt``, ``v/vt/vn``), or -1."""
+def _corner_index(token, slot):
+    """The 0-based ``vt`` (slot 1) or ``vn`` (slot 2) index of a face corner
+    (``v/vt``, ``v/vt/vn``, ``v//vn``), or -1 when it names none."""
     parts = token.split("/")
-    if len(parts) < 2 or not parts[1]:
+    if len(parts) <= slot or not parts[slot]:
         return -1
     try:
-        return int(parts[1]) - 1
+        return int(parts[slot]) - 1
     except ValueError:
         return -1
 
 
-def _corner_uv(points, texture_coords, face_groups, face_vts):
-    """``uv`` from the corners' ``vt`` indices, the twin of ``read_obj``'s.
+def _all_valid(face_idx, count):
+    return count > 0 and all(
+        np.all(np.asarray(v) >= 0) and np.all(np.asarray(v) < count) for v in face_idx
+    )
 
-    When every corner names a ``vt``, each point gets one ``uv``; a point whose
-    corners name different ones (a seam) is split, the first copy keeping its
-    index and the others appended in the order met. Rewrites ``face_groups`` to
-    0-based ids into the split points and returns ``(uv, parent)``, or
-    ``(None, None)`` (the faces left 1-based) without texture coordinates.
+
+def _corner_uv(points, texture_coords, vertex_normals, face_groups, face_vts, face_vns):
+    """``uv`` and normals from the corners' ``vt`` and ``vn`` indices, the twin
+    of ``read_obj``'s.
+
+    When every corner names a ``vt`` (``uv``) or a ``vn`` (``obj:vn``), each
+    point gets one value of each; a point whose corners name different ones (a
+    seam, a hard edge) is split, the first copy keeping its index and the
+    others appended in the order met. Rewrites ``face_groups`` to 0-based ids
+    into the split points and returns ``(uv, normals, parent)``; each is
+    ``None`` when the file does not name that attribute on every corner, and
+    the faces stay 1-based when none does.
     """
     num_in = len(points)
     nvt = len(texture_coords)
-    if nvt == 0 or texture_coords.ndim != 2 or texture_coords.shape[1] < 2:
-        return None, None
+    nvn = len(vertex_normals)
     if not face_groups:
-        return None, None
-    for f, v in zip(face_groups, face_vts):
-        vts = np.asarray(v)
-        if np.any(vts < 0) or np.any(vts >= nvt) or np.any(f < 1) or np.any(f > num_in):
-            return None, None
+        return None, None, None
+    for f in face_groups:
+        if np.any(f < 1) or np.any(f > num_in):
+            return None, None, None
+    has_uv = (
+        nvt > 0
+        and texture_coords.ndim == 2
+        and texture_coords.shape[1] >= 2
+        and _all_valid(face_vts, nvt)
+    )
+    has_vn = nvn > 0 and vertex_normals.ndim == 2 and _all_valid(face_vns, nvn)
+    if not has_uv and not has_vn:
+        return None, None, None
     copies = [[] for _ in range(num_in)]
     parent = list(range(num_in))
     uv = [[np.nan, np.nan] for _ in range(num_in)]
-    for gi, (f, v) in enumerate(zip(face_groups, face_vts)):
+    wn = vertex_normals.shape[1] if has_vn else 0
+    nrm = [[np.nan] * wn for _ in range(num_in)]
+    for gi, (f, v, n) in enumerate(zip(face_groups, face_vts, face_vns)):
         out = np.empty_like(f)
         for r in range(f.shape[0]):
             for k in range(f.shape[1]):
                 p = int(f[r, k]) - 1
-                t = int(v[r][k])
-                ident = next((o for vt_at, o in copies[p] if vt_at == t), -1)
+                key = (int(v[r][k]) if has_uv else -1, int(n[r][k]) if has_vn else -1)
+                ident = next((o for at, o in copies[p] if at == key), -1)
                 if ident < 0:
                     if copies[p]:
                         ident = len(parent)
                         parent.append(p)
                         uv.append([0.0, 0.0])
+                        nrm.append([0.0] * wn)
                     else:
                         ident = p
-                    copies[p].append((t, ident))
-                    uv[ident] = [
-                        float(texture_coords[t, 0]),
-                        float(texture_coords[t, 1]),
-                    ]
+                    copies[p].append((key, ident))
+                    if has_uv:
+                        uv[ident] = [
+                            float(texture_coords[key[0], 0]),
+                            float(texture_coords[key[0], 1]),
+                        ]
+                    if has_vn:
+                        nrm[ident] = [float(x) for x in vertex_normals[key[1]]]
                 out[r, k] = ident
         face_groups[gi] = out
-    return np.array(uv, dtype=float).reshape(-1, 2), np.array(parent, dtype=np.int64)
+    return (
+        np.array(uv, dtype=float).reshape(-1, 2) if has_uv else None,
+        np.array(nrm, dtype=float).reshape(-1, wn) if has_vn else None,
+        np.array(parent, dtype=np.int64),
+    )
 
 
 def write(filename, mesh):
