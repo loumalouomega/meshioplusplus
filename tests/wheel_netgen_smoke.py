@@ -17,3 +17,9 @@ assert report["backend"] == "netgen", report["backend"]
 assert report["boundary_preserved"] and report["num_tetrahedra"] > 0, report
 assert abs(report["volume"] - 1.0) < 1e-9, report["volume"]
 print("Netgen wheel smoke OK:", report["num_tetrahedra"], "tetrahedra")
+
+from importlib import metadata
+
+_files = {str(f) for f in metadata.files("meshioplusplus-netgen")}
+for _name in ("COPYING.LESSER", "RELINKING.md", "LICENSE"):
+    assert any(f.endswith("licenses/" + _name) for f in _files), (_name, sorted(_files))

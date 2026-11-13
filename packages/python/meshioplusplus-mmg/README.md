@@ -6,4 +6,4 @@ The MMG add-on for [meshio++](https://github.com/loumalouomega/meshioplusplus). 
 pip install "meshioplusplus[mmg]"
 ```
 
-The add-on is pinned to the exact base version and is licensed `MIT AND LGPL-3.0-or-later`; libmmg is linked dynamically and shipped as a shared library, so a recipient can replace it. See `doc/python_packages_plan.md` in the repository.
+The add-on is pinned to the exact base version and is licensed `MIT AND LGPL-3.0-or-later`; libmmg is linked dynamically and shipped as a shared library, so a recipient can replace it. The licence texts (`COPYING.LESSER`) and `RELINKING.md` ship in the wheel. See `doc/python_packages_plan.md` in the repository.

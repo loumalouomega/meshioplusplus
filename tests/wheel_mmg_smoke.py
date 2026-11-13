@@ -24,3 +24,9 @@ except (NotImplementedError, RuntimeError) as exc:
 else:
     raise AssertionError("move must not run without ELAS")
 print("MMG wheel smoke OK:", len(adapted.points), "points")
+
+from importlib import metadata
+
+_files = {str(f) for f in metadata.files("meshioplusplus-mmg")}
+for _name in ("COPYING.LESSER", "RELINKING.md", "LICENSE"):
+    assert any(f.endswith("licenses/" + _name) for f in _files), (_name, sorted(_files))
