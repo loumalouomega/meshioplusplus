@@ -118,7 +118,7 @@ SENTINEL = object()
 @pytest.fixture
 def ansys(monkeypatch):
     mod = importlib.import_module("meshioplusplus.ansys")
-    monkeypatch.setattr(mod, "_py_read", lambda filename: SENTINEL)
+    monkeypatch.setattr(mod, "_py_read", lambda filename, **kwargs: SENTINEL)
     monkeypatch.setattr(mod, "_py_write", lambda *a, **k: SENTINEL)
     return mod
 
