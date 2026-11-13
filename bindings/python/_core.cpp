@@ -10105,6 +10105,18 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // `region` selects one region of a multi-region case (v11.4.0, roadmap §1
     // tier B2): `<case>/constant/<region>/polyMesh`. `time_step`/`arrays`
     // (same tier) select a time directory and which of its fields to attach.
+    m.def("openfoam_read_cloud",
+          guard_read("openfoam",
+                     [](const std::string& path, const std::string& cloud, bool points_only,
+                        py::object arrays, int time_step) {
+                         const meshioplusplus::ReadOptions opts =
+                             core_read_options(points_only, arrays, time_step);
+                         return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                             return meshioplusplus::read_openfoam_cloud(path, cloud, opts);
+                         }));
+                     }),
+          py::arg("path"), py::arg("cloud"), py::arg("points_only") = false,
+          py::arg("arrays") = py::none(), py::arg("time_step") = 0);
     m.def("openfoam_read",
           guard_read("openfoam",
                      [](const std::string& path, const std::string& region, bool points_only,

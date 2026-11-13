@@ -30,7 +30,12 @@ meshioplusplus.openfoam.write("out/case.foam", mesh, binary=True)  # v15.5.0 -- 
 
 `read(filename)` takes no keyword arguments; the `polyMesh` directory is located from whichever of the three input forms above is given (`_resolve_polymesh`): a `.foam` suffix looks for `<parent>/constant/polyMesh`; a directory literally named `polyMesh` is used as-is; any other directory is checked for `constant/polyMesh` then `polyMesh` as subdirectories. A `FileNotFoundError` is raised if none match.
 
-## File structure
+
+## Lagrangian clouds
+
+`read(case, cloud="<name>")` (C++ `read_openfoam_cloud`) reads one cloud of `<case>/<time>/lagrangian/<name>/` instead of the mesh: the particles as `vertex` cells at the Cartesian `coordinates`, and every ASCII per-particle list file beside it (`d`, `U`, …) as `point_data`; `time_step` selects among the time directories that hold the cloud. A particle is not a node of the case's mesh, so the cloud is its own mesh. A cloud written with only barycentric `positions` is refused (placing a particle needs the mesh's tetrahedra), binary fields are skipped with a warning, and there is no writer. Core only.
+
+# File structure
 
 Each `polyMesh` file (`points`, `faces`, `owner`, `neighbour`, `boundary`) is an OpenFOAM "FoamFile": a header block declaring `format` (`ascii`/`binary`) and (for binary) an `arch` string encoding `label=32|64`/`scalar=32|64`, followed by a count and a parenthesized list.
 

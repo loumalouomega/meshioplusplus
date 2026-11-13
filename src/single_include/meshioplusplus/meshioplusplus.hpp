@@ -21570,6 +21570,22 @@ MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, const ReadOption
                                       OpenFoamInfo& rInfo);
 
 /**
+ * @brief Read one Lagrangian cloud of a case: the particles as `vertex` cells at their positions,
+ *        with the cloud's per-particle fields as `point_data`.
+ *
+ * `<case>/<time>/lagrangian/<cloud>/coordinates` (Cartesian positions) and every ASCII list file of
+ * the same length beside it (`d`, `U`, ...). `ReadOptions::mTimeStep` selects among the time
+ * directories that hold the cloud. A cloud written with only barycentric `positions` is refused:
+ * placing a particle needs the mesh's tetrahedra. A particle is not a node of the case's mesh, so
+ * this is a separate mesh, not part of `read_openfoam`.
+ *
+ * @throws ReadError when no time directory holds the cloud, it has no `coordinates`, or the step is
+ *         out of range
+ */
+MESHIOPLUSPLUS_API Mesh read_openfoam_cloud(const std::string& rPath, const std::string& rCloud,
+                                            const ReadOptions& rOptions = ReadOptions{});
+
+/**
  * @brief Cheaply summarize an OpenFOAM case's time directories.
  *
  * `mTimeValues` is a real, cheap (directory-listing only) native path: the
@@ -202197,6 +202213,97 @@ std::size_t OpenFoamSeriesWriter::NumSteps() const noexcept {
 void OpenFoamSeriesWriter::Finalize() {
     if (mpImpl && mpImpl->mSteps == 0)
         throw WriteError("OpenFOAM: series: no step was written");
+}
+
+Mesh read_openfoam_cloud(const std::string& rPath, const std::string& rCloud,
+                         const ReadOptions& rOptions) {
+    const fs::path path(rPath);
+    const fs::path case_root = path.extension() == ".foam" ? path.parent_path() : path;
+    // The time directories that hold the cloud, ascending by time.
+    std::vector<FoamTimeDir> times;
+    std::error_code ec;
+    for (const auto& entry : fs::directory_iterator(case_root, ec)) {
+        double t = 0.0;
+        if (!entry.is_directory() || !foam_parse_time_dir_name(entry.path().filename().string(), t))
+            continue;
+        if (fs::is_directory(entry.path() / "lagrangian" / rCloud, ec))
+            times.push_back({t, entry.path().filename().string()});
+    }
+    if (times.empty())
+        throw ReadError("OpenFOAM: no time directory of '" + case_root.string() +
+                        "' holds a lagrangian cloud '" + rCloud + "'");
+    std::sort(times.begin(), times.end(),
+              [](const FoamTimeDir& a, const FoamTimeDir& b) { return a.mValue < b.mValue; });
+    const fs::path dir =
+        case_root / times[rOptions.ResolveTimeStep(times.size())].mName / "lagrangian" / rCloud;
+    // Cartesian positions: `coordinates` (a `vectorField`). The barycentric `positions` file
+    // names a tetrahedron of the mesh per particle and needs the mesh to be turned into
+    // coordinates, which this reader does not do.
+    if (!foam_file_exists(dir / "coordinates"))
+        throw ReadError(
+            "OpenFOAM: the cloud '" + rCloud +
+            "' has no Cartesian `coordinates` file (its "
+            "`positions` are barycentric: write the cloud with `writeLagrangianPositions` off, or "
+            "convert it)");
+    const std::vector<std::array<double, 3>> coords = read_points(dir / "coordinates");
+    const std::size_t n = coords.size();
+    Mesh mesh;
+    NDArray pts(DType::Float64, {n, 3});
+    double* pp = pts.As<double>();
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            pp[i * 3 + c] = coords[i][c];
+    mesh.AssignPoints(std::move(pts));
+    if (n > 0) {
+        NDArray conn = NDArray::Uninit(DType::Int64, {n, std::size_t{1}});
+        for (std::size_t i = 0; i < n; ++i)
+            conn.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
+        mesh.AddCellBlock("vertex", std::move(conn));
+    }
+    // The per-particle fields: ASCII list files of `n` entries (scalar, vector, tensor, label).
+    for (const std::string& name : foam_field_files(dir)) {
+        if (name == "coordinates" || name == "positions" || !rOptions.WantsAnyData() ||
+            !rOptions.WantsArray(name))
+            continue;
+        const FoamText source = read_whole((dir / name).string());
+        const std::string_view raw = source.View();
+        if (detect_format(raw).mBinary) {
+            log::warn("OpenFOAM: the binary cloud field '{}' is not read", name);
+            continue;
+        }
+        std::string body = strip_comments_and_header(raw);
+        // The `FoamFile { ... }` header is still in front of the list.
+        if (const std::size_t close = body.find('}'); close != std::string::npos)
+            body.erase(0, close + 1);
+        // `N ( v v v ... )` or `N ( (a b c) ... )`: every number after the first `(` in order.
+        const std::size_t open = body.find('(');
+        if (open == std::string::npos)
+            continue;
+        const std::string count_text = body.substr(0, open);
+        const long long count = std::atoll(count_text.c_str());
+        if (count < 0 || static_cast<std::size_t>(count) != n)
+            continue;  // not a per-particle list
+        std::vector<double> values;
+        detail::TextStream numbers(std::string_view(body).substr(open + 1));
+        std::string token;
+        while (numbers >> token) {
+            for (char& ch : token)
+                if (ch == '(' || ch == ')')
+                    ch = ' ';
+            detail::TextStream inner(token);
+            double v;
+            while (inner >> v)
+                values.push_back(v);
+        }
+        if (n == 0 || values.empty() || values.size() % n != 0)
+            continue;
+        const std::size_t width = values.size() / n;
+        NDArray arr(DType::Float64,
+                    width == 1 ? std::vector<std::size_t>{n} : std::vector<std::size_t>{n, width});
+        std::copy(values.begin(), values.end(), arr.As<double>());
+        mesh.AddPointData(name, std::move(arr));
+    }
+    return mesh;
 }
 
 }  // namespace meshioplusplus
