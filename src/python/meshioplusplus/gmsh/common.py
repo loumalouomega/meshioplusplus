@@ -154,6 +154,8 @@ def _read_physical_names(f, field_data):
 #: ``uint8``) and written back: ghost elements, interpolation schemes, partitioned entities
 #: and parametrizations. ASCII files only. Twins of ``kGmshKeptSections`` in ``gmsh.cpp``.
 SECTION_PREFIX = "gmsh:section:"
+#: Private key carrying each block's element tags from ``_read_elements`` to the reader.
+ELEMENT_TAGS = "\0element_tags"
 KEPT_SECTIONS = (
     "GhostElements",
     "InterpolationScheme",
@@ -171,6 +173,36 @@ def _capture_section(f, name, field_data):
             break
         body += line.rstrip(b"\r\n") + b"\n"
     field_data[SECTION_PREFIX + name] = np.frombuffer(body, dtype=np.uint8).copy()
+
+
+def _ghost_cell_data(field_data, tag_blocks):
+    """``{"partition:ghost": [per block]}`` from a kept ``$GhostElements`` section: 1 for
+    an element the section lists (a ghost), 0 for an owned one. ``tag_blocks`` holds the
+    file's element tags per cell block. Twin of ``gmsh_add_ghost_cells`` in ``gmsh.cpp``.
+    """
+    body = field_data.get(SECTION_PREFIX + "GhostElements")
+    if body is None or tag_blocks is None:
+        return {}
+    words = np.asarray(body, dtype=np.uint8).tobytes().split()
+    try:
+        count = int(words[0])
+        pos, ghosts = 1, set()
+        for _ in range(count):
+            tag, num = int(words[pos]), int(words[pos + 2])
+            if num < 0:
+                return {}
+            ghosts.add(tag)
+            pos += 3 + num
+    except (IndexError, ValueError):
+        return {}
+    if count < 0:
+        return {}
+    return {
+        "partition:ghost": [
+            np.array([int(t) in ghosts for t in tags], dtype=np.int64)
+            for tags in tag_blocks
+        ]
+    }
 
 
 def _write_kept_sections(fh, field_data, binary):

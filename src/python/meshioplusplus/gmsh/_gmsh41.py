@@ -11,7 +11,9 @@ from .._common import num_nodes_per_cell, raw_from_cell_data, warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import CellBlock, Mesh
 from .common import (
+    ELEMENT_TAGS,
     KEPT_SECTIONS,
+    _ghost_cell_data,
     _capture_section,
     _element_node_cell_data,
     _fast_forward_over_blank_lines,
@@ -117,7 +119,9 @@ def read_buffer(f, is_ascii: bool, data_size):
     en_cell_data, en_field_data = _element_node_cell_data(cells, element_node)
     cell_data.update(en_cell_data)
     field_data.update(en_field_data)
+    element_tags = cell_tags.pop(ELEMENT_TAGS, None)
     cell_data.update(cell_tags)
+    cell_data.update(_ghost_cell_data(field_data, element_tags))
 
     # Add node entity information to the point data
     point_data.update({"gmsh:dim_tags": point_entities})
@@ -266,6 +270,7 @@ def _read_elements(
     inv_tags[point_tags] = np.arange(len(point_tags))
 
     # Note that the first column in the data array is the element tag; discard it.
+    element_tags = [d[:, 0] for _, _, _, _, d in data]
     data = [
         (physical_tag, bound_entity, geom_tag, tpe, inv_tags[d[:, 1:] - 1])
         for physical_tag, bound_entity, geom_tag, tpe, d in data
@@ -290,6 +295,7 @@ def _read_elements(
                 cell_sets["gmsh:bounding_entities"] = []
             cell_sets["gmsh:bounding_entities"].append(bound_entity)
 
+    cell_data[ELEMENT_TAGS] = element_tags
     return cells, cell_data, cell_sets
 
 

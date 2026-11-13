@@ -32,6 +32,8 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <sstream>
+#include <unordered_set>
 #include <ostream>
 #include <string>
 #include <string_view>
@@ -380,12 +382,12 @@ void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArr
     rCur.skip_to_end("PhysicalNames");
 }
 
-/// The sections the readers keep verbatim as `field_data["gmsh:section:<Name>"]` (their text body, as
-/// `uint8`) and the writers put back: ghost elements, interpolation schemes, partitioned entities and
-/// parametrizations. ASCII files only.
+/// The sections the readers keep verbatim as `field_data["gmsh:section:<Name>"]` (their text body,
+/// as `uint8`) and the writers put back: ghost elements, interpolation schemes, partitioned
+/// entities and parametrizations. ASCII files only.
 constexpr const char* kGmshSectionPrefix = "gmsh:section:";
 constexpr const char* kGmshKeptSections[] = {"GhostElements", "InterpolationScheme",
-                                              "PartitionedEntities", "Parametrizations"};
+                                             "PartitionedEntities", "Parametrizations"};
 
 bool gmsh_is_kept_section(const std::string& rName) {
     for (const char* kept : kGmshKeptSections)
@@ -420,6 +422,43 @@ void gmsh_keep_section(std::unordered_map<std::string, NDArray>& rFieldData,
     if (!rBody.empty())
         std::memcpy(bytes.Data(), rBody.data(), rBody.size());
     rFieldData.insert_or_assign(std::string(kGmshSectionPrefix) + rName, std::move(bytes));
+}
+
+/// `cell_data["partition:ghost"]` (1 = a ghost element, 0 = owned) from a kept `$GhostElements`
+/// section: `numGhostElements`, then `elementTag partitionTag numGhostPartitions ghostTag...` per
+/// line, matched to the cells through the element tags the blocks recorded. Twin of
+/// `_ghost_cell_data` in `gmsh/common.py`.
+template <typename Blocks>
+void gmsh_add_ghost_cells(Mesh& rMesh, const Blocks& rBlocks, const ReadOptions& rOpts) {
+    const std::string key = std::string(kGmshSectionPrefix) + "GhostElements";
+    if (!rMesh.HasFieldData(key) || !rOpts.WantsAnyData() || !rOpts.WantsArray("partition:ghost"))
+        return;
+    const NDArray& section = rMesh.FieldData(key);
+    const std::string body(reinterpret_cast<const char*>(section.Data()), section.Size());
+    std::istringstream in(body);
+    std::int64_t count = 0;
+    if (!(in >> count) || count < 0)
+        return;
+    std::unordered_set<std::int64_t> ghosts;
+    for (std::int64_t i = 0; i < count; ++i) {
+        std::int64_t tag = 0, part = 0, num = 0;
+        if (!(in >> tag >> part >> num) || num < 0)
+            return;
+        for (std::int64_t k = 0; k < num; ++k) {
+            std::int64_t g = 0;
+            if (!(in >> g))
+                return;
+        }
+        ghosts.insert(tag);
+    }
+    std::vector<NDArray> per_block;
+    for (const auto& b : rBlocks) {
+        NDArray flags(DType::Int64, {b.mCount});
+        for (std::size_t r = 0; r < b.mCount; ++r)
+            flags.As<std::int64_t>()[r] = ghosts.count(b.mTags[r]) ? 1 : 0;
+        per_block.push_back(std::move(flags));
+    }
+    rMesh.AddCellData("partition:ghost", std::move(per_block));
 }
 
 // --- physical groups <-> named regions ---------------------------------------
@@ -1230,8 +1269,9 @@ struct E41 {
     int mEntityTag = 0;
     std::int32_t mPhysicalTag = 0;  // 0 == gmsh's "no physical group"
     std::vector<std::int32_t> mBounding;
-    NDArray mConn;  // (count, n) Int64, 0-based gmsh node ids; moved into the
-                    // cell block directly when the tag remap is the identity.
+    std::vector<std::int64_t> mTags;  // the file's element tag per element (for $GhostElements)
+    NDArray mConn;                    // (count, n) Int64, 0-based gmsh node ids; moved into the
+                                      // cell block directly when the tag remap is the identity.
 };
 
 /**
@@ -1502,6 +1542,8 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                                   "element");
         blk.mConn = NDArray(DType::Int64, {nez, n});
         std::int64_t* dst = blk.mConn.As<std::int64_t>();
+        blk.mTags.assign(nez, 0);
+        std::int64_t* tag_dst = blk.mTags.data();
         bool parsed = false;
         if (!is_ascii && data_size == 8 && !version40) {
             // Each element is [tag, node0..node(n-1)] u64, native-endian and
@@ -1512,6 +1554,9 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
             const char* base = rCur.mBuf.data() + rCur.mPos;
             parallel_for_bw(nez, [&](std::size_t e) {
                 const char* row = base + (e * stride + 1) * 8;  // skip element tag
+                std::uint64_t etag;
+                std::memcpy(&etag, base + e * stride * 8, 8);
+                tag_dst[e] = static_cast<std::int64_t>(etag);
                 for (std::size_t j = 0; j < n; ++j) {
                     std::uint64_t v;
                     std::memcpy(&v, row + j * 8, 8);
@@ -1535,7 +1580,9 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                 } else if (!GmshCursor::integer_of(x, tag)) {
                     return false;
                 }
-                if (j != 0)
+                if (j == 0)
+                    tag_dst[e] = tag;
+                else
                     dst[e * n + j - 1] = tag - 1;
                 return true;
             });
@@ -1545,10 +1592,7 @@ void read_elements_41(GmshCursor& rCur, bool is_ascii, int data_size, std::vecto
                 rCur.need(nez * (n + 1) * 4);
             std::size_t p = 0;
             for (std::int64_t e = 0; e < num_ele; ++e) {
-                if (version40)
-                    rd_int();  // element tag (int32)
-                else
-                    rd_size();
+                tag_dst[e] = version40 ? rd_int() : rd_size();
                 for (std::size_t j = 0; j < n; ++j) {
                     const std::int64_t tag = version40 ? rd_int() : rd_size();
                     if (version40 && tag < 1)
@@ -1742,6 +1786,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         mesh.AddCellData(kv.first, std::move(per_block));
     }
     gmsh_add_element_node_data(mesh, element_node_raw, eblocks);
+    gmsh_add_ghost_cells(mesh, eblocks, rOpts);
     if (!physical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:physical"))
         mesh.AddCellData("gmsh:physical", std::move(physical_blocks));
     if (!geom_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
@@ -2313,7 +2358,8 @@ inline std::size_t gmsh_perm_src(const std::vector<int>& rPerm, std::size_t J) {
     return rPerm.empty() ? J : static_cast<std::size_t>(rPerm[J]);
 }
 
-/// The kept sections (`field_data["gmsh:section:<Name>"]`) back as `$Name ... $EndName`; ASCII only.
+/// The kept sections (`field_data["gmsh:section:<Name>"]`) back as `$Name ... $EndName`; ASCII
+/// only.
 void gmsh_write_kept_sections(std::ostream& rOs, const Mesh& rMesh, bool binary) {
     if (binary)
         return;

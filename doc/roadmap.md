@@ -221,7 +221,7 @@ Sets, particle clouds, and compressed writes beyond Python and C++. **S–M**
 - **State today.** `$ElementNodeData`, `$InterpolationScheme` and `$GhostElements` fall into the generic unknown-section skip with no warning: `gmsh.cpp` lines 1431–1432 (4.x body) and 1912–1913 (2.2), `gmsh/_gmsh22.py` lines 74–75, `_gmsh41.py` lines 91–100, `_gmsh40.py` line 83.
 - **Steps.**
   - **2.3.6.1 Interpret what is kept.** `$ElementNodeData` is read and written (`gmsh:element_node:<name>`, in the file's node order); decide with 8.3 whether it moves to that convention. **S–M, after 8.3's design pass**
-  - **2.3.6.2 `$GhostElements`, interpreted.** The section is kept verbatim (`gmsh:section:GhostElements`); map it to `cell_data["partition:ghost"]`, the name `partition`'s ghost layers use, which needs the element tags (a 2.2 line is `elm-number partition-tag ghost-partition-tag...`, a 4.x line adds a count: *verify first* against a Gmsh-written partitioned file). **S**
+  - **2.3.6.2 `$GhostElements`: verify.** Read as `cell_data["partition:ghost"]` in 4.x ASCII files (both engines). Still open: confirm the line layout against a Gmsh-written partitioned file, and MSH 2.2's negative partition ids. **S**
   - **2.3.6.3 The rest of MSH 4.1.** `$PartitionedEntities`, `$Parametrizations` and `$InterpolationScheme` are kept verbatim in ASCII files only; keep them in binary files, and read the parametric node coordinates (`u, v, w` after the point in a 4.1 node record), which are still discarded. The Gmsh 5.0 development manual's `$Polytopes`, `$Edges` and `$Faces` are a watch item until a release defines them†. **S–M**
 - **Done when.** Gmsh's `tutorials/view*.msh`-class file with element-node data round-trips in both engines.
 

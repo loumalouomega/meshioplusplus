@@ -13,7 +13,9 @@ from .._common import num_nodes_per_cell, raw_from_cell_data
 from .._exceptions import ReadError
 from .._mesh import CellBlock, Mesh
 from .common import (
+    ELEMENT_TAGS,
     KEPT_SECTIONS,
+    _ghost_cell_data,
     _capture_section,
     _element_node_cell_data,
     _fast_forward_to_end_block,
@@ -98,7 +100,9 @@ def read_buffer(f, is_ascii: bool, data_size) -> Mesh:
     en_cell_data, en_field_data = _element_node_cell_data(cells, element_node)
     cell_data.update(en_cell_data)
     field_data.update(en_field_data)
+    element_tags = cell_tags.pop(ELEMENT_TAGS, None)
     cell_data.update(cell_tags)
+    cell_data.update(_ghost_cell_data(field_data, element_tags))
 
     periodic = _remap_periodic(periodic, point_tags)
     return Mesh(
@@ -209,6 +213,7 @@ def _read_elements(f, point_tags, physical_tags, is_ascii):
     itags[point_tags] = np.arange(len(point_tags))
 
     # Note that the first column in the data array is the element tag; discard it.
+    element_tags = [d[:, 0] for _, _, _, d in data]
     data = [
         (physical_tag, geom_tag, tpe, itags[d[:, 1:]])
         for physical_tag, geom_tag, tpe, d in data
@@ -228,6 +233,7 @@ def _read_elements(f, point_tags, physical_tags, is_ascii):
             cell_data["gmsh:geometrical"] = []
         cell_data["gmsh:geometrical"].append(np.full(len(values), geom_tag, int))
 
+    cell_data[ELEMENT_TAGS] = element_tags
     return cells, cell_data
 
 

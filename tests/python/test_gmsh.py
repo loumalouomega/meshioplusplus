@@ -1468,3 +1468,46 @@ def test_ghost_and_interpolation_sections_survive_a_round_trip(tmp_path):
         text = out.read_text()
         assert "$GhostElements\n1\n1 1 2 2 3\n$EndGhostElements" in text
         assert '$InterpolationScheme\n"scheme"' in text
+
+
+_GHOST_MSH = """$MeshFormat
+4.1 0 8
+$EndMeshFormat
+$Nodes
+1 4 1 4
+2 1 0 4
+1
+2
+3
+4
+0 0 0
+1 0 0
+1 1 0
+0 1 0
+$EndNodes
+$Elements
+1 3 10 12
+2 1 2 3
+10 1 2 3
+11 2 3 4
+12 1 3 4
+$EndElements
+$GhostElements
+2
+11 1 1 2
+12 1 2 2 3
+$EndGhostElements
+"""
+
+
+def test_ghost_elements_become_partition_ghost(tmp_path, monkeypatch):
+    path = tmp_path / "g.msh"
+    path.write_text(_GHOST_MSH)
+    for strict in ("1", None):
+        if strict:
+            monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+        else:
+            monkeypatch.delenv("MESHIOPLUSPLUS_STRICT_CORE", raising=False)
+        mesh = meshioplusplus.read(path, "gmsh")
+        assert [list(b) for b in mesh.cell_data["partition:ghost"]] == [[0, 1, 1]]
+        assert "gmsh:section:GhostElements" in mesh.field_data

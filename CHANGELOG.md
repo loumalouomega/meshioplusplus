@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** Gmsh `$GhostElements` is read as `cell_data["partition:ghost"]` (4.x ASCII, both engines; roadmap 2.3.6.2).
+
+
 - **Added:** `.pvts`, `.pvtr` and `.pvti` readers (Python): the parallel indexes of structured pieces, each placed by its `Extent` in `WholeExtent` so shared planes are one layer of points, one `piece_<i>` region per piece (roadmap 2.3.7.3; the C++ reader remains).
 
 
