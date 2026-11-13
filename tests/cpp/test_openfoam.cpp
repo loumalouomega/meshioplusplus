@@ -39,6 +39,7 @@
 #include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../../src/cpp/src/detail/gzip_deflate.hpp"
