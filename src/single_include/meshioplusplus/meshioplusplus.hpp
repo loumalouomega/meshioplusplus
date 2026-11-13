@@ -177085,7 +177085,8 @@ Mesh medit_finish_mesh(
     Mesh&& rMesh, bool HavePoints, std::vector<MeditStagedBlock>& rBlocks,
     const std::unordered_map<std::string, std::vector<int>>& rPerms,
     const std::vector<std::int64_t>& rPointRef,
-    std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>>& rIdLists) {
+    std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>>& rIdLists,
+    const std::vector<double>& rNormals = {}, const std::vector<std::int64_t>& rNormalAt = {}) {
     if (!HavePoints)
         throw ReadError("Medit: expected Vertices");
     medit_add_blocks(rMesh, rBlocks, rPerms);
@@ -177093,6 +177094,24 @@ Mesh medit_finish_mesh(
     for (std::size_t i = 0; i < rPointRef.size(); ++i)
         pr.As<std::int64_t>()[i] = rPointRef[i];
     rMesh.AddPointData("medit:ref", std::move(pr));
+    // `NormalAtVertices` pairs (vertex, normal row), 1-based, over `Normals`
+    // rows of the mesh's dimension: one row per vertex, NaN where none.
+    if (!rNormalAt.empty()) {
+        const std::size_t np = rMesh.NumPoints(), dim = rMesh.PointDim();
+        const std::size_t nrows = dim ? rNormals.size() / dim : 0;
+        NDArray full(DType::Float64, {np, dim});
+        double* fp = full.As<double>();
+        std::fill(fp, fp + np * dim, std::nan(""));
+        for (std::size_t k = 0; k + 1 < rNormalAt.size(); k += 2) {
+            const std::int64_t v = rNormalAt[k] - 1, r = rNormalAt[k + 1] - 1;
+            if (v < 0 || static_cast<std::size_t>(v) >= np || r < 0 ||
+                static_cast<std::size_t>(r) >= nrows)
+                throw ReadError("Medit: NormalAtVertices names a vertex or normal out of range");
+            std::copy_n(rNormals.data() + static_cast<std::size_t>(r) * dim, dim,
+                        fp + static_cast<std::size_t>(v) * dim);
+        }
+        rMesh.AddPointData("medit:normal", std::move(full));
+    }
     for (auto& [list, ids] : rIdLists)
         medit_add_id_list_region(rMesh, *list, std::move(ids));
     return std::move(rMesh);
@@ -177106,8 +177125,6 @@ struct MeditCountedSkip {
 };
 
 constexpr MeditCountedSkip kMeditCountedSkips[] = {
-    {"Normals", 0},
-    {"NormalAtVertices", 2},
     {"SubDomainFromMesh", 4},
     {"VertexOnGeometricVertex", 2},
     {"VertexOnGeometricEdge", 3},
@@ -177140,6 +177157,8 @@ Mesh read_medit_ascii(const std::string& rPath) {
 
     const auto& e2m = medit_to_meshio();
     std::vector<std::pair<const MeditIdList*, std::vector<std::int64_t>>> id_lists;
+    std::vector<double> normals;
+    std::vector<std::int64_t> normal_at;
     std::vector<MeditStagedBlock> blocks;
     std::unordered_map<std::string, std::vector<int>> perms;
 
@@ -177238,6 +177257,16 @@ Mesh read_medit_ascii(const std::string& rPath) {
             for (std::int64_t& id : ids)
                 id = tok.next_int() - 1;
             id_lists.emplace_back(id_list, std::move(ids));
+        } else if (kw == "Normals") {
+            const std::int64_t n = tok.next_count();
+            normals.assign(static_cast<std::size_t>(n * dim), 0.0);
+            for (double& x : normals)
+                x = tok.next_double();
+        } else if (kw == "NormalAtVertices") {
+            const std::int64_t n = tok.next_count();
+            normal_at.assign(static_cast<std::size_t>(n * 2), 0);
+            for (std::int64_t& x : normal_at)
+                x = tok.next_int();
         } else if (const std::int64_t width = medit_counted_skip_width(kw, dim); width >= 0) {
             // A counted block meshio++ has no home for (`next_count` bounds n by the
             // buffer, so n * width cannot overflow).
@@ -177260,7 +177289,8 @@ Mesh read_medit_ascii(const std::string& rPath) {
         }
     }
 
-    return medit_finish_mesh(std::move(mesh), have_points, blocks, perms, point_ref, id_lists);
+    return medit_finish_mesh(std::move(mesh), have_points, blocks, perms, point_ref, id_lists,
+                             normals, normal_at);
 }
 
 void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
@@ -177346,6 +177376,36 @@ void write_medit_ascii(const std::string& rPath, const Mesh& rMesh) {
                                              rBuf += '\n';
                                          }
                                      });
+        }
+    }
+
+    // `medit:normal` (a row per vertex, NaN where none): Normals and NormalAtVertices.
+    if (rMesh.HasPointData("medit:normal")) {
+        const NDArray& nrm_array = rMesh.PointData("medit:normal");
+        const detail::DoubleView nv(nrm_array);
+        std::vector<std::size_t> present;
+        for (std::size_t i = 0; i < n; ++i) {
+            bool ok = true;
+            for (std::size_t c = 0; c < d; ++c)
+                ok = ok && !std::isnan(nv[i * d + c]);
+            if (ok)
+                present.push_back(i);
+        }
+        if (!present.empty()) {
+            const detail::CNumber num;
+            std::string buf = "\nNormals\n" + std::to_string(present.size()) + "\n";
+            for (const std::size_t i : present) {
+                for (std::size_t c = 0; c < d; ++c) {
+                    if (c)
+                        buf += ' ';
+                    num.Append(buf, "%.16e", nv[i * d + c]);
+                }
+                buf += '\n';
+            }
+            buf += "\nNormalAtVertices\n" + std::to_string(present.size()) + "\n";
+            for (std::size_t k = 0; k < present.size(); ++k)
+                buf += std::to_string(present[k] + 1) + " " + std::to_string(k + 1) + "\n";
+            os << buf;
         }
     }
 

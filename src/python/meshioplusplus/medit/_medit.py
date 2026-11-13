@@ -329,6 +329,8 @@ def read_ascii_buffer(f):
     cells = []
     point_data = {}
     cell_data = {"medit:ref": []}
+    normals = None
+    normal_at = None
 
     meshio_from_medit = {
         "Edges": ("line", 2),
@@ -436,15 +438,12 @@ def read_ascii_buffer(f):
             ids = np.fromfile(f, count=count, dtype=int, sep=" ")
             id_lists[items[0]] = ids - 1
         elif items[0] == "Normals":
-            # those are just discarded
             num_normals = int(f.readline())
-            np.fromfile(f, count=num_normals * dim, dtype=dtype, sep=" ").reshape(
-                num_normals, dim
-            )
+            normals = np.fromfile(f, count=num_normals * dim, dtype=dtype, sep=" ")
+            normals = normals.reshape(num_normals, dim)
         elif items[0] == "NormalAtVertices":
-            # those are just discarded
             num_normal_at_vertices = int(f.readline())
-            np.fromfile(
+            normal_at = np.fromfile(
                 f, count=num_normal_at_vertices * 2, dtype=int, sep=" "
             ).reshape(num_normal_at_vertices, 2)
         elif items[0] == "SubDomainFromMesh":
@@ -511,6 +510,21 @@ def read_ascii_buffer(f):
         raise ReadError("Expected `Vertices`")
     cells = _apply_orderings(cells, perms)
     regions = _regions_from_id_lists(id_lists, len(points), cells)
+    if normals is not None and normal_at is not None and len(normal_at):
+        vert = normal_at[:, 0] - 1
+        row = normal_at[:, 1] - 1
+        if (
+            vert.min() < 0
+            or vert.max() >= len(points)
+            or row.min() < 0
+            or row.max() >= len(normals)
+        ):
+            raise ReadError(
+                "Medit: NormalAtVertices names a vertex or normal out of range"
+            )
+        full = np.full((len(points), dim), np.nan)
+        full[vert] = normals[row]
+        point_data["medit:normal"] = full
     return Mesh(
         points, cells, point_data=point_data, cell_data=cell_data, regions=regions
     )
@@ -605,6 +619,7 @@ def write_ascii_file(filename, mesh, float_fmt=".16e"):
             for d, label in zip(data + 1, labels):
                 fh.write(fmt.format(*d, label).encode())
 
+        _write_normals(fh, mesh, float_fmt)
         _write_id_lists(fh, mesh)
         fh.write(b"\nEnd\n")
 
@@ -639,6 +654,25 @@ def _id_list_sections(mesh):
             out.append((keyword, ids))
             break
     return out
+
+
+def _write_normals(fh, mesh, float_fmt):
+    """``medit:normal`` (one row per vertex, NaN where none) as ``Normals`` and
+    ``NormalAtVertices``."""
+    data = mesh.point_data.get("medit:normal")
+    if data is None:
+        return
+    data = np.asarray(data, dtype=float)
+    present = np.nonzero(~np.isnan(data).any(axis=1))[0]
+    if len(present) == 0:
+        return
+    fh.write(f"\nNormals\n{len(present)}\n".encode())
+    fmt = " ".join(["{:" + float_fmt + "}"] * data.shape[1]) + "\n"
+    for i in present:
+        fh.write(fmt.format(*data[i]).encode())
+    fh.write(f"\nNormalAtVertices\n{len(present)}\n".encode())
+    for k, i in enumerate(present):
+        fh.write(f"{int(i) + 1} {k + 1}\n".encode())
 
 
 def _write_id_lists(fh, mesh):
