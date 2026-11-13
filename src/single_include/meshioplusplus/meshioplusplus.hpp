@@ -159463,12 +159463,13 @@ bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<E
                 return;
             std::int64_t v[3] = {0, 0, 0};
             std::size_t count = 0;
-            if (!for_each_int(line(e), [&](std::size_t k, std::int64_t x) {
-                    if (k < 3)
-                        v[k] = x;
-                    count = k + 1;
-                    return true;
-                }) ||
+            if (!for_each_int(line(e),
+                              [&](std::size_t k, std::int64_t x) {
+                                  if (k < 3)
+                                      v[k] = x;
+                                  count = k + 1;
+                                  return true;
+                              }) ||
                 count < 3) {
                 refused.store(true);
                 return;
@@ -160818,7 +160819,8 @@ void gmsh_write_node_data(std::ostream& os, const Mesh& rMesh, bool binary) {
         const NDArray& d = rMesh.PointData(name);
         std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
         std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
-        os << "$NodeData\n1\n\"" << name << "\"\n" << gmsh_data_time_lines() << ncomp << "\n"
+        os << "$NodeData\n1\n\"" << name << "\"\n"
+           << gmsh_data_time_lines() << ncomp << "\n"
            << rows << "\n";
         const detail::DoubleView values(d);
         char buf[32];
@@ -160855,8 +160857,8 @@ void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, c
         total += b.Shape().empty() ? 0 : b.Shape()[0];
         ncomp = b.Shape().size() >= 2 ? b.Shape()[1] : 1;
     }
-    rOs << "$" << pTag << "\n1\n\"" << rName << "\"\n" << gmsh_data_time_lines() << ncomp
-        << "\n"
+    rOs << "$" << pTag << "\n1\n\"" << rName << "\"\n"
+        << gmsh_data_time_lines() << ncomp << "\n"
         << total << "\n";
     std::int64_t idx = 1;
     for (std::size_t k = 0; k < nblocks; ++k) {
