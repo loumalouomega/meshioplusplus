@@ -8937,6 +8937,13 @@ PYBIND11_MODULE(_core, m) {
     core_def_step_writer(py::class_<meshioplusplus::FemapSeriesWriter>(m, "FemapSeriesWriter")
                              .def(py::init<const std::string&>(), py::arg("path")));
 
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    // A time series in one CGNS file: the core half of `meshioplusplus.cgns.SeriesWriter`.
+    core_def_step_writer(py::class_<meshioplusplus::CgnsSeriesWriter>(m, "CgnsSeriesWriter")
+                             .def(py::init<const std::string&, int>(), py::arg("path"),
+                                  py::arg("gzip_level") = 4));
+#endif
+
     // A time series as one EnSight case: the core half of `meshioplusplus.ensight.SeriesWriter`.
     core_def_step_writer(
         py::class_<meshioplusplus::EnsightSeriesWriter>(m, "EnsightSeriesWriter")

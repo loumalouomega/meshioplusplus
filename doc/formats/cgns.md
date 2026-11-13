@@ -133,6 +133,10 @@ A `Structured` zone (`ZoneType` `Structured`, its `Zone_t` value the vertex, cel
 
 A multi-base file reads its first base with a warning. Pass `base=` (a name, or a position with `0` the first) to `cgns.read` to choose one; the raw HDF5 path (C++ `read_cgns_base`, the h5py twin) honours it, the cgnslib path and the flat bindings do not. Reading every base into one mesh is not offered: bases may differ in dimension.
 
+## Writing a series
+
+`meshioplusplus.cgns.SeriesWriter` (C++: `CgnsSeriesWriter`, and `write_sequence` / `sequence_to_timeseries`) writes the mesh with the first step and one further `FlowSolution_t` per later step (`FlowSolution_1`, …, copied from a file the step is written to), and, when it closes, a `BaseIterativeData_t` (`TimeIterValues`, holding the step count and `TimeValues`) and a `ZoneIterativeData_t` (`FlowSolutionPointers`, one 32-character name per step) — the layout `read(..., time_step=k)` resolves a step through. A step is one `FlowSolution_t`, so it carries point data or cell data, not both; every step must have the first step's points and cell blocks, and a file with no point or cell data in a step is refused. Both engines write the same layout.
+
 ## Polyhedral cells (`NGON_n` / `NFACE_n`)
 
 Since v9.21.0 meshio++ reads and writes CGNS's face-based sections itself, in the native HDF5 build (the default wherever HDF5 is found, and the WASM artifact), so polyhedral CGNS works there. The PyPI wheels are built without HDF5, and their Python reference reader and writer cannot handle these sections, so polyhedral CGNS is unavailable in the wheels. A `polyhedron<N>` block becomes an `NGON_n` face list plus an `NFACE_n` cell list of **signed** face element ids (the sign meaning "traverse this face reversed"); a jagged `polygon<N>` block is itself a face list, so it becomes an `NGON_n` on its own.

@@ -2,6 +2,8 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
+from ._cgns import SeriesWriter as _PySeriesWriter
 from ._cgns import read as _py_read
 from ._cgns import write as _py_write
 
@@ -66,6 +68,30 @@ def read(filename, time_step: int = 0, base=None):
     return _py_read(filename, base=base)
 
 
+class SeriesWriter(CoreSeriesWriter):
+    """Write a time series into one CGNS file: the mesh with the first step, then one
+    ``FlowSolution_t`` per later step, with ``BaseIterativeData_t`` (``TimeValues``) and
+    ``ZoneIterativeData_t`` (``FlowSolutionPointers``), which ``read(..., time_step=k)``
+    resolves a step through. A step carries point data or cell data, not both; every step
+    must have the first step's points and cells.
+
+    >>> with meshioplusplus.cgns.SeriesWriter("run.cgns") as w:
+    ...     for t, mesh in steps:
+    ...         w.write(t, mesh)
+    """
+
+    def __init__(self, filename, compression="gzip", compression_opts=4):
+        self._core = self._py = None
+        if _HAS_HDF5 and not is_buffer(filename, "w") and compression == "gzip":
+            try:
+                self._core = _core.CgnsSeriesWriter(str(filename), compression_opts)
+                return
+            except Exception as exc:
+                if not core_declined(exc, "cgns", "write", filename):
+                    raise
+        self._py = _PySeriesWriter(filename, compression, compression_opts)
+
+
 def write(filename, mesh, compression="gzip", compression_opts=4):
     """Write a CGNS file (C++ core when built with HDF5, Python/h5py fallback)."""
     if _HAS_HDF5 and compression in (None, "gzip") and not is_buffer(filename, "w"):
@@ -81,4 +107,4 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
 
 register_format("cgns", [".cgns"], read, {"cgns": write})
 
-__all__ = ["read", "write"]
+__all__ = ["read", "write", "SeriesWriter"]

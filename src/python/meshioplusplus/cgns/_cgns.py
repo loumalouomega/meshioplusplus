@@ -1308,3 +1308,115 @@ def _read_legacy(f):
     cells = [("tetra", cells)]
 
     return Mesh(points, cells)
+
+
+def _series_solution_names(zone):
+    return [
+        n
+        for n in zone
+        if not n.startswith(" ")
+        and _read_attr_str(zone[n], "label") == "FlowSolution_t"
+    ]
+
+
+class SeriesWriter:
+    """The Python twin of ``CgnsSeriesWriter``: the mesh with the first step, then one
+    ``FlowSolution_t`` per later step, with a ``BaseIterativeData_t`` (``TimeValues``)
+    and a ``ZoneIterativeData_t`` (``FlowSolutionPointers``) written on :meth:`close`.
+    A step is one ``FlowSolution_t``, so it carries point data or cell data, not both.
+    Use as a context manager."""
+
+    def __init__(self, filename, compression="gzip", compression_opts=4):
+        self._path = str(filename)
+        self._compression = compression
+        self._opts = compression_opts
+        self._times = []
+        self._pointers = []
+        self._shape = None
+        self._closed = False
+
+    def write(self, time, mesh):
+        import os
+
+        import h5py
+
+        if self._closed:
+            raise WriteError("CGNS series: the writer is finalized")
+        if mesh.point_data and mesh.cell_data:
+            raise WriteError(
+                "CGNS series: a step may carry point data or cell data, not both "
+                "(a step is one FlowSolution_t)"
+            )
+        if not mesh.point_data and not mesh.cell_data:
+            raise WriteError("CGNS series: a step needs point data or cell data")
+        step = len(self._times)
+        shape = (len(mesh.points), [len(c.data) for c in mesh.cells])
+        if step and shape != self._shape:
+            raise WriteError(
+                f"CGNS series: step {step}'s points or cells differ from the first "
+                "step's; a file holds one mesh -- write one file per step with "
+                "'{step}'"
+            )
+        if step == 0:
+            write(self._path, mesh, self._compression, self._opts)
+            self._shape = shape
+            with h5py.File(self._path, "r") as f:
+                names = _series_solution_names(f["Base"]["Zone1"])
+            if not names:
+                raise WriteError("CGNS series: the first step wrote no FlowSolution_t")
+            self._pointers.append(names[0])
+        else:
+            scratch = self._path + ".step.tmp"
+            write(scratch, mesh, self._compression, self._opts)
+            try:
+                with h5py.File(scratch, "r") as src, h5py.File(self._path, "r+") as dst:
+                    names = _series_solution_names(src["Base"]["Zone1"])
+                    if not names:
+                        raise WriteError("CGNS series: a step wrote no FlowSolution_t")
+                    new_name = f"{names[0]}_{step}"
+                    zone = dst["Base"]["Zone1"]
+                    src.copy(src["Base"]["Zone1"][names[0]], zone, name=new_name)
+                    copy = zone[new_name]
+                    for attr in ("name", "label", "type", "flags"):
+                        del copy.attrs[attr]
+                    _write_node_attrs(copy, new_name, "FlowSolution_t", "MT")
+                    self._pointers.append(new_name)
+            finally:
+                os.remove(scratch)
+        self._times.append(float(time))
+
+    def close(self):
+        import h5py
+
+        if self._closed:
+            return
+        if not self._times:
+            raise WriteError("CGNS series: no step was written")
+        with h5py.File(self._path, "r+") as f:
+            base, zone = f["Base"], f["Base"]["Zone1"]
+            biter = _create_group(base, "TimeIterValues")
+            _write_node_attrs(biter, "TimeIterValues", "BaseIterativeData_t", "I4")
+            biter.create_dataset(" data", data=np.array([len(self._times)], "<i4"))
+            tv = _create_group(biter, "TimeValues")
+            _write_node_attrs(tv, "TimeValues", "DataArray_t", "R8")
+            tv.create_dataset(" data", data=np.array(self._times, "<f8"))
+            ziter = _create_group(zone, "ZoneIterativeData")
+            _write_node_attrs(ziter, "ZoneIterativeData", "ZoneIterativeData_t", "MT")
+            fp = _create_group(ziter, "FlowSolutionPointers")
+            _write_node_attrs(fp, "FlowSolutionPointers", "DataArray_t", "C1")
+            names = np.array(
+                [list(p.ljust(32).encode("ascii")[:32]) for p in self._pointers],
+                dtype="i1",
+            )
+            fp.create_dataset(" data", data=names)
+        self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if exc[0] is None:
+            self.close()
+        else:
+            self._closed = True
+        return False

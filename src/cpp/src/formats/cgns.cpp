@@ -2596,6 +2596,164 @@ MeshMetadata read_cgns_metadata(const std::string& rPath, const ReadOptions& rOp
     return cgns_read_metadata_impl(rPath, rOptions);
 }
 
+namespace {
+
+/// The names of the `FlowSolution_t` children of a series file's zone, in link order.
+std::vector<std::string> cgns_series_solution_names(hid_t zone) {
+    std::vector<std::string> names;
+    for (const std::string& child : h5::group_links(zone)) {
+        if (cgns_is_reserved_name(child))
+            continue;
+        h5::Hid node = h5::open_group(zone, child);
+        if (h5::has_attr(node, "label") && h5::read_attr_string(node, "label") == "FlowSolution_t")
+            names.push_back(child);
+    }
+    return names;
+}
+
+}  // namespace
+
+struct CgnsSeriesWriter::Impl {
+    std::string mPath;
+    int mGzip = 4;
+    std::size_t mSteps = 0;
+    std::size_t mPoints = 0;
+    std::vector<std::size_t> mBlockCells;
+    std::vector<double> mTimes;
+    std::vector<std::string> mPointers;  ///< the FlowSolution_t of each step
+    bool mClosed = false;
+};
+
+CgnsSeriesWriter::CgnsSeriesWriter(const std::string& rPath, int GzipLevel)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mGzip = GzipLevel;
+}
+
+CgnsSeriesWriter::~CgnsSeriesWriter() = default;
+CgnsSeriesWriter::CgnsSeriesWriter(CgnsSeriesWriter&&) noexcept = default;
+CgnsSeriesWriter& CgnsSeriesWriter::operator=(CgnsSeriesWriter&&) noexcept = default;
+
+void CgnsSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("CGNS series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (s.mClosed)
+        throw WriteError("CGNS series: the writer is finalized");
+    if (rMesh.NumPointData() > 0 && rMesh.NumCellData() > 0)
+        throw WriteError(
+            "CGNS series: a step may carry point data or cell data, not both (a "
+            "step is one FlowSolution_t)");
+    if (rMesh.NumPointData() == 0 && rMesh.NumCellData() == 0)
+        throw WriteError("CGNS series: a step needs point data or cell data");
+    if (s.mSteps > 0) {
+        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
+        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
+            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
+        if (!same)
+            throw WriteError("CGNS series: step " + std::to_string(s.mSteps) +
+                             "'s points or cells differ from the first step's; a file holds one "
+                             "mesh -- write one file per step with '{step}'");
+    }
+    detail::LibraryLock lock;
+    h5::SilenceErrors silence;
+    if (s.mSteps == 0) {
+        write_cgns(s.mPath, rMesh, s.mGzip);
+        s.mPoints = rMesh.NumPoints();
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
+        h5::Hid f = h5::open_file_read(s.mPath);
+        h5::Hid base = h5::open_group(f, "Base");
+        h5::Hid zone = h5::open_group(base, "Zone1");
+        const auto names = cgns_series_solution_names(zone);
+        if (names.empty())
+            throw WriteError("CGNS series: the first step wrote no FlowSolution_t");
+        s.mPointers.push_back(names.front());
+    } else {
+        // The step is written as a file of its own and its solution node copied in.
+        const std::string scratch = s.mPath + ".step.tmp";
+        write_cgns(scratch, rMesh, s.mGzip);
+        std::string source_name;
+        {
+            h5::Hid f = h5::open_file_read(scratch);
+            h5::Hid base = h5::open_group(f, "Base");
+            h5::Hid zone = h5::open_group(base, "Zone1");
+            const auto names = cgns_series_solution_names(zone);
+            if (names.empty()) {
+                std::remove(scratch.c_str());
+                throw WriteError("CGNS series: a step wrote no FlowSolution_t");
+            }
+            source_name = names.front();
+        }
+        {
+            h5::Hid src = h5::open_file_read(scratch);
+            h5::Hid dst = h5::open_file_rw(s.mPath);
+            h5::Hid src_zone = h5::open_group(h5::open_group(src, "Base"), "Zone1");
+            h5::Hid dst_zone = h5::open_group(h5::open_group(dst, "Base"), "Zone1");
+            const std::string new_name = source_name + "_" + std::to_string(s.mSteps);
+            if (H5Ocopy(src_zone, source_name.c_str(), dst_zone, new_name.c_str(), H5P_DEFAULT,
+                        H5P_DEFAULT) < 0) {
+                std::remove(scratch.c_str());
+                throw WriteError("CGNS series: could not copy step " + std::to_string(s.mSteps));
+            }
+            // The copy carries the source's node name; CGNS wants it to be its own.
+            h5::Hid copy = h5::open_group(dst_zone, new_name);
+            for (const char* attr : {"name", "label", "type", "flags"})
+                H5Adelete(copy, attr);
+            cgns_write_node_attrs(copy, new_name, "FlowSolution_t", "MT");
+            s.mPointers.push_back(new_name);
+        }
+        std::remove(scratch.c_str());
+    }
+    s.mTimes.push_back(Time);
+    ++s.mSteps;
+}
+
+std::size_t CgnsSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void CgnsSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mClosed)
+        return;
+    Impl& s = *mpImpl;
+    if (s.mSteps == 0)
+        throw WriteError("CGNS series: no step was written");
+    detail::LibraryLock lock;
+    h5::SilenceErrors silence;
+    h5::Hid f = h5::open_file_rw(s.mPath);
+    h5::Hid base = h5::open_group(f, "Base");
+    h5::Hid zone = h5::open_group(base, "Zone1");
+    // BaseIterativeData_t: the step count and the time of each step.
+    {
+        h5::Hid biter = cgns_create_group(base, "TimeIterValues");
+        cgns_write_node_attrs(biter, "TimeIterValues", "BaseIterativeData_t", "I4");
+        NDArray count(DType::Int32, {1});
+        *count.As<std::int32_t>() = static_cast<std::int32_t>(s.mSteps);
+        h5::write_dataset(biter, " data", count);
+        h5::Hid tv = cgns_create_group(biter, "TimeValues");
+        cgns_write_node_attrs(tv, "TimeValues", "DataArray_t", "R8");
+        NDArray times(DType::Float64, {s.mTimes.size()});
+        std::copy(s.mTimes.begin(), s.mTimes.end(), times.As<double>());
+        h5::write_dataset(tv, " data", times);
+    }
+    // ZoneIterativeData_t: the FlowSolution_t of each step, 32 characters each.
+    {
+        h5::Hid ziter = cgns_create_group(zone, "ZoneIterativeData");
+        cgns_write_node_attrs(ziter, "ZoneIterativeData", "ZoneIterativeData_t", "MT");
+        h5::Hid fp = cgns_create_group(ziter, "FlowSolutionPointers");
+        cgns_write_node_attrs(fp, "FlowSolutionPointers", "DataArray_t", "C1");
+        NDArray names(DType::Int8, {s.mPointers.size(), std::size_t{32}});
+        std::int8_t* np = names.As<std::int8_t>();
+        for (std::size_t i = 0; i < s.mPointers.size(); ++i)
+            for (std::size_t c = 0; c < 32; ++c)
+                np[i * 32 + c] =
+                    c < s.mPointers[i].size() ? static_cast<std::int8_t>(s.mPointers[i][c]) : ' ';
+        h5::write_dataset(fp, " data", names);
+    }
+    s.mClosed = true;
+}
+
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

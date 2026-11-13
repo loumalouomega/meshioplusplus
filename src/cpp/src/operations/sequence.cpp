@@ -42,6 +42,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/femap.hpp"
+#include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
@@ -289,6 +290,12 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         return true;
     }
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (rFormat == "cgns") {
+        rWhy.clear();
+        return true;
+    }
+#endif
     // The one multi-step writer in the repo. Unlike sequence_num_steps there is
     // no file to probe, so this is a predicate in registry_write_supports'
     // style. It is kept honest by a gtest that cross-checks it against what
@@ -307,7 +314,7 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil', 'unv', 'gmsh', 'ensight' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil', 'unv', 'gmsh', 'ensight', 'cgns' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -615,6 +622,7 @@ inline constexpr SeqSeriesFormat kSeqSeriesFormats[] = {
     {"unv", "UNV", "UNV"},
     {"gmsh", "Gmsh", nullptr},
     {"ensight", "EnSight", nullptr},
+    {"cgns", "CGNS", "CGNS"},
 };
 
 const SeqSeriesFormat& seq_series_format(const std::string& rFormat) {
@@ -724,6 +732,10 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqStepSink<FemapSeriesWriter>>(rPath);
     if (rFormat == "unv")
         return std::make_unique<SeqStepSink<UnvSeriesWriter>>(rPath);
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    if (rFormat == "cgns")
+        return std::make_unique<SeqStepSink<CgnsSeriesWriter>>(rPath);
+#endif
     if (rFormat == "ensight")
         return std::make_unique<SeqStepSink<EnsightSeriesWriter>>(
             rPath, rOptions.mEncoding != WriteEncoding::Ascii, false);

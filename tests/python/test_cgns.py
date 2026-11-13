@@ -883,3 +883,44 @@ def test_an_unknown_base_is_refused(tmp_path):
     _structured_cgns(path)
     with pytest.raises(ReadError, match="base"):
         _cgns.read(path, base="nope")
+
+
+def _series_mesh(scale, cell=False):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    kwargs = (
+        {"cell_data": {"p": [scale * np.array([1.0, 2.0])]}}
+        if cell
+        else {"point_data": {"T": scale * np.arange(4.0)}}
+    )
+    return meshioplusplus.Mesh(
+        pts, [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))], **kwargs
+    )
+
+
+@pytest.mark.parametrize("cell", [False, True])
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_series_writer_writes_iterative_data(tmp_path, engine, cell):
+    if engine == "core" and not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
+    path = tmp_path / "series.cgns"
+    cls = meshioplusplus.cgns.SeriesWriter if engine == "core" else _cgns.SeriesWriter
+    with cls(str(path)) as writer:
+        for t in (0.0, 0.5, 2.0):
+            writer.write(t, _series_mesh(1.0 + t, cell))
+    for k, t in enumerate((0.0, 0.5, 2.0)):
+        mesh = meshioplusplus.cgns.read(str(path), time_step=k)
+        if cell:
+            np.testing.assert_allclose(
+                mesh.cell_data["p"][0], (1.0 + t) * np.array([1.0, 2.0])
+            )
+        else:
+            np.testing.assert_allclose(mesh.point_data["T"], (1.0 + t) * np.arange(4.0))
+
+
+def test_series_writer_refuses_both_kinds_of_data(tmp_path):
+    mesh = _series_mesh(1.0)
+    mesh.cell_data["p"] = [np.array([1.0, 2.0])]
+    with meshioplusplus.cgns.SeriesWriter(str(tmp_path / "s.cgns")) as writer:
+        with pytest.raises(WriteError):
+            writer.write(0.0, mesh)
+        writer.write(0.0, _series_mesh(1.0))

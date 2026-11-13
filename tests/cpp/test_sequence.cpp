@@ -533,6 +533,7 @@ TEST(SequenceCapability, EveryTransientWriterNamesItselfWhenItRefusesAnOption) {
         {"unv", "UNV", "UNV"},
         {"gmsh", "Gmsh", nullptr},
         {"ensight", "EnSight", nullptr},
+        {"cgns", "CGNS", "CGNS"},
         {"xdmf", "XDMF", nullptr},
     };
     SeqTempDir dir;
