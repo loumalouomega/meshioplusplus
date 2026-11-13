@@ -89,6 +89,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="tikz">`tikz`</span> |  | ✓ | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="triangle">`triangle`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="ugrid">`ugrid`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
+| <span id="ugrid-nc">`ugrid_nc`</span> |  | ✓ | ✓ | ✓ |  |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
 | <span id="unv">`unv`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point |
 | <span id="usd">`usd`</span> |  |  | ✗ | ✗ | → tri | → quad | → quad+tri | → quad+tri | subset | — | — | — | — |
 | <span id="vti">`vti`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
@@ -150,6 +151,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`tecplot`**: Tecplot has no wedge or pyramid zone type: both are written as degenerate bricks and come back as hexahedra.
 - **`tikz`**: A 2-D drawing, read back as planar (z = 0) with its coordinates verbatim, to the digits `float_fmt` kept. A 3-D mesh is drawn projected, and what comes back is that picture. Data arrays are not drawn; a colour comes back as an RGB `tikz:fill`.
 - **`triangle`**: Triangle reads and writes 2-D triangulations only, so this row is observed on the planar part of the canonical mesh.
+- **`ugrid_nc`**: UGRID holds 1-D and 2-D topologies: the volume cells are refused, so the observation uses the linear 1-D and 2-D cells.
 - **`unv`**: Entities a dataset does not list are NaN, and NaN rows are not written back.
 - **`usd`**: A UsdGeom mesh stores faces: volume cells are written as their skin.
 - **`vti`**: ImageData holds one regular hexahedral lattice; the canonical mesh is not one ([VTI](./formats/vti.md)).

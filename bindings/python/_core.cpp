@@ -81,6 +81,7 @@
 #include "meshioplusplus/formats/ensight.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
 #include "meshioplusplus/formats/exodus.hpp"
+#include "meshioplusplus/formats/ugrid_nc.hpp"
 #endif
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
@@ -8279,20 +8280,20 @@ PYBIND11_MODULE(_core, m) {
     core_def_read(m, "dxf_read", "dxf", &meshioplusplus::read_dxf);
     core_def_write(m, "plot3d_write", &meshioplusplus::write_plot3d);
     m.def("plot3d_read",
-          guard_read("plot3d",
-                     [](const std::string& path, const std::string& solution,
-                        const std::string& function, int precision, int multiblock, int iblank,
-                        int dimensions) {
-                         meshioplusplus::Plot3dReadOptions o;
-                         o.mSolution = solution;
-                         o.mFunction = function;
-                         o.mPrecision = precision;
-                         o.mMultiblock = multiblock;
-                         o.mIblank = iblank;
-                         o.mDimensions = dimensions;
-                         return meshioplusplus_py::mesh_to_py(
-                             core_nogil([&] { return meshioplusplus::read_plot3d(path, o); }));
-                     }),
+          guard_read(
+              "plot3d",
+              [](const std::string& path, const std::string& solution, const std::string& function,
+                 int precision, int multiblock, int iblank, int dimensions) {
+                  meshioplusplus::Plot3dReadOptions o;
+                  o.mSolution = solution;
+                  o.mFunction = function;
+                  o.mPrecision = precision;
+                  o.mMultiblock = multiblock;
+                  o.mIblank = iblank;
+                  o.mDimensions = dimensions;
+                  return meshioplusplus_py::mesh_to_py(
+                      core_nogil([&] { return meshioplusplus::read_plot3d(path, o); }));
+              }),
           py::arg("path"), py::arg("solution") = "", py::arg("function") = "",
           py::arg("precision") = 0, py::arg("multiblock") = -1, py::arg("iblank") = -1,
           py::arg("dimensions") = 0);
@@ -8976,32 +8977,30 @@ PYBIND11_MODULE(_core, m) {
                              .def(py::init<const std::string&>(), py::arg("path")));
 
     // A time series in one CGNS file: the core half of `meshioplusplus.cgns.SeriesWriter`.
-    core_def_step_writer(py::class_<meshioplusplus::CgnsSeriesWriter>(m, "CgnsSeriesWriter")
-                             .def(py::init<const std::string&, int>(), py::arg("path"),
-                                  py::arg("gzip_level") = 4));
+    core_def_step_writer(
+        py::class_<meshioplusplus::CgnsSeriesWriter>(m, "CgnsSeriesWriter")
+            .def(py::init<const std::string&, int>(), py::arg("path"), py::arg("gzip_level") = 4));
 #endif
 
-    // A time series in one Tecplot ASCII file: the core half of `meshioplusplus.tecplot.SeriesWriter`.
+    // A time series in one Tecplot ASCII file: the core half of
+    // `meshioplusplus.tecplot.SeriesWriter`.
     core_def_step_writer(py::class_<meshioplusplus::TecplotSeriesWriter>(m, "TecplotSeriesWriter")
                              .def(py::init<const std::string&>(), py::arg("path")));
 
     // A time series as one EnSight case: the core half of `meshioplusplus.ensight.SeriesWriter`.
-    core_def_step_writer(
-        py::class_<meshioplusplus::EnsightSeriesWriter>(m, "EnsightSeriesWriter")
-            .def(py::init<const std::string&, bool, bool>(), py::arg("path"),
-                 py::arg("binary") = true, py::arg("fortran") = false));
+    core_def_step_writer(py::class_<meshioplusplus::EnsightSeriesWriter>(m, "EnsightSeriesWriter")
+                             .def(py::init<const std::string&, bool, bool>(), py::arg("path"),
+                                  py::arg("binary") = true, py::arg("fortran") = false));
 
     // A time series in one Gmsh file: the core half of `meshioplusplus.gmsh.SeriesWriter`.
-    core_def_step_writer(
-        py::class_<meshioplusplus::GmshSeriesWriter>(m, "GmshSeriesWriter")
-            .def(py::init<const std::string&, bool, bool>(), py::arg("path"),
-                 py::arg("version41") = true, py::arg("binary") = false));
+    core_def_step_writer(py::class_<meshioplusplus::GmshSeriesWriter>(m, "GmshSeriesWriter")
+                             .def(py::init<const std::string&, bool, bool>(), py::arg("path"),
+                                  py::arg("version41") = true, py::arg("binary") = false));
 
     // A time series in one UNV file: the core half of `meshioplusplus.unv.SeriesWriter`.
-    core_def_step_writer(
-        py::class_<meshioplusplus::UnvSeriesWriter>(m, "UnvSeriesWriter")
-            .def(py::init<const std::string&, bool, int>(), py::arg("path"),
-                 py::arg("code_aster") = false, py::arg("node_dataset") = 2411));
+    core_def_step_writer(py::class_<meshioplusplus::UnvSeriesWriter>(m, "UnvSeriesWriter")
+                             .def(py::init<const std::string&, bool, int>(), py::arg("path"),
+                                  py::arg("code_aster") = false, py::arg("node_dataset") = 2411));
 
     // A time series in one CalculiX result file (v16.39.0): the core half of
     // `meshioplusplus.frd.SeriesWriter`.
@@ -9724,9 +9723,8 @@ finalizes.
                      [](const std::string& path, const std::string& base, int time_step) {
                          meshioplusplus::ReadOptions opts;
                          opts.mTimeStep = time_step;
-                         return meshioplusplus_py::mesh_to_py(core_nogil([&] {
-                             return meshioplusplus::read_cgns_base(path, base, opts);
-                         }));
+                         return meshioplusplus_py::mesh_to_py(core_nogil(
+                             [&] { return meshioplusplus::read_cgns_base(path, base, opts); }));
                      }),
           py::arg("path"), py::arg("base"), py::arg("time_step") = 0);
 
@@ -10088,6 +10086,28 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                          return pymesh;
                      }),
           py::arg("path"), py::arg("time_step") = 0);
+    m.def("ugrid_nc_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+        core_nogil([&] { return meshioplusplus::write_ugrid_nc(path, cpp); });
+    });
+    m.def("ugrid_nc_read",
+          guard_read("ugrid_nc",
+                     [](const std::string& path, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_ugrid_nc(path, opts); }));
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
+    m.def(
+        "ugrid_nc_time_values",
+        [](const std::string& path) {
+            return core_nogil(
+                [&] { return meshioplusplus::read_ugrid_nc_metadata(path, {}).mTimeValues; });
+        },
+        py::arg("path"));
 #endif
 
     // DOLFIN XML writer / reader (.xml).

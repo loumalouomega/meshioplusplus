@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** a `ugrid_nc` format: UGRID-conventions NetCDF (`.nc`) in both engines, 1-D and 2-D topologies with mixed polygons (`start_index`, fill values, transposed connectivity), edges, node/face/edge data and time steps, written as netCDF-4 and checked against xugrid both ways (roadmap 2.4.3.2). The netCDF helpers Exodus had file-local are now `detail/netcdf_util` (2.4.3.1).
+
+
 - **Added:** a `plot3d` format: PLOT3D multi-block structured grids (`.p3d`, `.p3dfmt`, `.x`, `.g`) in both engines, the ASCII, Fortran-unformatted or raw variant, block count, dimension, precision, `iblank` and byte order inferred from the file's size, with `.q` solutions and `.f` function files as read options, written as Fortran unformatted multi-block double precision (roadmap 2.4.2).
 
 

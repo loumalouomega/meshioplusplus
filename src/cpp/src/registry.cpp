@@ -69,6 +69,7 @@
 #include "meshioplusplus/formats/plot3d.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/formats/frd.hpp"
+#include "meshioplusplus/formats/ugrid_nc.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
@@ -843,6 +844,14 @@ const std::vector<RegistryRow>& registry_rows() {
          .mReadEx = [](const std::string& path,
                        const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); },
          .mMetadata = meshioplusplus::read_exodus_metadata},
+        {.mName = "ugrid_nc",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_ugrid_nc(path); },
+         .mWrite = meshioplusplus::write_ugrid_nc,
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_ugrid_nc(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_ugrid_nc_metadata},
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
         {.mName = "vtx",
@@ -1029,6 +1038,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".e", "exodus"},
         {".exo", "exodus"},
         {".ex2", "exodus"},
+        {".nc", "ugrid_nc"},
     };
     return m;
 }
@@ -1248,7 +1258,7 @@ const char* registry_compiled_out(const std::string& rFormat) {
         return "HDF5";
 #endif
 #ifndef MESHIOPLUSPLUS_HAS_NETCDF
-    if (rFormat == "exodus")
+    if (rFormat == "exodus" || rFormat == "ugrid_nc")
         return "netCDF";
 #endif
 #ifndef MESHIOPLUSPLUS_HAS_ADIOS2

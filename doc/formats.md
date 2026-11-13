@@ -94,6 +94,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`tikz`](./formats/tikz.md) | `.tikz` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#tikz) |
 | [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#triangle) |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#ugrid) |
+| [`ugrid_nc`](./formats/ugrid_nc.md) | `.nc` | ✓ (UGRID 1-D/2-D topologies, data by location, time steps) | ✓ | netCDF (core), `netCDF4` (Python) | [3/8 cells · data PC](./conformance.md#ugrid-nc) |
 | [`unv`](./formats/unv.md) | `.unv`, `.uff` | ✓ | ✓ | — | [7/8 cells · data PC · regions CP](./conformance.md#unv) |
 | [`usd`](./formats/usd.md) | `.usd`, `.usda`, `.usdc` | ✓ | ✓ | `usd-core` | [0/8 cells · no data](./conformance.md#usd) |
 | [`vti`](./formats/vti.md) | `.vti` | ✓ | ✓ | — | [fails](./conformance.md#vti) |

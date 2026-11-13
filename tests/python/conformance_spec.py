@@ -1627,6 +1627,15 @@ SPEC: dict[str, dict] = {
         "note": "Triangle reads and writes 2-D triangulations only, so this row is observed "
         "on the planar part of the canonical mesh.",
     },
+    "ugrid_nc": {
+        "cells": {"line": "exact", "triangle": "exact", "quad": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "int32"},
+        "field_data": False,
+        "regions": [],
+        "note": "UGRID holds 1-D and 2-D topologies: the volume cells are refused, so the observation uses the linear 1-D and 2-D cells.",
+    },
     "ugrid": {
         "cells": {
             "triangle": "exact",

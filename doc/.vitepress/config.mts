@@ -405,6 +405,7 @@ export default defineConfig({
           { text: "tikz", link: "/formats/tikz" },
           { text: "triangle", link: "/formats/triangle" },
           { text: "ugrid", link: "/formats/ugrid" },
+          { text: "ugrid_nc", link: "/formats/ugrid_nc" },
           { text: "unv", link: "/formats/unv" },
           { text: "usd", link: "/formats/usd" },
           { text: "vti", link: "/formats/vti" },
