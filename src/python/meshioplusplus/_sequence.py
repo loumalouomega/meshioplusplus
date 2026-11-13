@@ -129,6 +129,7 @@ _SERIES_WRITERS = (
     "exodus",
     "unv",
     "gmsh",
+    "ensight",
 )
 
 # The formats whose step COUNT can be discovered, so a bare `convert in.X
@@ -881,6 +882,16 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         from .femap import SeriesWriter
 
         # Pushed: the mesh with the first step, then one output set per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "ensight":
+        from .ensight import SeriesWriter
+
+        # Pushed: the geometry with the first step, then one variable file per step;
+        # the case file with its TIME section is written when the writer closes.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

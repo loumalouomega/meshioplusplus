@@ -384,7 +384,7 @@ def test_series_writers_list_agrees_with_reality(steps, tmp_path):
     has_tecio = getattr(_core, "__has_tecio__", False)
     # 'vtx' needs ADIOS2: a core built with it, or the adios2 package for the twin.
     has_adios2 = getattr(_core, "__has_adios2__", False) or _importable("adios2")
-    suffixes = {"usd": ".usda"}
+    suffixes = {"usd": ".usda", "ensight": ".case"}
     for fmt in sorted(meshioplusplus._helpers._writer_map):
         if fmt == "gid" and not has_gidpost:
             continue

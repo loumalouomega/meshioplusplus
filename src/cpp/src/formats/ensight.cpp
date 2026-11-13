@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -2060,6 +2061,204 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
         else
             ensight_write_variable_ascii(vf, rMesh, entries, parts, v);
     }
+}
+
+struct EnsightSeriesWriter::Impl {
+    std::string mCasePath, mGeoPath, mDir, mBase;
+    bool mBinary = false;
+    bool mFortran = false;
+    std::size_t mSteps = 0;
+    std::vector<double> mTimes;
+    // The `VARIABLE` lines of the first step (kind, name, file), each file name with its
+    // step number to be put in, and the constants.
+    struct Variable {
+        std::string mKind, mName, mFile;
+    };
+    std::vector<Variable> mVariables;
+    std::vector<std::string> mConstants;
+    std::size_t mPoints = 0;
+    std::vector<std::size_t> mBlockCells;
+    bool mClosed = false;
+};
+
+namespace {
+
+/// `name.ext` with its step number put in as `name.NNNN.ext`.
+std::string ensight_numbered_file(const std::string& rFile, std::size_t Step) {
+    char digits[16];
+    std::snprintf(digits, sizeof(digits), "%04zu", Step);
+    const std::size_t dot = rFile.rfind('.');
+    if (dot == std::string::npos)
+        return rFile + "." + digits;
+    return rFile.substr(0, dot) + "." + digits + rFile.substr(dot);
+}
+
+/// `name.ext` as the case file's wildcard pattern `name.****.ext`.
+std::string ensight_wildcard_file(const std::string& rFile) {
+    const std::size_t dot = rFile.rfind('.');
+    if (dot == std::string::npos)
+        return rFile + ".****";
+    return rFile.substr(0, dot) + ".****" + rFile.substr(dot);
+}
+
+}  // namespace
+
+EnsightSeriesWriter::EnsightSeriesWriter(const std::string& rPath, bool Binary, bool Fortran)
+    : mpImpl(std::make_unique<Impl>()) {
+    bool ok = false;
+    const auto paths = ensight_case_geo_paths(rPath, ok);
+    if (!ok)
+        throw WriteError("EnSight: must specify a .case or .geo file");
+    mpImpl->mCasePath = paths.first;
+    mpImpl->mGeoPath = paths.second;
+    mpImpl->mDir = ensight_dirname(paths.second);
+    mpImpl->mBase = ensight_basename(paths.second);
+    mpImpl->mBinary = Binary;
+    mpImpl->mFortran = Fortran;
+    if (Fortran && !Binary)
+        throw WriteError("EnSight: Fortran binary is a binary encoding (binary=true)");
+}
+
+EnsightSeriesWriter::~EnsightSeriesWriter() = default;
+EnsightSeriesWriter::EnsightSeriesWriter(EnsightSeriesWriter&&) noexcept = default;
+EnsightSeriesWriter& EnsightSeriesWriter::operator=(EnsightSeriesWriter&&) noexcept = default;
+
+void EnsightSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    namespace fs = std::filesystem;
+    if (!mpImpl)
+        throw WriteError("EnSight series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (s.mClosed)
+        throw WriteError("EnSight series: the writer is finalized");
+    if (s.mSteps >= 10000)
+        throw WriteError(
+            "EnSight series: at most 10000 steps (the files are numbered with four "
+            "digits)");
+    if (s.mSteps > 0) {
+        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
+        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
+            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
+        if (!same)
+            throw WriteError("EnSight series: step " + std::to_string(s.mSteps) +
+                             "'s points or cells differ from the first step's; the geometry is "
+                             "written once -- write one file per step with '{step}'");
+    }
+    // The whole case is written beside the series files and its variable files are taken
+    // from it, so the geometry and variable layouts are exactly the ones `write_ensight`
+    // writes.
+    const fs::path scratch = fs::path(s.mDir.empty() ? "." : s.mDir) / (s.mBase + ".series_tmp");
+    std::error_code ec;
+    fs::remove_all(scratch, ec);
+    fs::create_directories(scratch, ec);
+    if (ec)
+        throw WriteError("EnSight series: could not create " + scratch.string());
+    struct Cleanup {
+        fs::path mDir;
+        ~Cleanup() {
+            std::error_code e;
+            fs::remove_all(mDir, e);
+        }
+    } cleanup{scratch};
+    const std::string scratch_case = (scratch / "s.case").string();
+    write_ensight(scratch_case, rMesh, s.mBinary, s.mFortran);
+
+    std::vector<Impl::Variable> variables;
+    std::vector<std::string> constants;
+    {
+        auto in = detail::make_classic_ifstream(scratch_case);
+        std::string line;
+        bool in_variable = false;
+        while (std::getline(in, line)) {
+            const std::string trimmed = ensight_trim(line);
+            if (trimmed == "VARIABLE") {
+                in_variable = true;
+                continue;
+            }
+            if (!in_variable || trimmed.empty())
+                continue;
+            if (trimmed.rfind("constant per case:", 0) == 0) {
+                constants.push_back(trimmed);
+                continue;
+            }
+            const std::size_t colon = trimmed.find(':');
+            if (colon == std::string::npos)
+                continue;
+            std::vector<std::string> tokens;
+            {
+                detail::TextStream toks(trimmed.substr(colon + 1));
+                std::string tok;
+                while (toks >> tok)
+                    tokens.push_back(tok);
+            }
+            if (tokens.size() < 2)
+                continue;
+            std::string name;
+            for (std::size_t k = 0; k + 1 < tokens.size(); ++k)
+                name += (k ? " " : "") + tokens[k];
+            variables.push_back({trimmed.substr(0, colon), name, tokens.back()});
+        }
+    }
+    if (s.mSteps == 0) {
+        s.mVariables = variables;
+        s.mConstants = constants;
+        s.mPoints = rMesh.NumPoints();
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
+        fs::rename(scratch / "s.geo", s.mGeoPath, ec);
+        if (ec)
+            throw WriteError("EnSight series: could not write " + s.mGeoPath);
+    } else {
+        bool same = variables.size() == s.mVariables.size();
+        for (std::size_t k = 0; same && k < variables.size(); ++k)
+            same = variables[k].mKind == s.mVariables[k].mKind &&
+                   variables[k].mName == s.mVariables[k].mName;
+        if (!same)
+            throw WriteError("EnSight series: step " + std::to_string(s.mSteps) +
+                             "'s variables differ from the first step's");
+    }
+    for (const Impl::Variable& v : variables) {
+        fs::rename(
+            scratch / v.mFile,
+            fs::path(s.mDir.empty() ? "." : s.mDir) / ensight_numbered_file(v.mFile, s.mSteps), ec);
+        if (ec)
+            throw WriteError("EnSight series: could not write " +
+                             ensight_numbered_file(v.mFile, s.mSteps));
+    }
+    s.mTimes.push_back(Time);
+    ++s.mSteps;
+}
+
+std::size_t EnsightSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void EnsightSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mClosed)
+        return;
+    Impl& s = *mpImpl;
+    if (s.mSteps == 0)
+        throw WriteError("EnSight series: no step was written");
+    std::string out = "FORMAT\ntype: ensight gold\n\nGEOMETRY\nmodel: " + s.mBase + "\n";
+    if (!s.mVariables.empty() || !s.mConstants.empty()) {
+        out += "\nVARIABLE\n";
+        for (const Impl::Variable& v : s.mVariables)
+            out += v.mKind + ": " + v.mName + " " + ensight_wildcard_file(v.mFile) + "\n";
+        for (const std::string& c : s.mConstants)
+            out += c + "\n";
+    }
+    out += "\nTIME\ntime set: 1\nnumber of steps: " + std::to_string(s.mSteps) +
+           "\nfilename start number: 0\nfilename increment: 1\ntime values:";
+    char buf[40];
+    for (const double t : s.mTimes) {
+        detail::snprintf_c(buf, sizeof(buf), "%.17g", t);
+        out += std::string("\n") + buf;
+    }
+    out += "\n";
+    auto f = detail::make_classic_ofstream(s.mCasePath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + s.mCasePath);
+    f.write(out.data(), static_cast<std::streamsize>(out.size()));
+    s.mClosed = true;
 }
 
 }  // namespace meshioplusplus

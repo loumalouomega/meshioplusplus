@@ -79,14 +79,18 @@ Since v15.5.0 (roadmap §1.1), `write` emits a `VARIABLE` section and one variab
 - `field_data` holding a single scalar becomes a `constant per case: <name> <value>` line, inline in the `.case` file itself rather than a separate variable file; any other shape is skipped with a `log::warn`.
 - Variable files follow the geometry file's encoding (ASCII, C binary or Fortran binary) with 32-bit records, as EnSight defines them: a variable file has no format record and starts with its description. Until v16.17.0 a binary variable file began with a `"C Binary"` record as the geometry file does, which no other reader expects: VTK and ParaView read the geometry and none of the variables. Such files still read, and so does a text variable file next to a binary geometry file, which hand-made cases hold.
 - Filenames are `<name>.<ext>`, with `<ext>` naming the kind and location (`scl`/`vec`/`tsym`/`tasym` per node, `escl`/`evec`/`etsym`/`etasym` per element) — arbitrary, since only the `.case` file's own declared kind matters on read, not the extension.
-- A mesh with `cell_data["ensight:part"]` of two or more values is written as that many parts, and each variable file has one `part` section per part. A transient write (one variable file per step plus a `TIME` section) is likewise not implemented — `sequence_write_supports_time("ensight")` is `false`.
+- A mesh with `cell_data["ensight:part"]` of two or more values is written as that many parts, and each variable file has one `part` section per part. A transient write is the [series writer](#writing-a-series).
+
+## Writing a series
+
+`meshioplusplus.ensight.SeriesWriter` (C++: `EnsightSeriesWriter`, and `write_sequence` / `sequence_to_timeseries`) writes a transient case: the geometry once (the first step's), one numbered variable file per step (`name.0000.scl`, …, referred to in the case file as `name.****.scl`) and a `TIME` section (`time set: 1`, the step count, `filename start number: 0`, `filename increment: 1` and the time values) in the `.case` file, which is written when the writer closes. Each step is written as a single `write` writes it, so ASCII, C binary and Fortran binary are all available, and a step's constants (`constant per case`) are the first step's. Every step must have the first step's points, cell blocks and variables; at most 10000 steps. A moving geometry (`change_coords_only`) is read but not written.
 
 ## Quirks & limitations
 
 - The format spans two files and **cannot** be read from or written to a buffer.
 - Foreign-endian binaries are auto-detected: the reader checks the plausibility of the part-number/count records (preferring the smaller of two plausible interpretations at the tiny part-number record) and byte-swaps all subsequent reads.
 - `polygon` blocks (jagged or uniform) are written as `nsided` and `polyhedron<N>` blocks as `nfaced`, by both engines with identical bytes (ASCII, C binary and Fortran binary). The layout is the inverse of what the reader parses: a per-cell node count (`nsided`) or face count (`nfaced`), for `nfaced` a per-face node count, then the node ids, with no orientation contract and no global face table. Reading groups `nfaced` cells by node count into `polyhedron<N>` blocks in first-seen order (the openfoam convention), so a `polyhedron` block mixing node counts comes back split by count, and every `nsided` section comes back as one `polygon` block. Because the writer emits one section per cell block, a part with several `nsided`/`nfaced` sections reads back as several blocks.
-- A transient *write* (a `TIME` section with numbered files), `measured:` geometry and EnSight 5/6 files are not supported.
+- `measured:` geometry and EnSight 5/6 files are not supported. A transient write is the [series writer](#writing-a-series); a single `write` never writes a `TIME` section.
 - The `.geo` extension is also used by Gmsh *script* files — those are not meshes and not claimed by meshio++'s gmsh reader, but a stray Gmsh `.geo` passed to `ensight` will simply fail to parse.
 
 ## Notes

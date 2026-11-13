@@ -422,7 +422,8 @@ TEST(SequenceCapability, WriteSupportsTimeAgreesWithReality) {
             }
         }
         SequenceOutput out;
-        out.mPath = dir / ("series_" + fmt + ".out");
+        // EnSight names its files from a `.case` path.
+        out.mPath = dir / ("series_" + fmt + (fmt == "ensight" ? ".case" : ".out"));
         out.mFormat = fmt;
         bool actually_works = true;
         try {
@@ -531,6 +532,7 @@ TEST(SequenceCapability, EveryTransientWriterNamesItselfWhenItRefusesAnOption) {
         {"abaqus_fil", "Abaqus results", nullptr},
         {"unv", "UNV", "UNV"},
         {"gmsh", "Gmsh", nullptr},
+        {"ensight", "EnSight", nullptr},
         {"xdmf", "XDMF", nullptr},
     };
     SeqTempDir dir;
@@ -538,7 +540,8 @@ TEST(SequenceCapability, EveryTransientWriterNamesItselfWhenItRefusesAnOption) {
     in.mPaths = seq_write_files(dir, "in_", 2);
     const auto message = [&](const Row& rRow, bool Codec, bool Ascii) -> std::string {
         SequenceOutput out;
-        out.mPath = dir / (std::string("o_") + rRow.mFormat + ".out");
+        out.mPath = dir / (std::string("o_") + rRow.mFormat +
+                           (std::string(rRow.mFormat) == "ensight" ? ".case" : ".out"));
         out.mFormat = rRow.mFormat;
         out.mOptions.mCodecSet = Codec;
         if (Codec)

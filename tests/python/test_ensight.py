@@ -679,3 +679,55 @@ def test_iblanked_block_keeps_its_mask(tmp_path):
         mask = read(path).point_data["ensight:iblank"]
         assert mask.dtype == np.uint8
         assert mask.tolist()[:3] == [1, 1, 0]
+
+
+def _series_mesh(scale):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        point_data={"T": scale * np.arange(4.0)},
+        cell_data={"p": [scale * np.array([1.0, 2.0])]},
+    )
+
+
+@pytest.mark.parametrize("binary", [False, True])
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_series_writer_writes_a_transient_case(tmp_path, binary, engine):
+    case = tmp_path / "run.case"
+    cls = (
+        meshioplusplus.ensight.SeriesWriter
+        if engine == "core"
+        else _ensight.SeriesWriter
+    )
+    with cls(str(case), binary=binary) as writer:
+        for t in (0.0, 0.5, 2.0):
+            writer.write(t, _series_mesh(1.0 + t))
+    text = case.read_text()
+    assert "time values:" in text and "T.****." in text
+    assert sorted(p.name for p in tmp_path.glob("T.*")) == [
+        "T.0000.scl",
+        "T.0001.scl",
+        "T.0002.scl",
+    ]
+    assert not list(tmp_path.glob("*series_tmp*"))
+    for k, t in enumerate((0.0, 0.5, 2.0)):
+        mesh = meshioplusplus.ensight.read(str(case), time_step=k)
+        np.testing.assert_allclose(
+            mesh.point_data["T"], (1.0 + t) * np.arange(4.0), rtol=1e-6
+        )
+        np.testing.assert_allclose(
+            mesh.cell_data["p"][0], (1.0 + t) * np.array([1.0, 2.0]), rtol=1e-6
+        )
+    meta = meshioplusplus.read_metadata(str(case), file_format="ensight")
+    assert meta["time_values"] == [0.0, 0.5, 2.0]
+
+
+def test_series_writer_refuses_a_different_mesh(tmp_path):
+    with meshioplusplus.ensight.SeriesWriter(str(tmp_path / "s.case")) as writer:
+        writer.write(0.0, _series_mesh(1.0))
+        other = meshioplusplus.Mesh(
+            _series_mesh(1.0).points[:3], [("triangle", np.array([[0, 1, 2]]))]
+        )
+        with pytest.raises(meshioplusplus.WriteError):
+            writer.write(1.0, other)

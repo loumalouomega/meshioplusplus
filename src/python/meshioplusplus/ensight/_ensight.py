@@ -1230,3 +1230,126 @@ def write(filename, mesh, binary=True, fortran=False):
         name, kind, _, per_node = variable
         var_path = geo_path.parent / f"{name}.{_variable_extension(kind, per_node)}"
         _write_variable(var_path, mesh, variable, parts, binary, fortran)
+
+
+def _numbered_file(name, step):
+    """``name.ext`` with its step number put in: ``name.NNNN.ext``."""
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}.{step:04d}.{ext}" if dot else f"{name}.{step:04d}"
+
+
+def _wildcard_file(name):
+    stem, dot, ext = name.rpartition(".")
+    return f"{stem}.****.{ext}" if dot else f"{name}.****"
+
+
+class SeriesWriter:
+    """The Python twin of ``EnsightSeriesWriter``: the geometry once, one numbered
+    variable file per step and a ``TIME`` section in the ``.case`` file, written on
+    :meth:`close`. Use as a context manager."""
+
+    def __init__(self, filename, binary=True, fortran=False):
+        if fortran and not binary:
+            raise WriteError(
+                "EnSight: Fortran binary is a binary encoding (binary=True)"
+            )
+        case_path, geo_path = _case_geo_paths(filename)
+        if case_path is None:
+            raise WriteError(
+                f"EnSight: must specify a .case or .geo file. Got {filename}."
+            )
+        self._case = case_path
+        self._geo = geo_path
+        self._binary = binary
+        self._fortran = fortran
+        self._times = []
+        self._variables = None
+        self._constants = []
+        self._shape = None
+        self._closed = False
+
+    def write(self, time, mesh):
+        import shutil
+        import tempfile
+
+        if self._closed:
+            raise WriteError("EnSight series: the writer is finalized")
+        step = len(self._times)
+        if step >= 10000:
+            raise WriteError(
+                "EnSight series: at most 10000 steps (the files are numbered with "
+                "four digits)"
+            )
+        shape = (len(mesh.points), [len(c.data) for c in mesh.cells])
+        if step and shape != self._shape:
+            raise WriteError(
+                f"EnSight series: step {step}'s points or cells differ from the first "
+                "step's; the geometry is written once -- write one file per step "
+                "with '{step}'"
+            )
+        scratch = pathlib.Path(tempfile.mkdtemp(dir=self._geo.parent or "."))
+        try:
+            write(scratch / "s.case", mesh, binary=self._binary, fortran=self._fortran)
+            variables, constants = [], []
+            in_variable = False
+            for raw in (scratch / "s.case").read_text().splitlines():
+                line = raw.strip()
+                if line == "VARIABLE":
+                    in_variable = True
+                elif in_variable and line.startswith("constant per case:"):
+                    constants.append(line)
+                elif in_variable and ":" in line:
+                    kind, _, rest = line.partition(":")
+                    tokens = rest.split()
+                    variables.append((kind, " ".join(tokens[:-1]), tokens[-1]))
+            if step == 0:
+                self._variables, self._constants = variables, constants
+                self._shape = shape
+                shutil.move(str(scratch / "s.geo"), str(self._geo))
+            elif [v[:2] for v in variables] != [v[:2] for v in self._variables]:
+                raise WriteError(
+                    f"EnSight series: step {step}'s variables differ from the first "
+                    "step's"
+                )
+            for _, _, file in variables:
+                shutil.move(
+                    str(scratch / file),
+                    str(self._geo.parent / _numbered_file(file, step)),
+                )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        self._times.append(float(time))
+
+    def close(self):
+        if self._closed:
+            return
+        if not self._times:
+            raise WriteError("EnSight series: no step was written")
+        text = "FORMAT\ntype: ensight gold\n\nGEOMETRY\n" f"model: {self._geo.name}\n"
+        if self._variables or self._constants:
+            text += "\nVARIABLE\n"
+            for kind, name, file in self._variables:
+                text += f"{kind}: {name} {_wildcard_file(file)}\n"
+            for line in self._constants:
+                text += line + "\n"
+        text += (
+            "\nTIME\ntime set: 1\n"
+            f"number of steps: {len(self._times)}\n"
+            "filename start number: 0\nfilename increment: 1\ntime values:"
+        )
+        for t in self._times:
+            text += f"\n{t:.17g}"
+        text += "\n"
+        with open(self._case, "wb") as fh:
+            fh.write(text.encode())
+        self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if exc[0] is None:
+            self.close()
+        else:
+            self._closed = True
+        return False
