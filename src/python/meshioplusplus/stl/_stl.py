@@ -178,7 +178,11 @@ def _read_binary(f, num_triangles: int):
     #     raise ReadError("Nonzero attr count")
 
     points, cells = data_from_facets(facets)
-    return Mesh(points, cells)
+    cell_data = {}
+    attr = out["attr count"]
+    if len(attr) and np.any(attr):
+        cell_data["stl:attribute"] = [attr.astype("<u2")]
+    return Mesh(points, cells, cell_data=cell_data)
 
 
 def _skin_triangles(mesh):
@@ -238,8 +242,13 @@ def write(filename, mesh, binary=False, skin=True):
         nrm = np.sqrt(np.einsum("ij,ij->i", normals, normals))
         normals = (normals.T / nrm).T
 
-    fun = _write_binary if binary else _write_ascii
-    fun(filename, pts, normals)
+    if binary:
+        attr = None
+        if "stl:attribute" in mesh.cell_data:
+            attr = mesh.get_cell_data("stl:attribute", "triangle")
+        _write_binary(filename, pts, normals, attr)
+    else:
+        _write_ascii(filename, pts, normals)
 
 
 def _write_ascii(filename, pts, normals):
@@ -264,7 +273,7 @@ def _write_ascii(filename, pts, normals):
         fh.write("endsolid\n")
 
 
-def _write_binary(filename, pts, normals):
+def _write_binary(filename, pts, normals, attr=None):
     with open_file(filename, "wb") as fh:
         # 80-byte header data, NUL-padded to match the C++ writer exactly.
         header = (
@@ -284,7 +293,7 @@ def _write_binary(filename, pts, normals):
         a = np.empty(len(pts), dtype=dtype)
         a["normal"] = normals
         a["points"] = pts
-        a["attr"] = 0
+        a["attr"] = 0 if attr is None else attr
         a.tofile(fh)
 
 
