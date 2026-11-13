@@ -191,7 +191,7 @@ meshioplusplus.openfoam.write("out/case.foam", mesh, compression="gzip")
 - `compression="gzip"` (Python) or `OpenFoamWriteOptions::mCompress` (C++) writes every case file it produces gzipped: the `polyMesh` files, the zone files, the `*ProcAddressing` lists of a decomposed case and the field files of each time directory; `regionProperties` stays plain. The bytes are those of Python's `gzip.compress(data, mtime=0)`. It combines with `binary`.
 - Writing either form removes the other form of each file it writes, and the stale-file cleanup removes both, so a case never holds a plain `points` that would shadow a newer `points.gz`.
 - Reading or writing a compressed case needs zlib (`MESHIOPLUSPLUS_WITH_ZLIB`, on by default); without it the read raises naming the flag, and so does a compressed write. The Python fallback reader inflates with the standard library.
-- **Python and C++ only**, like the label and scalar widths: the registry's generic write, both CLIs, the C API and its bindings write plain files.
+- Through the registry's `registry_write_ex` the gzip switch is the **`zlib` codec** (`WriteOptions::mCodec`, `mio_write_opts.codec`, and so every binding built on them): `zlib` writes gzipped case files, `none` or no codec writes plain ones, and `lz4`/`zstd`/`lzf` are refused by name. The label and scalar widths stay Python and C++ only, and the native CLI's `compress` has no OpenFOAM case form.
 
 ## Quirks & limitations
 

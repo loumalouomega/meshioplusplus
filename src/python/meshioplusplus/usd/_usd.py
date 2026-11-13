@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 
 import numpy as np
 
@@ -38,6 +39,11 @@ from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._helpers import register_format
 from .._mesh import CellBlock, Mesh
+from .._regions import Region
+
+#: Custom-data key holding a cell region's original name on its ``GeomSubset`` (prim
+#: names are identifiers, so a region named ``my set`` is written as ``my_set``).
+REGION_NAME_KEY = "meshioplusplus:region"
 
 #: Where the provenance block rides: the root layer's ``documentation`` field,
 #: USD's own free-text slot. A text ``.usda`` therefore also surrenders it to
@@ -313,9 +319,47 @@ class SeriesWriter:
                 UsdGeom, Sdf, Vt, primvars, name, joined, num_cells, "uniform", code
             )
 
+        if blocks:
+            self._write_region_subsets(UsdGeom, Vt, geom, mesh, blocks, code)
+
         if time is not None:
             self._update_time_range(float(time))
         self._samples += 1
+
+    @staticmethod
+    def _write_region_subsets(UsdGeom, Vt, geom, mesh, blocks, code):
+        """Each cell region of a surface mesh as a face ``GeomSubset`` (the face index
+        is the global cell index only when the mesh is its own surface, so a volume's
+        regions, which would need the parent-cell map, are not written)."""
+        regions = [r for r in getattr(mesh, "regions", []) if r.kind == "cell"]
+        if not regions or len(blocks) != len(mesh.cells):
+            return
+        if any(
+            b.type not in _SURFACE_TYPES and b.type != "polygon" for b in mesh.cells
+        ):
+            return
+        num_faces = sum(len(b.data) for b in mesh.cells)
+        used = set()
+        for region in regions:
+            ids = np.asarray(region.entries, dtype=np.int64)
+            if len(ids) and (ids.min() < 0 or ids.max() >= num_faces):
+                continue
+            name = re.sub(r"\W", "_", region.name) or "_"
+            if name[0].isdigit():
+                name = "_" + name
+            base, n = name, 1
+            while name in used:
+                n += 1
+                name = f"{base}_{n}"
+            used.add(name)
+            subset = UsdGeom.Subset.CreateGeomSubset(
+                geom,
+                name,
+                UsdGeom.Tokens.face,
+                Vt.IntArray.FromNumpy(ids.astype(np.int32)),
+                "meshioplusplus",
+            )
+            subset.GetPrim().SetCustomDataByKey(REGION_NAME_KEY, region.name)
 
     def close(self):
         """Write the provenance block and save the layer."""
@@ -475,6 +519,38 @@ def _blocks_from_topology(counts, indices):
     return blocks, order
 
 
+def _subset_regions(UsdGeom, geom, code, blocks, order, earlier, prim_index, num_prims):
+    """The face ``GeomSubset``s of one prim as cell regions: a face's cell is its row in
+    the block layout ``_blocks_from_topology`` made, offset by the blocks before this prim.
+    """
+    first = sum(len(b.data) for b in earlier)
+    num_faces = sum(len(rows) for rows in order)
+    face_cell = np.full(num_faces, -1, dtype=np.int64)
+    cursor = first
+    for rows in order:
+        face_cell[np.asarray(rows, dtype=np.int64)] = cursor + np.arange(len(rows))
+        cursor += len(rows)
+    out = []
+    for subset in UsdGeom.Subset.GetAllGeomSubsets(geom):
+        if str(subset.GetElementTypeAttr().Get()) != "face":
+            continue
+        ids = subset.GetIndicesAttr().Get(code)
+        if ids is None:
+            ids = subset.GetIndicesAttr().Get()
+        if ids is None:
+            continue
+        ids = np.asarray(ids, dtype=np.int64)
+        if len(ids) and (ids.min() < 0 or ids.max() >= num_faces):
+            continue
+        name = subset.GetPrim().GetCustomDataByKey(REGION_NAME_KEY)
+        if not name:
+            name = str(subset.GetPrim().GetName())
+            if num_prims > 1:
+                name = f"{geom.GetPrim().GetName()}/{name}"
+        out.append(Region(name, "cell", face_cell[ids], dim=2))
+    return out
+
+
 def _primvar_values(primvar, code):
     """One primvar's values as ``(rows, width)`` numpy, or ``None``."""
     values = primvar.Get(code)
@@ -525,6 +601,7 @@ def read(filename, time_step=0):
     prim_paths = []
     point_arrays = {}
     cell_arrays = {}
+    regions = []
     offset = 0
     skipped = set()
 
@@ -548,6 +625,19 @@ def read(filename, time_step=0):
                     np.asarray(counts, dtype=np.int64),
                     np.asarray(indices, dtype=np.int64) + offset,
                 )
+        if kind == "mesh" and blocks:
+            regions.extend(
+                _subset_regions(
+                    UsdGeom,
+                    geom,
+                    code,
+                    blocks,
+                    order,
+                    all_blocks,
+                    prim_index,
+                    len(prims),
+                )
+            )
         all_blocks.extend(blocks)
         prim_of_block.extend([prim_index] * len(blocks))
 
@@ -634,6 +724,7 @@ def read(filename, time_step=0):
         point_data=point_data,
         cell_data=cell_data,
         field_data=field_data,
+        regions=regions,
     )
     # The Exodus side channel: `_metadata_from_mesh` reads this, so
     # `read_metadata(...)["time_values"]` and the sequence engine's step count

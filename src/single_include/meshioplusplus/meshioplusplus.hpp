@@ -311736,6 +311736,13 @@ bool registry_write_supports(const std::string& rFormat, const WriteOptions& rOp
                 rWhy = "pcd LZF codec requires binary encoding, not ascii";
                 return false;
             }
+        } else if (rFormat == "openfoam") {
+            // The case's files gzipped (`writeCompression on`): the deflate family's name here.
+            if (rOptions.mCodec != detail::VtkCodec::Zlib &&
+                rOptions.mCodec != detail::VtkCodec::None) {
+                rWhy = "openfoam takes the zlib codec (gzip case files) or none";
+                return false;
+            }
         } else if (!wopt_has_codec(rFormat)) {
             rWhy = "format '" + rFormat + "' has no VTK block compression codec";
             return false;
@@ -311797,10 +311804,14 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     } else if (fmt == "openfoam") {
         // Label/scalar width is Python/C++-only (OpenFoamWriteOptions), not
         // reachable from the generic ASCII/binary switch every other format
-        // shares here -- see doc/formats/openfoam.md.
+        // shares here; the codec selector carries the gzip switch -- see
+        // doc/formats/openfoam.md.
         OpenFoamInfo info;
         OpenFoamWriteOptions wopts;
         wopts.mBinary = binary;
+        // Zlib selects gzip-compressed case files (`writeCompression on`); none (or no
+        // codec) writes plain ones.
+        wopts.mCompress = rOptions.mCodecSet && rOptions.mCodec == detail::VtkCodec::Zlib;
         write_openfoam(rPath, rMesh, info, wopts);
     } else if (fmt == "pcd") {
         write_pcd(rPath, rMesh,

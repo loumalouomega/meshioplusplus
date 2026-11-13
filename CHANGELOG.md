@@ -10,6 +10,12 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** OpenUSD face `GeomSubset`s are read as cell regions and a surface mesh's cell regions are written as `GeomSubset`s (roadmap 2.3.9.9).
+
+
+- **Added:** `registry_write_ex` writes a gzipped OpenFOAM case when the codec is `zlib` (and plain when it is `none`), so the C API and every binding reach `writeCompression on` output (roadmap 2.3.5.3).
+
+
 - **Added:** Gmsh `$GhostElements` is read as `cell_data["partition:ghost"]` (4.x ASCII, both engines; roadmap 2.3.6.2).
 
 
