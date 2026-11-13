@@ -195084,6 +195084,7 @@ struct FaceBlock {
     std::size_t mSize = 0;
     std::vector<std::int64_t> mIdx;  // flat, 0-based
     std::vector<std::int64_t> mVt;   // per corner, the 0-based `vt` index (-1 none)
+    std::vector<std::int64_t> mVn;   // per corner, the 0-based `vn` index (-1 none)
     std::vector<std::int64_t> mGids;
     std::size_t mCount = 0;
 };
@@ -195167,6 +195168,7 @@ Mesh read_obj(const std::string& rPath) {
     std::vector<double> row;
     std::vector<std::int64_t> dat;
     std::vector<std::int64_t> dat_vt;
+    std::vector<std::int64_t> dat_vn;
 
     while (!cursor.AtEnd()) {
         std::string_view line = cursor.Line();
@@ -195199,6 +195201,7 @@ Mesh read_obj(const std::string& rPath) {
         } else if (tag == "f") {
             dat.clear();
             dat_vt.clear();
+            dat_vn.clear();
             std::size_t i = 0;
             while (true) {
                 while (i < rest.size() && detail::text_is_blank(rest[i]))
@@ -195215,18 +195218,31 @@ Mesh read_obj(const std::string& rPath) {
                 const std::size_t last = slash == std::string_view::npos ? i : slash;
                 dat.push_back(obj_stoll(rest.substr(first, last - first)) - 1);
                 // `v/vt`, `v/vt/vn`: the texture index; `v` and `v//vn` have none.
-                std::int64_t vt_index = -1;
-                if (slash != std::string_view::npos && slash + 1 < i && rest[slash + 1] != '/') {
-                    std::size_t end = slash + 1;
+                // `v/vt/vn` and `v//vn`: the normal index.
+                const auto corner_index = [&](std::size_t From) {
+                    if (From >= i || rest[From] == '/')
+                        return std::int64_t(-1);
+                    std::size_t end = From;
                     while (end < i && rest[end] != '/')
                         ++end;
                     try {
-                        vt_index = obj_stoll(rest.substr(slash + 1, end - slash - 1)) - 1;
+                        return obj_stoll(rest.substr(From, end - From)) - 1;
                     } catch (const std::exception&) {
-                        vt_index = -1;
+                        return std::int64_t(-1);
                     }
+                };
+                std::int64_t vt_index = -1;
+                std::int64_t vn_index = -1;
+                if (slash != std::string_view::npos) {
+                    vt_index = corner_index(slash + 1);
+                    std::size_t slash2 = slash + 1;
+                    while (slash2 < i && rest[slash2] != '/')
+                        ++slash2;
+                    if (slash2 < i)
+                        vn_index = corner_index(slash2 + 1);
                 }
                 dat_vt.push_back(vt_index);
+                dat_vn.push_back(vn_index);
             }
             std::size_t sz = dat.size();
             if (blocks.empty() || (blocks.back().mCount > 0 && blocks.back().mSize != sz)) {
@@ -195239,6 +195255,7 @@ Mesh read_obj(const std::string& rPath) {
                 cur.mSize = sz;
             cur.mIdx.insert(cur.mIdx.end(), dat.begin(), dat.end());
             cur.mVt.insert(cur.mVt.end(), dat_vt.begin(), dat_vt.end());
+            cur.mVn.insert(cur.mVn.end(), dat_vn.begin(), dat_vn.end());
             cur.mGids.push_back(group_id);
             ++cur.mCount;
         } else if (tag == "g") {
@@ -195255,32 +195272,46 @@ Mesh read_obj(const std::string& rPath) {
         if (fb.mCount > 0)
             nonempty.push_back(std::move(fb));
 
-    // Texture coordinates by corner (`f v/vt`): when every corner names a `vt`,
-    // each point gets one `uv`; a point whose corners name different ones (a
-    // seam) is split, the first copy keeping its index and the others appended
-    // in the order met, with `obj:parent_point` naming the point each copies.
+    // Texture coordinates and normals by corner (`f v/vt/vn`): when every
+    // corner names a `vt` each point gets one `uv`, and when every corner names
+    // a `vn` one normal; a point whose corners name different ones (a seam, a
+    // hard edge) is split, the first copy keeping its index and the others
+    // appended in the order met, with `obj:parent_point` naming the point each
+    // copies.
     const std::size_t np_in = points.size() / 3;
-    std::vector<double> uv;
+    std::vector<double> uv, corner_vn;
     std::vector<std::int64_t> parent;
     bool has_uv = vt.mRows > 0 && vt.mUniform && vt.mWidth >= 2 && !nonempty.empty();
+    bool has_vn = vn.mRows > 0 && vn.mUniform && vn.mWidth >= 1 && !nonempty.empty();
+    bool ids_ok = !nonempty.empty();
     for (const auto& fb : nonempty)
-        for (std::size_t k = 0; has_uv && k < fb.mVt.size(); ++k)
-            has_uv = fb.mVt[k] >= 0 && static_cast<std::size_t>(fb.mVt[k]) < vt.mRows &&
-                     fb.mIdx[k] >= 0 && static_cast<std::size_t>(fb.mIdx[k]) < np_in;
-    if (has_uv) {
-        std::vector<std::vector<std::pair<std::int64_t, std::int64_t>>> copies(np_in);
+        for (std::size_t k = 0; k < fb.mVt.size(); ++k) {
+            ids_ok = ids_ok && fb.mIdx[k] >= 0 && static_cast<std::size_t>(fb.mIdx[k]) < np_in;
+            has_uv = has_uv && fb.mVt[k] >= 0 && static_cast<std::size_t>(fb.mVt[k]) < vt.mRows;
+            has_vn = has_vn && fb.mVn[k] >= 0 && static_cast<std::size_t>(fb.mVn[k]) < vn.mRows;
+        }
+    if (!ids_ok)
+        has_uv = has_vn = false;
+    if (has_uv || has_vn) {
+        std::vector<std::vector<std::pair<std::pair<std::int64_t, std::int64_t>, std::int64_t>>>
+            copies(np_in);
         parent.resize(np_in);
         for (std::size_t p = 0; p < np_in; ++p)
             parent[p] = static_cast<std::int64_t>(p);
-        uv.assign(2 * np_in, std::nan(""));
+        const std::size_t wn = has_vn ? vn.mWidth : 0;
+        if (has_uv)
+            uv.assign(2 * np_in, std::nan(""));
+        if (has_vn)
+            corner_vn.assign(wn * np_in, std::nan(""));
         for (auto& fb : nonempty)
             for (std::size_t k = 0; k < fb.mIdx.size(); ++k) {
                 const std::int64_t p = fb.mIdx[k];
-                const std::int64_t t = fb.mVt[k];
+                const std::pair<std::int64_t, std::int64_t> key = {has_uv ? fb.mVt[k] : -1,
+                                                                   has_vn ? fb.mVn[k] : -1};
                 auto& list = copies[static_cast<std::size_t>(p)];
                 std::int64_t id = -1;
-                for (const auto& [vt_at, out] : list)
-                    if (vt_at == t)
+                for (const auto& [at, out] : list)
+                    if (at == key)
                         id = out;
                 if (id < 0) {
                     id = list.empty() ? p : static_cast<std::int64_t>(parent.size());
@@ -195290,14 +195321,22 @@ Mesh read_obj(const std::string& rPath) {
                         const std::array<double, 3> xyz = {points[at], points[at + 1],
                                                            points[at + 2]};
                         points.insert(points.end(), xyz.begin(), xyz.end());
-                        uv.push_back(0.0);
-                        uv.push_back(0.0);
+                        if (has_uv)
+                            uv.insert(uv.end(), {0.0, 0.0});
+                        if (has_vn)
+                            corner_vn.insert(corner_vn.end(), wn, 0.0);
                     }
-                    list.emplace_back(t, id);
-                    uv[2 * static_cast<std::size_t>(id)] =
-                        vt.mValues[static_cast<std::size_t>(t) * vt.mWidth];
-                    uv[2 * static_cast<std::size_t>(id) + 1] =
-                        vt.mValues[static_cast<std::size_t>(t) * vt.mWidth + 1];
+                    list.emplace_back(key, id);
+                    if (has_uv) {
+                        uv[2 * static_cast<std::size_t>(id)] =
+                            vt.mValues[static_cast<std::size_t>(key.first) * vt.mWidth];
+                        uv[2 * static_cast<std::size_t>(id) + 1] =
+                            vt.mValues[static_cast<std::size_t>(key.first) * vt.mWidth + 1];
+                    }
+                    if (has_vn)
+                        for (std::size_t c = 0; c < wn; ++c)
+                            corner_vn[wn * static_cast<std::size_t>(id) + c] =
+                                vn.mValues[static_cast<std::size_t>(key.second) * wn + c];
                 }
                 fb.mIdx[k] = id;
             }
@@ -195324,17 +195363,22 @@ Mesh read_obj(const std::string& rPath) {
         if (!has_uv || vt.mRows == np_in)
             mesh.AddPointData("obj:vt", std::move(rows));
     }
-    if (vn.mRows > 0)
+    if (has_vn) {
+        NDArray vn_array(DType::Float64, {np, vn.mWidth});
+        std::memcpy(vn_array.As<double>(), corner_vn.data(), corner_vn.size() * sizeof(double));
+        mesh.AddPointData("obj:vn", std::move(vn_array));
+    } else if (vn.mRows > 0) {
         mesh.AddPointData("obj:vn", raw_rows(vn));
+    }
     if (has_uv) {
         NDArray uv_array(DType::Float64, {np, 2});
         std::memcpy(uv_array.As<double>(), uv.data(), uv.size() * sizeof(double));
         mesh.AddPointData("uv", std::move(uv_array));
-        if (np > np_in) {
-            NDArray parents(DType::Int64, {np});
-            std::memcpy(parents.As<std::int64_t>(), parent.data(), np * sizeof(std::int64_t));
-            mesh.AddPointData("obj:parent_point", std::move(parents));
-        }
+    }
+    if ((has_uv || has_vn) && np > np_in) {
+        NDArray parents(DType::Int64, {np});
+        std::memcpy(parents.As<std::int64_t>(), parent.data(), np * sizeof(std::int64_t));
+        mesh.AddPointData("obj:parent_point", std::move(parents));
     }
 
     if (!nonempty.empty()) {

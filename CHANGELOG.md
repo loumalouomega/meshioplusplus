@@ -12,6 +12,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 The first steps of the [freeform fit CAD plan](doc/fit_cad_freeform_plan.md). Everything is off by default, so no default output changes: the `fit_cad` golden digests are as they were.
 
+- **OBJ normal indices** (roadmap 2.3.9.3, [OBJ](doc/formats/obj.md)): the per-corner `vn` index of `f v//vn` and `f v/vt/vn` is read, and a point whose corners name different normals is split on the distinct `(vt, vn)` pairs, with `obj:parent_point`, in both engines. Before, the index was dropped and normals that were not one per vertex were scrambled.
 - **STL attribute word** (roadmap 2.3.9.2, [STL](doc/formats/stl.md)): the two attribute bytes of a binary facet are read into `cell_data["stl:attribute"]` (`uint16`) when any is non-zero and written back, in both engines. ASCII `solid` names stay open.
 - **Add-on wheels carry their licence texts** (roadmap 4.8.1.1, [binary licences](LICENSE-BINARIES.md)): `meshioplusplus-mmg` ships `COPYING.LESSER` (LGPL-3.0) and `COPYING` (GPL-3.0), `meshioplusplus-netgen` ships `COPYING.LESSER` (LGPL-2.1), and both ship `LICENSE` and a `RELINKING.md` naming the pinned source, the build recipe and how to replace the shared library, through `license-files`. The wheel smoke tests check they are installed.
 - **Ansys `.rst`**: a record flagged both bit-sparse and windowed-sparse is refused by name in both engines ([Ansys `.rst`](doc/formats/ansys_rst.md#not-read)); it was decoded silently as bit-sparse, with wrong values.
