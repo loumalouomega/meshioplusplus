@@ -383,6 +383,7 @@ export default defineConfig({
           { text: "patran", link: "/formats/patran" },
           { text: "pcd", link: "/formats/pcd" },
           { text: "permas", link: "/formats/permas" },
+          { text: "plot3d", link: "/formats/plot3d" },
           { text: "ply", link: "/formats/ply" },
           { text: "pmsh", link: "/formats/pmsh" },
           { text: "pvd", link: "/formats/pvd" },

@@ -84,6 +84,7 @@
 #endif
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
+#include "meshioplusplus/formats/plot3d.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
@@ -8276,6 +8277,25 @@ PYBIND11_MODULE(_core, m) {
     core_def_read(m, "off_read", "off", &meshioplusplus::read_off);
     core_def_write(m, "dxf_write", &meshioplusplus::write_dxf);
     core_def_read(m, "dxf_read", "dxf", &meshioplusplus::read_dxf);
+    core_def_write(m, "plot3d_write", &meshioplusplus::write_plot3d);
+    m.def("plot3d_read",
+          guard_read("plot3d",
+                     [](const std::string& path, const std::string& solution,
+                        const std::string& function, int precision, int multiblock, int iblank,
+                        int dimensions) {
+                         meshioplusplus::Plot3dReadOptions o;
+                         o.mSolution = solution;
+                         o.mFunction = function;
+                         o.mPrecision = precision;
+                         o.mMultiblock = multiblock;
+                         o.mIblank = iblank;
+                         o.mDimensions = dimensions;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_plot3d(path, o); }));
+                     }),
+          py::arg("path"), py::arg("solution") = "", py::arg("function") = "",
+          py::arg("precision") = 0, py::arg("multiblock") = -1, py::arg("iblank") = -1,
+          py::arg("dimensions") = 0);
 
     // OBJ writer / reader.
     core_def_write(m, "obj_write", &meshioplusplus::write_obj);

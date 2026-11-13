@@ -1238,6 +1238,10 @@ SPEC: dict[str, dict] = {
         "field_data": True,
         "regions": ["cell", "point", "side"],
     },
+    "plot3d": {
+        "error": "no cell type round-trips",
+        "note": "PLOT3D holds lattice blocks (`plot3d:dims`); the canonical mesh is not one, so the writer refuses it by name.",
+    },
     "pvtp": {
         "cells": {
             "vertex": "exact",

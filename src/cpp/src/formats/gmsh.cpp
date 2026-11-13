@@ -435,7 +435,7 @@ void gmsh_add_ghost_cells(Mesh& rMesh, const Blocks& rBlocks, const ReadOptions&
         return;
     const NDArray& section = rMesh.FieldData(key);
     const std::string body(reinterpret_cast<const char*>(section.Data()), section.Size());
-    std::istringstream in(body);
+    auto in = detail::make_classic_istringstream(body);
     std::int64_t count = 0;
     if (!(in >> count) || count < 0)
         return;

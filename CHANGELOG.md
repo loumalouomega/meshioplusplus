@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** a `plot3d` format: PLOT3D multi-block structured grids (`.p3d`, `.p3dfmt`, `.x`, `.g`) in both engines, the ASCII, Fortran-unformatted or raw variant, block count, dimension, precision, `iblank` and byte order inferred from the file's size, with `.q` solutions and `.f` function files as read options, written as Fortran unformatted multi-block double precision (roadmap 2.4.2).
+
+
 - **Added:** `detect(path)`: every format a file could be, ranked `certain` (a content signature), `likely` (the extension plus a metadata read) or `guess` (the extension alone), so a caller can tell a sure answer from a guess and see the formats `.msh`, `.inp`, `.dat`, `.mesh`, `.ele` and `.node` share. In the core (`operations/detect.hpp`), Python, the C API (`mio_detect`), Fortran, Julia, R, Octave/MATLAB, WASM, both CLIs (`detect`) and the MCP server (roadmap 2.4.9).
 
 

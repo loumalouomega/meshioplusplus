@@ -66,6 +66,7 @@
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
+#include "meshioplusplus/formats/plot3d.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
@@ -544,6 +545,9 @@ const std::vector<RegistryRow>& registry_rows() {
         // DXF R2000 drawings (roadmap 7.6.4): LINE/ARC/CIRCLE/LWPOLYLINE/SPLINE in,
         // a line mesh or a fit_curves sketch out.
         {.mName = "dxf", .mRead = meshioplusplus::read_dxf, .mWrite = meshioplusplus::write_dxf},
+        {.mName = "plot3d",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_plot3d(rPath); },
+         .mWrite = meshioplusplus::write_plot3d},
         {.mName = "svg",
          .mRead = [](const std::string& path) { return meshioplusplus::read_svg(path); },
          .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); },
@@ -971,6 +975,10 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".glb", "gltf"},
         {".gltf", "gltf"},
         {".dxf", "dxf"},
+        {".p3d", "plot3d"},
+        {".p3dfmt", "plot3d"},
+        {".x", "plot3d"},
+        {".g", "plot3d"},
         {".svg", "svg"},
         {".tikz", "tikz"},
         // .node/.ele stay with tetgen for backward compatibility (3D pairs

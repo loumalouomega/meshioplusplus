@@ -274,13 +274,9 @@ Each names its consumer, as the admission asks. None was estimated from a file: 
 - **Fixtures.** Fluent tutorial cases are not redistributable; VTK's `Testing/Data` has small `.cas`/`.dat` and `.cas.h5` files (BSD): take those with their README.
 - **Done when.** VTK's `room.cas`/`room.dat` and `room.cas.h5`/`room.dat.h5` read to the cell counts and field ranges `vtkFLUENTReader` and `vtkFLUENTCFFReader` report. **M** (legacy), **M** (CFF)
 
-#### 2.4.2 PLOT3D
+#### 2.4.2 PLOT3D: verify
 
-- **Why.** Multi-block structured grids (`.xyz`/`.x`/`.g`, solution `.q`, function `.f`): what OVERFLOW, CFL3D and NASA's turbulence-modelling resource exchange.
-- **Reuse.** `detail/fortran_records.hpp`: `sniff_fortran_records`, `fortran_records`, `fortran_append_record`, `fortran_put_*` (twin `_fortran_records.py`); `vtk_structured_cells`; the `byteswap.hpp` helpers.
-- **Steps.** (1) Sniff the variant, since the file does not state it: ASCII or Fortran-unformatted or raw binary, single or multi-block, 2-D or 3-D, single or double precision, with or without `iblank`, either byte order; `sniff_fortran_records` gives the record layout and the first record's size the rest. An ambiguous file takes read options (`precision=`, `multiblock=`, `iblank=`), named in the error. (2) One block per grid block, expanded to hexahedra or quads, `iblank` to a `uint8` point array, block dimensions in `field_data["plot3d:dims"]` for 8.6. (3) `.q`: the four reference values to `field_data`, the five conserved variables to point data. `.f`: `n` named-by-index functions. (4) Writer: the unformatted multi-block double-precision form, from blocks that carry `plot3d:dims`; a mesh that is not a set of lattices is refused by name.
-- **Fixtures.** NASA TMR grids (US-government works).
-- **Done when.** A TMR multi-block `.p3dfmt` grid reads to its documented block dimensions and writes back byte-equal in the unformatted form. **S–M**
+Read and written in both engines ([PLOT3D](./formats/plot3d.md)): the variant inferred from the size, `.q` and `.f` files, unformatted double-precision writing. Still open: read a NASA TMR multi-block `.p3dfmt` grid to its documented block dimensions and write it back byte-equal. **XS**
 
 #### 2.4.3 Coastal and ocean meshes
 

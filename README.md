@@ -42,6 +42,7 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [COMSOL](https://www.comsol.com) mesh (`.mphtxt` text and `.mphbin` binary; Selections as named regions, COMSOL's own node order),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [DXF](https://loumalouomega.github.io/meshioplusplus/formats/dxf) (`.dxf`; ASCII R2000: a line mesh as `LINE`s and a `fit_curves` sketch as `LINE`, `ARC` and `CIRCLE` entities, read back from `LINE`, `ARC`, `CIRCLE`, `LWPOLYLINE` and `SPLINE`),
+> [PLOT3D](https://loumalouomega.github.io/meshioplusplus/formats/plot3d) (`.p3d`, `.x`, `.g`; multi-block structured grids with `.q` solutions and `.f` function files, the ASCII, Fortran-unformatted or raw variant inferred from the file's size),
 > [Elmer](https://www.elmerfem.org) mesh directory (`mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names`, text or ElmerGrid's binary; bodies and boundaries as named regions, ElmerGrid partitions merged, `partition:part` written as `partitioning.N`, recognised by content),
 > [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) (geometry, `.case`/`.geo`; C and Fortran binary),
 > [FEBio](https://febio.org) input (`.feb`, spec 2.5/3.0/4.0 read, 4.0 written; sets and surfaces as named regions, MeshData read and written) and plot files (`.xplt`; every state is a step, remeshed runs included, surface variables on facet blocks),

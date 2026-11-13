@@ -70,6 +70,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="patran">`patran`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="pcd">`pcd`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | approx | `p_f64` float64, `p_i32` int32, `p_vec` float64 | — | — | — |
 | <span id="permas">`permas`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
+| <span id="plot3d">`plot3d`</span> |  |  |  |  |  |  |  |  | fails: `no cell type round-trips` | | | | |
 | <span id="ply">`ply`</span> | ✗ | ✗ | ✗ | ✗ | → tri | → quad | → quad+tri | → quad+tri | subset | — | — | — | — |
 | <span id="pmsh">`pmsh`</span> | ✗ | ✗ | ✗ | ✗ | ✓ | → tet | → tet | → tet | approx | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | — |
 | <span id="pvd">`pvd`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | ✓ | cell, point, side |
@@ -135,6 +136,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`netgen`**: Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.
 - **`openfoam`**: Fields are written to time directory 0 as volume and point fields (float64); OpenFOAM has no field_data.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
+- **`plot3d`**: PLOT3D holds lattice blocks (`plot3d:dims`); the canonical mesh is not one, so the writer refuses it by name.
 - **`ply`**: PLY stores faces: volume cells are written as their skin.
 - **`pmsh`**: The physics-ML mesh stores tetrahedra: other volume cells are simplexified, and non-volume blocks dropped.
 - **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.

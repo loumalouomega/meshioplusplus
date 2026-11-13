@@ -72,6 +72,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`patran`](./formats/patran.md) | `.pat`, `.out` | ✓ | ✓ | — | [7/8 cells · no data · regions CP](./conformance.md#patran) |
 | [`pcd`](./formats/pcd.md) | `.pcd` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#pcd) |
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#permas) |
+| [`plot3d`](./formats/plot3d.md) | `.p3d`, `.p3dfmt`, `.x`, `.g` | ✓ (ASCII, Fortran unformatted or raw; the variant inferred) | ✓ (unformatted, double) | — | [fails](./conformance.md#plot3d) |
 | [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#ply) |
 | [`pmsh`](./formats/pmsh.md) | `.pmsh` | ✓ | ✓ | — | [1/8 cells · data PCF](./conformance.md#pmsh) |
 | [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvd) |
