@@ -1357,3 +1357,114 @@ def test_series_writer_refuses_a_different_mesh(tmp_path):
         )
         with pytest.raises(meshioplusplus.WriteError):
             writer.write(1.0, other)
+
+
+def _element_node_mesh():
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [
+            ("triangle", np.array([[0, 1, 2], [1, 3, 2]])),
+            ("line", np.array([[0, 1]])),
+        ],
+        cell_data={
+            "gmsh:element_node:flux": [
+                np.arange(12.0).reshape(2, 6),
+                np.arange(4.0).reshape(1, 4),
+            ]
+        },
+        field_data={"gmsh:element_node_components:flux": np.array([2])},
+    )
+
+
+@pytest.mark.parametrize("fmt_version", ["2.2", "4.1"])
+@pytest.mark.parametrize("binary", [False, True])
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_element_node_data_round_trips(tmp_path, fmt_version, binary, engine):
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    path = tmp_path / "en.msh"
+    mesh = _element_node_mesh()
+    if engine == "core":
+        meshioplusplus.gmsh.write(
+            str(path), mesh, fmt_version=fmt_version, binary=binary
+        )
+        back = meshioplusplus.gmsh.read(str(path))
+    else:
+        gmsh_main.write(str(path), mesh, fmt_version=fmt_version, binary=binary)
+        back = gmsh_main.read(str(path))
+    blocks = back.cell_data["gmsh:element_node:flux"]
+    np.testing.assert_array_equal(blocks[0], np.arange(12.0).reshape(2, 6))
+    np.testing.assert_array_equal(blocks[1], np.arange(4.0).reshape(1, 4))
+    assert back.field_data["gmsh:element_node_components:flux"].tolist() == [2]
+    # no ElementData section was made of it
+    assert b"$ElementData" not in path.read_bytes()
+
+
+def test_element_node_data_is_read_by_both_engines(tmp_path):
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    path = tmp_path / "en.msh"
+    gmsh_main.write(str(path), _element_node_mesh(), fmt_version="4.1", binary=False)
+    core = meshioplusplus.gmsh.read(str(path))
+    twin = gmsh_main.read(str(path))
+    for a, b in zip(
+        core.cell_data["gmsh:element_node:flux"],
+        twin.cell_data["gmsh:element_node:flux"],
+    ):
+        np.testing.assert_array_equal(a, b)
+
+
+_KEPT = """$MeshFormat
+4.1 0 8
+$EndMeshFormat
+$Nodes
+1 3 1 3
+2 1 0 3
+1
+2
+3
+0 0 0
+0 0 1
+0 0 0
+$EndNodes
+$Elements
+1 1 1 1
+2 1 15 1
+1 1
+$EndElements
+$GhostElements
+1
+1 1 2 2 3
+$EndGhostElements
+$InterpolationScheme
+"scheme"
+1
+2 1 2
+1
+1 1
+$EndInterpolationScheme
+"""
+
+
+def test_ghost_and_interpolation_sections_survive_a_round_trip(tmp_path):
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    src = tmp_path / "kept.msh"
+    src.write_text(
+        _KEPT.replace(
+            "$Nodes\n1 3 1 3\n2 1 0 3\n1\n2\n3\n0 0 0\n0 0 1\n0 0 0\n",
+            "$Nodes\n1 1 1 1\n0 1 0 1\n1\n0 0 0\n",
+        )
+    )
+    for read, write in (
+        (meshioplusplus.gmsh.read, meshioplusplus.gmsh.write),
+        (gmsh_main.read, gmsh_main.write),
+    ):
+        mesh = read(str(src))
+        assert "gmsh:section:GhostElements" in mesh.field_data
+        out = tmp_path / "out.msh"
+        write(str(out), mesh, fmt_version="4.1", binary=False)
+        text = out.read_text()
+        assert "$GhostElements\n1\n1 1 2 2 3\n$EndGhostElements" in text
+        assert '$InterpolationScheme\n"scheme"' in text

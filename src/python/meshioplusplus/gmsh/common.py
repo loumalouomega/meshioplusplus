@@ -150,7 +150,45 @@ def _read_physical_names(f, field_data):
     _fast_forward_to_end_block(f, "PhysicalNames")
 
 
-def _read_data(f, tag, data_dict, data_size, is_ascii):
+#: The sections kept verbatim as ``field_data["gmsh:section:<Name>"]`` (their text body, as
+#: ``uint8``) and written back: ghost elements, interpolation schemes, partitioned entities
+#: and parametrizations. ASCII files only. Twins of ``kGmshKeptSections`` in ``gmsh.cpp``.
+SECTION_PREFIX = "gmsh:section:"
+KEPT_SECTIONS = (
+    "GhostElements",
+    "InterpolationScheme",
+    "PartitionedEntities",
+    "Parametrizations",
+)
+
+
+def _capture_section(f, name, field_data):
+    """A kept section's body, line by line to its ``$End`` line, into ``field_data``."""
+    target = f"$End{name}"
+    body = b""
+    for line in f:
+        if line.decode("latin-1").strip() == target:
+            break
+        body += line.rstrip(b"\r\n") + b"\n"
+    field_data[SECTION_PREFIX + name] = np.frombuffer(body, dtype=np.uint8).copy()
+
+
+def _write_kept_sections(fh, field_data, binary):
+    """The kept sections back as ``$Name ... $EndName``; ASCII only."""
+    if binary:
+        return
+    for name in KEPT_SECTIONS:
+        body = field_data.get(SECTION_PREFIX + name)
+        if body is None:
+            continue
+        fh.write(f"${name}\n".encode())
+        fh.write(np.asarray(body, dtype=np.uint8).tobytes())
+        fh.write(f"$End{name}\n".encode())
+
+
+def _read_data_header(f, tag):
+    """The tags of a ``$NodeData``/``$ElementData``/``$ElementNodeData`` section:
+    ``(first string tag, component count, item count)``."""
     # Read string tags
     num_string_tags = _header_int(f, tag)
     string_tags = [
@@ -169,6 +207,122 @@ def _read_data(f, tag, data_dict, data_size, is_ascii):
     num_items = integer_tags[2]
     if num_components < 0 or num_items < 0:
         raise ReadError(f"Gmsh ${tag}: negative component or item count")
+    return string_tags[0] if string_tags else "", num_components, num_items
+
+
+#: The ``cell_data`` name prefix of a ``$ElementNodeData`` section (a value per
+#: element per node), and of the ``field_data`` entry holding its component count.
+#: Twins of ``kGmshElementNodePrefix`` and ``kGmshElementNodeComponents`` in ``gmsh.cpp``.
+ELEMENT_NODE_PREFIX = "gmsh:element_node:"
+ELEMENT_NODE_COMPONENTS = "gmsh:element_node_components:"
+
+
+def _read_element_node_data(f, out, is_ascii):
+    """A ``$ElementNodeData`` section into ``out[name] = (components, rows)``, one
+    row per element (its ``nodes * components`` values, in the file's node order)."""
+    tag = "ElementNodeData"
+    name, num_components, num_items = _read_data_header(f, tag)
+    rows = []
+    if is_ascii:
+        for _ in range(num_items):
+            parts = f.readline().decode().split()
+            if len(parts) < 2:
+                raise ReadError(f"Gmsh ${tag}: truncated element row")
+            count = int(parts[1])
+            values = np.array([float(v) for v in parts[2:]])
+            if len(values) != count * num_components:
+                raise ReadError(f"Gmsh ${tag}: an element row has the wrong length")
+            rows.append(values)
+    else:
+        for _ in range(num_items):
+            head = np.fromfile(f, dtype=c_int, count=2)
+            if len(head) != 2:
+                raise ReadError(f"Gmsh ${tag}: truncated element row")
+            values = np.fromfile(f, dtype=c_double, count=int(head[1]) * num_components)
+            rows.append(values)
+    _fast_forward_to_end_block(f, tag)
+    out[name] = (num_components, rows)
+
+
+def _element_node_cell_data(cells, element_node):
+    """``cell_data`` and ``field_data`` entries for the ``$ElementNodeData`` sections:
+    per block, the rows of its elements as ``(cells, nodes * components)``."""
+    sizes = [len(c[1] if isinstance(c, tuple) else c.data) for c in cells]
+    total = sum(sizes)
+    cell_data, field_data = {}, {}
+    for name, (num_components, rows) in element_node.items():
+        if len(rows) < total:
+            raise ReadError(
+                "Gmsh: element-node data has fewer rows than the elements it annotates"
+            )
+        blocks, at = [], 0
+        for size in sizes:
+            chunk = rows[at : at + size]
+            at += size
+            widths = {len(r) for r in chunk}
+            if len(widths) > 1:
+                raise ReadError("Gmsh: element-node rows of one block differ in length")
+            blocks.append(
+                np.array(chunk, dtype=float).reshape(len(chunk), -1)
+                if chunk
+                else np.empty((0, 0))
+            )
+        cell_data[ELEMENT_NODE_PREFIX + name] = blocks
+        field_data[ELEMENT_NODE_COMPONENTS + name] = np.array(
+            [num_components], dtype=np.int64
+        )
+    return cell_data, field_data
+
+
+def _write_element_node_data(fh, name, blocks, num_components, binary):
+    """One ``$ElementNodeData`` section from per-block ``(cells, nodes * components)``
+    arrays; elements are tagged 1 to N in block order."""
+    fh.write(b"$ElementNodeData\n")
+    fh.write(f'1\n"{name}"\n1\n{0.0}\n3\n0\n{num_components}\n'.encode())
+    total = sum(len(b) for b in blocks)
+    fh.write(f"{total}\n".encode())
+    tag = 1
+    for block in blocks:
+        block = np.asarray(block, dtype=float).reshape(len(block), -1)
+        nodes = block.shape[1] // num_components if num_components else 0
+        for row in block:
+            if binary:
+                np.array([tag, nodes], dtype=c_int).tofile(fh)
+                row.astype(c_double).tofile(fh)
+            else:
+                fh.write(
+                    (
+                        f"{tag} {nodes} " + " ".join(repr(float(v)) for v in row) + "\n"
+                    ).encode()
+                )
+            tag += 1
+    if binary:
+        fh.write(b"\n")
+    fh.write(b"$EndElementNodeData\n")
+
+
+def _split_element_node(cell_data, field_data):
+    """``(plain cell_data, {name: (blocks, components)})``: the ``gmsh:element_node:``
+    arrays set apart, for the writers."""
+    plain, special = {}, {}
+    for key, value in cell_data.items():
+        if key.startswith(ELEMENT_NODE_PREFIX):
+            name = key[len(ELEMENT_NODE_PREFIX) :]
+            comp = field_data.get(ELEMENT_NODE_COMPONENTS + name)
+            if comp is None:
+                raise WriteError(
+                    f"Gmsh: '{key}' needs field_data['{ELEMENT_NODE_COMPONENTS}{name}'] "
+                    "holding its component count"
+                )
+            special[name] = (value, int(np.asarray(comp).ravel()[0]))
+        else:
+            plain[key] = value
+    return plain, special
+
+
+def _read_data(f, tag, data_dict, data_size, is_ascii):
+    string_tags, num_components, num_items = _read_data_header(f, tag)
+    string_tags = [string_tags]
     if is_ascii:
         # We need to read num_items * (1 + num_components) floats.
         # np.fromfile(..., sep=" ") can be flaky if there are newlines or other
@@ -292,6 +446,8 @@ def _write_physical_names(fh, field_data):
     # Write physical names
     entries = []
     for phys_name in field_data:
+        if phys_name.startswith((ELEMENT_NODE_COMPONENTS, SECTION_PREFIX)):
+            continue
         try:
             phys_num, phys_dim = field_data[phys_name]
             phys_num, phys_dim = int(phys_num), int(phys_dim)

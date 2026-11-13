@@ -237,10 +237,9 @@ Sets, particle clouds, and compressed writes beyond Python and C++. **S–M**
 
 - **State today.** `$ElementNodeData`, `$InterpolationScheme` and `$GhostElements` fall into the generic unknown-section skip with no warning: `gmsh.cpp` lines 1431–1432 (4.x body) and 1912–1913 (2.2), `gmsh/_gmsh22.py` lines 74–75, `_gmsh41.py` lines 91–100, `_gmsh40.py` line 83.
 - **Steps.**
-  - **2.3.6.1 `$ElementNodeData`.** A value per element per node (discontinuous fields: what Gmsh's own post-processing and GetDP write). Parse with the tag reader `read_data` (`gmsh.cpp` near line 943; `common._read_data` in Python) and store as cell data of shape `(cells, nodes × components)` under the convention 8.3 decides; until then under `gmsh:element_node:<name>` with the layout in `field_data`, the form `abaqus:layout:` uses. Write it back. **S–M, after 8.3's design pass**
-  - **2.3.6.2 `$GhostElements`.** To `cell_data["partition:ghost"]`, the name `partition`'s ghost layers use. **S**
-  - **2.3.6.3 The other MSH 4.1 sections.** `gmsh.cpp` parses `$Entities` (and `$Periodic`) but no `$PartitionedEntities`, `$Parametrizations` or parametric node coordinates (`u, v, w` after the point in a node record): keep each as `field_data` under a `gmsh:` prefix and write it back, so a Gmsh-partitioned model survives a round trip; the Gmsh 5.0 development manual's `$Polytopes`, `$Edges` and `$Faces` are a watch item until a release defines them†. **S–M**
-  - **2.3.6.3 `$InterpolationScheme`.** Kept only as an opaque `GmshInfo` member so a round trip does not lose it. **S**
+  - **2.3.6.1 Interpret what is kept.** `$ElementNodeData` is read and written (`gmsh:element_node:<name>`, in the file's node order); decide with 8.3 whether it moves to that convention. **S–M, after 8.3's design pass**
+  - **2.3.6.2 `$GhostElements`, interpreted.** The section is kept verbatim (`gmsh:section:GhostElements`); map it to `cell_data["partition:ghost"]`, the name `partition`'s ghost layers use, which needs the element tags (a 2.2 line is `elm-number partition-tag ghost-partition-tag...`, a 4.x line adds a count: *verify first* against a Gmsh-written partitioned file). **S**
+  - **2.3.6.3 The rest of MSH 4.1.** `$PartitionedEntities`, `$Parametrizations` and `$InterpolationScheme` are kept verbatim in ASCII files only; keep them in binary files, and read the parametric node coordinates (`u, v, w` after the point in a 4.1 node record), which are still discarded. The Gmsh 5.0 development manual's `$Polytopes`, `$Edges` and `$Faces` are a watch item until a release defines them†. **S–M**
 - **Done when.** Gmsh's `tutorials/view*.msh`-class file with element-node data round-trips in both engines.
 
 #### 2.3.7 The structured VTK family

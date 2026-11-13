@@ -380,6 +380,48 @@ void read_physical_names(GmshCursor& rCur, std::unordered_map<std::string, NDArr
     rCur.skip_to_end("PhysicalNames");
 }
 
+/// The sections the readers keep verbatim as `field_data["gmsh:section:<Name>"]` (their text body, as
+/// `uint8`) and the writers put back: ghost elements, interpolation schemes, partitioned entities and
+/// parametrizations. ASCII files only.
+constexpr const char* kGmshSectionPrefix = "gmsh:section:";
+constexpr const char* kGmshKeptSections[] = {"GhostElements", "InterpolationScheme",
+                                              "PartitionedEntities", "Parametrizations"};
+
+bool gmsh_is_kept_section(const std::string& rName) {
+    for (const char* kept : kGmshKeptSections)
+        if (rName == kept)
+            return true;
+    return false;
+}
+
+/// `field_data` entries that are not physical groups (their payload is not a `(tag, dim)` pair).
+bool gmsh_is_private_field(const std::string& rName) {
+    return rName.compare(0, std::strlen(kGmshSectionPrefix), kGmshSectionPrefix) == 0 ||
+           rName.compare(0, 29, "gmsh:element_node_components:") == 0;
+}
+
+/// A section's body, line by line to its `$End` line, as the bytes a writer puts back.
+std::string gmsh_capture_section(GmshCursor& rCur, const std::string& rName) {
+    const std::string target = "$End" + rName;
+    std::string body;
+    while (!rCur.eof()) {
+        const std::string line = rCur.read_line();
+        if (gmsh_trim(line) == target)
+            break;
+        body += line;
+        body += '\n';
+    }
+    return body;
+}
+
+void gmsh_keep_section(std::unordered_map<std::string, NDArray>& rFieldData,
+                       const std::string& rName, const std::string& rBody) {
+    NDArray bytes(DType::UInt8, {rBody.size()});
+    if (!rBody.empty())
+        std::memcpy(bytes.Data(), rBody.data(), rBody.size());
+    rFieldData.insert_or_assign(std::string(kGmshSectionPrefix) + rName, std::move(bytes));
+}
+
 // --- physical groups <-> named regions ---------------------------------------
 //
 // Gmsh describes a physical group twice over: `$PhysicalNames` gives it a name,
@@ -396,7 +438,7 @@ std::map<std::pair<std::int64_t, int>, std::string> gmsh_physical_names(const Me
     std::map<std::pair<std::int64_t, int>, std::string> out;
     for (const auto& name : rMesh.FieldDataNames()) {
         const NDArray& d = rMesh.FieldData(name);
-        if (d.Size() < 2)
+        if (d.Size() < 2 || gmsh_is_private_field(name))
             continue;
         const std::int64_t tag = detail::read_int(d, 0);
         const int dim = static_cast<int>(detail::read_int(d, 1));
@@ -523,7 +565,7 @@ std::vector<GmshRegionTag> gmsh_resolve_region_tags(const Mesh& rMesh) {
     std::map<int, std::int64_t> max_tag_by_dim;
     for (const auto& name : rMesh.FieldDataNames()) {
         const NDArray& d = rMesh.FieldData(name);
-        if (d.Size() < 2)
+        if (d.Size() < 2 || gmsh_is_private_field(name))
             continue;
         const std::int64_t tag = detail::read_int(d, 0);
         const int dim = static_cast<int>(detail::read_int(d, 1));
@@ -569,7 +611,7 @@ std::vector<std::tuple<long long, long long, std::string>> gmsh_physical_rows(
     std::set<std::string> seen;
     for (const auto& name : rMesh.FieldDataNames()) {
         const NDArray& d = rMesh.FieldData(name);
-        if (d.Size() < 2)
+        if (d.Size() < 2 || gmsh_is_private_field(name))
             continue;
         rows.emplace_back(detail::read_int(d, 1), detail::read_int(d, 0), name);
         seen.insert(name);
@@ -1016,6 +1058,136 @@ void read_data(GmshCursor& rCur, const std::string& rTag, bool is_ascii,
         rOut.emplace(name, std::move(data));  // legacy: first section per name wins
 }
 
+/// The `cell_data` name prefix of a `$ElementNodeData` section (a value per element per node),
+/// and of the `field_data` entry holding its component count; twins of `ELEMENT_NODE_PREFIX` and
+/// `ELEMENT_NODE_COMPONENTS` in `gmsh/common.py`.
+constexpr const char* kGmshElementNodePrefix = "gmsh:element_node:";
+constexpr const char* kGmshElementNodeComponents = "gmsh:element_node_components:";
+
+/// One `$ElementNodeData` section as read: a row per element, padded with NaN to the widest.
+struct GmshElementNodeRaw {
+    NDArray mData;
+    std::vector<std::size_t> mLens;  ///< each row's real width (nodes * components)
+    std::int64_t mComponents = 1;
+};
+
+/// A `$ElementNodeData` section, the way `read_data` reads `$ElementData` (name filter, time
+/// step selection) but with a node count in front of every element's values.
+void read_element_node_data(GmshCursor& rCur, bool is_ascii,
+                            std::unordered_map<std::string, GmshElementNodeRaw>& rOut,
+                            const ReadOptions& rOpts, const double* pTargetTime) {
+    const std::string tag = "ElementNodeData";
+    std::int64_t num_str = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
+    std::string name;
+    for (std::int64_t i = 0; i < num_str; ++i) {
+        std::string s = gmsh_trim(rCur.read_line());
+        if (i == 0) {
+            std::size_t q1 = s.find('"'), q2 = s.rfind('"');
+            name = (q1 != std::string::npos && q2 > q1) ? s.substr(q1 + 1, q2 - q1 - 1) : s;
+        }
+    }
+    std::int64_t num_real = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
+    double time = 0.0;
+    for (std::int64_t i = 0; i < num_real; ++i) {
+        std::string s = gmsh_trim(rCur.read_line());
+        if (i == 0) {
+            const char* end = nullptr;
+            time = detail::parse_double(s.c_str(), end);
+            if (end == s.c_str())
+                throw ReadError("Gmsh: expected a number for the data step's time value, got '" +
+                                s + "'");
+        }
+    }
+    const std::int64_t num_int = rCur.count(std::stoll(gmsh_trim(rCur.read_line())));
+    if (num_int < 3)
+        throw ReadError("Gmsh: ElementNodeData needs at least 3 integer tags");
+    std::vector<std::int64_t> itags(static_cast<std::size_t>(num_int));
+    for (std::int64_t i = 0; i < num_int; ++i)
+        itags[static_cast<std::size_t>(i)] = std::stoll(gmsh_trim(rCur.read_line()));
+    if (itags[1] < 1 || itags[2] < 0)
+        throw ReadError("Gmsh: ElementNodeData holds a bad component or entity count");
+    rCur.count(itags[2]);
+    const std::size_t ncomp = static_cast<std::size_t>(itags[1]);
+    const std::size_t nitems = static_cast<std::size_t>(itags[2]);
+    if (!rOpts.WantsAnyData() || !rOpts.WantsArray(std::string(kGmshElementNodePrefix) + name) ||
+        (pTargetTime != nullptr && time != *pTargetTime) ||
+        (pTargetTime == nullptr && rOut.count(name))) {
+        rCur.skip_to_end(tag);
+        return;
+    }
+    std::vector<std::vector<double>> rows(nitems);
+    std::size_t widest = 0;
+    for (std::size_t i = 0; i < nitems; ++i) {
+        std::int64_t nodes = 0;
+        if (is_ascii) {
+            rCur.next_int();  // element tag
+            nodes = rCur.next_int();
+        } else {
+            rCur.read_i32();
+            nodes = rCur.read_i32();
+        }
+        if (nodes < 0)
+            throw ReadError("Gmsh: ElementNodeData has a negative node count");
+        rCur.count(nodes);
+        rows[i].resize(static_cast<std::size_t>(nodes) * ncomp);
+        for (double& v : rows[i])
+            v = is_ascii ? rCur.next_double() : rCur.read_f64();
+        widest = std::max(widest, rows[i].size());
+    }
+    rCur.skip_to_end(tag);
+    GmshElementNodeRaw raw;
+    raw.mComponents = static_cast<std::int64_t>(ncomp);
+    raw.mData = NDArray(DType::Float64, {nitems, widest});
+    double* dp = raw.mData.As<double>();
+    std::fill(dp, dp + nitems * widest, std::nan(""));
+    for (std::size_t i = 0; i < nitems; ++i) {
+        raw.mLens.push_back(rows[i].size());
+        std::copy(rows[i].begin(), rows[i].end(), dp + i * widest);
+    }
+    rOut.insert_or_assign(name, std::move(raw));
+}
+
+/// The `$ElementNodeData` arrays of a read as per-block cell data (each block trimmed to the width
+/// its own rows have) plus their component counts as `field_data`.
+template <class TBlocks>
+void gmsh_add_element_node_data(Mesh& rMesh,
+                                std::unordered_map<std::string, GmshElementNodeRaw>& rRaw,
+                                const TBlocks& rBlocks) {
+    for (auto& [name, raw] : rRaw) {
+        std::size_t total = 0;
+        for (const auto& b : rBlocks)
+            total += b.mCount;
+        if (raw.mLens.size() < total)
+            throw ReadError(
+                "Gmsh: element-node data has fewer rows than the elements it "
+                "annotates");
+        const std::size_t width = raw.mData.Shape().size() >= 2 ? raw.mData.Shape()[1] : 0;
+        std::vector<NDArray> per_block;
+        std::size_t offset = 0;
+        for (const auto& b : rBlocks) {
+            std::size_t block_width = 0;
+            for (std::size_t r = 0; r < b.mCount; ++r) {
+                const std::size_t len = raw.mLens[offset + r];
+                if (r && len != block_width)
+                    throw ReadError("Gmsh: element-node rows of one block differ in length");
+                block_width = len;
+            }
+            NDArray blk(DType::Float64, {b.mCount, block_width});
+            double* bp = blk.As<double>();
+            const double* src = raw.mData.As<double>();
+            for (std::size_t r = 0; r < b.mCount; ++r)
+                std::copy(src + (offset + r) * width, src + (offset + r) * width + block_width,
+                          bp + r * block_width);
+            per_block.push_back(std::move(blk));
+            offset += b.mCount;
+        }
+        rMesh.AddCellData(std::string(kGmshElementNodePrefix) + name, std::move(per_block));
+        NDArray comp(DType::Int64, {1});
+        *comp.As<std::int64_t>() = raw.mComponents;
+        rMesh.AddFieldData(std::string(kGmshElementNodeComponents) + name, std::move(comp));
+    }
+}
+
 NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
     // Cell data shorter than the elements it annotates is corrupt input: the
     // range must lie inside the array. Checked before anything is allocated
@@ -1403,6 +1575,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
     std::vector<GmshPeriodicLink> periodic;
     bool have_periodic = false;
     std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
+    std::unordered_map<std::string, GmshElementNodeRaw> element_node_raw;
 
     while (!rCur.eof()) {
         std::string line = rCur.next_nonblank();
@@ -1430,6 +1603,10 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
             read_data(rCur, "NodeData", is_ascii, point_data, rOpts, pTargetTime);
         else if (env == "ElementData")
             read_data(rCur, "ElementData", is_ascii, cell_data_raw, rOpts, pTargetTime);
+        else if (env == "ElementNodeData")
+            read_element_node_data(rCur, is_ascii, element_node_raw, rOpts, pTargetTime);
+        else if (is_ascii && gmsh_is_kept_section(env))
+            gmsh_keep_section(field_data, env, gmsh_capture_section(rCur, env));
         else
             rCur.skip_to_end(env);
     }
@@ -1564,6 +1741,7 @@ Mesh read_gmsh41_body(GmshCursor& rCur, bool is_ascii, int data_size, const Read
         }
         mesh.AddCellData(kv.first, std::move(per_block));
     }
+    gmsh_add_element_node_data(mesh, element_node_raw, eblocks);
     if (!physical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:physical"))
         mesh.AddCellData("gmsh:physical", std::move(physical_blocks));
     if (!geom_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
@@ -1888,6 +2066,7 @@ static Mesh gmsh_read_impl(const std::string& rPath, GmshInfo& rInfo, const Read
     std::vector<GmshPeriodicLink> periodic;
     bool have_periodic = false;
     std::unordered_map<std::string, NDArray> field_data, point_data, cell_data_raw;
+    std::unordered_map<std::string, GmshElementNodeRaw> element_node_raw;
 
     while (!cur.eof()) {
         std::string line = cur.next_nonblank();
@@ -1911,6 +2090,10 @@ static Mesh gmsh_read_impl(const std::string& rPath, GmshInfo& rInfo, const Read
             read_data(cur, "NodeData", is_ascii, point_data, rOpts, target_time_ptr);
         else if (env == "ElementData")
             read_data(cur, "ElementData", is_ascii, cell_data_raw, rOpts, target_time_ptr);
+        else if (env == "ElementNodeData")
+            read_element_node_data(cur, is_ascii, element_node_raw, rOpts, target_time_ptr);
+        else if (is_ascii && gmsh_is_kept_section(env))
+            gmsh_keep_section(field_data, env, gmsh_capture_section(cur, env));
         else
             cur.skip_to_end(env);
     }
@@ -1996,6 +2179,7 @@ static Mesh gmsh_read_impl(const std::string& rPath, GmshInfo& rInfo, const Read
         }
         mesh.AddCellData(kv.first, std::move(per_block));
     }
+    gmsh_add_element_node_data(mesh, element_node_raw, eblocks);
     if (!physical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:physical"))
         mesh.AddCellData("gmsh:physical", std::move(physical_blocks));
     if (!geometrical_blocks.empty() && rOpts.WantsAnyData() && rOpts.WantsArray("gmsh:geometrical"))
@@ -2129,6 +2313,23 @@ inline std::size_t gmsh_perm_src(const std::vector<int>& rPerm, std::size_t J) {
     return rPerm.empty() ? J : static_cast<std::size_t>(rPerm[J]);
 }
 
+/// The kept sections (`field_data["gmsh:section:<Name>"]`) back as `$Name ... $EndName`; ASCII only.
+void gmsh_write_kept_sections(std::ostream& rOs, const Mesh& rMesh, bool binary) {
+    if (binary)
+        return;
+    for (const char* kept : kGmshKeptSections) {
+        const std::string key = std::string(kGmshSectionPrefix) + kept;
+        if (!rMesh.HasFieldData(key))
+            continue;
+        const NDArray& bytes = rMesh.FieldData(key);
+        rOs << "$" << kept << "\n";
+        if (bytes.Size() > 0)
+            rOs.write(reinterpret_cast<const char*>(bytes.Data()),
+                      static_cast<std::streamsize>(bytes.Size()));
+        rOs << "$End" << kept << "\n";
+    }
+}
+
 /// The time and step index a data section carries, set around a write by the series writer
 /// (`GmshSeriesWriter`); a plain write leaves it null and writes 0 and 0.
 struct GmshSeriesLabel {
@@ -2181,6 +2382,63 @@ void gmsh_write_node_data(std::ostream& os, const Mesh& rMesh, bool binary) {
         if (binary)
             os << '\n';
         os << "$EndNodeData\n";
+    }
+}
+
+/// Every `gmsh:element_node:<name>` cell-data array as a `$ElementNodeData` section: elements are
+/// tagged 1 to N in block order, each row is `tag, nodes, values`; the component count is
+/// `field_data["gmsh:element_node_components:<name>"]`.
+void gmsh_write_element_node_data(std::ostream& rOs, const Mesh& rMesh, bool binary) {
+    const std::string prefix = kGmshElementNodePrefix;
+    for (const auto& key : rMesh.CellDataNames()) {
+        if (key.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        const std::string name = key.substr(prefix.size());
+        const std::string comp_key = std::string(kGmshElementNodeComponents) + name;
+        if (!rMesh.HasFieldData(comp_key))
+            throw WriteError("Gmsh: '" + key + "' needs field_data['" + comp_key +
+                             "'] holding its component count");
+        const std::size_t ncomp =
+            static_cast<std::size_t>(detail::read_int(rMesh.FieldData(comp_key), 0));
+        if (ncomp == 0)
+            throw WriteError("Gmsh: '" + comp_key + "' must be positive");
+        const std::size_t nblocks = rMesh.CellDataNumBlocks(key);
+        std::size_t total = 0;
+        for (std::size_t k = 0; k < nblocks; ++k)
+            total += rMesh.CellData(key, k).Shape().empty() ? 0 : rMesh.CellData(key, k).Shape()[0];
+        char buf[40];
+        rOs << "$ElementNodeData\n1\n\"" << name << "\"\n"
+            << gmsh_data_time_lines() << ncomp << "\n"
+            << total << "\n";
+        std::int64_t tag = 1;
+        for (std::size_t k = 0; k < nblocks; ++k) {
+            const NDArray& b = rMesh.CellData(key, k);
+            const std::size_t rows = b.Shape().empty() ? 0 : b.Shape()[0];
+            const std::size_t width = b.Shape().size() >= 2 ? b.Shape()[1] : 1;
+            const std::size_t nodes = width / ncomp;
+            const detail::DoubleView values(b);
+            for (std::size_t r = 0; r < rows; ++r, ++tag) {
+                if (binary) {
+                    const std::int32_t head[2] = {static_cast<std::int32_t>(tag),
+                                                  static_cast<std::int32_t>(nodes)};
+                    rOs.write(reinterpret_cast<const char*>(head), 8);
+                    for (std::size_t c = 0; c < width; ++c) {
+                        const double v = values[r * width + c];
+                        rOs.write(reinterpret_cast<const char*>(&v), 8);
+                    }
+                } else {
+                    rOs << tag << ' ' << nodes;
+                    for (std::size_t c = 0; c < width; ++c) {
+                        detail::snprintf_c(buf, sizeof(buf), " %.17g", values[r * width + c]);
+                        rOs << buf;
+                    }
+                    rOs << '\n';
+                }
+            }
+        }
+        if (binary)
+            rOs << '\n';
+        rOs << "$EndElementNodeData\n";
     }
 }
 
@@ -2707,13 +2965,16 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
     os << "$EndElements\n";
     gmsh_write_periodic(os, rInfo, binary, 22);
 
+    gmsh_write_kept_sections(os, rMesh, binary);
     gmsh_write_node_data(os, rMesh, binary);
 
     for (const auto& name : rMesh.CellDataNames()) {
-        if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags")
+        if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags" ||
+            name.compare(0, std::strlen(kGmshElementNodePrefix), kGmshElementNodePrefix) == 0)
             continue;
         write_data(os, "ElementData", name, rMesh, binary);
     }
+    gmsh_write_element_node_data(os, rMesh, binary);
 }
 
 void write_gmsh41(const std::string& rPath, const Mesh& rMesh, bool binary) {
@@ -3060,13 +3321,16 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
     os << "$EndElements\n";
     gmsh_write_periodic(os, rInfo, binary, 41);
 
+    gmsh_write_kept_sections(os, rMesh, binary);
     gmsh_write_node_data(os, rMesh, binary);
 
     for (const auto& name : rMesh.CellDataNames()) {
-        if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags")
+        if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags" ||
+            name.compare(0, std::strlen(kGmshElementNodePrefix), kGmshElementNodePrefix) == 0)
             continue;
         write_data(os, "ElementData", name, rMesh, binary);
     }
+    gmsh_write_element_node_data(os, rMesh, binary);
 }
 
 MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOpts) {
