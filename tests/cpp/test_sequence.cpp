@@ -530,6 +530,7 @@ TEST(SequenceCapability, EveryTransientWriterNamesItselfWhenItRefusesAnOption) {
         {"lsdyna_binout", "LS-DYNA binout", "LS-DYNA binout"},
         {"abaqus_fil", "Abaqus results", nullptr},
         {"unv", "UNV", "UNV"},
+        {"gmsh", "Gmsh", nullptr},
         {"xdmf", "XDMF", nullptr},
     };
     SeqTempDir dir;

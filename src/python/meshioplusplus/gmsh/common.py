@@ -307,6 +307,11 @@ def _write_physical_names(fh, field_data):
         fh.write(b"$EndPhysicalNames\n")
 
 
+# The time and step index of the data sections of a write, set by
+# ``gmsh.SeriesWriter`` around it (a plain write leaves it ``None``: 0.0 and 0).
+_SERIES_LABEL = None
+
+
 def _write_data(fh, tag, name, data, binary):
     fh.write(f"${tag}\n".encode())
     # <http://gmsh.info/doc/texinfo/gmsh.html>:
@@ -318,11 +323,12 @@ def _write_data(fh, tag, name, data, binary):
     fh.write(f"{1}\n".encode())
     fh.write(f'"{name}"\n'.encode())
     fh.write(f"{1}\n".encode())
-    fh.write(f"{0.0}\n".encode())
+    time, step = _SERIES_LABEL if _SERIES_LABEL is not None else (0.0, 0)
+    fh.write((f"{0.0}\n" if _SERIES_LABEL is None else f"{time:.17g}\n").encode())
     # three integer tags:
     fh.write(f"{3}\n".encode())
     # time step
-    fh.write(f"{0}\n".encode())
+    fh.write(f"{step}\n".encode())
     # number of components
     num_components = data.shape[1] if len(data.shape) > 1 else 1
     if num_components not in [1, 3, 9]:

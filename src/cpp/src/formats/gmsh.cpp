@@ -17,6 +17,7 @@
 
 // System includes
 #include <algorithm>
+#include <iterator>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -799,12 +800,13 @@ bool gmsh22_parallel_elements(GmshCursor& rCur, std::size_t Total, std::vector<E
                 return;
             std::int64_t v[3] = {0, 0, 0};
             std::size_t count = 0;
-            if (!for_each_int(line(e), [&](std::size_t k, std::int64_t x) {
-                    if (k < 3)
-                        v[k] = x;
-                    count = k + 1;
-                    return true;
-                }) ||
+            if (!for_each_int(line(e),
+                              [&](std::size_t k, std::int64_t x) {
+                                  if (k < 3)
+                                      v[k] = x;
+                                  count = k + 1;
+                                  return true;
+                              }) ||
                 count < 3) {
                 refused.store(true);
                 return;
@@ -2127,6 +2129,23 @@ inline std::size_t gmsh_perm_src(const std::vector<int>& rPerm, std::size_t J) {
     return rPerm.empty() ? J : static_cast<std::size_t>(rPerm[J]);
 }
 
+/// The time and step index a data section carries, set around a write by the series writer
+/// (`GmshSeriesWriter`); a plain write leaves it null and writes 0 and 0.
+struct GmshSeriesLabel {
+    double mTime = 0.0;
+    std::int64_t mStep = 0;
+};
+thread_local const GmshSeriesLabel* gmsh_series_label = nullptr;
+
+/// The "1 real tag, the time, 3 integer tags, the step" lines of a data section header.
+std::string gmsh_data_time_lines() {
+    char buf[40];
+    const double time = gmsh_series_label ? gmsh_series_label->mTime : 0.0;
+    detail::snprintf_c(buf, sizeof(buf), "%.17g", time);
+    return std::string("1\n") + buf + "\n3\n" +
+           std::to_string(gmsh_series_label ? gmsh_series_label->mStep : 0) + "\n";
+}
+
 /// Every point_data array but `gmsh:dim_tags` as a `$NodeData` section, alike
 /// in the 2.2 and 4.1 writers: one-based node tags, `%.17g` values in ASCII,
 /// native int32 tags and float64 values in binary.
@@ -2137,7 +2156,9 @@ void gmsh_write_node_data(std::ostream& os, const Mesh& rMesh, bool binary) {
         const NDArray& d = rMesh.PointData(name);
         std::size_t ncomp = d.Shape().size() >= 2 ? d.Shape()[1] : 1;
         std::size_t rows = d.Shape().empty() ? 0 : d.Shape()[0];
-        os << "$NodeData\n1\n\"" << name << "\"\n1\n0\n3\n0\n" << ncomp << "\n" << rows << "\n";
+        os << "$NodeData\n1\n\"" << name << "\"\n"
+           << gmsh_data_time_lines() << ncomp << "\n"
+           << rows << "\n";
         const detail::DoubleView values(d);
         char buf[32];
         for (std::size_t r = 0; r < rows; ++r) {
@@ -2173,8 +2194,8 @@ void write_data(std::ostream& rOs, const char* pTag, const std::string& rName, c
         total += b.Shape().empty() ? 0 : b.Shape()[0];
         ncomp = b.Shape().size() >= 2 ? b.Shape()[1] : 1;
     }
-    rOs << "$" << pTag << "\n1\n\"" << rName << "\"\n1\n0\n3\n0\n"
-        << ncomp << "\n"
+    rOs << "$" << pTag << "\n1\n\"" << rName << "\"\n"
+        << gmsh_data_time_lines() << ncomp << "\n"
         << total << "\n";
     std::int64_t idx = 1;
     for (std::size_t k = 0; k < nblocks; ++k) {
@@ -3193,6 +3214,115 @@ MeshMetadata read_gmsh_metadata(const std::string& rPath, const ReadOptions& rOp
 
     out.mHasBBox = false;  // would require decoding the coordinates
     return out;
+}
+
+namespace {
+
+/// The data sections (`$NodeData`, `$ElementData`) of a Gmsh file's bytes, each with its
+/// `$End` line: what a later step adds to the file.
+std::string gmsh_data_sections(const std::string& rBytes) {
+    std::string out;
+    for (const char* tag : {"NodeData", "ElementData"}) {
+        const std::string begin = std::string("$") + tag + "\n";
+        const std::string end = std::string("$End") + tag + "\n";
+        std::size_t pos = 0;
+        while ((pos = rBytes.find(begin, pos)) != std::string::npos) {
+            std::size_t stop = rBytes.find(end, pos);
+            if (stop == std::string::npos)
+                break;
+            stop += end.size();
+            out.append(rBytes, pos, stop - pos);
+            pos = stop;
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+struct GmshSeriesWriter::Impl {
+    std::string mPath;
+    bool mV41 = true;
+    bool mBinary = false;
+    std::size_t mSteps = 0;
+    std::size_t mPoints = 0;
+    std::vector<std::size_t> mBlockCells;
+    bool mClosed = false;
+};
+
+GmshSeriesWriter::GmshSeriesWriter(const std::string& rPath, bool Version41, bool Binary)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mV41 = Version41;
+    mpImpl->mBinary = Binary;
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+GmshSeriesWriter::~GmshSeriesWriter() = default;
+GmshSeriesWriter::GmshSeriesWriter(GmshSeriesWriter&&) noexcept = default;
+GmshSeriesWriter& GmshSeriesWriter::operator=(GmshSeriesWriter&&) noexcept = default;
+
+void GmshSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("Gmsh series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (s.mClosed)
+        throw WriteError("Gmsh series: the writer is finalized");
+    const GmshSeriesLabel label{Time, static_cast<std::int64_t>(s.mSteps)};
+    struct Scope {
+        explicit Scope(const GmshSeriesLabel* pLabel) { gmsh_series_label = pLabel; }
+        ~Scope() { gmsh_series_label = nullptr; }
+    } scope(&label);
+    const auto write = [&](const std::string& rPath) {
+        if (s.mV41)
+            write_gmsh41(rPath, rMesh, s.mBinary);
+        else
+            write_gmsh22(rPath, rMesh, s.mBinary);
+    };
+    if (s.mSteps == 0) {
+        write(s.mPath);
+        s.mPoints = rMesh.NumPoints();
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
+    } else {
+        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
+        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
+            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
+        if (!same)
+            throw WriteError("Gmsh series: step " + std::to_string(s.mSteps) +
+                             "'s points or cells differ from the first step's; a file holds one "
+                             "mesh -- write one file per step with '{step}'");
+        // A later step adds only its data sections: the whole file is written beside the
+        // series file and they are taken from it.
+        const std::string scratch = s.mPath + ".step.tmp";
+        write(scratch);
+        std::string bytes;
+        {
+            auto in = detail::make_classic_ifstream(scratch, std::ios::binary);
+            bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        std::remove(scratch.c_str());
+        const std::string sections = gmsh_data_sections(bytes);
+        auto out = detail::make_classic_ofstream(s.mPath, std::ios::binary | std::ios::app);
+        if (!out)
+            throw WriteError("Could not open file for writing: " + s.mPath);
+        out.write(sections.data(), static_cast<std::streamsize>(sections.size()));
+    }
+    ++s.mSteps;
+}
+
+std::size_t GmshSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void GmshSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mClosed)
+        return;
+    if (mpImpl->mSteps == 0)
+        throw WriteError("Gmsh series: no step was written");
+    mpImpl->mClosed = true;
 }
 
 }  // namespace meshioplusplus

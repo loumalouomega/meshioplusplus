@@ -205,3 +205,92 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
 # NOTE: format registration now lives in meshioplusplus/gmsh/__init__.py, which wraps the
 # reader/writer above with the C++-backed fast paths (reads 2.2/4.0/4.1,
 # writes 2.2/4.1).
+
+
+def _data_sections(data):
+    """The ``$NodeData`` and ``$ElementData`` sections of a Gmsh file's bytes, each
+    with its ``$End`` line: what a later step of a series adds to the file. Twin of
+    ``gmsh_data_sections`` in ``gmsh.cpp``."""
+    out = b""
+    for tag in (b"NodeData", b"ElementData"):
+        begin, end = b"$" + tag + b"\n", b"$End" + tag + b"\n"
+        pos = 0
+        while True:
+            pos = data.find(begin, pos)
+            if pos < 0:
+                break
+            stop = data.find(end, pos)
+            if stop < 0:
+                break
+            stop += len(end)
+            out += data[pos:stop]
+            pos = stop
+    return out
+
+
+class SeriesWriter:
+    """The Python twin of ``GmshSeriesWriter``: the mesh with the first step, then
+    each later step's data sections (time in the real tag, step index in the first
+    integer tag). Use as a context manager, or call :meth:`close`."""
+
+    def __init__(self, filename, fmt_version="4.1", binary=False):
+        self._path = str(filename)
+        self._version = fmt_version
+        self._binary = binary
+        with open(self._path, "wb"):
+            pass
+        self._steps = 0
+        self._shape = None
+        self._closed = False
+
+    def write(self, time, mesh):
+        import os
+        import tempfile
+
+        from . import common
+
+        if self._closed:
+            raise WriteError("Gmsh series: the writer is finalized")
+        shape = (len(mesh.points), [len(c.data) for c in mesh.cells])
+        if self._steps and shape != self._shape:
+            raise WriteError(
+                f"Gmsh series: step {self._steps}'s points or cells differ from the "
+                "first step's; a file holds one mesh -- write one file per step with "
+                "'{step}'"
+            )
+        common._SERIES_LABEL = (float(time), self._steps)
+        try:
+            if self._steps == 0:
+                write(self._path, mesh, fmt_version=self._version, binary=self._binary)
+                self._shape = shape
+            else:
+                fd, scratch = tempfile.mkstemp(suffix=".msh")
+                os.close(fd)
+                try:
+                    write(scratch, mesh, fmt_version=self._version, binary=self._binary)
+                    with open(scratch, "rb") as fh:
+                        data = fh.read()
+                finally:
+                    os.remove(scratch)
+                with open(self._path, "ab") as fh:
+                    fh.write(_data_sections(data))
+        finally:
+            common._SERIES_LABEL = None
+        self._steps += 1
+
+    def close(self):
+        if self._closed:
+            return
+        if self._steps == 0:
+            raise WriteError("Gmsh series: no step was written")
+        self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if exc[0] is None:
+            self.close()
+        else:
+            self._closed = True
+        return False

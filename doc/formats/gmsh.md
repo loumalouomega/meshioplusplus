@@ -91,6 +91,10 @@ A transient Gmsh file carries several `$NodeData`/`$ElementData` sections under 
 
 `read_gmsh_metadata` (4.1 only, native — 2.2 has no header-only metadata path at all and falls back to a full read regardless of time) reports the same union in `time_values`; a name pushed once per step is deduplicated in the summary, matching the single-array-per-name a real read always returns.
 
+## Writing a series
+
+`meshioplusplus.gmsh.SeriesWriter` (C++: `GmshSeriesWriter`, and `write_sequence` / `sequence_to_timeseries`) writes the mesh with the first step and then only each later step's `$NodeData` and `$ElementData` sections (2.2 or 4.1, ASCII or binary) into the same file. A step's time is the real tag of its sections and its position their first integer tag, which is what `read(..., time_step=k)` and `read_metadata(...)["time_values"]` select by. Every step must have the first step's points and cell blocks. A plain `write` still writes time 0 and step 0.
+
 ## Quirks & limitations
 
 - Section keywords may be indented (FEconv's samples indent every line); leading and trailing whitespace around `$Nodes`, `$Elements` and the other markers is ignored. Before v16.6.0 both engines refused such a file.

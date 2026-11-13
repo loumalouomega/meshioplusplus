@@ -128,6 +128,7 @@ _SERIES_WRITERS = (
     "abaqus_fil",
     "exodus",
     "unv",
+    "gmsh",
 )
 
 # The formats whose step COUNT can be discovered, so a bare `convert in.X
@@ -880,6 +881,15 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         from .femap import SeriesWriter
 
         # Pushed: the mesh with the first step, then one output set per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "gmsh":
+        from .gmsh import SeriesWriter
+
+        # Pushed: the mesh with the first step, then each step's data sections.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

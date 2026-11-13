@@ -1312,3 +1312,48 @@ def test_python_writer_derives_physical_groups_from_regions(tmp_path, version):
     assert {k: list(v) for k, v in a.field_data.items()} == {
         k: list(v) for k, v in b.field_data.items()
     }
+
+
+def _series_mesh(scale):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        point_data={"T": scale * np.arange(4.0)},
+        cell_data={"p": [scale * np.array([1.0, 2.0])]},
+    )
+
+
+@pytest.mark.parametrize("fmt_version", ["2.2", "4.1"])
+@pytest.mark.parametrize("binary", [False, True])
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_series_writer_one_file_every_step(tmp_path, fmt_version, binary, engine):
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    path = tmp_path / "series.msh"
+    cls = (
+        meshioplusplus.gmsh.SeriesWriter if engine == "core" else gmsh_main.SeriesWriter
+    )
+    with cls(str(path), fmt_version=fmt_version, binary=binary) as writer:
+        for t in (0.0, 0.25, 1.0):
+            writer.write(t, _series_mesh(1.0 + t))
+    if fmt_version == "4.1":
+        # 2.2 has no header-only metadata path, so its steps are only selectable
+        meta = meshioplusplus.read_metadata(str(path), file_format="gmsh")
+        assert meta["time_values"] == [0.0, 0.25, 1.0]
+    for k, t in enumerate((0.0, 0.25, 1.0)):
+        mesh = meshioplusplus.gmsh.read(str(path), time_step=k)
+        np.testing.assert_allclose(mesh.point_data["T"], (1.0 + t) * np.arange(4.0))
+        np.testing.assert_allclose(
+            mesh.cell_data["p"][0], (1.0 + t) * np.array([1.0, 2.0])
+        )
+
+
+def test_series_writer_refuses_a_different_mesh(tmp_path):
+    with meshioplusplus.gmsh.SeriesWriter(str(tmp_path / "s.msh")) as writer:
+        writer.write(0.0, _series_mesh(1.0))
+        other = meshioplusplus.Mesh(
+            _series_mesh(1.0).points[:3], [("triangle", np.array([[0, 1, 2]]))]
+        )
+        with pytest.raises(meshioplusplus.WriteError):
+            writer.write(1.0, other)

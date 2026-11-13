@@ -43,6 +43,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/frd.hpp"
+#include "meshioplusplus/formats/gmsh.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
@@ -299,13 +300,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
         rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19" ||
         rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot" || rFormat == "openfoam" ||
-        rFormat == "unv") {
+        rFormat == "unv" || rFormat == "gmsh") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil', 'unv' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil', 'unv', 'gmsh' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -611,6 +612,7 @@ inline constexpr SeqSeriesFormat kSeqSeriesFormats[] = {
     {"lsdyna_binout", "LS-DYNA binout", "LS-DYNA binout"},
     {"abaqus_fil", "Abaqus results", nullptr},
     {"unv", "UNV", "UNV"},
+    {"gmsh", "Gmsh", nullptr},
 };
 
 const SeqSeriesFormat& seq_series_format(const std::string& rFormat) {
@@ -720,6 +722,9 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
         return std::make_unique<SeqStepSink<FemapSeriesWriter>>(rPath);
     if (rFormat == "unv")
         return std::make_unique<SeqStepSink<UnvSeriesWriter>>(rPath);
+    if (rFormat == "gmsh")
+        return std::make_unique<SeqStepSink<GmshSeriesWriter>>(
+            rPath, true, rOptions.mEncoding == WriteEncoding::Binary);
     if (rFormat == "frd") {
         FrdWriteOptions frd_opts;
         frd_opts.mBinary = rOptions.mEncoding == WriteEncoding::Binary;

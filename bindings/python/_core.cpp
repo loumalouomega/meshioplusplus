@@ -8937,6 +8937,12 @@ PYBIND11_MODULE(_core, m) {
     core_def_step_writer(py::class_<meshioplusplus::FemapSeriesWriter>(m, "FemapSeriesWriter")
                              .def(py::init<const std::string&>(), py::arg("path")));
 
+    // A time series in one Gmsh file: the core half of `meshioplusplus.gmsh.SeriesWriter`.
+    core_def_step_writer(
+        py::class_<meshioplusplus::GmshSeriesWriter>(m, "GmshSeriesWriter")
+            .def(py::init<const std::string&, bool, bool>(), py::arg("path"),
+                 py::arg("version41") = true, py::arg("binary") = false));
+
     // A time series in one UNV file: the core half of `meshioplusplus.unv.SeriesWriter`.
     core_def_step_writer(
         py::class_<meshioplusplus::UnvSeriesWriter>(m, "UnvSeriesWriter")

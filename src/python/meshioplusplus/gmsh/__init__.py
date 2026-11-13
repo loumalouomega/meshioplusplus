@@ -2,9 +2,11 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
 from .common import _gmsh_to_meshio_type as gmsh_to_meshioplusplus_type
 from .common import _meshio_to_gmsh_type as meshioplusplus_to_gmsh_type
 from .common import _validate_periodic
+from .main import SeriesWriter as _PySeriesWriter
 from .main import read as _py_read
 from .main import write as _py_write
 
@@ -78,6 +80,32 @@ def write(filename, mesh, fmt_version="4.1", binary=True, float_fmt=".16e"):
     )
 
 
+class SeriesWriter(CoreSeriesWriter):
+    """Write a time series into one Gmsh file (2.2 or 4.1): the mesh with the first
+    step, then each later step's ``$NodeData`` and ``$ElementData`` sections, with the
+    step's time as their real tag and its position as their first integer tag (what
+    ``read(..., time_step=k)`` selects by). Every step must have the first step's
+    points and cells.
+
+    >>> with meshioplusplus.gmsh.SeriesWriter("run.msh") as w:
+    ...     for t, mesh in steps:
+    ...         w.write(t, mesh)
+    """
+
+    def __init__(self, filename, fmt_version="4.1", binary=False):
+        self._core = self._py = None
+        if not is_buffer(filename, "w") and fmt_version in ("2.2", "4.1"):
+            try:
+                self._core = _core.GmshSeriesWriter(
+                    str(filename), fmt_version == "4.1", binary
+                )
+                return
+            except Exception as exc:
+                if not core_declined(exc, "gmsh", "write", filename):
+                    raise
+        self._py = _PySeriesWriter(filename, fmt_version, binary)
+
+
 register_format(
     "gmsh",
     [".msh"],
@@ -91,6 +119,7 @@ register_format(
 __all__ = [
     "read",
     "write",
+    "SeriesWriter",
     "gmsh_to_meshioplusplus_type",
     "meshioplusplus_to_gmsh_type",
 ]
