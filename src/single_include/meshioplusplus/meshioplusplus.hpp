@@ -202264,6 +202264,7 @@ void write_permas(const std::string& rPath, const Mesh& rMesh) {
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <limits>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
@@ -202718,6 +202719,13 @@ void write_ply(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
         os << "property list uint8 int32 vertex_indices\n";
         for (const auto cb : rMesh.CellRange()) {
             if (is_legal(cb.Type()) && cb.NumCells() > 0 && cb.Conn().Dtype() == DType::Int64) {
+                // The header says int32: an id above 2^31 - 1 would wrap, so refuse it.
+                const detail::Int64View ids(cb.Conn());
+                const std::size_t total = cb.Conn().Size();
+                for (std::size_t q = 0; q < total; ++q)
+                    if (ids[q] > std::numeric_limits<std::int32_t>::max())
+                        throw WriteError("PLY: a point index exceeds the int32 range of the "
+                                         "vertex_indices list");
                 detail::provenance_note("dtype",
                                         "connectivity cast from int64 to int32 -- PLY has no "
                                         "64-bit integer type");

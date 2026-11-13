@@ -110,6 +110,10 @@ def read_buffer(f):
             while line[:8] == "property":
                 m = re.match("property +([^ ]+) +([^ ]+)", line)
                 assert m is not None
+                if m.groups()[0] == "list":
+                    raise ReadError(
+                        "PLY: list-typed vertex properties are not supported"
+                    )
                 point_data_formats.append(m.groups()[0])
                 point_data_names.append(m.groups()[1])
                 line = _next_line(f)
@@ -471,6 +475,14 @@ def write(filename, mesh: Mesh, binary: bool = True, skin: bool = True):  # noqa
             has_cast = False
             for k, cell_block in enumerate(mesh.cells):
                 if cell_block.data.dtype == np.int64:
+                    if (
+                        cell_block.data.size
+                        and cell_block.data.max() > np.iinfo(np.int32).max
+                    ):
+                        raise WriteError(
+                            "PLY: a point index exceeds the int32 range of the "
+                            "vertex_indices list"
+                        )
                     has_cast = True
                     mesh.cells[k] = CellBlock(
                         cell_block.type, cell_block.data.astype(np.int32)
