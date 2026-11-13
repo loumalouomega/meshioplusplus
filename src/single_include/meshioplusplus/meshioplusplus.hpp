@@ -222771,6 +222771,104 @@ Mesh read_vtkhdf(const std::string& rPath) {
     return read_vtkhdf(rPath, ReadOptions{});
 }
 
+namespace {
+
+// A floating-point attribute of any length, as doubles (`h5::` has integer and string readers
+// only).
+std::vector<double> vtkhdf_attr_doubles(hid_t Loc, const char* pName) {
+    if (!h5::has_attr(Loc, pName))
+        throw ReadError(std::string("meshio++: vtkhdf: ImageData has no ") + pName + " attribute");
+    Hid attr(H5Aopen(Loc, pName, H5P_DEFAULT), H5Aclose);
+    Hid space(H5Aget_space(attr), H5Sclose);
+    const hssize_t n = H5Sget_simple_extent_npoints(space);
+    std::vector<double> out(static_cast<std::size_t>(std::max<hssize_t>(n, 0)));
+    if (!out.empty() && H5Aread(attr, H5T_NATIVE_DOUBLE, out.data()) < 0)
+        throw ReadError(std::string("meshio++: vtkhdf: cannot read the ") + pName + " attribute");
+    return out;
+}
+
+// A static `ImageData` file as its lattice: the points (x fastest, at `Origin + Direction *
+// (Spacing * index)`), the hexahedra (quads or lines when a direction has one point) and the
+// `PointData`/`CellData` datasets, one row per point or cell. The twin of the Python
+// `_read_image_data`.
+Mesh vtkhdf_read_image_data(hid_t Root, const ReadOptions& rOpts) {
+    if (h5::exists(Root, "Steps"))
+        throw ReadError("meshio++: vtkhdf: a transient ImageData file is not supported");
+    if (rOpts.mTimeStep != 0 && rOpts.mTimeStep != -1)
+        throw ReadError("meshio++: vtkhdf: time step " + std::to_string(rOpts.mTimeStep) +
+                        " is out of range; the file has 1 step");
+    if (!h5::has_attr(Root, "WholeExtent"))
+        throw ReadError("meshio++: vtkhdf: ImageData has no WholeExtent attribute");
+    const std::vector<std::int64_t> ext = h5::read_attr_int_array(Root, "WholeExtent");
+    if (ext.size() != 6)
+        throw ReadError("meshio++: vtkhdf: WholeExtent needs six integers");
+    const std::vector<double> origin = vtkhdf_attr_doubles(Root, "Origin");
+    const std::vector<double> spacing = vtkhdf_attr_doubles(Root, "Spacing");
+    if (origin.size() != 3 || spacing.size() != 3)
+        throw ReadError("meshio++: vtkhdf: Origin and Spacing need three numbers");
+    std::vector<double> dir = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    if (h5::has_attr(Root, "Direction")) {
+        dir = vtkhdf_attr_doubles(Root, "Direction");
+        if (dir.size() != 9)
+            throw ReadError("meshio++: vtkhdf: Direction needs nine numbers");
+    }
+    const std::int64_t ni = ext[1] - ext[0] + 1, nj = ext[3] - ext[2] + 1, nk = ext[5] - ext[4] + 1;
+    if (ni < 1 || nj < 1 || nk < 1)
+        throw ReadError("meshio++: vtkhdf: WholeExtent holds no points");
+    const std::size_t num_points = static_cast<std::size_t>(ni * nj * nk);
+    NDArray pts(DType::Float64, {num_points, 3});
+    double* pp = pts.As<double>();
+    std::size_t at = 0;
+    for (std::int64_t k = 0; k < nk; ++k)
+        for (std::int64_t j = 0; j < nj; ++j)
+            for (std::int64_t i = 0; i < ni; ++i, ++at) {
+                const double idx[3] = {static_cast<double>(ext[0] + i) * spacing[0],
+                                       static_cast<double>(ext[2] + j) * spacing[1],
+                                       static_cast<double>(ext[4] + k) * spacing[2]};
+                for (std::size_t r = 0; r < 3; ++r)
+                    pp[at * 3 + r] = origin[r] + dir[r * 3] * idx[0] + dir[r * 3 + 1] * idx[1] +
+                                     dir[r * 3 + 2] * idx[2];
+            }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    std::string type;
+    std::vector<std::int64_t> lattice;
+    std::size_t npc = 0;
+    detail::lattice_cells(ni, nj, nk, type, lattice, npc);
+    const std::size_t num_cells = lattice.size() / npc;
+    if (num_cells > 0) {
+        NDArray conn = NDArray::Uninit(DType::Int64, {num_cells, npc});
+        std::memcpy(conn.Data(), lattice.data(), lattice.size() * sizeof(std::int64_t));
+        mesh.AddCellBlock(type, std::move(conn));
+    }
+    const auto add = [&](const char* pGroup, std::size_t Rows, bool Point) {
+        if (!rOpts.WantsAnyData())
+            return;
+        for (const auto& name : vtkhdf_dataset_names(Root, pGroup)) {
+            if (!rOpts.WantsArray(name))
+                continue;
+            h5::Hid g = h5::open_group(Root, pGroup);
+            NDArray data = h5::read_dataset(g, name);
+            if (Rows == 0 || data.Size() % Rows != 0)
+                throw ReadError(std::string("meshio++: vtkhdf: ") + pGroup + "/" + name +
+                                " does not hold " + std::to_string(Rows) + " values");
+            const std::size_t width = data.Size() / Rows;
+            data.Reshape(width == 1 ? std::vector<std::size_t>{Rows}
+                                    : std::vector<std::size_t>{Rows, width});
+            if (Point)
+                mesh.AddPointData(name, std::move(data));
+            else
+                mesh.AddCellData(name, std::vector<NDArray>{std::move(data)});
+        }
+    };
+    add("PointData", num_points, true);
+    if (num_cells > 0)
+        add("CellData", num_cells, false);
+    return mesh;
+}
+
+}  // namespace
+
 Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
     detail::LibraryLock lock;
     h5::SilenceErrors silence;
@@ -222779,6 +222877,8 @@ Mesh read_vtkhdf(const std::string& rPath, const ReadOptions& rOpts) {
     Hid f = vtkhdf_open(rPath, root, kind);
     if (vtkhdf_is_composite(kind))
         return vtkhdf_read_composite(root, kind, rOpts);
+    if (kind == "ImageData")
+        return vtkhdf_read_image_data(root, rOpts);
     if (!vtkhdf_is_leaf(kind))
         throw ReadError("meshio++: vtkhdf: Type '" + kind +
                         "' is not supported; this build reads UnstructuredGrid, PolyData, "
