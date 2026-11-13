@@ -77,11 +77,17 @@ private:
 
 /// Write `Count` single-step `.vtu` files named `<stem><i>.vtu` into `rDir`.
 std::vector<std::string> seq_write_files(const SeqTempDir& rDir, const std::string& rStem,
-                                         std::size_t Count) {
+                                         std::size_t Count, bool WithData = false) {
     std::vector<std::string> out;
     for (std::size_t i = 0; i < Count; ++i) {
         const std::string path = rDir / (rStem + std::to_string(i) + ".vtu");
         Mesh m = mt::tri_mesh();
+        if (WithData) {  // CGNS and MED series steps are a solution: they need a field
+            std::vector<double> u(m.NumPoints());
+            for (std::size_t k = 0; k < u.size(); ++k)
+                u[k] = static_cast<double>(k + i);
+            m.AddPointData("u", mt::data_array(u));
+        }
         meshioplusplus::registry_writers().at("vtu")(path, m);
         out.push_back(path);
     }
@@ -402,7 +408,7 @@ TEST(SequenceCapability, WriteSupportsTimeAgreesWithReality) {
     // The anti-drift gate: a format that grows a multi-step writer without
     // updating the predicate turns this red naming itself.
     SeqTempDir dir;
-    const std::vector<std::string> files = seq_write_files(dir, "in_", 2);
+    const std::vector<std::string> files = seq_write_files(dir, "in_", 2, /*WithData=*/true);
 
     for (const auto& [fmt, writer] : meshioplusplus::registry_writers()) {
         (void)writer;
@@ -426,14 +432,16 @@ TEST(SequenceCapability, WriteSupportsTimeAgreesWithReality) {
         out.mPath = dir / ("series_" + fmt + (fmt == "ensight" ? ".case" : ".out"));
         out.mFormat = fmt;
         bool actually_works = true;
+        std::string failure;
         try {
             meshioplusplus::sequence_to_timeseries(in, out);
-        } catch (const std::exception&) {
+        } catch (const std::exception& e) {
             actually_works = false;
+            failure = e.what();
         }
         EXPECT_EQ(claimed, actually_works)
             << "format '" << fmt << "': sequence_write_supports_time says " << claimed
-            << " but a real two-step fan-in " << (actually_works ? "succeeded" : "failed");
+            << " but a real two-step fan-in " << (actually_works ? "succeeded" : "failed: " + failure);
     }
 }
 
