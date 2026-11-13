@@ -529,6 +529,7 @@ TEST(SequenceCapability, EveryTransientWriterNamesItselfWhenItRefusesAnOption) {
         {"marc_t19", "Marc post file", "Marc post-file"},
         {"lsdyna_binout", "LS-DYNA binout", "LS-DYNA binout"},
         {"abaqus_fil", "Abaqus results", nullptr},
+        {"unv", "UNV", "UNV"},
         {"xdmf", "XDMF", nullptr},
     };
     SeqTempDir dir;

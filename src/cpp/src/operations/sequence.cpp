@@ -43,6 +43,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/formats/femap.hpp"
 #include "meshioplusplus/formats/frd.hpp"
+#include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
@@ -297,13 +298,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
         rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
         rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19" ||
-        rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot" || rFormat == "openfoam") {
+        rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot" || rFormat == "openfoam" ||
+        rFormat == "unv") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil', 'unv' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -608,6 +610,7 @@ inline constexpr SeqSeriesFormat kSeqSeriesFormats[] = {
     {"marc_t19", "Marc post file", "Marc post-file"},
     {"lsdyna_binout", "LS-DYNA binout", "LS-DYNA binout"},
     {"abaqus_fil", "Abaqus results", nullptr},
+    {"unv", "UNV", "UNV"},
 };
 
 const SeqSeriesFormat& seq_series_format(const std::string& rFormat) {
@@ -715,6 +718,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "femap")
         return std::make_unique<SeqStepSink<FemapSeriesWriter>>(rPath);
+    if (rFormat == "unv")
+        return std::make_unique<SeqStepSink<UnvSeriesWriter>>(rPath);
     if (rFormat == "frd") {
         FrdWriteOptions frd_opts;
         frd_opts.mBinary = rOptions.mEncoding == WriteEncoding::Binary;

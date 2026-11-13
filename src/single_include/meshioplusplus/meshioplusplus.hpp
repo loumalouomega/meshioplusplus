@@ -23451,8 +23451,10 @@ MESHIOPLUSPLUS_API Mesh read_ugrid(const std::string& rPath);
  */
 
 // System includes
+#include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -23537,6 +23539,40 @@ MESHIOPLUSPLUS_API Mesh read_unv(const std::string& rPath, UnvInfo& rInfo,
  */
 MESHIOPLUSPLUS_API MeshMetadata read_unv_metadata(const std::string& rPath,
                                                   const ReadOptions& rOpts = {});
+
+/**
+ * @brief A time series in one UNV file: the mesh with the first step, then each later step's
+ *        results datasets (2414, or the legacy 55 and 56 with @p CodeAster).
+ *
+ * A step's value is its time and its number its position (the datasets' `unv:step`); the
+ * analysis type is the mesh's `unv:analysis`, else 4 (transient). Every step must have the first step's
+ * points and cell blocks. The Python twin, `meshioplusplus.unv.SeriesWriter`, writes the same
+ * bytes.
+ */
+class MESHIOPLUSPLUS_API UnvSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit UnvSeriesWriter(const std::string& rPath, bool CodeAster = false,
+                             int NodeDataset = 2411);
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(UnvSeriesWriter);
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step's points or cells differ from the first step's, on a
+     *         write failure, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/unv.hpp =====
@@ -216845,6 +216881,7 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
 // ===== end src/cpp/src/formats/ugrid.cpp =====
 // ===== begin src/cpp/src/formats/unv.cpp =====
 #include <algorithm>
+#include <iterator>
 #include <array>
 #include <bit>
 #include <cctype>
@@ -218545,8 +218582,26 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, bool code_aster, int
     write_unv(rPath, rMesh, info, code_aster, node_dataset);
 }
 
+namespace {
+
+// `pTime` and `pStep`, when given, replace the mesh's `meshio:time` and `unv:step` in the results
+// datasets: how the series writer labels each step.
+void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo,
+                    bool code_aster, int node_dataset, const double* pTime,
+                    const std::int64_t* pStep, const int* pAnalysis);
+
+}  // namespace
+
 void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo, bool code_aster,
                int node_dataset) {
+    unv_write_impl(rPath, rMesh, rInfo, code_aster, node_dataset, nullptr, nullptr, nullptr);
+}
+
+namespace {
+
+void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo,
+                    bool code_aster, int node_dataset, const double* pTime,
+                    const std::int64_t* pStep, const int* pAnalysis) {
     // No provenance slot in this format: drop the notes this write raises on
     // the way out rather than let them reach the next file written.
     const detail::ProvenanceSlotlessWrite slotless;
@@ -218803,9 +218858,10 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
 
     // Results: point_data -> data at nodes, cell_data -> data on elements, as one step
     // described by the mesh's `unv:analysis` / `unv:step` / `meshio:time` field data.
-    const int analysis = static_cast<int>(unv_field_int(rMesh, "unv:analysis", 0));
-    const std::int64_t step_id = unv_field_int(rMesh, "unv:step", 0);
-    const double time = unv_field_real(rMesh, kSequenceTimeKey, 0.0);
+    const int analysis =
+        pAnalysis ? *pAnalysis : static_cast<int>(unv_field_int(rMesh, "unv:analysis", 0));
+    const std::int64_t step_id = pStep ? *pStep : unv_field_int(rMesh, "unv:step", 0);
+    const double time = pTime ? *pTime : unv_field_real(rMesh, kSequenceTimeKey, 0.0);
     auto write_field = [&](int field_id, const std::string& rName, int location, std::size_t nc,
                            std::vector<std::int64_t> rLabels, std::vector<double> rFlat) {
         // An entity with no value (NaN everywhere, as the reader pads) gets no record.
@@ -218984,6 +219040,132 @@ void write_unv(const std::string& rPath, const Mesh& rMesh, const UnvInfo& rInfo
             continue;
         write_field(++field_id, name, 2, nc, labels, flat);
     }
+}
+
+}  // namespace
+
+namespace {
+
+// The results datasets (2414, or the legacy 55 and 56) of a UNV file's text, each with its
+// `    -1` delimiters: what a later step adds to the file.
+std::string unv_results_text(const std::string& rText) {
+    std::string out;
+    std::size_t pos = 0;
+    while (pos < rText.size()) {
+        std::size_t eol = rText.find('\n', pos);
+        if (eol == std::string::npos)
+            eol = rText.size();
+        if (rText.compare(pos, eol - pos, "    -1") == 0 && eol + 1 < rText.size()) {
+            const std::size_t next = rText.find('\n', eol + 1);
+            const std::string code =
+                rText.substr(eol + 1, (next == std::string::npos ? rText.size() : next) - eol - 1);
+            std::size_t b = code.find_first_not_of(' ');
+            const std::string trimmed = b == std::string::npos ? "" : code.substr(b);
+            if (trimmed == "2414" || trimmed == "55" || trimmed == "56") {
+                // To the closing delimiter, inclusive.
+                std::size_t end = next == std::string::npos ? rText.size() : next + 1;
+                while (end < rText.size()) {
+                    std::size_t line_end = rText.find('\n', end);
+                    if (line_end == std::string::npos)
+                        line_end = rText.size();
+                    const bool closing = rText.compare(end, line_end - end, "    -1") == 0;
+                    end = std::min(line_end + 1, rText.size());
+                    if (closing)
+                        break;
+                }
+                out.append(rText, pos, end - pos);
+                pos = end;
+                continue;
+            }
+        }
+        pos = eol + 1;
+    }
+    return out;
+}
+
+}  // namespace
+
+struct UnvSeriesWriter::Impl {
+    std::string mPath;
+    bool mCodeAster = false;
+    int mNodeDataset = 2411;
+    std::size_t mSteps = 0;
+    std::size_t mPoints = 0;
+    std::vector<std::size_t> mBlockCells;
+    bool mClosed = false;
+};
+
+UnvSeriesWriter::UnvSeriesWriter(const std::string& rPath, bool CodeAster, int NodeDataset)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+    mpImpl->mCodeAster = CodeAster;
+    mpImpl->mNodeDataset = NodeDataset;
+    // Created (or emptied) now, so a path that cannot be written is refused before a step.
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+UnvSeriesWriter::~UnvSeriesWriter() = default;
+UnvSeriesWriter::UnvSeriesWriter(UnvSeriesWriter&&) noexcept = default;
+UnvSeriesWriter& UnvSeriesWriter::operator=(UnvSeriesWriter&&) noexcept = default;
+
+void UnvSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("UNV series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (s.mClosed)
+        throw WriteError("UNV series: the writer is finalized");
+    const std::int64_t step = static_cast<std::int64_t>(s.mSteps) + 1;
+    // The mesh's own analysis type when it has one; else transient (4), whose datasets carry
+    // the time (analysis 0 keys its steps by number alone).
+    const int analysis = rMesh.HasFieldData("unv:analysis")
+                             ? static_cast<int>(unv_field_int(rMesh, "unv:analysis", 0))
+                             : 4;
+    const UnvInfo info;
+    if (s.mSteps == 0) {
+        // The first step is the file: the mesh and its results.
+        unv_write_impl(s.mPath, rMesh, info, s.mCodeAster, s.mNodeDataset, &Time, &step, &analysis);
+        s.mPoints = rMesh.NumPoints();
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
+    } else {
+        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
+        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
+            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
+        if (!same)
+            throw WriteError("UNV series: step " + std::to_string(s.mSteps) +
+                             "'s points or cells differ from the first step's; a file holds one "
+                             "mesh -- write one file per step with '{step}'");
+        // A later step adds only its results datasets: the whole file is written beside the
+        // series file and its results are taken from it.
+        const std::string scratch = s.mPath + ".step.tmp";
+        unv_write_impl(scratch, rMesh, info, s.mCodeAster, s.mNodeDataset, &Time, &step, &analysis);
+        std::string text;
+        {
+            auto in = detail::make_classic_ifstream(scratch, std::ios::binary);
+            text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        std::remove(scratch.c_str());
+        const std::string results = unv_results_text(text);
+        auto out = detail::make_classic_ofstream(s.mPath, std::ios::binary | std::ios::app);
+        if (!out)
+            throw WriteError("Could not open file for writing: " + s.mPath);
+        out.write(results.data(), static_cast<std::streamsize>(results.size()));
+    }
+    ++s.mSteps;
+}
+
+std::size_t UnvSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void UnvSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mClosed)
+        return;
+    if (mpImpl->mSteps == 0)
+        throw WriteError("UNV series: no step was written");
+    mpImpl->mClosed = true;
 }
 
 }  // namespace meshioplusplus
@@ -296826,13 +297008,14 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         rFormat == "nastran_op2" || rFormat == "lsdyna_binout" || rFormat == "abaqus_fil" ||
         rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
         rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19" ||
-        rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot" || rFormat == "openfoam") {
+        rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot" || rFormat == "openfoam" ||
+        rFormat == "unv") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil', 'unv' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -297137,6 +297320,7 @@ inline constexpr SeqSeriesFormat kSeqSeriesFormats[] = {
     {"marc_t19", "Marc post file", "Marc post-file"},
     {"lsdyna_binout", "LS-DYNA binout", "LS-DYNA binout"},
     {"abaqus_fil", "Abaqus results", nullptr},
+    {"unv", "UNV", "UNV"},
 };
 
 const SeqSeriesFormat& seq_series_format(const std::string& rFormat) {
@@ -297244,6 +297428,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     }
     if (rFormat == "femap")
         return std::make_unique<SeqStepSink<FemapSeriesWriter>>(rPath);
+    if (rFormat == "unv")
+        return std::make_unique<SeqStepSink<UnvSeriesWriter>>(rPath);
     if (rFormat == "frd") {
         FrdWriteOptions frd_opts;
         frd_opts.mBinary = rOptions.mEncoding == WriteEncoding::Binary;
