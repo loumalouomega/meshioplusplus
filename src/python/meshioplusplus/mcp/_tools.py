@@ -95,6 +95,7 @@ from .. import (
     decimate,
     decimate_volume,
     delaunay_2d,
+    detect,
     deviation,
     deviation_regions,
     diff,
@@ -743,6 +744,20 @@ def tool_sniff(input_path):
         from_extension = []
     return _json_safe(
         {"format": sniffed or None, "from_extension": list(from_extension)}
+    )
+
+
+def tool_detect(input_path):
+    """Rank every format a file could be: ``certain`` (a content signature matched),
+    ``likely`` (the extension names it and its metadata reads), ``guess`` (the
+    extension alone)."""
+    found = detect(_resolve(input_path, must_exist=True))
+    return _json_safe(
+        {
+            "candidates": [
+                {"format": f, "confidence": c, "reason": r} for f, c, r in found
+            ]
+        }
     )
 
 
@@ -7741,6 +7756,7 @@ TOOL_REGISTRY = OrderedDict(
             },
         ),
         ("sniff", {"fn": tool_sniff, "wraps": ("sniff_format",), "gated": None}),
+        ("detect", {"fn": tool_detect, "wraps": ("detect",), "gated": None}),
         ("info", {"fn": tool_info, "wraps": ("read_metadata",), "gated": None}),
         ("stats", {"fn": tool_stats, "wraps": ("compute_stats",), "gated": None}),
         (

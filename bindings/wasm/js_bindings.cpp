@@ -198,6 +198,7 @@
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/operations/detect.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -3748,6 +3749,21 @@ val attach_quality_js(const val& rMeshObj) {
 /** @brief Guess a mesh file's format from its contents ("" if undetermined). */
 std::string sniff_format_js(const std::string& rPath) {
     return with_js_errors([&]() -> std::string { return meshioplusplus::sniff_format(rPath); });
+}
+
+/** @brief A ranked detection report: `[{format, confidence, reason}]` (roadmap 2.4.9). */
+emscripten::val detect_js(const std::string& rPath) {
+    return with_js_errors([&]() -> emscripten::val {
+        emscripten::val out = emscripten::val::array();
+        for (const auto& c : meshioplusplus::detect_format(rPath)) {
+            emscripten::val entry = emscripten::val::object();
+            entry.set("format", c.mFormat);
+            entry.set("confidence", c.mConfidence);
+            entry.set("reason", c.mReason);
+            out.call<void>("push", entry);
+        }
+        return out;
+    });
 }
 
 /**
@@ -11011,6 +11027,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("extractSkin", &extract_skin_js);
     emscripten::function("attachQuality", &attach_quality_js);
     emscripten::function("sniffFormat", &sniff_format_js);
+    emscripten::function("detect", &detect_js);
     emscripten::function("reorder", &reorder_js);
     emscripten::function("computeBandwidth", &compute_bandwidth_js);
     emscripten::function("diff", &diff_js);

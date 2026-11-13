@@ -218,6 +218,7 @@
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/operations/detect.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -2512,6 +2513,18 @@ PYBIND11_MODULE(_core, m) {
         "sniff_format",
         [](const std::string& path) {
             return core_nogil([&] { return meshioplusplus::sniff_format(path); });
+        },
+        py::arg("path"));
+
+    // A ranked detection report: [(format, confidence, reason)] (roadmap 2.4.9).
+    m.def(
+        "detect_format",
+        [](const std::string& path) {
+            const auto found = core_nogil([&] { return meshioplusplus::detect_format(path); });
+            py::list out;
+            for (const auto& c : found)
+                out.append(py::make_tuple(c.mFormat, c.mConfidence, c.mReason));
+            return out;
         },
         py::arg("path"));
 

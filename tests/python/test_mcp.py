@@ -566,6 +566,15 @@ def test_sniff(mesh_file):
     assert out["from_extension"] == ["vtu"]
 
 
+def test_detect(mesh_file):
+    out = _dump(_tools.tool_detect(mesh_file))
+    assert out["candidates"][0] == {
+        "format": "vtu",
+        "confidence": "certain",
+        "reason": "content signature",
+    }
+
+
 def test_sniff_directory(tmp_path):
     case = tmp_path / "case"
     (case / "constant" / "polyMesh").mkdir(parents=True)

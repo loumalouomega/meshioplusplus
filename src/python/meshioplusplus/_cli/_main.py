@@ -338,6 +338,12 @@ _VERBS = (
         aliases=("surface",),
     ),
     _Verb(
+        "detect",
+        "_detect",
+        "detect_cmd",
+        "Rank the formats a file could be (certain / likely / guess)",
+    ),
+    _Verb(
         "reorder",
         "_reorder",
         "reorder_cmd",

@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** `detect(path)`: every format a file could be, ranked `certain` (a content signature), `likely` (the extension plus a metadata read) or `guess` (the extension alone), so a caller can tell a sure answer from a guess and see the formats `.msh`, `.inp`, `.dat`, `.mesh`, `.ele` and `.node` share. In the core (`operations/detect.hpp`), Python, the C API (`mio_detect`), Fortran, Julia, R, Octave/MATLAB, WASM, both CLIs (`detect`) and the MCP server (roadmap 2.4.9).
+
+
 - **Added:** OpenUSD face `GeomSubset`s are read as cell regions and a surface mesh's cell regions are written as `GeomSubset`s (roadmap 2.3.9.9).
 
 

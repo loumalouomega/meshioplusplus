@@ -17,6 +17,7 @@ extern SEXP R_mio_format_readable(SEXP);
 extern SEXP R_mio_load_plugins(SEXP);
 extern SEXP R_mio_format_writable(SEXP);
 extern SEXP R_mio_sniff_format(SEXP);
+extern SEXP R_mio_detect(SEXP);
 extern SEXP R_mio_cell_type_num_nodes(SEXP);
 extern SEXP R_mio_cell_type_dimension(SEXP);
 extern SEXP R_mio_reader_supports_options(SEXP);
@@ -306,6 +307,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_load_plugins, 1),
                                               CALLDEF(R_mio_format_writable, 1),
                                               CALLDEF(R_mio_sniff_format, 1),
+                                              CALLDEF(R_mio_detect, 1),
                                               CALLDEF(R_mio_cell_type_num_nodes, 1),
                                               CALLDEF(R_mio_cell_type_dimension, 1),
                                               CALLDEF(R_mio_reader_supports_options, 1),

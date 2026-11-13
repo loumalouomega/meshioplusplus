@@ -139,6 +139,10 @@ mio_read("/nope.vtu")
 #> Error: meshio++: cannot open file '/nope.vtu'
 ```
 
+## Format detection
+
+`mio_sniff_format(path)` returns the format a content signature names, or `""`; `mio_detect(path)` returns a data frame with columns `format`, `confidence` (`"certain"`, `"likely"` or `"guess"`) and `reason`, best first. See the [CLI's `detect`](./cli.md#meshioplusplus-detect).
+
 ## Named regions
 
 ```r

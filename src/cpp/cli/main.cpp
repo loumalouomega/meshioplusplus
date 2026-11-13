@@ -110,6 +110,7 @@
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/operations/detect.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -1080,6 +1081,37 @@ void print_metadata_summary(const meshioplusplus::MeshMetadata& rMeta) {
     // not happen.
     if (rMeta.mFellBackToFullRead)
         std::cout << "  (no header-only path for this format; the file was read in full)\n";
+}
+
+/// `detect INFILE [--json]`: the ranked format report (roadmap 2.4.9); exit 1 when
+/// nothing matches. The twin of the Python CLI's `detect`.
+int cmd_detect(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({{{"json", {}, false}}}));
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("detect requires exactly INFILE");
+    const auto found = meshioplusplus::detect_format(p.positionals[0]);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("path", p.positionals[0]);
+        json.Key("candidates");
+        json.BeginArray();
+        for (const auto& c : found) {
+            json.BeginObject();
+            json.Field("format", c.mFormat);
+            json.Field("confidence", c.mConfidence);
+            json.Field("reason", c.mReason);
+            json.EndObject();
+        }
+        json.EndArray();
+        json.EndObject();
+    } else if (found.empty()) {
+        std::cout << "no format matches " << p.positionals[0] << "\n";
+    } else {
+        for (const auto& c : found)
+            std::cout << c.mFormat << "  " << c.mConfidence << "  (" << c.mReason << ")\n";
+    }
+    return found.empty() ? 1 : 0;
 }
 
 int cmd_info(const std::vector<std::string>& rArgs) {
@@ -10433,6 +10465,9 @@ const CliVerb kCliVerbs[] = {
      "  sobolev-deform          Filter a displacement field and apply it\n", &cmd_sobolev_deform},
     {"extract-surface", "surface",
      "  extract-surface (surface)  Extract the boundary surface/edges\n", &cmd_extract_surface},
+    {"detect", nullptr,
+     "  detect                  Rank the formats a file could be (certain / likely / guess)\n",
+     &cmd_detect},
     {"reorder", nullptr,
      "  reorder                 Renumber nodes/elements (RCM / Morton / Hilbert)\n", &cmd_reorder},
     {"diff", nullptr, "  diff                    Compare two meshes (nonzero exit if different)\n",

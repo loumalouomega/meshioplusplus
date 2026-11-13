@@ -129,6 +129,13 @@ def _register_inspection(server: FastMCP) -> None:
         files it holds) and its extension."""
 
     @server.tool()
+    @_forward(_tools.tool_detect)
+    def detect(input_path: str) -> dict:
+        """Rank every format a file could be: certain (a content signature
+        matched), likely (the extension names it and its metadata reads) or
+        guess (the extension alone)."""
+
+    @server.tool()
     @_forward(_tools.tool_info)
     def info(input_path: str, file_format: Optional[str] = None) -> dict:
         """Fast file summary without loading heavy arrays: point/cell counts,

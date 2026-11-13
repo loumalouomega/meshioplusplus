@@ -104,7 +104,7 @@ Formats whose reader follows other files are never cached, because the entry fil
 
 MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint memberships as raw file ids, through the Python format side channel. Constraints remain opaque; the lists are not mesh-cell indices and operations do not remap them. Other output formats need not preserve MDPA-specific content. See [MDPA](formats/mdpa.md).
 
-205 tools; the six marked *gated* need a further extra and return a named error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report. A mesh carrying a B-rep side channel (read from [Kratos CAD JSON](/formats/cad_json), STEP or IGES, or made by `fit_cad`) adds a `brep` entry to the summary: its faces, trimmed and rational faces, loops, edges and vertices, by count.
+206 tools; the six marked *gated* need a further extra and return a named error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report. A mesh carrying a B-rep side channel (read from [Kratos CAD JSON](/formats/cad_json), STEP or IGES, or made by `fit_cad`) adds a `brep` entry to the summary: its faces, trimmed and rational faces, loops, edges and vertices, by count.
 
 ### Inspection (read-only)
 
@@ -112,6 +112,7 @@ MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint membe
 |---|---|
 | `formats` | readable/writable format lists + extension map (also the `meshioplusplus://formats` resource) |
 | `sniff` | format identified from leading bytes (a directory: the files it holds — Elmer, OpenFOAM, a DOLFINx VTX `.bp`) + extension |
+| `detect` | every format a file could be, ranked `certain` (content signature), `likely` (extension plus a metadata read) or `guess` (extension only) |
 | `info` | fast file summary via `read_metadata` — counts, cell blocks, data names, regions, time steps |
 | `stats` | bbox, centroid, areas/volumes, per-type counts, inverted cells |
 | `quality` | per-metric summaries + histograms; pass `output_path` to write the mesh with `quality:<metric>` cell data |

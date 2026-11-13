@@ -186,6 +186,17 @@ The exit codes are unchanged by `--json`.
 
 ---
 
+## meshioplusplus detect
+
+Rank every format a file could be (roadmap 2.4.9):
+
+```sh
+meshioplusplus detect part.msh
+meshioplusplus detect part.msh --json
+```
+
+Each candidate is `certain` (a content signature matched, what `sniff_format` reports), `likely` (the extension names the format and its metadata reads as it) or `guess` (the extension alone names it), best first; two `likely` entries and no `certain` one is an ambiguous file. The extensions several formats share (`.msh`, `.inp`, `.dat`, `.mesh`, `.ele`, `.node`) list every one. The exit code is 1 when nothing matches. `--json` prints `{"path", "candidates": [{"format", "confidence", "reason"}]}`; both CLIs print the same document (the Python CLI also lists its Python-only formats).
+
 ## meshioplusplus info
 
 Print a summary of a mesh file.

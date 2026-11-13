@@ -13,6 +13,7 @@ import re
 import struct
 from pathlib import Path
 
+from ._exceptions import ReadError
 from ._fallback import core_declined
 from ._files import is_d3plot_filename, is_z88_filename
 
@@ -474,3 +475,62 @@ def sniff_format(path) -> str:
         if not core_declined(exc, "sniff", "read", path):
             raise
     return _sniff_format_py(Path(path))
+
+
+#: The confidence levels of a detection report, best first.
+DETECT_CONFIDENCES = ("certain", "likely", "guess")
+
+
+def detect(path) -> list:
+    """Every format ``path`` could be, ranked: ``[(format, confidence, reason)]``.
+
+    ``certain`` means a content signature matched (``sniff_format``), ``likely`` that
+    the extension names the format and its metadata reads as it, ``guess`` that the
+    extension alone names it. Two ``likely`` entries and no ``certain`` one is an
+    ambiguous file. Empty when nothing matches. The twin of the core's
+    ``detect_format`` (roadmap 2.4.9), over the Python registry, so a Python-only
+    format is a candidate too.
+    """
+    from ._helpers import _filetypes_from_path, read_metadata
+
+    path = Path(path)
+    sniffed = sniff_format(path)
+    out = []
+    if sniffed:
+        out.append((sniffed, "certain", "content signature"))
+    try:
+        candidates = _filetypes_from_path(path)
+    except ReadError:
+        candidates = []
+    suffix = _matched_suffix(path) or path.name.lower()
+    for fmt in dict.fromkeys(candidates):
+        if fmt == sniffed:
+            continue
+        try:
+            read_metadata(path, fmt)
+            reads = True
+        except Exception:  # noqa: BLE001 -- any failure means "does not read as fmt"
+            reads = False
+        if reads:
+            out.append(
+                (fmt, "likely", f"extension {suffix} and the file reads as {fmt}")
+            )
+        else:
+            out.append((fmt, "guess", f"extension {suffix} only"))
+    out.sort(key=lambda entry: DETECT_CONFIDENCES.index(entry[1]))
+    return out
+
+
+def _matched_suffix(path):
+    """The longest registered suffix of ``path``'s name, as the registry resolves it."""
+    from ._helpers import _ensure_extension, extension_to_filetypes
+
+    name = path.name.lower()
+    pos = name.find(".")
+    while pos != -1:
+        suffix = name[pos:]
+        _ensure_extension(suffix)
+        if dict.__contains__(extension_to_filetypes, suffix):
+            return suffix
+        pos = name.find(".", pos + 1)
+    return ""

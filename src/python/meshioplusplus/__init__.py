@@ -77,8 +77,8 @@ if TYPE_CHECKING:
         ply,
         pmsh,
         pvd,
-        pvtp,
         pvti,
+        pvtp,
         pvtr,
         pvts,
         pvtu,
@@ -325,7 +325,7 @@ if TYPE_CHECKING:
     from ._skin import extract_skin
     from ._slice import sections, slice
     from ._smooth import smooth
-    from ._sniff import sniff_format
+    from ._sniff import detect, sniff_format
     from ._sobolev_deform import sobolev_deform
     from ._split import split
     from ._stats import compute_stats
@@ -598,6 +598,7 @@ _LAZY_ATTRS = {
     "write_step_elements": "_step_elements",
     "smooth": "_smooth",
     "sniff_format": "_sniff",
+    "detect": "_sniff",
     "sobolev_deform": "_sobolev_deform",
     "split": "_split",
     "compute_stats": "_stats",
@@ -763,6 +764,7 @@ __all__ = [
     "exaggerate",
     "colorize",
     "sniff_format",
+    "detect",
     "reorder",
     "compute_bandwidth",
     "diff",

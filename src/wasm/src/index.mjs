@@ -267,6 +267,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   extractSkin: (mesh: Mesh, linearize?: boolean) => Mesh,
  *   attachQuality: (mesh: Mesh) => Mesh,
  *   sniffFormat: (path: string) => string,
+ *   detect: (path: string) => {format: string, confidence: string, reason: string}[],
  *   reorder: (mesh: Mesh, method?: string) => object,
  *   computeBandwidth: (mesh: Mesh) => number,
  *   diff: (a: Mesh, b: Mesh, atol?: number, rtol?: number, unordered?: boolean) => object,
@@ -752,6 +753,7 @@ export async function loadMeshioPlusPlus(
         extractSkin: (mesh, linearize = false) => Module.extractSkin(mesh, linearize),
         attachQuality: (mesh) => Module.attachQuality(mesh),
         sniffFormat: (path) => Module.sniffFormat(path),
+        detect: (path) => Module.detect(path),
         reorder: (mesh, method = 'rcm') => Module.reorder(mesh, method),
         computeBandwidth: (mesh) => Module.computeBandwidth(mesh),
         diff: (a, b, atol = 0, rtol = 0, unordered = false) =>

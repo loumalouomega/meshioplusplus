@@ -29056,6 +29056,50 @@ MESHIOPLUSPLUS_API DecimateVolumeResult decimate_volume(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/decimate_volume.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/detect.hpp =====
+/**
+ * @file operations/detect.hpp
+ * @brief A ranked format detection report (roadmap 2.4.9).
+ *
+ * `sniff_format` answers with one name or `""`, so a caller cannot tell a sure
+ * answer from a guess, nor that `.msh`, `.mesh`, `.inp`, `.dat`, `.ele` and `.node`
+ * name several formats. `detect_format` returns every candidate with how sure it is:
+ *
+ * - `certain`: a content signature matched (`sniff_format`);
+ * - `likely`: the extension names the format and the file's metadata reads as it;
+ * - `guess`: the extension alone names it.
+ *
+ * Candidates are ranked certain, likely, guess, each in the extension's own order.
+ * Two `likely` entries and no `certain` one is an ambiguous file. The twin is the
+ * Python `meshioplusplus.detect`.
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/** @brief One candidate of a detection report. */
+struct DetectCandidate {
+    std::string mFormat;      ///< a meshio++ format name
+    std::string mConfidence;  ///< "certain", "likely" or "guess"
+    std::string mReason;      ///< why, in words
+};
+
+/**
+ * @brief Every format @p rPath could be, ranked (empty when nothing matches).
+ * @param rPath an existing file or directory
+ */
+MESHIOPLUSPLUS_API std::vector<DetectCandidate> detect_format(const std::string& rPath);
+
+/** @brief The report as text: one `format<TAB>confidence<TAB>reason` line per candidate. */
+MESHIOPLUSPLUS_API std::string detect_format_text(const std::string& rPath);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/detect.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/deviation.hpp =====
 /**
  * @file operations/deviation.hpp
@@ -246219,6 +246263,125 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/decimate_volume.cpp =====
+// ===== begin src/cpp/src/operations/detect.cpp =====
+#include <algorithm>
+#include <cctype>
+#include <cstddef>
+#include <exception>
+#include <filesystem>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// Extensions several formats register, in the Python registry's order (the twin's
+/// `extension_to_filetypes`); every other extension names its registry default only.
+struct DetectShared {
+    const char* mSuffix;
+    std::vector<const char*> mFormats;
+};
+
+const std::vector<DetectShared>& detect_shared_extensions() {
+    static const std::vector<DetectShared> table = {
+        {".inp", {"abaqus", "ansysInp"}}, {".msh", {"ansys", "gmsh", "freefem"}},
+        {".dat", {"marc", "tecplot"}},    {".mesh", {"medit", "mfem"}},
+        {".ele", {"tetgen", "triangle"}}, {".node", {"tetgen", "triangle"}},
+    };
+    return table;
+}
+
+std::string detect_lower(std::string Text) {
+    std::transform(Text.begin(), Text.end(), Text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return Text;
+}
+
+/// The extension candidates of @p rPath and the suffix that named them (longest first,
+/// as the registry resolves it), or none.
+std::pair<std::string, std::vector<std::string>> detect_extension_candidates(
+    const std::string& rPath) {
+    std::vector<std::string> out;
+    std::string named;
+    try {
+        named = resolve_write_format(rPath, "");
+    } catch (const std::exception&) {
+        return {};
+    }
+    const std::string base = detect_lower(std::filesystem::path(rPath).filename().string());
+    std::string suffix;
+    const auto& defaults = registry_extension_defaults();
+    for (std::size_t pos = base.find('.'); pos != std::string::npos;
+         pos = base.find('.', pos + 1)) {
+        if (defaults.count(base.substr(pos))) {
+            suffix = base.substr(pos);
+            break;
+        }
+    }
+    for (const DetectShared& shared : detect_shared_extensions())
+        if (suffix == shared.mSuffix)
+            for (const char* fmt : shared.mFormats)
+                if (registry_readers().count(fmt))
+                    out.emplace_back(fmt);
+    if (std::find(out.begin(), out.end(), named) == out.end())
+        out.insert(out.begin(), named);
+    return {suffix.empty() ? base : suffix, out};
+}
+
+int detect_rank(const std::string& rConfidence) {
+    return rConfidence == "certain" ? 0 : rConfidence == "likely" ? 1 : 2;
+}
+
+}  // namespace
+
+std::vector<DetectCandidate> detect_format(const std::string& rPath) {
+    std::vector<DetectCandidate> out;
+    std::string sniffed;
+    try {
+        sniffed = sniff_format(rPath);
+    } catch (const std::exception&) {
+        sniffed.clear();
+    }
+    if (!sniffed.empty())
+        out.push_back({sniffed, "certain", "content signature"});
+    const auto [suffix, candidates] = detect_extension_candidates(rPath);
+    for (const std::string& fmt : candidates) {
+        if (fmt == sniffed)
+            continue;
+        bool reads = false;
+        if (registry_readers().count(fmt)) {
+            try {
+                (void)registry_read_metadata(rPath, fmt, ReadOptions{});
+                reads = true;
+            } catch (const std::exception&) {
+                reads = false;
+            }
+        }
+        if (reads)
+            out.push_back({fmt, "likely", "extension " + suffix + " and the file reads as " + fmt});
+        else
+            out.push_back({fmt, "guess", "extension " + suffix + " only"});
+    }
+    std::stable_sort(out.begin(), out.end(),
+                     [](const DetectCandidate& rA, const DetectCandidate& rB) {
+                         return detect_rank(rA.mConfidence) < detect_rank(rB.mConfidence);
+                     });
+    return out;
+}
+
+std::string detect_format_text(const std::string& rPath) {
+    std::string text;
+    for (const DetectCandidate& c : detect_format(rPath))
+        text += c.mFormat + "\t" + c.mConfidence + "\t" + c.mReason + "\n";
+    return text;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/detect.cpp =====
 // ===== begin src/cpp/src/operations/deviation.cpp =====
 #include <algorithm>
 #include <array>
