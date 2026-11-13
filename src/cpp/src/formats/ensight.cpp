@@ -402,11 +402,10 @@ bool ensight_is_fortran_geometry(std::string_view Data) {
 // .case parsing
 // ---------------------------------------------------------------------------
 
-/// One `VARIABLE` section entry -- `scalar per node:`/`vector per node:`/
-/// `scalar per element:`/`vector per element:` are the four kinds this
-/// reader understands; anything else (complex/tensor variables, `per
-/// measured node`, constants) is recorded but never read, matching the
-/// roadmap's variable-reading scope.
+/// One `VARIABLE` section entry: `scalar`, `vector`, `tensor symm` and `tensor
+/// asym`, each `per node:` or `per element:`, are the kinds this reader
+/// understands; anything else (complex variables, `per measured node`) is
+/// recorded but never read. Constants are read from their own lines.
 struct EnsightVariableEntry {
     std::string mKind;
     std::string mName;
@@ -636,6 +635,65 @@ bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     throw ReadError(std::string("EnSight: malformed '") + pWhat + " id' record: " + rRecord);
 }
 
+// The cells of an `ni x nj x nk` lattice of points numbered with `i` fastest,
+// the twin of the Python reader's `_lattice_cells`: hexahedra, quads or lines
+// by how many of the dimensions are above one.
+void ensight_lattice_cells(std::int64_t Ni, std::int64_t Nj, std::int64_t Nk, std::string& rType,
+                           std::vector<std::int64_t>& rConn, std::size_t& rNodes) {
+    const auto at = [&](std::int64_t I, std::int64_t J, std::int64_t K) {
+        return I + Ni * (J + Nj * K);
+    };
+    const int big = (Ni > 1) + (Nj > 1) + (Nk > 1);
+    rConn.clear();
+    if (big == 3) {
+        rType = "hexahedron";
+        rNodes = 8;
+        for (std::int64_t k = 0; k + 1 < Nk; ++k)
+            for (std::int64_t j = 0; j + 1 < Nj; ++j)
+                for (std::int64_t i = 0; i + 1 < Ni; ++i)
+                    for (const auto& c : {std::array<std::int64_t, 3>{i, j, k},
+                                          {i + 1, j, k},
+                                          {i + 1, j + 1, k},
+                                          {i, j + 1, k},
+                                          {i, j, k + 1},
+                                          {i + 1, j, k + 1},
+                                          {i + 1, j + 1, k + 1},
+                                          {i, j + 1, k + 1}})
+                        rConn.push_back(at(c[0], c[1], c[2]));
+        return;
+    }
+    // Flatten the lattice to the (up to) two axes above one, slowest first.
+    std::vector<std::int64_t> dims;
+    std::vector<std::int64_t> strides;
+    const std::int64_t d[3] = {Ni, Nj, Nk};
+    const std::int64_t st[3] = {1, Ni, Ni * Nj};
+    for (int a = 2; a >= 0; --a)
+        if (d[a] > 1) {
+            dims.push_back(d[a]);
+            strides.push_back(st[a]);
+        }
+    if (big == 2) {
+        rType = "quad";
+        rNodes = 4;
+        for (std::int64_t a = 0; a + 1 < dims[0]; ++a)
+            for (std::int64_t b = 0; b + 1 < dims[1]; ++b) {
+                const auto p = [&](std::int64_t A, std::int64_t B) {
+                    return A * strides[0] + B * strides[1];
+                };
+                rConn.insert(rConn.end(), {p(a, b), p(a, b + 1), p(a + 1, b + 1), p(a + 1, b)});
+            }
+    } else if (big == 1) {
+        rType = "line";
+        rNodes = 2;
+        for (std::int64_t a = 0; a + 1 < dims[0]; ++a)
+            rConn.insert(rConn.end(), {a * strides[0], (a + 1) * strides[0]});
+    } else {
+        rType = "vertex";
+        rNodes = 1;
+        rConn.push_back(0);
+    }
+}
+
 Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLayout = nullptr) {
     constexpr std::int64_t plausible_max = 100000000;  // generous id/count bound
 
@@ -658,6 +716,8 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
 
     std::vector<double> coords;  // xyz-interleaved, all parts concatenated
     std::vector<EnsightBlock> blocks;
+    // The per-node iblank arrays of the block parts, with their point offsets.
+    std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> iblank_parts;
     std::int64_t num_parts = 0;
     // Point range per part, for a variable file's per-node sections; filled
     // regardless of pLayout (cheap) and only exposed through it.
@@ -673,6 +733,85 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
         rCur.NextRecord();  // part description
 
         rec = rCur.NextRecord();
+        if (ensight_starts_with(rec, "block")) {
+            // A structured part: `block [uniform|rectilinear] [iblanked]`, expanded to
+            // points (`i` fastest) and a lattice of cells; see the Python `_read_block`.
+            const bool uniform = rec.find("uniform") != std::string::npos;
+            const bool rectilinear = rec.find("rectilinear") != std::string::npos;
+            const bool iblanked = rec.find("iblanked") != std::string::npos;
+            rCur.CheckSwap(plausible_max, /*PreferSmaller=*/false);
+            std::int64_t dims[3];
+            rCur.ReadInts(3, dims);
+            if (dims[0] < 1 || dims[1] < 1 || dims[2] < 1)
+                throw ReadError("EnSight: a block needs at least one node in each direction");
+            const auto ni = static_cast<std::size_t>(dims[0]);
+            const auto nj = static_cast<std::size_t>(dims[1]);
+            const auto nk = static_cast<std::size_t>(dims[2]);
+            if (ni > static_cast<std::size_t>(plausible_max) / nj / nk)
+                throw ReadError("EnSight: implausible block size");
+            const std::size_t n = ni * nj * nk;
+            const std::int64_t point_offset = static_cast<std::int64_t>(coords.size() / 3);
+            part_point_ranges.emplace_back(
+                part_id, std::make_pair(static_cast<std::size_t>(point_offset), n));
+            coords.reserve(coords.size() + n * 3);
+            if (uniform) {
+                double org[3], delta[3];
+                rCur.ReadFloats(3, org);
+                rCur.ReadFloats(3, delta);
+                for (std::size_t k = 0; k < nk; ++k)
+                    for (std::size_t j = 0; j < nj; ++j)
+                        for (std::size_t i = 0; i < ni; ++i) {
+                            coords.push_back(org[0] + delta[0] * static_cast<double>(i));
+                            coords.push_back(org[1] + delta[1] * static_cast<double>(j));
+                            coords.push_back(org[2] + delta[2] * static_cast<double>(k));
+                        }
+            } else if (rectilinear) {
+                std::vector<double> xs(ni), ys(nj), zs(nk);
+                rCur.ReadFloats(ni, xs.data());
+                rCur.ReadFloats(nj, ys.data());
+                rCur.ReadFloats(nk, zs.data());
+                for (std::size_t k = 0; k < nk; ++k)
+                    for (std::size_t j = 0; j < nj; ++j)
+                        for (std::size_t i = 0; i < ni; ++i) {
+                            coords.push_back(xs[i]);
+                            coords.push_back(ys[j]);
+                            coords.push_back(zs[k]);
+                        }
+            } else {
+                if (node_ids_in_file)
+                    rCur.SkipInts(n);
+                std::vector<double> x(n), y(n), z(n);
+                rCur.ReadFloats(n, x.data());
+                rCur.ReadFloats(n, y.data());
+                rCur.ReadFloats(n, z.data());
+                for (std::size_t i = 0; i < n; ++i) {
+                    coords.push_back(x[i]);
+                    coords.push_back(y[i]);
+                    coords.push_back(z[i]);
+                }
+            }
+            if (iblanked) {
+                std::vector<std::int64_t> ib(n);
+                rCur.ReadInts(n, ib.data());
+                iblank_parts.emplace_back(static_cast<std::size_t>(point_offset), std::move(ib));
+            }
+            std::string type;
+            std::vector<std::int64_t> lattice;
+            std::size_t npc = 0;
+            ensight_lattice_cells(dims[0], dims[1], dims[2], type, lattice, npc);
+            for (std::int64_t& v : lattice)
+                v += point_offset;
+            NDArray conn = NDArray::Uninit(DType::Int64, {lattice.size() / npc, npc});
+            std::memcpy(conn.Data(), lattice.data(), lattice.size() * sizeof(std::int64_t));
+            EnsightBlock b;
+            b.mType = type;
+            b.mKind = 0;
+            b.mPartId = part_id;
+            b.mNumCells = lattice.size() / npc;
+            b.mConn = std::move(conn);
+            blocks.push_back(std::move(b));
+            continue;
+        }
         if (!ensight_starts_with(rec, "coordinates"))
             throw ReadError("EnSight: expected 'coordinates' record, got: " + rec);
         rCur.CheckSwap(plausible_max, /*PreferSmaller=*/false);
@@ -848,6 +987,17 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
                     pl.mBlocks.emplace_back(i, blocks[i].mNumCells);
             pLayout->push_back(std::move(pl));
         }
+    }
+
+    if (!iblank_parts.empty()) {
+        // Per node: 0 blanked, 1 visible, others kept as they are.
+        NDArray mask(DType::UInt8, {npoints});
+        std::uint8_t* mp = mask.As<std::uint8_t>();
+        std::fill(mp, mp + npoints, std::uint8_t{1});
+        for (const auto& [offset, ib] : iblank_parts)
+            for (std::size_t i = 0; i < ib.size() && offset + i < npoints; ++i)
+                mp[offset + i] = static_cast<std::uint8_t>(ib[i]);
+        mesh.AddPointData("ensight:iblank", std::move(mask));
     }
 
     if (num_parts >= 2) {

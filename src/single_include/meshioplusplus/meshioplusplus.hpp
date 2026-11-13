@@ -144676,11 +144676,10 @@ bool ensight_is_fortran_geometry(std::string_view Data) {
 // .case parsing
 // ---------------------------------------------------------------------------
 
-/// One `VARIABLE` section entry -- `scalar per node:`/`vector per node:`/
-/// `scalar per element:`/`vector per element:` are the four kinds this
-/// reader understands; anything else (complex/tensor variables, `per
-/// measured node`, constants) is recorded but never read, matching the
-/// roadmap's variable-reading scope.
+/// One `VARIABLE` section entry: `scalar`, `vector`, `tensor symm` and `tensor
+/// asym`, each `per node:` or `per element:`, are the kinds this reader
+/// understands; anything else (complex variables, `per measured node`) is
+/// recorded but never read. Constants are read from their own lines.
 struct EnsightVariableEntry {
     std::string mKind;
     std::string mName;
@@ -144695,6 +144694,8 @@ struct EnsightVariableEntry {
 struct EnsightCaseInfo {
     std::string mGeoPath;
     bool mGeoIsWildcard = false;
+    std::string mGeoPattern;  // the `model:` file name, wildcard run unresolved
+    bool mChangeCoordsOnly = false;
     std::vector<double> mTimeValues;
     long mFileNameStart = 0;
     long mFileNameIncrement = 1;
@@ -144836,8 +144837,9 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
         throw ReadError("EnSight: malformed 'model:' line in case file");
     const std::string& filename = tokens.front();
     info.mGeoIsWildcard = filename.find('*') != std::string::npos;
-    if (info.mGeoIsWildcard)
-        throw ReadError("EnSight: transient (wildcard) geometry is not supported");
+    info.mGeoPattern = filename;
+    info.mChangeCoordsOnly =
+        std::find(tokens.begin() + 1, tokens.end(), "change_coords_only") != tokens.end();
     info.mGeoPath = ensight_dirname(rCasePath) + filename;
 
     return info;
@@ -144868,7 +144870,7 @@ std::string ensight_resolve_wildcard(const std::string& rPattern, long Number) {
 // A staged cell block (added to the mesh only after AssignPoints).
 struct EnsightBlock {
     std::string mType;
-    NDArray mConn{DType::Int64, {}};                                       // rectangular
+    NDArray mConn{DType::Int64, {}};  // rectangular
     // nsided / nfaced, as the CSR triple the mesh backends store.
     std::vector<std::int64_t> mFlat;
     std::vector<std::int64_t> mRowOffsets;
@@ -144907,6 +144909,65 @@ bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     throw ReadError(std::string("EnSight: malformed '") + pWhat + " id' record: " + rRecord);
 }
 
+// The cells of an `ni x nj x nk` lattice of points numbered with `i` fastest,
+// the twin of the Python reader's `_lattice_cells`: hexahedra, quads or lines
+// by how many of the dimensions are above one.
+void ensight_lattice_cells(std::int64_t Ni, std::int64_t Nj, std::int64_t Nk, std::string& rType,
+                           std::vector<std::int64_t>& rConn, std::size_t& rNodes) {
+    const auto at = [&](std::int64_t I, std::int64_t J, std::int64_t K) {
+        return I + Ni * (J + Nj * K);
+    };
+    const int big = (Ni > 1) + (Nj > 1) + (Nk > 1);
+    rConn.clear();
+    if (big == 3) {
+        rType = "hexahedron";
+        rNodes = 8;
+        for (std::int64_t k = 0; k + 1 < Nk; ++k)
+            for (std::int64_t j = 0; j + 1 < Nj; ++j)
+                for (std::int64_t i = 0; i + 1 < Ni; ++i)
+                    for (const auto& c : {std::array<std::int64_t, 3>{i, j, k},
+                                          {i + 1, j, k},
+                                          {i + 1, j + 1, k},
+                                          {i, j + 1, k},
+                                          {i, j, k + 1},
+                                          {i + 1, j, k + 1},
+                                          {i + 1, j + 1, k + 1},
+                                          {i, j + 1, k + 1}})
+                        rConn.push_back(at(c[0], c[1], c[2]));
+        return;
+    }
+    // Flatten the lattice to the (up to) two axes above one, slowest first.
+    std::vector<std::int64_t> dims;
+    std::vector<std::int64_t> strides;
+    const std::int64_t d[3] = {Ni, Nj, Nk};
+    const std::int64_t st[3] = {1, Ni, Ni * Nj};
+    for (int a = 2; a >= 0; --a)
+        if (d[a] > 1) {
+            dims.push_back(d[a]);
+            strides.push_back(st[a]);
+        }
+    if (big == 2) {
+        rType = "quad";
+        rNodes = 4;
+        for (std::int64_t a = 0; a + 1 < dims[0]; ++a)
+            for (std::int64_t b = 0; b + 1 < dims[1]; ++b) {
+                const auto p = [&](std::int64_t A, std::int64_t B) {
+                    return A * strides[0] + B * strides[1];
+                };
+                rConn.insert(rConn.end(), {p(a, b), p(a, b + 1), p(a + 1, b + 1), p(a + 1, b)});
+            }
+    } else if (big == 1) {
+        rType = "line";
+        rNodes = 2;
+        for (std::int64_t a = 0; a + 1 < dims[0]; ++a)
+            rConn.insert(rConn.end(), {a * strides[0], (a + 1) * strides[0]});
+    } else {
+        rType = "vertex";
+        rNodes = 1;
+        rConn.push_back(0);
+    }
+}
+
 Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLayout = nullptr) {
     constexpr std::int64_t plausible_max = 100000000;  // generous id/count bound
 
@@ -144929,6 +144990,8 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
 
     std::vector<double> coords;  // xyz-interleaved, all parts concatenated
     std::vector<EnsightBlock> blocks;
+    // The per-node iblank arrays of the block parts, with their point offsets.
+    std::vector<std::pair<std::size_t, std::vector<std::int64_t>>> iblank_parts;
     std::int64_t num_parts = 0;
     // Point range per part, for a variable file's per-node sections; filled
     // regardless of pLayout (cheap) and only exposed through it.
@@ -144944,6 +145007,85 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
         rCur.NextRecord();  // part description
 
         rec = rCur.NextRecord();
+        if (ensight_starts_with(rec, "block")) {
+            // A structured part: `block [uniform|rectilinear] [iblanked]`, expanded to
+            // points (`i` fastest) and a lattice of cells; see the Python `_read_block`.
+            const bool uniform = rec.find("uniform") != std::string::npos;
+            const bool rectilinear = rec.find("rectilinear") != std::string::npos;
+            const bool iblanked = rec.find("iblanked") != std::string::npos;
+            rCur.CheckSwap(plausible_max, /*PreferSmaller=*/false);
+            std::int64_t dims[3];
+            rCur.ReadInts(3, dims);
+            if (dims[0] < 1 || dims[1] < 1 || dims[2] < 1)
+                throw ReadError("EnSight: a block needs at least one node in each direction");
+            const auto ni = static_cast<std::size_t>(dims[0]);
+            const auto nj = static_cast<std::size_t>(dims[1]);
+            const auto nk = static_cast<std::size_t>(dims[2]);
+            if (ni > static_cast<std::size_t>(plausible_max) / nj / nk)
+                throw ReadError("EnSight: implausible block size");
+            const std::size_t n = ni * nj * nk;
+            const std::int64_t point_offset = static_cast<std::int64_t>(coords.size() / 3);
+            part_point_ranges.emplace_back(
+                part_id, std::make_pair(static_cast<std::size_t>(point_offset), n));
+            coords.reserve(coords.size() + n * 3);
+            if (uniform) {
+                double org[3], delta[3];
+                rCur.ReadFloats(3, org);
+                rCur.ReadFloats(3, delta);
+                for (std::size_t k = 0; k < nk; ++k)
+                    for (std::size_t j = 0; j < nj; ++j)
+                        for (std::size_t i = 0; i < ni; ++i) {
+                            coords.push_back(org[0] + delta[0] * static_cast<double>(i));
+                            coords.push_back(org[1] + delta[1] * static_cast<double>(j));
+                            coords.push_back(org[2] + delta[2] * static_cast<double>(k));
+                        }
+            } else if (rectilinear) {
+                std::vector<double> xs(ni), ys(nj), zs(nk);
+                rCur.ReadFloats(ni, xs.data());
+                rCur.ReadFloats(nj, ys.data());
+                rCur.ReadFloats(nk, zs.data());
+                for (std::size_t k = 0; k < nk; ++k)
+                    for (std::size_t j = 0; j < nj; ++j)
+                        for (std::size_t i = 0; i < ni; ++i) {
+                            coords.push_back(xs[i]);
+                            coords.push_back(ys[j]);
+                            coords.push_back(zs[k]);
+                        }
+            } else {
+                if (node_ids_in_file)
+                    rCur.SkipInts(n);
+                std::vector<double> x(n), y(n), z(n);
+                rCur.ReadFloats(n, x.data());
+                rCur.ReadFloats(n, y.data());
+                rCur.ReadFloats(n, z.data());
+                for (std::size_t i = 0; i < n; ++i) {
+                    coords.push_back(x[i]);
+                    coords.push_back(y[i]);
+                    coords.push_back(z[i]);
+                }
+            }
+            if (iblanked) {
+                std::vector<std::int64_t> ib(n);
+                rCur.ReadInts(n, ib.data());
+                iblank_parts.emplace_back(static_cast<std::size_t>(point_offset), std::move(ib));
+            }
+            std::string type;
+            std::vector<std::int64_t> lattice;
+            std::size_t npc = 0;
+            ensight_lattice_cells(dims[0], dims[1], dims[2], type, lattice, npc);
+            for (std::int64_t& v : lattice)
+                v += point_offset;
+            NDArray conn = NDArray::Uninit(DType::Int64, {lattice.size() / npc, npc});
+            std::memcpy(conn.Data(), lattice.data(), lattice.size() * sizeof(std::int64_t));
+            EnsightBlock b;
+            b.mType = type;
+            b.mKind = 0;
+            b.mPartId = part_id;
+            b.mNumCells = lattice.size() / npc;
+            b.mConn = std::move(conn);
+            blocks.push_back(std::move(b));
+            continue;
+        }
         if (!ensight_starts_with(rec, "coordinates"))
             throw ReadError("EnSight: expected 'coordinates' record, got: " + rec);
         rCur.CheckSwap(plausible_max, /*PreferSmaller=*/false);
@@ -145119,6 +145261,17 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
                     pl.mBlocks.emplace_back(i, blocks[i].mNumCells);
             pLayout->push_back(std::move(pl));
         }
+    }
+
+    if (!iblank_parts.empty()) {
+        // Per node: 0 blanked, 1 visible, others kept as they are.
+        NDArray mask(DType::UInt8, {npoints});
+        std::uint8_t* mp = mask.As<std::uint8_t>();
+        std::fill(mp, mp + npoints, std::uint8_t{1});
+        for (const auto& [offset, ib] : iblank_parts)
+            for (std::size_t i = 0; i < ib.size() && offset + i < npoints; ++i)
+                mp[offset + i] = static_cast<std::uint8_t>(ib[i]);
+        mesh.AddPointData("ensight:iblank", std::move(mask));
     }
 
     if (num_parts >= 2) {
@@ -145331,25 +145484,72 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
         geo_path = case_info.mGeoPath;
     }
 
-    // The source outlives both cursors below, which only hold views into it.
-    const detail::FileSource source = ensight_read_whole_file(geo_path, "geometry file");
-    const std::string_view data = source.View();
+    // Which step's files to read. A file with no TIME section (the
+    // static-geometry-plus-static-variables case) has exactly one step; a
+    // non-default mTimeStep against it is a real request this reader cannot
+    // honour, so it is refused rather than silently answering step 0.
+    const auto resolve_file_number = [&]() {
+        std::size_t step = 0;
+        if (!case_info.mTimeValues.empty()) {
+            step = rOptions.ResolveTimeStep(case_info.mTimeValues.size());
+        } else if (rOptions.mTimeStep != 0) {
+            throw ReadError(
+                "EnSight: mTimeStep requested but the case file has no TIME section to resolve "
+                "it against");
+        }
+        return case_info.mFileNameStart + static_cast<long>(step) * case_info.mFileNameIncrement;
+    };
+    const std::string dir = ensight_dirname(rPath);
 
     std::vector<EnsightPartLayout> layout;
     Mesh mesh;
     EnsightEncoding encoding = EnsightEncoding::Ascii;
-    if (ensight_is_fortran_geometry(data)) {
-        encoding = EnsightEncoding::Fortran;
-        const auto unframed = ensight_unframe_fortran(data, "geometry file");
-        EnsightBinaryCursor cur(unframed->mBytes, 80, unframed->mSwap);
-        mesh = ensight_parse_geo(cur, &layout);
-    } else if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
-        encoding = EnsightEncoding::CBinary;
-        EnsightBinaryCursor cur(data);
-        mesh = ensight_parse_geo(cur, &layout);
-    } else {
+    // One geometry file into `rMesh`, whatever its encoding.
+    const auto read_geo = [](const std::string& rGeoPath, std::vector<EnsightPartLayout>* pLayout,
+                             EnsightEncoding& rEncoding) {
+        // The source outlives the cursors, which only hold views into it.
+        const detail::FileSource source = ensight_read_whole_file(rGeoPath, "geometry file");
+        const std::string_view data = source.View();
+        if (ensight_is_fortran_geometry(data)) {
+            rEncoding = EnsightEncoding::Fortran;
+            const auto unframed = ensight_unframe_fortran(data, "geometry file");
+            EnsightBinaryCursor cur(unframed->mBytes, 80, unframed->mSwap);
+            return ensight_parse_geo(cur, pLayout);
+        }
+        if (data.size() >= 80 && ensight_starts_with(data, "C Binary")) {
+            rEncoding = EnsightEncoding::CBinary;
+            EnsightBinaryCursor cur(data);
+            return ensight_parse_geo(cur, pLayout);
+        }
+        rEncoding = EnsightEncoding::Ascii;
         EnsightAsciiCursor cur(data);
-        mesh = ensight_parse_geo(cur, &layout);
+        return ensight_parse_geo(cur, pLayout);
+    };
+    long file_number = 0;
+    bool have_file_number = false;
+    if (have_case && case_info.mGeoIsWildcard) {
+        file_number = resolve_file_number();
+        have_file_number = true;
+        geo_path = dir + ensight_resolve_wildcard(case_info.mGeoPattern, file_number);
+        if (case_info.mChangeCoordsOnly) {
+            // Connectivity from the first file, coordinates from the step's.
+            const std::string first =
+                dir + ensight_resolve_wildcard(case_info.mGeoPattern, case_info.mFileNameStart);
+            mesh = read_geo(first, &layout, encoding);
+            if (geo_path != first) {
+                EnsightEncoding moved_encoding = encoding;
+                Mesh moved = read_geo(geo_path, nullptr, moved_encoding);
+                if (moved.NumPoints() != mesh.NumPoints() || moved.PointDim() != mesh.PointDim())
+                    throw ReadError(
+                        "EnSight: a change_coords_only geometry file holds a different number of "
+                        "points than the first");
+                mesh.AssignPoints(moved.Points());
+            }
+        } else {
+            mesh = read_geo(geo_path, &layout, encoding);
+        }
+    } else {
+        mesh = read_geo(geo_path, &layout, encoding);
     }
 
     if (!have_case || !rOptions.WantsAnyData() ||
@@ -145366,22 +145566,9 @@ Mesh read_ensight(const std::string& rPath, const ReadOptions& rOptions) {
     if (case_info.mVariables.empty())
         return mesh;
 
-    // Which step's variable files to read. A file with no TIME section (the
-    // static-geometry-plus-static-variables case) has exactly one step; a
-    // non-default mTimeStep against it is a real request this reader cannot
-    // honour, so it is refused rather than silently answering step 0.
-    std::size_t step = 0;
-    if (!case_info.mTimeValues.empty()) {
-        step = rOptions.ResolveTimeStep(case_info.mTimeValues.size());
-    } else if (rOptions.mTimeStep != 0) {
-        throw ReadError(
-            "EnSight: mTimeStep requested but the case file has no TIME section to resolve it "
-            "against");
-    }
-    const long file_number =
-        case_info.mFileNameStart + static_cast<long>(step) * case_info.mFileNameIncrement;
+    if (!have_file_number)
+        file_number = resolve_file_number();
 
-    const std::string dir = ensight_dirname(rPath);
     for (const EnsightVariableEntry& var : case_info.mVariables) {
         if (!rOptions.WantsArray(var.mName))
             continue;
@@ -145556,8 +145743,103 @@ private:
     std::optional<detail::Int64View> mRect;
 };
 
+// One `part` of a geometry file. A mesh whose cell blocks all carry
+// `cell_data["ensight:part"]` with two or more distinct values (what the
+// reader produces for such a file) is written as one part per value, in
+// first-seen order, each holding the points its blocks use; any other mesh is
+// the single part "Mesh" holding every point.
+struct EnsightPart {
+    std::int64_t mId = 1;
+    std::string mName = "Mesh";
+    std::vector<std::size_t> mBlocks;
+    std::vector<std::int64_t> mNodes;   // the mesh's points this part holds (all when mAll)
+    std::vector<std::int64_t> mLookup;  // mesh point -> part point (identity when mAll)
+    bool mAll = true;
+
+    std::int64_t IdOf(std::int64_t V) const {
+        return mAll ? V : mLookup[static_cast<std::size_t>(V)];
+    }
+    std::size_t NumNodes(std::size_t All) const { return mAll ? All : mNodes.size(); }
+    std::int64_t Node(std::size_t I) const {
+        return mAll ? static_cast<std::int64_t>(I) : mNodes[I];
+    }
+};
+
+template <class TView>
+void ensight_mark_block_nodes(const TView& rCb, std::vector<char>& rMark) {
+    const auto mark = [&](std::int64_t V) {
+        if (V >= 0 && static_cast<std::size_t>(V) < rMark.size())
+            rMark[static_cast<std::size_t>(V)] = 1;
+    };
+    if (rCb.IsPolyhedron()) {
+        for (std::size_t r = 0; r < rCb.NumCells(); ++r)
+            for (std::size_t f = 0; f < rCb.NumFaces(r); ++f) {
+                const auto face = rCb.Face(r, f);
+                for (std::size_t k = 0; k < face.second; ++k)
+                    mark(face.first[k]);
+            }
+    } else if (rCb.IsRagged()) {
+        for (std::size_t r = 0; r < rCb.NumCells(); ++r)
+            for (std::size_t k = 0; k < rCb.RowSize(r); ++k)
+                mark(rCb.Row(r)[k]);
+    } else if (rCb.NumCells() > 0) {
+        const detail::Int64View conn(rCb.Conn());
+        const std::size_t total = rCb.NumCells() * rCb.NodesPerCell();
+        for (std::size_t q = 0; q < total; ++q)
+            mark(conn[q]);
+    }
+}
+
+std::vector<EnsightPart> ensight_plan_parts(const Mesh& rMesh) {
+    std::vector<EnsightPart> parts(1);
+    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi)
+        parts[0].mBlocks.push_back(bi);
+    const std::size_t nb = rMesh.NumCellBlocks();
+    if (nb == 0 || !rMesh.HasCellData("ensight:part") ||
+        rMesh.CellDataNumBlocks("ensight:part") != nb)
+        return parts;
+    std::vector<std::int64_t> block_part(nb, 0);
+    std::vector<char> has(nb, 0);
+    std::vector<std::int64_t> order;
+    for (std::size_t bi = 0; bi < nb; ++bi) {
+        const NDArray& arr = rMesh.CellData("ensight:part", bi);
+        if (arr.Size() == 0)
+            continue;
+        const detail::Int64View ids(arr);
+        block_part[bi] = ids[0];
+        has[bi] = 1;
+        if (std::find(order.begin(), order.end(), ids[0]) == order.end())
+            order.push_back(ids[0]);
+    }
+    if (order.size() < 2)
+        return parts;
+    parts.clear();
+    const std::size_t np = rMesh.NumPoints();
+    for (const std::int64_t pid : order) {
+        EnsightPart part;
+        part.mId = pid;
+        part.mName = "Part " + std::to_string(pid);
+        part.mAll = false;
+        std::vector<char> mark(np, 0);
+        for (std::size_t bi = 0; bi < nb; ++bi)
+            if (has[bi] && block_part[bi] == pid) {
+                part.mBlocks.push_back(bi);
+                ensight_mark_block_nodes(rMesh.Cells(bi), mark);
+            }
+        part.mLookup.assign(np, -1);
+        for (std::size_t i = 0; i < np; ++i)
+            if (mark[i]) {
+                part.mLookup[i] = static_cast<std::int64_t>(part.mNodes.size());
+                part.mNodes.push_back(static_cast<std::int64_t>(i));
+            }
+        parts.push_back(std::move(part));
+    }
+    return parts;
+}
+
 void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
-                             const std::vector<const EnsightTypeEntry*>& rEntries) {
+                             const std::vector<const EnsightTypeEntry*>& rEntries,
+                             const std::vector<EnsightPart>& rParts) {
     const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
     const std::size_t np = rMesh.NumPoints();
@@ -145568,87 +145850,95 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
     out += detail::provenance_lines(detail::SlotTier::Bounded)[0] + "\n";
     out += "node id assign\n";
     out += "element id assign\n";
-    out += "part\n";
 
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "%10d\n", 1);
-    out += buf;
-    out += "Mesh\n";
-    out += "coordinates\n";
-    std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(np));
-    out += buf;
     const detail::DoubleView point_values(points);
-    for (std::size_t c = 0; c < 3; ++c) {
-        for (std::size_t i = 0; i < np; ++i) {
-            const double v = c < dim ? point_values[i * dim + c] : 0.0;
-            detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
-            out += buf;
-        }
-    }
-
-    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-        const auto cb = rMesh.Cells(bi);
-        const EnsightTypeEntry* entry = rEntries[bi];
-        const std::size_t npc = cb.NodesPerCell();
-        const std::size_t ne = cb.NumCells();
-        const NDArray& conn = cb.Conn();
-        const std::vector<int>* perm = ensight_permutation(cb.Type());
-
-        out += entry->mKeyword;
-        out += "\n";
-        std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(ne));
+    for (const EnsightPart& part : rParts) {
+        out += "part\n";
+        std::snprintf(buf, sizeof(buf), "%10d\n", static_cast<int>(part.mId));
         out += buf;
-        if (entry->mNumNodes == -2) {
-            // nfaced: faces-per-cell, then nodes-per-face, then the node ids --
-            // the three runs read_faces consumes, in the same order.
-            for (std::size_t r = 0; r < ne; ++r) {
-                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(cb.NumFaces(r)));
+        out += part.mName + "\n";
+        out += "coordinates\n";
+        const std::size_t pn = part.NumNodes(np);
+        std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(pn));
+        out += buf;
+        for (std::size_t c = 0; c < 3; ++c) {
+            for (std::size_t i = 0; i < pn; ++i) {
+                const std::size_t src = static_cast<std::size_t>(part.Node(i));
+                const double v = c < dim ? point_values[src * dim + c] : 0.0;
+                detail::snprintf_c(buf, sizeof(buf), "%12.5e\n", v);
                 out += buf;
             }
-            for (std::size_t r = 0; r < ne; ++r)
-                for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+        }
+
+        for (const std::size_t bi : part.mBlocks) {
+            const auto cb = rMesh.Cells(bi);
+            const EnsightTypeEntry* entry = rEntries[bi];
+            const std::size_t npc = cb.NodesPerCell();
+            const std::size_t ne = cb.NumCells();
+            const NDArray& conn = cb.Conn();
+            const std::vector<int>* perm = ensight_permutation(cb.Type());
+
+            out += entry->mKeyword;
+            out += "\n";
+            std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(ne));
+            out += buf;
+            if (entry->mNumNodes == -2) {
+                // nfaced: faces-per-cell, then nodes-per-face, then the node ids --
+                // the three runs read_faces consumes, in the same order.
+                for (std::size_t r = 0; r < ne; ++r) {
                     std::snprintf(buf, sizeof(buf), "%10lld\n",
-                                  static_cast<long long>(cb.Face(r, f).second));
+                                  static_cast<long long>(cb.NumFaces(r)));
                     out += buf;
                 }
-            for (std::size_t r = 0; r < ne; ++r)
-                for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
-                    const auto face = cb.Face(r, f);
-                    for (std::size_t k = 0; k < face.second; ++k) {
+                for (std::size_t r = 0; r < ne; ++r)
+                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                        std::snprintf(buf, sizeof(buf), "%10lld\n",
+                                      static_cast<long long>(cb.Face(r, f).second));
+                        out += buf;
+                    }
+                for (std::size_t r = 0; r < ne; ++r)
+                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                        const auto face = cb.Face(r, f);
+                        for (std::size_t k = 0; k < face.second; ++k) {
+                            std::snprintf(buf, sizeof(buf), "%10lld",
+                                          static_cast<long long>(part.IdOf(face.first[k])) + 1);
+                            out += buf;
+                        }
+                        out += "\n";
+                    }
+                continue;
+            }
+            if (entry->mNumNodes == -1) {
+                // nsided: nodes-per-cell, then the node ids.
+                const EnsightPolygonRows rows(cb);
+                for (std::size_t r = 0; r < ne; ++r) {
+                    std::snprintf(buf, sizeof(buf), "%10lld\n",
+                                  static_cast<long long>(rows.Size(r)));
+                    out += buf;
+                }
+                for (std::size_t r = 0; r < ne; ++r) {
+                    for (std::size_t k = 0; k < rows.Size(r); ++k) {
                         std::snprintf(buf, sizeof(buf), "%10lld",
-                                      static_cast<long long>(face.first[k]) + 1);
+                                      static_cast<long long>(part.IdOf(rows.Node(r, k))) + 1);
                         out += buf;
                     }
                     out += "\n";
                 }
-            continue;
-        }
-        if (entry->mNumNodes == -1) {
-            // nsided: nodes-per-cell, then the node ids.
-            const EnsightPolygonRows rows(cb);
-            for (std::size_t r = 0; r < ne; ++r) {
-                std::snprintf(buf, sizeof(buf), "%10lld\n", static_cast<long long>(rows.Size(r)));
-                out += buf;
+                continue;
             }
+            const detail::Int64View conn_values(conn);
             for (std::size_t r = 0; r < ne; ++r) {
-                for (std::size_t k = 0; k < rows.Size(r); ++k) {
-                    std::snprintf(buf, sizeof(buf), "%10lld",
-                                  static_cast<long long>(rows.Node(r, k)) + 1);
+                for (std::size_t j = 0; j < npc; ++j) {
+                    const std::size_t src =
+                        perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
+                    const long long v =
+                        static_cast<long long>(part.IdOf(conn_values[r * npc + src])) + 1;
+                    std::snprintf(buf, sizeof(buf), "%10lld", v);
                     out += buf;
                 }
                 out += "\n";
             }
-            continue;
-        }
-        const detail::Int64View conn_values(conn);
-        for (std::size_t r = 0; r < ne; ++r) {
-            for (std::size_t j = 0; j < npc; ++j) {
-                const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
-                const long long v = static_cast<long long>(conn_values[r * npc + src]) + 1;
-                std::snprintf(buf, sizeof(buf), "%10lld", v);
-                out += buf;
-            }
-            out += "\n";
         }
     }
 
@@ -145656,15 +145946,14 @@ void ensight_write_geo_ascii(std::ostream& rOs, const Mesh& rMesh,
 }
 
 void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
-                              const std::vector<const EnsightTypeEntry*>& rEntries, bool Fortran) {
+                              const std::vector<const EnsightTypeEntry*>& rEntries,
+                              const std::vector<EnsightPart>& rParts, bool Fortran) {
     const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
     const std::size_t np = rMesh.NumPoints();
 
     constexpr std::size_t i32_max =
         static_cast<std::size_t>(std::numeric_limits<std::int32_t>::max());
-    if (np > i32_max)
-        throw WriteError("EnSight: mesh too large for 32-bit binary EnSight output");
 
     EnsightRecordWriter out(Fortran);
     out.Bytes().reserve(80 * 8 + np * 12 + 64);
@@ -145673,76 +145962,88 @@ void ensight_write_geo_binary(std::ostream& rOs, const Mesh& rMesh,
     out.Str80(detail::provenance_lines(detail::SlotTier::Bounded)[0]);
     out.Str80("node id assign");
     out.Str80("element id assign");
-    out.Str80("part");
-    out.Int(1);
-    out.Str80("Mesh");
-    out.Str80("coordinates");
-    out.Int(static_cast<std::int64_t>(np));
-    {
-        std::vector<float> col(np * 3);
-        const detail::DoubleView point_values(points);
-        for (std::size_t c = 0; c < 3; ++c)
-            for (std::size_t i = 0; i < np; ++i)
-                col[c * np + i] = c < dim ? static_cast<float>(point_values[i * dim + c]) : 0.0f;
-        for (std::size_t c = 0; c < 3; ++c)
-            out.Floats(col.data() + c * np, np);
-    }
-
-    for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-        const auto cb = rMesh.Cells(bi);
-        const EnsightTypeEntry* entry = rEntries[bi];
-        const std::size_t npc = cb.NodesPerCell();
-        const std::size_t ne = cb.NumCells();
-        if (ne > i32_max)
+    for (const EnsightPart& part : rParts) {
+        const std::size_t pn = part.NumNodes(np);
+        if (pn > i32_max)
             throw WriteError("EnSight: mesh too large for 32-bit binary EnSight output");
-        const NDArray& conn = cb.Conn();
-        const std::vector<int>* perm = ensight_permutation(cb.Type());
-
-        out.Str80(entry->mKeyword);
-        out.Int(static_cast<std::int64_t>(ne));
-        if (entry->mNumNodes < 0) {
-            // nsided / nfaced: the same three (or two) runs as the ASCII path,
-            // as int32 -- which is exactly what read_binary_faces consumes.
-            std::vector<std::int32_t> counts;
-            std::vector<std::int32_t> sizes;
-            std::vector<std::int32_t> nodes;
-            const bool faced = entry->mNumNodes == -2;
-            std::optional<EnsightPolygonRows<std::remove_cv_t<decltype(cb)>>> rows;
-            if (!faced)
-                rows.emplace(cb);
-            for (std::size_t r = 0; r < ne; ++r) {
-                if (faced) {
-                    counts.push_back(static_cast<std::int32_t>(cb.NumFaces(r)));
-                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
-                        const auto face = cb.Face(r, f);
-                        sizes.push_back(static_cast<std::int32_t>(face.second));
-                        for (std::size_t k = 0; k < face.second; ++k)
-                            nodes.push_back(static_cast<std::int32_t>(face.first[k]) + 1);
-                    }
-                } else {
-                    counts.push_back(static_cast<std::int32_t>(rows->Size(r)));
-                    for (std::size_t k = 0; k < rows->Size(r); ++k)
-                        nodes.push_back(static_cast<std::int32_t>(rows->Node(r, k)) + 1);
+        out.Str80("part");
+        out.Int(part.mId);
+        out.Str80(part.mName);
+        out.Str80("coordinates");
+        out.Int(static_cast<std::int64_t>(pn));
+        {
+            std::vector<float> col(pn * 3);
+            const detail::DoubleView point_values(points);
+            for (std::size_t c = 0; c < 3; ++c)
+                for (std::size_t i = 0; i < pn; ++i) {
+                    const std::size_t src = static_cast<std::size_t>(part.Node(i));
+                    col[c * pn + i] =
+                        c < dim ? static_cast<float>(point_values[src * dim + c]) : 0.0f;
                 }
-            }
-            auto append = [&out](const std::vector<std::int32_t>& v) {
-                if (!v.empty())
-                    out.Ints(v);
-            };
-            append(counts);
-            if (faced)
-                append(sizes);
-            append(nodes);
-            continue;
+            for (std::size_t c = 0; c < 3; ++c)
+                out.Floats(col.data() + c * pn, pn);
         }
-        std::vector<std::int32_t> flat(ne * npc);
-        const detail::Int64View conn_values(conn);
-        for (std::size_t r = 0; r < ne; ++r)
-            for (std::size_t j = 0; j < npc; ++j) {
-                const std::size_t src = perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
-                flat[r * npc + j] = static_cast<std::int32_t>(conn_values[r * npc + src]) + 1;
+
+        for (const std::size_t bi : part.mBlocks) {
+            const auto cb = rMesh.Cells(bi);
+            const EnsightTypeEntry* entry = rEntries[bi];
+            const std::size_t npc = cb.NodesPerCell();
+            const std::size_t ne = cb.NumCells();
+            if (ne > i32_max)
+                throw WriteError("EnSight: mesh too large for 32-bit binary EnSight output");
+            const NDArray& conn = cb.Conn();
+            const std::vector<int>* perm = ensight_permutation(cb.Type());
+
+            out.Str80(entry->mKeyword);
+            out.Int(static_cast<std::int64_t>(ne));
+            if (entry->mNumNodes < 0) {
+                // nsided / nfaced: the same three (or two) runs as the ASCII path,
+                // as int32 -- which is exactly what read_binary_faces consumes.
+                std::vector<std::int32_t> counts;
+                std::vector<std::int32_t> sizes;
+                std::vector<std::int32_t> nodes;
+                const bool faced = entry->mNumNodes == -2;
+                std::optional<EnsightPolygonRows<std::remove_cv_t<decltype(cb)>>> rows;
+                if (!faced)
+                    rows.emplace(cb);
+                for (std::size_t r = 0; r < ne; ++r) {
+                    if (faced) {
+                        counts.push_back(static_cast<std::int32_t>(cb.NumFaces(r)));
+                        for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                            const auto face = cb.Face(r, f);
+                            sizes.push_back(static_cast<std::int32_t>(face.second));
+                            for (std::size_t k = 0; k < face.second; ++k)
+                                nodes.push_back(
+                                    static_cast<std::int32_t>(part.IdOf(face.first[k])) + 1);
+                        }
+                    } else {
+                        counts.push_back(static_cast<std::int32_t>(rows->Size(r)));
+                        for (std::size_t k = 0; k < rows->Size(r); ++k)
+                            nodes.push_back(static_cast<std::int32_t>(part.IdOf(rows->Node(r, k))) +
+                                            1);
+                    }
+                }
+                auto append = [&out](const std::vector<std::int32_t>& v) {
+                    if (!v.empty())
+                        out.Ints(v);
+                };
+                append(counts);
+                if (faced)
+                    append(sizes);
+                append(nodes);
+                continue;
             }
-        out.Ints(flat);
+            std::vector<std::int32_t> flat(ne * npc);
+            const detail::Int64View conn_values(conn);
+            for (std::size_t r = 0; r < ne; ++r)
+                for (std::size_t j = 0; j < npc; ++j) {
+                    const std::size_t src =
+                        perm != nullptr ? static_cast<std::size_t>((*perm)[j]) : j;
+                    flat[r * npc + j] =
+                        static_cast<std::int32_t>(part.IdOf(conn_values[r * npc + src])) + 1;
+                }
+            out.Ints(flat);
+        }
     }
 
     rOs.write(out.Bytes().data(), static_cast<std::streamsize>(out.Bytes().size()));
@@ -145817,29 +146118,33 @@ std::string ensight_variable_extension(const std::string& rKind, bool PerNode) {
  * @return One value per point (or per cell of that block).
  */
 std::vector<double> ensight_variable_column(const Mesh& rMesh, const EnsightVariableToWrite& rVar,
-                                            std::size_t Comp, std::size_t BlockIndex) {
+                                            std::size_t Comp, std::size_t BlockIndex,
+                                            const EnsightPart* pPart = nullptr) {
     const std::size_t mio_comp =
         (rVar.mKind == "tensor symm" && (Comp == 4 || Comp == 5)) ? (Comp == 4 ? 5 : 4) : Comp;
     const NDArray& arr =
         rVar.mPerNode ? rMesh.PointData(rVar.mName) : rMesh.CellData(rVar.mName, BlockIndex);
     const std::size_t stored_ncomp = arr.Shape().size() >= 2 ? arr.Shape()[1] : 1;
-    const std::size_t n = rVar.mPerNode ? rMesh.NumPoints() : rMesh.Cells(BlockIndex).NumCells();
+    const std::size_t n = rVar.mPerNode
+                              ? (pPart ? pPart->NumNodes(rMesh.NumPoints()) : rMesh.NumPoints())
+                              : rMesh.Cells(BlockIndex).NumCells();
     std::vector<double> col(n);
     const detail::DoubleView arr_values(arr);
-    for (std::size_t i = 0; i < n; ++i)
-        col[i] = mio_comp < stored_ncomp ? arr_values[i * stored_ncomp + mio_comp] : 0.0;
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::size_t src =
+            (rVar.mPerNode && pPart) ? static_cast<std::size_t>(pPart->Node(i)) : i;
+        col[i] = mio_comp < stored_ncomp ? arr_values[src * stored_ncomp + mio_comp] : 0.0;
+    }
     return col;
 }
 
 void ensight_write_variable_ascii(std::ostream& rOs, const Mesh& rMesh,
                                   const std::vector<const EnsightTypeEntry*>& rEntries,
+                                  const std::vector<EnsightPart>& rParts,
                                   const EnsightVariableToWrite& rVar) {
     std::string out;
     out += "variable\n";  // description line; not re-read
-    out += "part\n";
     char buf[64];
-    std::snprintf(buf, sizeof(buf), "%10d\n", 1);
-    out += buf;
 
     auto write_col = [&](const std::vector<double>& col) {
         for (double v : col) {
@@ -145848,16 +146153,21 @@ void ensight_write_variable_ascii(std::ostream& rOs, const Mesh& rMesh,
         }
     };
 
-    if (rVar.mPerNode) {
-        out += "coordinates\n";
-        for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
-            write_col(ensight_variable_column(rMesh, rVar, c, 0));
-    } else {
-        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-            out += rEntries[bi]->mKeyword;
-            out += "\n";
+    for (const EnsightPart& part : rParts) {
+        out += "part\n";
+        std::snprintf(buf, sizeof(buf), "%10d\n", static_cast<int>(part.mId));
+        out += buf;
+        if (rVar.mPerNode) {
+            out += "coordinates\n";
             for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
-                write_col(ensight_variable_column(rMesh, rVar, c, bi));
+                write_col(ensight_variable_column(rMesh, rVar, c, 0, &part));
+        } else {
+            for (const std::size_t bi : part.mBlocks) {
+                out += rEntries[bi]->mKeyword;
+                out += "\n";
+                for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+                    write_col(ensight_variable_column(rMesh, rVar, c, bi));
+            }
         }
     }
     rOs.write(out.data(), static_cast<std::streamsize>(out.size()));
@@ -145868,11 +146178,10 @@ void ensight_write_variable_ascii(std::ostream& rOs, const Mesh& rMesh,
 // first, which kept VTK and ParaView from reading the variables).
 void ensight_write_variable_binary(std::ostream& rOs, const Mesh& rMesh,
                                    const std::vector<const EnsightTypeEntry*>& rEntries,
+                                   const std::vector<EnsightPart>& rParts,
                                    const EnsightVariableToWrite& rVar, bool Fortran) {
     EnsightRecordWriter out(Fortran);
     out.Str80("variable");
-    out.Str80("part");
-    out.Int(1);
 
     auto append_col = [&](const std::vector<double>& col) {
         std::vector<float> f(col.size());
@@ -145881,15 +146190,19 @@ void ensight_write_variable_binary(std::ostream& rOs, const Mesh& rMesh,
         out.Floats(f.data(), f.size());
     };
 
-    if (rVar.mPerNode) {
-        out.Str80("coordinates");
-        for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
-            append_col(ensight_variable_column(rMesh, rVar, c, 0));
-    } else {
-        for (std::size_t bi = 0; bi < rMesh.NumCellBlocks(); ++bi) {
-            out.Str80(rEntries[bi]->mKeyword);
+    for (const EnsightPart& part : rParts) {
+        out.Str80("part");
+        out.Int(part.mId);
+        if (rVar.mPerNode) {
+            out.Str80("coordinates");
             for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
-                append_col(ensight_variable_column(rMesh, rVar, c, bi));
+                append_col(ensight_variable_column(rMesh, rVar, c, 0, &part));
+        } else {
+            for (const std::size_t bi : part.mBlocks) {
+                out.Str80(rEntries[bi]->mKeyword);
+                for (std::size_t c = 0; c < rVar.mNumComponents; ++c)
+                    append_col(ensight_variable_column(rMesh, rVar, c, bi));
+            }
         }
     }
     rOs.write(out.Bytes().data(), static_cast<std::streamsize>(out.Bytes().size()));
@@ -145969,6 +146282,7 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
     if (rMesh.PointDim() > 3)
         throw WriteError("EnSight: points must have at most three components");
     const std::vector<const EnsightTypeEntry*> entries = ensight_writable_blocks(rMesh);
+    const std::vector<EnsightPart> parts = ensight_plan_parts(rMesh);
 
     std::vector<EnsightVariableToWrite> vars;
     std::vector<std::pair<std::string, double>> constants;
@@ -146005,9 +146319,9 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
     if (!gf)
         throw WriteError("Could not open file for writing: " + geo_path);
     if (binary)
-        ensight_write_geo_binary(gf, rMesh, entries, fortran);
+        ensight_write_geo_binary(gf, rMesh, entries, parts, fortran);
     else
-        ensight_write_geo_ascii(gf, rMesh, entries);
+        ensight_write_geo_ascii(gf, rMesh, entries, parts);
 
     for (const EnsightVariableToWrite& v : vars) {
         const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
@@ -146016,9 +146330,9 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
         if (!vf)
             throw WriteError("Could not open file for writing: " + var_path);
         if (binary)
-            ensight_write_variable_binary(vf, rMesh, entries, v, fortran);
+            ensight_write_variable_binary(vf, rMesh, entries, parts, v, fortran);
         else
-            ensight_write_variable_ascii(vf, rMesh, entries, v);
+            ensight_write_variable_ascii(vf, rMesh, entries, parts, v);
     }
 }
 

@@ -207,16 +207,12 @@ Global variables, set variables, polyhedral blocks and assemblies. Consumers: MO
 
 Transient geometry, structured parts, several parts on write. Consumers: EnSight and ParaView reading what Fluent, STAR-CCM+, CONVERGE and OpenFOAM's `foamToEnsight` export. **M**
 
-- **State today.** `ensight.cpp` / `ensight/_ensight.py`. Transient (wildcard) geometry is refused (`ensight_parse_case`, lines 564–566; `_ensight.py` lines 232–233); `change_coords_only` is named nowhere; a structured `block` part fails with `"expected 'coordinates' record"` (line 673; `_ensight.py` line 447); only the eight kinds of `kKinds` are parsed (lines 493–496; `_VARIABLE_KINDS`), so complex and `per measured node` variables and the `measured:` line are ignored silently; only the first time set is honoured (lines 516–528). The writer (`write_ensight`, lines 1683–1749) writes no `TIME` section and one `part 1`, and ignores `cell_data["ensight:part"]`, which its own reader produces for a file of two or more parts (lines 850–861): a round-trip loss, so 2.3.3.1 falls under the parity decision.
-- **Reuse.** `ensight_resolve_wildcard` (line 575) already zero-pads `*` runs for variable files; `EnsightCaseInfo` (line 420) holds the time values and file numbering; `ensight_parse_geo` (line 636); `detail::vtk_structured_cells` for `block` parts.
+- **State today.** `ensight.cpp` / `ensight/_ensight.py`. Written and read in both engines: several parts (`ensight:part`), transient geometry with `change_coords_only`, and structured `block` parts (expanded; the writer writes them unstructured until 8.6). Still open: the `measured:` line and `per measured node` variables are ignored silently, complex variables are not read, only the first time set is honoured (lines 516–528), and the writer writes no `TIME` section.
 - **Steps.**
-  - **2.3.3.1 Write the parts that were read.** Group cells by `ensight:part` and write one `part` per value, named from `field_data` or `Part <n>`; variables per part. **S**
-  - **2.3.3.2 Transient geometry.** Resolve the `model:` wildcard with `ensight_resolve_wildcard` at the selected step; honour `change_coords_only` (connectivity from the first file, coordinates from the step's). `time_values` and the sequence layer need no change. **S–M**
-  - **2.3.3.3 `block` parts.** Parse `block [uniform|rectilinear] [iblanked]` with its `i j k` header and expand; `iblanked` to a `uint8` cell mask. **S–M**
   - **2.3.3.4 A transient writer**, as 2.3.4 describes (the `TIME` section and numbered files).
-  - **2.3.3.5 Measured and complex variables.** Measured data is a point cloud with its own files: read as a second vertex block when a `measured:` line is present. Complex variables wait on 8.1's naming. **S**
-- **Tests and fixtures.** `tests/python/test_ensight.py`, `tests/cpp/test_ensight.cpp`; fixtures in `tests/python/meshes/ensight/`. Generate transient and `block` cases from ParaView's `EnSightWriter` or VTK's test data (BSD), and fix the stale comment at `ensight.cpp` lines 404–409 (tensors are read).
-- **Done when.** A two-part transient case from ParaView reads at every step and writes back with both parts.
+  - **2.3.3.5 Measured and complex variables.** Measured data is a point cloud with its own files (`measured:` in the case file, a `particle coordinates` geometry): read as a second vertex block when a `measured:` line is present, which needs the point data and cell data of the mesh padded for the extra points. The binary layout of the particle file is not documented anywhere this project has to hand (*verify first* against a file EnSight wrote). Complex variables wait on 8.1's naming. **S**
+- **Tests and fixtures.** `tests/python/test_ensight.py`, `tests/cpp/test_ensight.cpp`; fixtures in `tests/python/meshes/ensight/`. Generate transient and `block` cases from ParaView's `EnSightWriter` or VTK's test data (BSD) to check against a real writer's files.
+- **Done when.** A two-part transient case from ParaView reads at every step and writes back with both parts (checked here on hand-built cases only).
 
 #### 2.3.4 A series writer for every format that reads one
 

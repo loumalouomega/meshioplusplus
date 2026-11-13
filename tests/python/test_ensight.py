@@ -280,7 +280,6 @@ def _transient_case(tmp_path, change_coords_only):
     """Two geometry files, ``moving.000.geo`` and ``moving.001.geo``."""
     mesh = copy.deepcopy(helpers.tri_mesh)
     meshioplusplus.ensight.write(tmp_path / "moving.000.case", mesh, binary=False)
-    first = tmp_path / "moving.000.geo"
     shifted = copy.deepcopy(mesh)
     shifted.points = shifted.points + 10.0
     meshioplusplus.ensight.write(tmp_path / "moving.001.case", shifted, binary=False)
@@ -629,3 +628,54 @@ def test_parts_that_were_read_are_written(tmp_path, binary):
     assert [a.tolist() for a in back.cell_data["ensight:part"]] == [[1, 1], [2]]
     assert back.point_data["p"].tolist() == [0, 1, 2, 3, 1, 3, 4, 5]
     assert [a.tolist() for a in back.cell_data["s"]] == [[1.0, 2.0], [3.0]]
+
+
+def _block_geo(kind, iblanked=False):
+    lines = [
+        "EnSight Gold Geometry File",
+        "structured",
+        "node id off",
+        "element id off",
+        "part",
+        "         1",
+        "lattice",
+        "block"
+        + (" " + kind if kind != "curvilinear" else "")
+        + (" iblanked" if iblanked else ""),
+        "         3         2         2",
+    ]
+    if kind == "uniform":
+        lines += ["0.0", "0.0", "0.0", "1.0", "2.0", "3.0"]
+    elif kind == "rectilinear":
+        lines += ["0.0", "1.0", "3.0", "0.0", "2.0", "0.0", "3.0"]
+    else:
+        pts = [
+            (i, 2.0 * j, 3.0 * k) for k in range(2) for j in range(2) for i in range(3)
+        ]
+        for c in range(3):
+            lines += [str(float(p[c])) for p in pts]
+    if iblanked:
+        lines += ["1", "1", "0"] + ["1"] * 9
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("kind", ["curvilinear", "uniform", "rectilinear"])
+def test_block_parts_expand_to_hexahedra(tmp_path, kind):
+    path = tmp_path / "block.geo"
+    path.write_text(_block_geo(kind))
+    for read in (_ensight.read, meshioplusplus.ensight.read):
+        mesh = read(path)
+        assert len(mesh.points) == 12
+        assert [b.type for b in mesh.cells] == ["hexahedron"]
+        assert mesh.cells[0].data.shape == (2, 8)
+        assert mesh.points[:, 0].max() == (3.0 if kind == "rectilinear" else 2.0)
+        assert mesh.cells[0].data[0].tolist() == [0, 1, 4, 3, 6, 7, 10, 9]
+
+
+def test_iblanked_block_keeps_its_mask(tmp_path):
+    path = tmp_path / "block.geo"
+    path.write_text(_block_geo("uniform", iblanked=True))
+    for read in (_ensight.read, meshioplusplus.ensight.read):
+        mask = read(path).point_data["ensight:iblank"]
+        assert mask.dtype == np.uint8
+        assert mask.tolist()[:3] == [1, 1, 0]
