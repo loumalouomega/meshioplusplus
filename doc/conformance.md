@@ -15,6 +15,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 
 | Format | vtx | line | tri | quad | tet | hex | wdg | pyr | Points | Point data | Cell data | F | Regions |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| <span id="3mf">`3mf`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | cell |
 | <span id="abaqus">`abaqus`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | exact | — | — | — | cell, point, side |
 | <span id="abaqus-fil">`abaqus_fil`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="adcirc">`adcirc`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
@@ -116,6 +117,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 
 ## Notes
 
+- **`3mf`**: 3MF's core specification holds triangle objects, a unit and base-material colours (`3mf:color`); a cell region is an object.
 - **`abaqus_fil`**: A results file holds the model and the results Abaqus names: only point data named like a nodal result (`U`, `RF`...) and cell data named like an element result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; a `vertex` has no Abaqus element. Side regions are contact surfaces.
 - **`adcirc`**: A fort.14 grid holds triangles, a depth per node and named boundary strings (`open_boundary_*`, `land_boundary_*`); results are separate fort.63/64 files, which meshio++ reads but does not write.
 - **`ansys`**: A Fluent mesh stores volume cells and the faces that bound them; lower-dimensional cells that are not boundary faces of a volume cell are dropped with a warning.

@@ -7,6 +7,7 @@ this is how it finds them without importing the others first.
 
 # Every format and writer name -> the subpackage that registers it.
 FORMAT_MODULES = {
+    "3mf": "threemf",
     "abaqus": "abaqus",
     "abaqus_fil": "abaqus_fil",
     "adcirc": "adcirc",
@@ -115,6 +116,7 @@ FORMAT_MODULES = {
 # Every extension -> the subpackages that register it, in registration order.
 EXTENSION_MODULES = {
     ".14": ("adcirc",),
+    ".3mf": ("threemf",),
     ".asc": ("xyz",),
     ".avs": ("avsucd",),
     ".bdf": ("nastran",),
@@ -333,6 +335,7 @@ ALL_MODULES = (
     "szplt",
     "tecplot",
     "tetgen",
+    "threemf",
     "tikz",
     "triangle",
     "ugrid",
@@ -358,6 +361,7 @@ ALL_MODULES = (
 
 # Every format name with a reader.
 READER_NAMES = (
+    "3mf",
     "abaqus",
     "abaqus_fil",
     "adcirc",
@@ -462,6 +466,7 @@ READER_NAMES = (
 
 # Every writer name.
 WRITER_NAMES = (
+    "3mf",
     "abaqus",
     "abaqus_fil",
     "adcirc",

@@ -67,6 +67,7 @@
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/adcirc.hpp"
 #include "meshioplusplus/formats/gifti.hpp"
+#include "meshioplusplus/formats/threemf.hpp"
 #include "meshioplusplus/formats/freesurfer.hpp"
 #include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
@@ -564,6 +565,7 @@ const std::vector<RegistryRow>& registry_rows() {
         {.mName = "freesurfer",
          .mRead = [](const std::string& rPath) { return meshioplusplus::read_freesurfer(rPath); },
          .mWrite = meshioplusplus::write_freesurfer},
+        {.mName = "3mf", .mRead = meshioplusplus::read_3mf, .mWrite = meshioplusplus::write_3mf},
         {.mName = "selafin",
          .mRead = [](const std::string& rPath) { return meshioplusplus::read_selafin(rPath); },
          .mWrite = meshioplusplus::write_selafin,
@@ -1012,6 +1014,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".dxf", "dxf"},
         {".14", "adcirc"},
         {".gii", "gifti"},
+        {".3mf", "3mf"},
         {".pial", "freesurfer"},
         {".white", "freesurfer"},
         {".inflated", "freesurfer"},

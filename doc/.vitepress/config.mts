@@ -329,6 +329,7 @@ export default defineConfig({
         text: "Formats",
         collapsed: true,
         items: [
+          { text: "3mf", link: "/formats/3mf" },
           { text: "abaqus", link: "/formats/abaqus" },
           { text: "abaqus_fil", link: "/formats/abaqus_fil" },
           { text: "adcirc", link: "/formats/adcirc" },

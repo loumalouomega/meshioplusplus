@@ -65,6 +65,7 @@ Under `src/cpp/include/meshioplusplus/detail/`. Installed, so an inline body or 
 | Header | Contents |
 | --- | --- |
 | `vtk_xml.hpp`, `vtu_binary.hpp`, `xdmf_common.hpp`, `hdf5_util.hpp` | VTK XML `<DataArray>` helpers and codecs; XDMF type names and raw cell data; HDF5 helpers. |
+| `src/cpp/src/detail/zip_archive.hpp` (core-private) | A ZIP container: `ZipReader` (list members, read one by name, stored or deflated; Zip64 and encryption refused by name) and `ZipWriter` (stored or level-9 deflated members dated 1980-01-01, so the bytes depend on the contents alone). The single-member `.zip` input path and 3MF use it; the Python twin of the writer is `meshioplusplus._zip`. |
 | `src/cpp/src/detail/netcdf_util.hpp` (core-private, `detail::nc`) | netCDF helpers shared by the netCDF-backed formats (Exodus, UGRID NetCDF): `check` (with the format's own message prefix), `nc_type_of`/`dtype_of`, `read_var` (a variable or hyperslab as an `NDArray`), `var_dims`, `read_names`, `read_att_text` (NUL and blank padding trimmed), `read_ints`. |
 | `nastran_model.hpp`, `ansys_model.hpp`, `abaqus_types.hpp`, `colormap.hpp`, `face_color.hpp` | The models the Nastran, Ansys and Abaqus readers share; the drawing writers' colormaps and per-face colours. |
 | `link_check.hpp`, `abi_version_check.hpp`, `mesh_backend_check.hpp` | The two link-time sentinels and the paste, stringize and `gnu::used` reference they share. |

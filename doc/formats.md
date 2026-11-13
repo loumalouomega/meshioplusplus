@@ -16,6 +16,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 | Format name | Extensions | Read | Write | Extra dependencies | Round trip |
 |---|---|---|---|---|---|
+| [`3mf`](./formats/3mf.md) | `.3mf` | ✓ (core spec: objects, components, build, base materials) | ✓ | — | [1/8 cells · no data · regions C](./conformance.md#3mf) |
 | [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — | [6/8 cells · no data · regions CPS](./conformance.md#abaqus) |
 | [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#abaqus-fil) |
 | [`adcirc`](./formats/adcirc.md) | `.14`, `.grd` | ✓ (`fort.14` grid; `fort.63`/`fort.64` results as steps) | ✓ (grid) | — | [1/8 cells · no data](./conformance.md#adcirc) |

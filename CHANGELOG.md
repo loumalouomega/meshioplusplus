@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** a `3mf` format (the 3MF core specification: build items, objects, components and their transforms, units as `meshio:length_unit`, base materials as `3mf:color`; written one object per cell region), both engines with identical bytes, checked against lib3mf both ways; and `detail/zip_archive`, a ZIP reader and writer the single-member `.zip` input now goes through (roadmap 2.4.5).
+
+
 - **Added:** `gifti` (GIFTI `.gii` surfaces: every encoding, byte order and indexing order, point data by name, label tables as point regions, the coordinate transform; written little-endian Base64Binary) and `freesurfer` (binary triangle surfaces with their volume-geometry tail kept, `curv` overlays and `annot` parcellations as read options), both engines, checked both ways against nibabel (roadmap 2.4.4).
 
 

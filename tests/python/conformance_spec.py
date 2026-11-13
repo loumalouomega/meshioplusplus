@@ -399,6 +399,15 @@ def _describe(mesh, back) -> dict:
 # ----------------------------------------------------------------------------
 
 SPEC: dict[str, dict] = {
+    "3mf": {
+        "cells": {"triangle": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "3MF's core specification holds triangle objects, a unit and base-material colours (`3mf:color`); a cell region is an object.",
+    },
     "abaqus": {
         "cells": {
             "line": "exact",

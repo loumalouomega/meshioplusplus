@@ -88,6 +88,7 @@
 #include "meshioplusplus/formats/plot3d.hpp"
 #include "meshioplusplus/formats/adcirc.hpp"
 #include "meshioplusplus/formats/gifti.hpp"
+#include "meshioplusplus/formats/threemf.hpp"
 #include "meshioplusplus/formats/freesurfer.hpp"
 #include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
@@ -8303,6 +8304,8 @@ PYBIND11_MODULE(_core, m) {
                 [&] { return meshioplusplus::read_adcirc_metadata(path, {}).mTimeValues; });
         },
         py::arg("path"));
+    core_def_write(m, "threemf_write", &meshioplusplus::write_3mf);
+    core_def_read(m, "threemf_read", "3mf", &meshioplusplus::read_3mf);
     core_def_write(m, "gifti_write", &meshioplusplus::write_gifti);
     core_def_read(m, "gifti_read", "gifti", &meshioplusplus::read_gifti);
     core_def_write(m, "freesurfer_write", &meshioplusplus::write_freesurfer);

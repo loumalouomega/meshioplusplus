@@ -293,17 +293,9 @@ Read and written in both engines ([PLOT3D](./formats/plot3d.md)): the variant in
 
 [GIFTI](./formats/gifti.md) and [FreeSurfer](./formats/freesurfer.md) surfaces are read and written in both engines, with curv and annot overlays read; nibabel reads what meshio++ writes and the reverse. Writing curv and annot files is the one piece left, for when a user asks.
 
-#### 2.4.5 3MF
+#### 2.4.5 3MF: verify
 
-Reopened from *Considered, not queued*: print preparation is now a meshio++ workflow ([`repair`](./repair.md), [`offset_surface`](./offset_surface.md)'s thicken and hollow, [`remesh`](./remesh.md), the scan-to-part loop), and 3MF is what slicers exchange, with units, several objects and colour where STL has none. Consumer: PrusaSlicer, Cura, Bambu Studio. **M**
-
-- **Reuse.** A ZIP reader exists but refuses more than one member: `cmpin_zip_entry` and `cmpin_unzip` in `src/cpp/src/detail/compressed_input.cpp` (lines 199–264; the refusal at line 237; no Zip64). For writing there is a CRC-32 (`png_crc32`, `src/cpp/src/detail/png_write.hpp` line 39) and deflate through zlib (`png_write.cpp` line 139). pugixml for the XML. In Python, `zipfile`.
-- **Steps.**
-  - **2.4.5.1 A ZIP container in the core.** `detail/zip_archive.{hpp,cpp}`: list members and read one by name (lifting the single-member limit of the existing parser, which then calls this), and write stored or deflated members with a central directory. No Zip64 (refuse above 4 GB by name), no encryption. Tests against `zipfile`-written archives; fuzz it through the 3MF reader's seed. Recorded in [common utilities](./common_utilities.md). **S–M**
-  - **2.4.5.2 The core specification.** Read `_rels/.rels` to find the model part (`3D/3dmodel.model`), then `<resources>`: each `<object type="model">` with a `<mesh>` (`<vertices>`, `<triangles v1 v2 v3 pid p1…>`) is a triangle block and a cell region named after the object; `<components>` and the `<build>` items' `transform` are applied (`transform`), `unit` goes to `meshio:length_unit`. `<basematerials>` and per-triangle `pid`/`p1` to a `uint8` RGBA cell array `3mf:color`. The writer emits one object per cell region, `[Content_Types].xml` and the relationships. **M**
-  - **2.4.5.3 Out of scope.** The materials, production, slice and beam-lattice extensions; a model using a `requiredextensions` the reader lacks is refused by name.
-- **Fixtures.** The 3MF Consortium's sample files (BSD-2†).
-- **Done when.** The consortium's validator (`lib3mf`'s, run outside the tests) and PrusaSlicer open a file meshio++ wrote; the consortium's core samples read.
+The ZIP container (`detail/zip_archive`, 2.4.5.1) and the core specification (2.4.5.2) are in both engines ([3MF](./formats/3mf.md)), checked against lib3mf both ways. Still open: open a written file in PrusaSlicer, and read the consortium's core sample files. **XS**
 
 #### 2.4.6 E57 and LAS/LAZ
 
