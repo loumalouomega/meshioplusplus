@@ -309251,8 +309251,8 @@ const char* registry_compiled_out(const std::string& rFormat) {
     // Deliberately NOT an arm for cgns/cgnslib: the format is fully readable
     // and writable without it (the hand-rolled ADF-over-HDF5 path), so
     // reporting it "compiled out" would be wrong. The cgnslib-only
-    // capabilities -- ADF containers and NGON_n/NFACE_n -- report themselves
-    // by name from read_cgns_mll instead.
+    // capabilities -- ADF containers and the CGNS 3.x NGON_n/NFACE_n layout --
+    // report themselves by name from read_cgns_mll instead.
     return nullptr;
 }
 

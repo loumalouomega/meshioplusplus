@@ -7,10 +7,12 @@ from ._cgns import write as _py_write
 
 _HAS_HDF5 = getattr(_core, "__has_hdf5__", False)
 # The optional cgnslib backend. When present the C++ read path additionally
-# handles ADF-container files and NGON_n/NFACE_n polyhedral sections; the
-# Python reference below is h5py-based and can do neither, which is why a
+# handles ADF-container files and the CGNS 3.x NGON_n/NFACE_n layout (the
+# 4.x layout is the raw HDF5 path's own, in the core without cgnslib); the
+# Python reference below is h5py-based and can read neither, which is why a
 # failure on a non-HDF5 file is re-raised rather than falling back into a
-# confusing h5py error (see `read`).
+# confusing h5py error (see `read`). ADF itself stays out of scope: it is a
+# bespoke binary container, and cgnslib is the route.
 _HAS_CGNSLIB = getattr(_core, "__has_cgnslib__", False)
 
 

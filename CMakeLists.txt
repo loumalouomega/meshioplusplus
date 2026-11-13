@@ -374,15 +374,16 @@ endif()
 # The official CGNS library (cgnslib / the CGNS Mid-Level Library). OFF by
 # default and bring-your-own, exactly like KaHIP: never vendored, never
 # downloaded. It is an ADDITIVE backend -- the hand-rolled ADF-over-HDF5 CGNS
-# reader and writer are unchanged and remain the default -- that buys two
-# things the raw-HDF5 path fundamentally cannot have: files in the ADF
-# container (a raw-HDF5 reader can never open one) and NGON_n/NFACE_n
-# polyhedral sections, whose CGNS 3.x-vs-4.0 ElementStartOffset split the MLL
-# absorbs. Point CGNS_ROOT at an install; cgnslib ships its own CMake config
+# reader and writer are unchanged and remain the default -- that buys what the
+# raw-HDF5 path cannot have: files in the ADF container (a raw-HDF5 reader can
+# never open one) and the CGNS 3.x layout of NGON_n/NFACE_n polyhedral sections
+# (inline face lengths, no ElementStartOffset), which the MLL absorbs. The
+# CGNS 4.x polyhedral layout needs no cgnslib: the raw HDF5 path reads and
+# writes it. Point CGNS_ROOT at an install; cgnslib ships its own CMake config
 # (targets CGNS::cgns_shared / CGNS::cgns_static), so no Find module is needed
 # and the exported package stays relocatable.
 option(MESHIOPLUSPLUS_WITH_CGNSLIB
-       "Use the official CGNS library for CGNS (ADF containers + NGON_n/NFACE_n)" OFF)
+       "Use the official CGNS library for CGNS (ADF containers + the 3.x NGON_n/NFACE_n layout)" OFF)
 if(MESHIOPLUSPLUS_WITH_CGNSLIB)
   find_package(CGNS CONFIG QUIET)
   if(NOT TARGET CGNS::cgns_shared AND NOT TARGET CGNS::cgns_static AND CGNS_ROOT)
