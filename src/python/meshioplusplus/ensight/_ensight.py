@@ -28,6 +28,7 @@ from .. import _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._fortran_records import fortran_records, sniff_fortran_records
+from .._grid import lattice_cells
 from .._mesh import CellBlock, Mesh
 
 ensight_to_meshio_type = {
@@ -570,38 +571,6 @@ def _parse_geo(cur, layout=None):
     return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
 
 
-def _lattice_cells(ni, nj, nk):
-    """``(cell_type, 0-based connectivity)`` of the cells of an ``ni x nj x nk``
-    lattice of points numbered with ``i`` fastest: hexahedra, quads or lines
-    by how many of the dimensions are above one."""
-    idx = np.arange(ni * nj * nk).reshape(nk, nj, ni)
-    dims = [d for d in (ni, nj, nk) if d > 1]
-    if len(dims) == 3:
-        c = np.stack(
-            [
-                idx[:-1, :-1, :-1],
-                idx[:-1, :-1, 1:],
-                idx[:-1, 1:, 1:],
-                idx[:-1, 1:, :-1],
-                idx[1:, :-1, :-1],
-                idx[1:, :-1, 1:],
-                idx[1:, 1:, 1:],
-                idx[1:, 1:, :-1],
-            ],
-            axis=-1,
-        )
-        return "hexahedron", c.reshape(-1, 8)
-    plane = idx.reshape([d for d in (nk, nj, ni) if d > 1] or [1])
-    if len(dims) == 2:
-        c = np.stack(
-            [plane[:-1, :-1], plane[:-1, 1:], plane[1:, 1:], plane[1:, :-1]], axis=-1
-        )
-        return "quad", c.reshape(-1, 4)
-    if len(dims) == 1:
-        return "line", np.stack([plane[:-1], plane[1:]], axis=-1)
-    return "vertex", plane.reshape(-1, 1)
-
-
 def _read_block(cur, record, node_ids_in_file):
     """A structured ``block`` part: ``(points, cell type, connectivity, iblank)``.
 
@@ -646,7 +615,7 @@ def _read_block(cur, record, node_ids_in_file):
     iblank = None
     if iblanked:
         iblank = np.asarray(cur.read_ints(n), dtype=np.uint8)
-    cell_type, conn = _lattice_cells(ni, nj, nk)
+    cell_type, conn = lattice_cells(ni, nj, nk)
     return xyz, cell_type, conn.astype(np.int64), iblank
 
 

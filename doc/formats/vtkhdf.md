@@ -9,6 +9,9 @@ The one ParaView-native format that puts time, partitions and fields in a single
 | **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | HDF5 (C++ core built with `MESHIOPLUSPLUS_WITH_HDF5`, otherwise `h5py`) |
 
+
+**`ImageData`** (Python engine only: the core refuses the type by name and the shim retries on the twin) is read, static files only: the `WholeExtent`, `Origin`, `Spacing` and `Direction` attributes become the lattice's points (x fastest, at `Origin + Direction · (Spacing × index)`) and hexahedra (quads or lines when a dimension has one point), and the `PointData` and `CellData` datasets are flattened to one row per point or cell. It is not written, and the mesh does not remember it was an image (8.6).
+
 ## Reading & writing
 
 ```python
@@ -38,7 +41,8 @@ A transient file is best written through the [time-series writers](../vtkhdf_tim
 | `PolyData` | ✓ | ✓ | `Vertices`/`Lines`/`Polygons`/`Strips`; never chosen automatically on write |
 | `PartitionedDataSetCollection` | ✓ | ✓ | blocks are `UnstructuredGrid`/`PolyData`; no time |
 | `MultiBlockDataSet` | ✓ | ✓ | nesting is flattened; no time |
-| `ImageData`, `OverlappingAMR`, `HyperTreeGrid`, `Table`, `RectilinearGrid`, `StructuredGrid` | — | — | refused by name |
+| `ImageData` | ✓ (Python engine) | — | static; read as its lattice |
+| `OverlappingAMR`, `HyperTreeGrid`, `Table`, `RectilinearGrid`, `StructuredGrid` | — | — | refused by name |
 
 ## The mesh side of the deal
 
