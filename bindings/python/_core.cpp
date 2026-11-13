@@ -8938,6 +8938,10 @@ PYBIND11_MODULE(_core, m) {
                              .def(py::init<const std::string&>(), py::arg("path")));
 
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
+    // A time series in one MED file: the core half of `meshioplusplus.med.SeriesWriter`.
+    core_def_step_writer(py::class_<meshioplusplus::MedSeriesWriter>(m, "MedSeriesWriter")
+                             .def(py::init<const std::string&>(), py::arg("path")));
+
     // A time series in one CGNS file: the core half of `meshioplusplus.cgns.SeriesWriter`.
     core_def_step_writer(py::class_<meshioplusplus::CgnsSeriesWriter>(m, "CgnsSeriesWriter")
                              .def(py::init<const std::string&, int>(), py::arg("path"),

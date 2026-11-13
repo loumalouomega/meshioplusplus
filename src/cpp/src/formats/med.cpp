@@ -2169,6 +2169,127 @@ void write_med_multi(const std::string& rPath, const std::vector<const Mesh*>& r
         med_write_mesh(file, *rMeshes[i], rInfos[i], rMedVersion, collisions);
 }
 
+namespace {
+
+/// The `CHA` field group names of a MED file, in link order.
+std::vector<std::string> med_series_fields(hid_t file) {
+    std::vector<std::string> names;
+    if (h5::exists(file, "CHA")) {
+        h5::Hid cha = h5::open_group(file, "CHA");
+        for (const std::string& name : h5::group_links(cha))
+            names.push_back(name);
+    }
+    return names;
+}
+
+/// The step subgroup name MED gives a `(ndt, nor)` pair: both zero-padded to 20 digits.
+std::string med_step_name(long long Ndt, long long Nor) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%020lld%020lld", Ndt, Nor);
+    return buf;
+}
+
+/// `NDT`, `NOR` and `PDT` of a step group set to the given values (replacing what is there).
+void med_set_step_attrs(hid_t Step, long long Ndt, long long Nor, double Pdt) {
+    for (const char* attr : {"NDT", "NOR", "PDT"})
+        if (H5Aexists(Step, attr) > 0)
+            H5Adelete(Step, attr);
+    h5::write_attr_int(Step, "NDT", Ndt);
+    h5::write_attr_int(Step, "NOR", Nor);
+    write_attr_double(Step, "PDT", Pdt);
+}
+
+}  // namespace
+
+struct MedSeriesWriter::Impl {
+    std::string mPath;
+    std::size_t mSteps = 0;
+    std::size_t mPoints = 0;
+    std::vector<std::size_t> mBlockCells;
+    std::vector<std::string> mFields;
+    bool mClosed = false;
+};
+
+MedSeriesWriter::MedSeriesWriter(const std::string& rPath) : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mPath = rPath;
+}
+
+MedSeriesWriter::~MedSeriesWriter() = default;
+MedSeriesWriter::MedSeriesWriter(MedSeriesWriter&&) noexcept = default;
+MedSeriesWriter& MedSeriesWriter::operator=(MedSeriesWriter&&) noexcept = default;
+
+void MedSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("MED series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (s.mClosed)
+        throw WriteError("MED series: the writer is finalized");
+    if (s.mSteps > 0) {
+        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
+        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
+            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
+        if (!same)
+            throw WriteError("MED series: step " + std::to_string(s.mSteps) +
+                             "'s points or cells differ from the first step's; a file holds one "
+                             "mesh -- write one file per step with '{step}'");
+    }
+    const MedInfo info;
+    detail::LibraryLock lock;
+    h5::SilenceErrors silence;
+    if (s.mSteps == 0) {
+        write_med(s.mPath, rMesh, info);
+        s.mPoints = rMesh.NumPoints();
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
+        h5::Hid f = h5::open_file_rw(s.mPath);
+        s.mFields = med_series_fields(f);
+        for (const std::string& name : s.mFields) {
+            h5::Hid field = h5::open_group(h5::open_group(f, "CHA"), name);
+            h5::Hid step = h5::open_group(field, med_step_name(1, -1));
+            med_set_step_attrs(step, 1, -1, Time);
+        }
+    } else {
+        const std::string scratch = s.mPath + ".step.tmp";
+        write_med(scratch, rMesh, info);
+        {
+            h5::Hid src = h5::open_file_read(scratch);
+            h5::Hid dst = h5::open_file_rw(s.mPath);
+            if (med_series_fields(src) != s.mFields) {
+                std::remove(scratch.c_str());
+                throw WriteError("MED series: step " + std::to_string(s.mSteps) +
+                                 "'s fields differ from the first step's");
+            }
+            const long long ndt = static_cast<long long>(s.mSteps) + 1;
+            for (const std::string& name : s.mFields) {
+                h5::Hid src_field = h5::open_group(h5::open_group(src, "CHA"), name);
+                h5::Hid dst_field = h5::open_group(h5::open_group(dst, "CHA"), name);
+                const std::string new_name = med_step_name(ndt, -1);
+                if (H5Ocopy(src_field, med_step_name(1, -1).c_str(), dst_field, new_name.c_str(),
+                            H5P_DEFAULT, H5P_DEFAULT) < 0) {
+                    std::remove(scratch.c_str());
+                    throw WriteError("MED series: could not copy step " + std::to_string(s.mSteps));
+                }
+                h5::Hid copy = h5::open_group(dst_field, new_name);
+                med_set_step_attrs(copy, ndt, -1, Time);
+            }
+        }
+        std::remove(scratch.c_str());
+    }
+    ++s.mSteps;
+}
+
+std::size_t MedSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void MedSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mClosed)
+        return;
+    if (mpImpl->mSteps == 0)
+        throw WriteError("MED series: no step was written");
+    mpImpl->mClosed = true;
+}
+
 }  // namespace meshioplusplus
 
 #endif  // MESHIOPLUSPLUS_HAS_HDF5

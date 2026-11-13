@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import meshioplusplus
+from meshioplusplus import _core
 from meshioplusplus.med._med import numpy_to_med_type
 from meshioplusplus.med._med41 import (
     FieldBitmaskWriter,
@@ -2510,3 +2511,41 @@ def test_hexa27_and_penta18_write_in_med_order(tmp_path, engine):
     back = meshioplusplus.med.read(path)
     np.testing.assert_array_equal(back.cells_dict["hexahedron27"], [np.arange(27)])
     np.testing.assert_array_equal(back.cells_dict["wedge18"], [np.arange(27, 45)])
+
+
+def _series_mesh(scale):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        point_data={"T": scale * np.arange(4.0)},
+        cell_data={"p": [scale * np.array([1.0, 2.0])]},
+    )
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_series_writer_writes_a_step_group_per_step(tmp_path, engine):
+    from meshioplusplus.med import _med
+
+    if engine == "core" and not _core.__has_hdf5__:
+        pytest.skip("needs the C++ HDF5-enabled core")
+    path = tmp_path / "series.med"
+    cls = meshioplusplus.med.SeriesWriter if engine == "core" else _med.SeriesWriter
+    with cls(str(path)) as writer:
+        for t in (0.0, 0.5, 2.0):
+            writer.write(t, _series_mesh(1.0 + t))
+    meta = meshioplusplus.read_metadata(str(path), file_format="med")
+    assert meta["time_values"] == [0.0, 0.5, 2.0]
+    # step 0 is the default read, which surfaces every step under "Name[i] - pdt" keys
+    first = meshioplusplus.med.read(str(path))
+    assert sorted(n for n in first.point_data if n.startswith("T[")) == [
+        "T[0] - 0",
+        "T[1] - 0.5",
+        "T[2] - 2",
+    ]
+    for k, t in ((1, 0.5), (2, 2.0)):
+        mesh = meshioplusplus.med.read(str(path), time_step=k)
+        np.testing.assert_allclose(mesh.point_data["T"], (1.0 + t) * np.arange(4.0))
+        np.testing.assert_allclose(
+            mesh.cell_data["p"][0], (1.0 + t) * np.array([1.0, 2.0])
+        )
