@@ -208867,7 +208867,8 @@ std::vector<std::int64_t> dedup(const unsigned char* pRows, std::size_t nrows, s
 }
 
 Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
-                std::vector<unsigned char>* pNormalBytes) {
+                std::vector<unsigned char>* pNormalBytes,
+                const std::vector<std::uint16_t>* pAttributes = nullptr) {
     std::size_t isz = dtype_size(dt);
     std::size_t nverts = rVertBytes.size() / (3 * isz);
 
@@ -208897,6 +208898,13 @@ Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
         NDArray nrm(DType::Float64, {ntri, 3});
         std::memcpy(nrm.Data(), pNormalBytes->data(), pNormalBytes->size());
         mesh.AppendCellData("facet_normals", std::move(nrm));
+    }
+    // The attribute word of a binary facet, kept only when some facet sets it.
+    if (pAttributes && std::any_of(pAttributes->begin(), pAttributes->end(),
+                                   [](std::uint16_t A) { return A != 0; })) {
+        NDArray attr(DType::UInt16, {ntri});
+        std::memcpy(attr.Data(), pAttributes->data(), ntri * sizeof(std::uint16_t));
+        mesh.AppendCellData("stl:attribute", std::move(attr));
     }
     return mesh;
 }
@@ -208984,13 +208992,15 @@ Mesh read_ascii(std::string_view Text) {
 Mesh read_binary(const char* pTriangles, std::uint32_t num_tri) {
     std::vector<unsigned char> verts;
     verts.reserve(static_cast<std::size_t>(num_tri) * 9 * sizeof(float));
+    std::vector<std::uint16_t> attributes(num_tri);
     for (std::uint32_t i = 0; i < num_tri; ++i) {
         // bytes [12, 48) are the 9 float32 vertex coords (host is little-endian).
         const char* tri = pTriangles + static_cast<std::size_t>(i) * 50;
         verts.insert(verts.end(), reinterpret_cast<const unsigned char*>(tri + 12),
                      reinterpret_cast<const unsigned char*>(tri + 48));
+        std::memcpy(&attributes[i], tri + 48, 2);
     }
-    return build_mesh(verts, DType::Float32, nullptr);
+    return build_mesh(verts, DType::Float32, nullptr, &attributes);
 }
 
 }  // namespace
@@ -209019,7 +209029,9 @@ Mesh read_stl(const std::string& rPath) {
 namespace {
 
 void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTris,
-                      std::vector<std::array<double, 3>>& rNormals) {
+                      std::vector<std::array<double, 3>>& rNormals,
+                      std::vector<std::uint16_t>& rAttributes) {
+    const bool have_attr = rMesh.HasCellData("stl:attribute");
     const bool have_normals = rMesh.HasCellData("facet_normals");
     const std::size_t normal_blocks = have_normals ? rMesh.CellDataNumBlocks("facet_normals") : 0;
     const NDArray& points = rMesh.Points();
@@ -209034,6 +209046,9 @@ void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTr
         }
         std::size_t nc = cb.NumCells();
         const detail::Int64View conn(cb.Conn());
+        std::optional<detail::DoubleView> attr;
+        if (have_attr && block < rMesh.CellDataNumBlocks("stl:attribute"))
+            attr.emplace(rMesh.CellData("stl:attribute", block));
         std::optional<detail::DoubleView> nrm;
         if (have_normals && block < normal_blocks)
             nrm.emplace(rMesh.CellData("facet_normals", block));
@@ -209049,6 +209064,7 @@ void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTr
                 tri[k * 3 + 2] = v[k][2];
             }
             rTris.push_back(tri);
+            rAttributes.push_back(attr ? static_cast<std::uint16_t>((*attr)[r]) : 0);
 
             std::array<double, 3> n{};
             if (nrm) {
@@ -209133,7 +209149,8 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     std::vector<std::array<double, 9>> tris;
     std::vector<std::array<double, 3>> normals;
-    gather_triangles(rMesh, tris, normals);
+    std::vector<std::uint16_t> attributes;
+    gather_triangles(rMesh, tris, normals, attributes);
 
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
@@ -209154,7 +209171,7 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
             for (int c = 0; c < 9; ++c)
                 buf[3 + c] = static_cast<float>(tris[i][c]);
             os.write(reinterpret_cast<const char*>(buf), 48);
-            std::uint16_t attr = 0;
+            std::uint16_t attr = attributes[i];
             os.write(reinterpret_cast<const char*>(&attr), 2);
         }
     } else {

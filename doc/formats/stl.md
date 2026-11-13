@@ -42,7 +42,7 @@ solid [name]
 endsolid
 ```
 
-**Binary**: an 80-byte free-form header, then a little-endian `uint32` triangle count, then that many fixed 50-byte records: `float32[3]` normal, `float32[3][3]` facet vertices, `int16` attribute byte count (conventionally 0, not enforced).
+**Binary**: an 80-byte free-form header, then a little-endian `uint32` triangle count, then that many fixed 50-byte records: `float32[3]` normal, `float32[3][3]` facet vertices, `uint16` attribute word (conventionally 0, not enforced). When any facet's word is non-zero it is read into `cell_data["stl:attribute"]` (`uint16`) and written back by the binary writer; all-zero words are not kept.
 
 **Binary-vs-ASCII detection**: if the file is under 80 bytes, it's treated as ASCII. Otherwise, the 80-byte header and triangle count are read and the expected total size `84 + num_triangles*50` is compared against the actual file size; if they match, it's binary, otherwise the reader rewinds and parses as ASCII. This heuristic deliberately avoids the naive "does the file start with the literal word `solid`" check, since binary STL files sometimes also start with that word in their free-form header.
 
