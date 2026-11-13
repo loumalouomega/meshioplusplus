@@ -685,6 +685,15 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
     },
+    "freesurfer": {
+        "cells": {"triangle": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A FreeSurfer surface holds vertices and triangles; overlays live in their own curv and annot files, which meshio++ reads but does not write.",
+    },
     "gid": {
         "cells": {
             "vertex": "exact",
@@ -739,6 +748,15 @@ SPEC: dict[str, dict] = {
         "note": "A surface export: volume and 2-D cells come back as their triangulated "
         "skin, positions are `float32`, and `weld=True` merges the vertices split per "
         "smooth fan.",
+    },
+    "gifti": {
+        "cells": {"triangle": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "float32", "p_i32": "int32", "p_vec": "float32"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A GIFTI surface is one triangle set with per-vertex arrays in float32 or int32; a point region is written only as a LabelTable entry (a non-negative tag).",
     },
     "gmsh": {
         "cells": {

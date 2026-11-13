@@ -66,6 +66,8 @@
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
 #include "meshioplusplus/formats/adcirc.hpp"
+#include "meshioplusplus/formats/gifti.hpp"
+#include "meshioplusplus/formats/freesurfer.hpp"
 #include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
 #include "meshioplusplus/formats/plot3d.hpp"
@@ -556,6 +558,12 @@ const std::vector<RegistryRow>& registry_rows() {
                  return meshioplusplus::read_adcirc(rPath, rOpts);
              },
          .mMetadata = meshioplusplus::read_adcirc_metadata},
+        {.mName = "gifti",
+         .mRead = meshioplusplus::read_gifti,
+         .mWrite = meshioplusplus::write_gifti},
+        {.mName = "freesurfer",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_freesurfer(rPath); },
+         .mWrite = meshioplusplus::write_freesurfer},
         {.mName = "selafin",
          .mRead = [](const std::string& rPath) { return meshioplusplus::read_selafin(rPath); },
          .mWrite = meshioplusplus::write_selafin,
@@ -1003,6 +1011,13 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".gltf", "gltf"},
         {".dxf", "dxf"},
         {".14", "adcirc"},
+        {".gii", "gifti"},
+        {".pial", "freesurfer"},
+        {".white", "freesurfer"},
+        {".inflated", "freesurfer"},
+        {".orig", "freesurfer"},
+        {".smoothwm", "freesurfer"},
+        {".sphere", "freesurfer"},
         {".slf", "selafin"},
         {".srf", "selafin"},
         {".grd", "adcirc"},

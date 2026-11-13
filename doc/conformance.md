@@ -38,7 +38,9 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="flux">`flux`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
 | <span id="frd">`frd`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | — |
 | <span id="freefem">`freefem`</span> |  |  | ✓ |  | ✓ |  |  |  | exact | — | — | — | — |
+| <span id="freesurfer">`freesurfer`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="gid">`gid`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | — |
+| <span id="gifti">`gifti`</span> |  |  | ✓ |  |  |  |  |  | exact | `p_f64` float32, `p_i32` int32, `p_vec` float32 | — | — | — |
 | <span id="gltf">`gltf`</span> | ✓ | ✓ | ✓ | → tri | → tri | → tri | → tri | → tri | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | — | — | cell |
 | <span id="gmsh">`gmsh`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell |
 | <span id="gmsh22">`gmsh22`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | ✓ | cell |
@@ -124,6 +126,8 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`dex`**: DEX stores one nodal field over a node set: cells are not kept.
 - **`dxf`**: A drawing exchange file: a line mesh is written as one `LINE` per segment, a `fit_curves` sketch as `LINE`, `ARC` and `CIRCLE` entities, and only the drawing comes back (`dxf:entity`, `dxf:type`). Vertex cells are skipped and surface or volume cells are refused by name.
 - **`frd`**: Nodal, with no sets: cell data, regions and other field data are dropped with a warning, and values print at six digits (`E12.5`). No vertex or pyramid element exists. Only `frd:group` and `frd:material` come back as cell data.
+- **`freesurfer`**: A FreeSurfer surface holds vertices and triangles; overlays live in their own curv and annot files, which meshio++ reads but does not write.
+- **`gifti`**: A GIFTI surface is one triangle set with per-vertex arrays in float32 or int32; a point region is written only as a LabelTable entry (a non-negative tag).
 - **`gltf`**: A surface export: volume and 2-D cells come back as their triangulated skin, positions are `float32`, and `weld=True` merges the vertices split per smooth fan.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
 - **`libmesh`**: A `.xda`/`.xdr` holds geometry, subdomains, p-levels, boundaries and the refinement tree, and no data arrays; `libmesh:level` is derived from the tree.

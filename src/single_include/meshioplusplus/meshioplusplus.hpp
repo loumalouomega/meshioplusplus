@@ -17882,6 +17882,59 @@ MESHIOPLUSPLUS_API Mesh read_freefem(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/freefem.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/freesurfer.hpp =====
+/**
+ * @file formats/freesurfer.hpp
+ * @brief FreeSurfer binary surfaces, with `curv` overlays and `annot` parcellations
+ * (roadmap 2.4.4).
+ *
+ * A triangle surface (`lh.pial`, `rh.white`, ...): the magic `0xFFFFFE`, a
+ * "created by" line ended by two newlines, big-endian `int32` vertex and face
+ * counts, `float32` coordinates and `int32` faces; whatever follows (the volume
+ * geometry tags FreeSurfer appends) is kept verbatim in
+ * `field_data["freesurfer:tail"]` and the creator line in
+ * `field_data["freesurfer:created_by"]` (bytes), and both are written back. Quad
+ * surfaces (`0xFFFFFF`/`0xFFFFFD` magic) are refused by name.
+ *
+ * Overlays (`FreesurferReadOptions`): each new-format `curv` file (`0xFFFFFF`
+ * magic, vertex and face counts, values per vertex, `float32` values) becomes point
+ * data named after the file with its `lh.`/`rh.` prefix dropped (`lh.thickness` is
+ * `thickness`); an `annot` file becomes the Int32 point data `freesurfer:annot`
+ * (each vertex's structure index, -1 where its colour matches no entry) and one
+ * point region per colour-table entry (tag = the index), from either colour-table
+ * layout.
+ *
+ * The writer emits a triangle surface from one triangle block. The Python twin is
+ * `meshioplusplus.freesurfer`; nibabel reads what it writes.
+ * @see doc/formats/freesurfer.md
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/** @brief The overlay files to read with a FreeSurfer surface. */
+struct FreesurferReadOptions {
+    std::vector<std::string> mCurv;  ///< curv files, each one point data array
+    std::string mAnnot;              ///< an annot file ("" = none)
+};
+
+/** @brief Read a FreeSurfer triangle surface and its overlays. */
+MESHIOPLUSPLUS_API Mesh read_freesurfer(const std::string& rPath,
+                                        const FreesurferReadOptions& rOptions);
+
+/** @brief Read a FreeSurfer triangle surface. */
+MESHIOPLUSPLUS_API Mesh read_freesurfer(const std::string& rPath);
+
+/** @brief Write one triangle block as a FreeSurfer triangle surface. */
+MESHIOPLUSPLUS_API void write_freesurfer(const std::string& rPath, const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/freesurfer.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/gid.hpp =====
 /**
  * @file gid.hpp
@@ -18325,6 +18378,47 @@ MESHIOPLUSPLUS_API MeshMetadata read_gid_metadata(const std::string& rPath,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/gid.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/gifti.hpp =====
+/**
+ * @file formats/gifti.hpp
+ * @brief GIFTI (`.gii`) surfaces: neuroimaging meshes and their per-vertex data
+ * (roadmap 2.4.4).
+ *
+ * The reader takes every `DataArray`: `ASCII`, `Base64Binary` and
+ * `GZipBase64Binary` encodings (the zlib stream inflated with window 15), either
+ * `Endian`, `RowMajorOrder` or `ColumnMajorOrder`, and the NIfTI integer and float
+ * types. `NIFTI_INTENT_POINTSET` is the points (its first `CoordinateSystemTransformMatrix`
+ * in `field_data["gifti:transform"]`, 4x4, and the space names as bytes in
+ * `gifti:data_space` and `gifti:transformed_space`), `NIFTI_INTENT_TRIANGLE` the
+ * triangle block, `NIFTI_INTENT_LABEL` an integer point data array whose
+ * `LabelTable` entries become point regions (tag = the label key), and every other
+ * array with one row per point is point data named by its `Name` metadata (else
+ * `gifti:<intent>_<index>`). External-file encodings are refused by name.
+ *
+ * The writer emits one triangle block as `POINTSET` (float32) and `TRIANGLE`
+ * (int32), then each point data array (float32, or int32 for an integer array;
+ * `NIFTI_INTENT_LABEL` for the one named `gifti:label` or any integer array a
+ * tagged point region labels), little-endian `Base64Binary`, row-major, with a
+ * `LabelTable` from the tagged point regions. The Python twin is
+ * `meshioplusplus.gifti`; nibabel reads what it writes.
+ * @see doc/formats/gifti.md
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/** @brief Read a GIFTI surface and its per-vertex arrays. */
+MESHIOPLUSPLUS_API Mesh read_gifti(const std::string& rPath);
+
+/** @brief Write a triangle surface and its point data as GIFTI. */
+MESHIOPLUSPLUS_API void write_gifti(const std::string& rPath, const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/gifti.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/gltf.hpp =====
 /**
  * @file formats/gltf.hpp
@@ -155463,6 +155557,264 @@ void write_freefem(const std::string& rPath, const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/freefem.cpp =====
+// ===== begin src/cpp/src/formats/freesurfer.cpp =====
+#include <bit>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// Big-endian reads over a file, bounds-checked.
+struct FsCursor {
+    std::string mData;
+    std::size_t mAt = 0;
+    std::string mWhat;
+
+    void Need(std::size_t N) const {
+        if (mData.size() - mAt < N)
+            throw ReadError("meshio++: freesurfer: " + mWhat + " is truncated");
+    }
+    std::int32_t I32() {
+        Need(4);
+        std::uint32_t u;
+        std::memcpy(&u, mData.data() + mAt, 4);
+        mAt += 4;
+        if constexpr (std::endian::native == std::endian::little)
+            u = detail::bswap32(u);
+        return static_cast<std::int32_t>(u);
+    }
+    float F32() {
+        const std::int32_t i = I32();
+        return std::bit_cast<float>(i);
+    }
+    std::uint32_t Magic() {
+        Need(3);
+        const auto* b = reinterpret_cast<const unsigned char*>(mData.data() + mAt);
+        mAt += 3;
+        return (std::uint32_t{b[0]} << 16) | (std::uint32_t{b[1]} << 8) | b[2];
+    }
+};
+
+FsCursor fs_open(const std::string& rPath, const std::string& rWhat) {
+    const detail::FileSource source =
+        detail::open_source(rPath, "meshio++: freesurfer: could not open file: " + rPath);
+    FsCursor c;
+    c.mData.assign(source.View());
+    c.mWhat = rWhat + " '" + rPath + "'";
+    return c;
+}
+
+NDArray fs_bytes(std::string_view Text) {
+    NDArray out(DType::UInt8, {Text.size()});
+    std::memcpy(out.Data(), Text.data(), Text.size());
+    return out;
+}
+
+std::string fs_overlay_name(const std::string& rPath) {
+    std::string base = std::filesystem::path(rPath).filename().string();
+    if (base.rfind("lh.", 0) == 0 || base.rfind("rh.", 0) == 0)
+        base = base.substr(3);
+    return base.empty() ? std::string("curv") : base;
+}
+
+void fs_add_curv(Mesh& rMesh, const std::string& rPath) {
+    FsCursor c = fs_open(rPath, "curv file");
+    if (c.Magic() != 0xFFFFFFu)
+        throw ReadError("meshio++: freesurfer: '" + rPath +
+                        "' is not a new-format curv file (old-format curv is not read)");
+    const std::int32_t nv = c.I32();
+    c.I32();  // faces
+    const std::int32_t per = c.I32();
+    if (nv < 0 || static_cast<std::size_t>(nv) != rMesh.NumPoints())
+        throw ReadError("meshio++: freesurfer: '" + rPath + "' has " + std::to_string(nv) +
+                        " values but the surface has " + std::to_string(rMesh.NumPoints()) +
+                        " vertices");
+    if (per != 1)
+        throw ReadError("meshio++: freesurfer: '" + rPath + "' has " + std::to_string(per) +
+                        " values per vertex; meshio++ reads one");
+    NDArray values(DType::Float32, {static_cast<std::size_t>(nv)});
+    for (std::int32_t k = 0; k < nv; ++k)
+        values.As<float>()[k] = c.F32();
+    rMesh.AddPointData(fs_overlay_name(rPath), std::move(values));
+}
+
+std::string fs_string(FsCursor& rC) {
+    const std::int32_t len = rC.I32();
+    if (len < 0)
+        throw ReadError("meshio++: freesurfer: a negative string length in " + rC.mWhat);
+    rC.Need(static_cast<std::size_t>(len));
+    std::string s(rC.mData.data() + rC.mAt, static_cast<std::size_t>(len));
+    rC.mAt += static_cast<std::size_t>(len);
+    const auto nul = s.find('\0');
+    return nul == std::string::npos ? s : s.substr(0, nul);
+}
+
+void fs_add_annot(Mesh& rMesh, const std::string& rPath) {
+    FsCursor c = fs_open(rPath, "annot file");
+    const std::int32_t nv = c.I32();
+    if (nv < 0 || static_cast<std::size_t>(nv) != rMesh.NumPoints())
+        throw ReadError("meshio++: freesurfer: '" + rPath + "' labels " + std::to_string(nv) +
+                        " vertices but the surface has " + std::to_string(rMesh.NumPoints()));
+    std::vector<std::int32_t> colour(static_cast<std::size_t>(nv), 0);
+    for (std::int32_t k = 0; k < nv; ++k) {
+        const std::int32_t v = c.I32();
+        const std::int32_t label = c.I32();
+        if (v < 0 || v >= nv)
+            throw ReadError("meshio++: freesurfer: '" + rPath + "' names vertex " +
+                            std::to_string(v));
+        colour[static_cast<std::size_t>(v)] = label;
+    }
+    struct Entry {
+        std::int32_t mIndex;
+        std::string mName;
+        std::int32_t mColour;
+    };
+    std::vector<Entry> entries;
+    if (c.mAt < c.mData.size() && c.I32() == 1) {
+        const std::int32_t n = c.I32();
+        const auto rgb = [&] {
+            const std::int32_t r = c.I32(), g = c.I32(), b = c.I32();
+            c.I32();  // transparency
+            return r + g * 256 + b * 65536;
+        };
+        if (n > 0) {
+            fs_string(c);  // the colour table's file name
+            const std::size_t count =
+                detail::checked_count(n, c.mData.size(), "freesurfer", "entry");
+            for (std::size_t k = 0; k < count; ++k) {
+                const std::string name = fs_string(c);
+                entries.push_back({static_cast<std::int32_t>(k), name, rgb()});
+            }
+        } else {
+            if (-n != 2)
+                throw ReadError("meshio++: freesurfer: colour table version " + std::to_string(-n) +
+                                " is not read");
+            c.I32();       // the largest structure index
+            fs_string(c);  // the colour table's file name
+            const std::size_t count =
+                detail::checked_count(c.I32(), c.mData.size(), "freesurfer", "entry");
+            for (std::size_t k = 0; k < count; ++k) {
+                const std::int32_t index = c.I32();
+                const std::string name = fs_string(c);
+                entries.push_back({index, name, rgb()});
+            }
+        }
+    }
+    std::unordered_map<std::int32_t, std::int32_t> by_colour;
+    for (const Entry& e : entries)
+        by_colour.emplace(e.mColour, e.mIndex);
+    NDArray index(DType::Int32, {static_cast<std::size_t>(nv)});
+    for (std::int32_t k = 0; k < nv; ++k) {
+        const auto it = by_colour.find(colour[static_cast<std::size_t>(k)]);
+        index.As<std::int32_t>()[k] = it == by_colour.end() ? -1 : it->second;
+    }
+    for (const Entry& e : entries) {
+        std::vector<std::int64_t> ids;
+        for (std::int32_t k = 0; k < nv; ++k)
+            if (index.As<std::int32_t>()[k] == e.mIndex)
+                ids.push_back(k);
+        NDArray arr(DType::Int64, {ids.size()});
+        std::copy(ids.begin(), ids.end(), arr.As<std::int64_t>());
+        rMesh.AddRegion(Region(e.mName, RegionKind::Point, -1, e.mIndex, std::move(arr)));
+    }
+    rMesh.AddPointData("freesurfer:annot", std::move(index));
+}
+
+}  // namespace
+
+Mesh read_freesurfer(const std::string& rPath, const FreesurferReadOptions& rOptions) {
+    FsCursor c = fs_open(rPath, "surface");
+    const std::uint32_t magic = c.Magic();
+    if (magic == 0xFFFFFFu || magic == 0xFFFFFDu)
+        throw ReadError("meshio++: freesurfer: '" + rPath +
+                        "' is a quad surface; meshio++ reads triangle surfaces");
+    if (magic != 0xFFFFFEu)
+        throw ReadError("meshio++: freesurfer: '" + rPath + "' is not a FreeSurfer surface");
+    const std::size_t end = c.mData.find("\n\n", c.mAt);
+    if (end == std::string::npos)
+        throw ReadError("meshio++: freesurfer: '" + rPath + "' has no creator line");
+    const std::string created = c.mData.substr(c.mAt, end - c.mAt);
+    c.mAt = end + 2;
+    const std::int32_t nv = c.I32(), nf = c.I32();
+    const std::size_t limit = c.mData.size();
+    const std::size_t np = detail::checked_count(nv, limit / 12, "freesurfer", "vertex");
+    const std::size_t nc = detail::checked_count(nf, limit / 12, "freesurfer", "face");
+    NDArray pts(DType::Float64, {np, 3});
+    for (std::size_t k = 0; k < np * 3; ++k)
+        pts.As<double>()[k] = static_cast<double>(c.F32());
+    NDArray tri(DType::Int64, {nc, 3});
+    for (std::size_t k = 0; k < nc * 3; ++k) {
+        const std::int32_t v = c.I32();
+        if (v < 0 || static_cast<std::size_t>(v) >= np)
+            throw ReadError("meshio++: freesurfer: a face names vertex " + std::to_string(v));
+        tri.As<std::int64_t>()[k] = v;
+    }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    if (nc > 0)
+        mesh.AddCellBlock("triangle", std::move(tri));
+    mesh.AddFieldData("freesurfer:created_by", fs_bytes(created));
+    if (c.mAt < c.mData.size())
+        mesh.AddFieldData("freesurfer:tail", fs_bytes(std::string_view(c.mData).substr(c.mAt)));
+    for (const std::string& curv : rOptions.mCurv)
+        fs_add_curv(mesh, curv);
+    if (!rOptions.mAnnot.empty())
+        fs_add_annot(mesh, rOptions.mAnnot);
+    return mesh;
+}
+
+Mesh read_freesurfer(const std::string& rPath) {
+    return read_freesurfer(rPath, FreesurferReadOptions{});
+}
+
+void write_freesurfer(const std::string& rPath, const Mesh& rMesh) {
+    if (rMesh.NumCellBlocks() != 1 || std::string(rMesh.Cells(0).Type()) != "triangle")
+        throw WriteError("meshio++: freesurfer: a FreeSurfer surface is one triangle block");
+    const auto cb = rMesh.Cells(0);
+    std::string out = "\xFF\xFF\xFE";
+    std::string created = "created by meshio++";
+    if (rMesh.HasFieldData("freesurfer:created_by")) {
+        const NDArray& t = rMesh.FieldData("freesurfer:created_by");
+        created.assign(reinterpret_cast<const char*>(t.Data()), t.Size());
+    }
+    out += created + "\n\n";
+    const auto put = [&](std::uint32_t u) {
+        if constexpr (std::endian::native == std::endian::little)
+            u = detail::bswap32(u);
+        out.append(reinterpret_cast<const char*>(&u), 4);
+    };
+    const std::size_t np = rMesh.NumPoints(), pd = rMesh.PointDim();
+    put(static_cast<std::uint32_t>(np));
+    put(static_cast<std::uint32_t>(cb.NumCells()));
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            put(std::bit_cast<std::uint32_t>(static_cast<float>(
+                c < pd ? detail::read_double(rMesh.Points(), i * pd + c) : 0.0)));
+    for (std::size_t k = 0; k < cb.NumCells() * 3; ++k)
+        put(static_cast<std::uint32_t>(detail::read_int(cb.Conn(), k)));
+    if (rMesh.HasFieldData("freesurfer:tail")) {
+        const NDArray& t = rMesh.FieldData("freesurfer:tail");
+        out.append(reinterpret_cast<const char*>(t.Data()), t.Size());
+    }
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("meshio++: freesurfer: could not open file for writing: " + rPath);
+    os.write(out.data(), static_cast<std::streamsize>(out.size()));
+    if (!os)
+        throw WriteError("meshio++: freesurfer: failed writing " + rPath);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/freesurfer.cpp =====
 // ===== begin src/cpp/src/formats/gid.cpp =====
 #include <stdexcept>
 
@@ -158264,6 +158616,366 @@ MeshMetadata read_gid_metadata(const std::string& rPath, const ReadOptions& rOpt
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/gid_read.cpp =====
+// ===== begin src/cpp/src/formats/gifti.cpp =====
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+#include <cstring>
+#include <map>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+DType gii_dtype(const std::string& rName) {
+    static const std::map<std::string, DType> table = {
+        {"NIFTI_TYPE_UINT8", DType::UInt8},     {"NIFTI_TYPE_INT8", DType::Int8},
+        {"NIFTI_TYPE_INT16", DType::Int16},     {"NIFTI_TYPE_UINT16", DType::UInt16},
+        {"NIFTI_TYPE_INT32", DType::Int32},     {"NIFTI_TYPE_UINT32", DType::UInt32},
+        {"NIFTI_TYPE_INT64", DType::Int64},     {"NIFTI_TYPE_UINT64", DType::UInt64},
+        {"NIFTI_TYPE_FLOAT32", DType::Float32}, {"NIFTI_TYPE_FLOAT64", DType::Float64}};
+    const auto it = table.find(rName);
+    if (it == table.end())
+        throw ReadError("meshio++: gifti: DataType '" + rName + "' is not supported");
+    return it->second;
+}
+
+/// The `<MD>` value named @p rKey in @p Node's `<MetaData>`, or "".
+std::string gii_meta(const pugi::xml_node& Node, const std::string& rKey) {
+    for (const auto md : Node.child("MetaData").children("MD"))
+        if (std::string(md.child("Name").text().get()) == rKey)
+            return md.child("Value").text().get();
+    return {};
+}
+
+std::string gii_trim(std::string Text) {
+    const auto b = Text.find_first_not_of(" \t\r\n");
+    const auto e = Text.find_last_not_of(" \t\r\n");
+    return b == std::string::npos ? std::string() : Text.substr(b, e - b + 1);
+}
+
+/// One `DataArray`'s values, row-major, of its own dtype.
+NDArray gii_decode(const pugi::xml_node& Array) {
+    const DType dt = gii_dtype(Array.attribute("DataType").value());
+    const int rank = Array.attribute("Dimensionality").as_int(1);
+    if (rank < 1 || rank > 4)
+        throw ReadError("meshio++: gifti: Dimensionality must be 1 to 4");
+    std::vector<std::size_t> shape;
+    std::size_t count = 1;
+    for (int d = 0; d < rank; ++d) {
+        const long long n = Array.attribute(("Dim" + std::to_string(d)).c_str()).as_llong(-1);
+        if (n < 0 || n > (1LL << 40))
+            throw ReadError("meshio++: gifti: Dim" + std::to_string(d) + " is missing or invalid");
+        shape.push_back(static_cast<std::size_t>(n));
+        count *= static_cast<std::size_t>(n);
+    }
+    const std::string encoding = Array.attribute("Encoding").value();
+    const std::string text = Array.child("Data").text().get();
+    NDArray out(dt, shape);
+    const std::size_t itemsize = out.Nbytes() / std::max<std::size_t>(count, 1);
+    if (encoding == "ASCII") {
+        const char* p = text.c_str();
+        for (std::size_t k = 0; k < count; ++k) {
+            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+                ++p;
+            const char* end = nullptr;
+            const double v = detail::parse_double(p, end);
+            if (end == p)
+                throw ReadError(
+                    "meshio++: gifti: an ASCII DataArray holds fewer values than its "
+                    "dimensions");
+            p = end;
+            detail::write_double(out, k, v);
+        }
+    } else if (encoding == "Base64Binary" || encoding == "GZipBase64Binary") {
+        std::vector<unsigned char> raw = detail::b64decode(text.data(), text.size());
+        std::string bytes(raw.begin(), raw.end());
+        if (encoding == "GZipBase64Binary")
+            bytes = detail::zlib_inflate(bytes, 15, nullptr, "gifti");
+        if (bytes.size() != out.Nbytes())
+            throw ReadError("meshio++: gifti: a DataArray holds " + std::to_string(bytes.size()) +
+                            " bytes, not the " + std::to_string(out.Nbytes()) +
+                            " its dimensions need");
+        std::memcpy(out.Data(), bytes.data(), bytes.size());
+        const bool big = std::string(Array.attribute("Endian").value()) == "BigEndian";
+        if (big != (std::endian::native == std::endian::big) && itemsize > 1) {
+            auto* b = reinterpret_cast<unsigned char*>(out.Data());
+            for (std::size_t k = 0; k < count; ++k)
+                std::reverse(b + k * itemsize, b + (k + 1) * itemsize);
+        }
+    } else {
+        throw ReadError("meshio++: gifti: Encoding '" + encoding +
+                        "' is not read (ExternalFileBinary needs its sibling file)");
+    }
+    if (std::string(Array.attribute("ArrayIndexingOrder").value()) == "ColumnMajorOrder" &&
+        rank == 2 && shape[0] > 0 && shape[1] > 1) {
+        // Column-major storage: element (i, j) sits at j * n0 + i.
+        NDArray t(dt, shape);
+        const auto* src = reinterpret_cast<const unsigned char*>(out.Data());
+        auto* dst = reinterpret_cast<unsigned char*>(t.Data());
+        for (std::size_t i = 0; i < shape[0]; ++i)
+            for (std::size_t j = 0; j < shape[1]; ++j)
+                std::memcpy(dst + (i * shape[1] + j) * itemsize,
+                            src + (j * shape[0] + i) * itemsize, itemsize);
+        out = std::move(t);
+    }
+    return out;
+}
+
+NDArray gii_text(const std::string& rText) {
+    NDArray out(DType::UInt8, {rText.size()});
+    std::memcpy(out.Data(), rText.data(), rText.size());
+    return out;
+}
+
+}  // namespace
+
+Mesh read_gifti(const std::string& rPath) {
+    const detail::FileSource source =
+        detail::open_source(rPath, "meshio++: gifti: could not open file: " + rPath);
+    pugi::xml_document doc;
+    const std::string_view view = source.View();
+    if (!doc.load_buffer(view.data(), view.size()))
+        throw ReadError("meshio++: gifti: could not parse " + rPath + " as XML");
+    const pugi::xml_node root = doc.child("GIFTI");
+    if (!root)
+        throw ReadError("meshio++: gifti: '" + rPath + "' has no <GIFTI> root");
+    Mesh mesh;
+    bool have_points = false;
+    std::size_t np = 0;
+    std::vector<std::pair<std::string, NDArray>> later;
+    std::vector<std::pair<std::string, bool>> later_label;
+    std::size_t index = 0;
+    for (const auto array : root.children("DataArray")) {
+        const std::string intent = array.attribute("Intent").value();
+        NDArray data = gii_decode(array);
+        if (intent == "NIFTI_INTENT_POINTSET" && !have_points) {
+            if (data.Shape().size() != 2 || data.Shape()[1] != 3)
+                throw ReadError("meshio++: gifti: the POINTSET is not (n, 3)");
+            np = data.Shape()[0];
+            NDArray pts(DType::Float64, {np, 3});
+            for (std::size_t k = 0; k < np * 3; ++k)
+                pts.As<double>()[k] = detail::read_double(data, k);
+            mesh.AssignPoints(std::move(pts));
+            have_points = true;
+            const auto xform = array.child("CoordinateSystemTransformMatrix");
+            if (xform) {
+                NDArray m(DType::Float64, {4, 4});
+                const std::string text = xform.child("MatrixData").text().get();
+                const char* p = text.c_str();
+                for (std::size_t k = 0; k < 16; ++k) {
+                    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+                        ++p;
+                    const char* end = nullptr;
+                    m.As<double>()[k] = detail::parse_double(p, end);
+                    if (end == p)
+                        throw ReadError("meshio++: gifti: MatrixData needs 16 numbers");
+                    p = end;
+                }
+                mesh.AddFieldData("gifti:transform", std::move(m));
+                mesh.AddFieldData("gifti:data_space",
+                                  gii_text(gii_trim(xform.child("DataSpace").text().get())));
+                mesh.AddFieldData("gifti:transformed_space",
+                                  gii_text(gii_trim(xform.child("TransformedSpace").text().get())));
+            }
+        } else if (intent == "NIFTI_INTENT_TRIANGLE") {
+            if (data.Shape().size() != 2 || data.Shape()[1] != 3)
+                throw ReadError("meshio++: gifti: the TRIANGLE array is not (n, 3)");
+            NDArray conn(DType::Int64, data.Shape());
+            for (std::size_t k = 0; k < data.Size(); ++k)
+                conn.As<std::int64_t>()[k] = detail::read_int(data, k);
+            later.emplace_back("\x01triangle", std::move(conn));
+        } else {
+            std::string name = gii_meta(array, "Name");
+            if (name.empty())
+                name = intent == "NIFTI_INTENT_LABEL"
+                           ? std::string("gifti:label")
+                           : "gifti:" + intent + "_" + std::to_string(index);
+            later_label.emplace_back(name, intent == "NIFTI_INTENT_LABEL");
+            later.emplace_back(name, std::move(data));
+        }
+        ++index;
+    }
+    if (!have_points)
+        throw ReadError("meshio++: gifti: '" + rPath + "' has no NIFTI_INTENT_POINTSET array");
+    std::size_t data_k = 0;
+    std::string label_name;
+    for (auto& [name, data] : later) {
+        if (name == "\x01triangle") {
+            for (std::size_t k = 0; k < data.Size(); ++k)
+                if (data.As<std::int64_t>()[k] < 0 ||
+                    static_cast<std::size_t>(data.As<std::int64_t>()[k]) >= np)
+                    throw ReadError("meshio++: gifti: a triangle names a point out of range");
+            mesh.AddCellBlock("triangle", std::move(data));
+            continue;
+        }
+        const bool is_label = later_label[data_k++].second;
+        if (data.Shape().empty() || data.Shape()[0] != np) {
+            log::warn("gifti: array '{}' does not hold one row per point; skipped", name);
+            continue;
+        }
+        if (data.Shape().size() > 2) {
+            std::size_t width = data.Size() / np;
+            data.Reshape({np, width});
+        }
+        if (is_label && label_name.empty())
+            label_name = name;
+        mesh.AddPointData(name, std::move(data));
+    }
+    // The LabelTable's keys become point regions over the label array.
+    const pugi::xml_node table = root.child("LabelTable");
+    if (table && !label_name.empty()) {
+        const NDArray& labels = mesh.PointData(label_name);
+        for (const auto label : table.children("Label")) {
+            const long long key =
+                label.attribute("Key").as_llong(label.attribute("Index").as_llong());
+            std::vector<std::int64_t> ids;
+            for (std::size_t k = 0; k < np; ++k)
+                if (detail::read_int(labels, k) == key)
+                    ids.push_back(static_cast<std::int64_t>(k));
+            NDArray entries(DType::Int64, {ids.size()});
+            std::copy(ids.begin(), ids.end(), entries.As<std::int64_t>());
+            mesh.AddRegion(Region(gii_trim(label.text().get()), RegionKind::Point, -1, key,
+                                  std::move(entries)));
+        }
+    }
+    return mesh;
+}
+
+namespace {
+
+std::string gii_array(const std::string& rIntent, const std::string& rType,
+                      const std::vector<std::size_t>& rShape, const std::string& rBytes,
+                      const std::string& rName, const std::string& rExtra) {
+    std::string s = "<DataArray Intent=\"" + rIntent + "\" DataType=\"" + rType +
+                    "\" ArrayIndexingOrder=\"RowMajorOrder\" Dimensionality=\"" +
+                    std::to_string(rShape.size()) + "\"";
+    for (std::size_t d = 0; d < rShape.size(); ++d)
+        s += " Dim" + std::to_string(d) + "=\"" + std::to_string(rShape[d]) + "\"";
+    s += " Encoding=\"Base64Binary\" Endian=\"LittleEndian\" ExternalFileName=\"\" "
+         "ExternalFileOffset=\"\">\n";
+    s += rName.empty() ? "<MetaData/>\n"
+                       : "<MetaData>\n<MD>\n<Name><![CDATA[Name]]></Name>\n<Value><![CDATA[" +
+                             rName + "]]></Value>\n</MD>\n</MetaData>\n";
+    s += rExtra;
+    s += "<Data>" +
+         detail::b64encode(reinterpret_cast<const unsigned char*>(rBytes.data()), rBytes.size()) +
+         "</Data>\n</DataArray>\n";
+    return s;
+}
+
+template <class T>
+void gii_put(std::string& rOut, T Value) {
+    if constexpr (std::endian::native == std::endian::big) {
+        unsigned char b[sizeof(T)];
+        std::memcpy(b, &Value, sizeof(T));
+        std::reverse(b, b + sizeof(T));
+        rOut.append(reinterpret_cast<const char*>(b), sizeof(T));
+    } else {
+        rOut.append(reinterpret_cast<const char*>(&Value), sizeof(T));
+    }
+}
+
+}  // namespace
+
+void write_gifti(const std::string& rPath, const Mesh& rMesh) {
+    if (rMesh.NumCellBlocks() > 1 ||
+        (rMesh.NumCellBlocks() == 1 && std::string(rMesh.Cells(0).Type()) != "triangle"))
+        throw WriteError("meshio++: gifti: a GIFTI surface is one triangle block");
+    const std::size_t np = rMesh.NumPoints(), pd = rMesh.PointDim();
+    std::vector<std::string> arrays;
+    std::string bytes;
+    for (std::size_t i = 0; i < np; ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            gii_put(bytes, static_cast<float>(
+                               c < pd ? detail::read_double(rMesh.Points(), i * pd + c) : 0.0));
+    std::string xform = "<CoordinateSystemTransformMatrix>\n<DataSpace><![CDATA[";
+    const auto text_of = [&](const char* pKey, const char* pDefault) {
+        if (!rMesh.HasFieldData(pKey))
+            return std::string(pDefault);
+        const NDArray& t = rMesh.FieldData(pKey);
+        return std::string(reinterpret_cast<const char*>(t.Data()), t.Size());
+    };
+    xform += text_of("gifti:data_space", "NIFTI_XFORM_UNKNOWN") +
+             "]]></DataSpace>\n<TransformedSpace><![CDATA[" +
+             text_of("gifti:transformed_space", "NIFTI_XFORM_UNKNOWN") +
+             "]]></TransformedSpace>\n<MatrixData>";
+    char buf[64];
+    for (std::size_t k = 0; k < 16; ++k) {
+        double v = (k % 5 == 0) ? 1.0 : 0.0;
+        if (rMesh.HasFieldData("gifti:transform") &&
+            rMesh.FieldData("gifti:transform").Size() == 16)
+            v = detail::read_double(rMesh.FieldData("gifti:transform"), k);
+        detail::snprintf_c(buf, sizeof buf, "%.17g", v);
+        xform += (k ? " " : "") + std::string(buf);
+    }
+    xform += "</MatrixData>\n</CoordinateSystemTransformMatrix>\n";
+    arrays.push_back(
+        gii_array("NIFTI_INTENT_POINTSET", "NIFTI_TYPE_FLOAT32", {np, 3}, bytes, "", xform));
+    if (rMesh.NumCellBlocks() == 1) {
+        const auto cb = rMesh.Cells(0);
+        bytes.clear();
+        for (std::size_t k = 0; k < cb.NumCells() * 3; ++k)
+            gii_put(bytes, static_cast<std::int32_t>(detail::read_int(cb.Conn(), k)));
+        arrays.push_back(gii_array("NIFTI_INTENT_TRIANGLE", "NIFTI_TYPE_INT32", {cb.NumCells(), 3},
+                                   bytes, "", ""));
+    }
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (a.Shape().empty() || a.Shape()[0] != np)
+            continue;
+        const bool floating = a.Dtype() == DType::Float32 || a.Dtype() == DType::Float64;
+        const bool integer = !floating;
+        if (!floating && !integer)
+            continue;
+        const std::size_t width = np ? a.Size() / np : 0;
+        bytes.clear();
+        for (std::size_t k = 0; k < a.Size(); ++k) {
+            if (floating)
+                gii_put(bytes, static_cast<float>(detail::read_double(a, k)));
+            else
+                gii_put(bytes, static_cast<std::int32_t>(detail::read_int(a, k)));
+        }
+        const std::string intent = name == "gifti:label" ? "NIFTI_INTENT_LABEL"
+                                   : width > 1           ? "NIFTI_INTENT_NONE"
+                                   : floating            ? "NIFTI_INTENT_SHAPE"
+                                                         : "NIFTI_INTENT_NONE";
+        arrays.push_back(gii_array(
+            intent, floating ? "NIFTI_TYPE_FLOAT32" : "NIFTI_TYPE_INT32",
+            width > 1 ? std::vector<std::size_t>{np, width} : std::vector<std::size_t>{np}, bytes,
+            name, ""));
+    }
+    std::string out =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE GIFTI SYSTEM \"http://www.nitrc.org/frs/download.php/115/"
+        "gifti.dtd\">\n<GIFTI Version=\"1.0\" NumberOfDataArrays=\"" +
+        std::to_string(arrays.size()) + "\">\n<MetaData/>\n";
+    std::string labels;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind == RegionKind::Point && r.mTag >= 0)
+            labels += "<Label Key=\"" + std::to_string(r.mTag) +
+                      "\" Red=\"0\" Green=\"0\" Blue=\"0\" Alpha=\"0\"><![CDATA[" + r.mName +
+                      "]]></Label>\n";
+    }
+    out += labels.empty() ? "<LabelTable/>\n" : "<LabelTable>\n" + labels + "</LabelTable>\n";
+    for (const std::string& a : arrays)
+        out += a;
+    out += "</GIFTI>\n";
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("meshio++: gifti: could not open file for writing: " + rPath);
+    os << out;
+    if (!os)
+        throw WriteError("meshio++: gifti: failed writing " + rPath);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/gifti.cpp =====
 // ===== begin src/cpp/src/formats/gltf.cpp =====
 #include <algorithm>
 #include <array>
@@ -313388,6 +314100,12 @@ const std::vector<RegistryRow>& registry_rows() {
                  return meshioplusplus::read_adcirc(rPath, rOpts);
              },
          .mMetadata = meshioplusplus::read_adcirc_metadata},
+        {.mName = "gifti",
+         .mRead = meshioplusplus::read_gifti,
+         .mWrite = meshioplusplus::write_gifti},
+        {.mName = "freesurfer",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_freesurfer(rPath); },
+         .mWrite = meshioplusplus::write_freesurfer},
         {.mName = "selafin",
          .mRead = [](const std::string& rPath) { return meshioplusplus::read_selafin(rPath); },
          .mWrite = meshioplusplus::write_selafin,
@@ -313835,6 +314553,13 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".gltf", "gltf"},
         {".dxf", "dxf"},
         {".14", "adcirc"},
+        {".gii", "gifti"},
+        {".pial", "freesurfer"},
+        {".white", "freesurfer"},
+        {".inflated", "freesurfer"},
+        {".orig", "freesurfer"},
+        {".smoothwm", "freesurfer"},
+        {".sphere", "freesurfer"},
         {".slf", "selafin"},
         {".srf", "selafin"},
         {".grd", "adcirc"},

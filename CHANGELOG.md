@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** `gifti` (GIFTI `.gii` surfaces: every encoding, byte order and indexing order, point data by name, label tables as point regions, the coordinate transform; written little-endian Base64Binary) and `freesurfer` (binary triangle surfaces with their volume-geometry tail kept, `curv` overlays and `annot` parcellations as read options), both engines, checked both ways against nibabel (roadmap 2.4.4).
+
+
 - **Added:** `adcirc` (ADCIRC `fort.14` grids, open and land boundaries as tagged point regions with their order kept, `fort.63`/`fort.64` full and sparse results as steps; the grid is written) and `selafin` (TELEMAC Selafin `.slf`, single or double precision, 2-D triangles and quads and 3-D prisms, steps; 2-D one-step files are written), both in both engines with byte-identical writes (roadmap 2.4.3.3, 2.4.3.4).
 
 

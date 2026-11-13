@@ -87,6 +87,8 @@
 #include "meshioplusplus/formats/dxf.hpp"
 #include "meshioplusplus/formats/plot3d.hpp"
 #include "meshioplusplus/formats/adcirc.hpp"
+#include "meshioplusplus/formats/gifti.hpp"
+#include "meshioplusplus/formats/freesurfer.hpp"
 #include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
@@ -8301,6 +8303,20 @@ PYBIND11_MODULE(_core, m) {
                 [&] { return meshioplusplus::read_adcirc_metadata(path, {}).mTimeValues; });
         },
         py::arg("path"));
+    core_def_write(m, "gifti_write", &meshioplusplus::write_gifti);
+    core_def_read(m, "gifti_read", "gifti", &meshioplusplus::read_gifti);
+    core_def_write(m, "freesurfer_write", &meshioplusplus::write_freesurfer);
+    m.def("freesurfer_read",
+          guard_read("freesurfer",
+                     [](const std::string& path, const std::vector<std::string>& curv,
+                        const std::string& annot) {
+                         meshioplusplus::FreesurferReadOptions o;
+                         o.mCurv = curv;
+                         o.mAnnot = annot;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_freesurfer(path, o); }));
+                     }),
+          py::arg("path"), py::arg("curv") = std::vector<std::string>{}, py::arg("annot") = "");
     core_def_write(m, "selafin_write", &meshioplusplus::write_selafin);
     m.def("selafin_read",
           guard_read("selafin",

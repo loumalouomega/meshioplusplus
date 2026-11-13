@@ -289,12 +289,9 @@ Read and written in both engines ([PLOT3D](./formats/plot3d.md)): the variant in
 - **Fixtures.** The UGRID conventions' own examples; ADCIRC's public example problems; TELEMAC's examples (GPL data: do not copy, generate small files with the writer once it exists and check against a TELEMAC-written one locally).
 - **Done when.** A Delft3D-FM `_map.nc`, an ADCIRC quarter-annular case and a TELEMAC `r2d_*.slf` each read with their times in both engines. **M** for the three
 
-#### 2.4.4 Neuroimaging surfaces
+#### 2.4.4 Neuroimaging surfaces: done
 
-- **Why.** Head models for TMS and EEG simulation (SimNIBS, Brainstorm, MNE) mesh these surfaces into volumes; [`tetrahedralize`](./tetrahedralize.md) is the next step of that pipeline. Lowest of this group: take it when a user asks.
-- **Steps.** (1) GIFTI (`.gii`): XML through pugixml (`src/cpp/third_party/pugixml`), `DataArray` elements with `Intent` (`NIFTI_INTENT_POINTSET`, `_TRIANGLE`, `_SHAPE`, `_LABEL`, …), `Encoding` `ASCII`, `Base64Binary` or `GZipBase64Binary`: decode with `b64decode` (`detail/vtu_binary.hpp`) then `zlib_inflate` with window 15 (`detail/zlib_inflate.hpp`), not the VTK block framing, which is a different header; `ArrayIndexingOrder` and `Endian` honoured; the coordinate-system matrix to `field_data`; label tables to regions. (2) FreeSurfer: binary triangle surfaces (magic `0xFFFFFE`, big-endian), `curv` files (magic `0xFFFFFF`) as point data, `annot` as regions; one format `freesurfer` with the sibling files as read options. (3) Writers for both.
-- **Fixtures.** The GIFTI reference files of the NITRC GIFTI project (public domain†); a FreeSurfer `fsaverage` hemisphere is under the FreeSurfer licence (do not copy: generate with nibabel in the test, `importorskip`).
-- **Done when.** `nibabel` reads what meshio++ wrote and the reverse. **S–M**
+[GIFTI](./formats/gifti.md) and [FreeSurfer](./formats/freesurfer.md) surfaces are read and written in both engines, with curv and annot overlays read; nibabel reads what meshio++ writes and the reverse. Writing curv and annot files is the one piece left, for when a user asks.
 
 #### 2.4.5 3MF
 
