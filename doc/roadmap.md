@@ -262,6 +262,8 @@ Each is the parity decision's "unwritten feature" if the format can hold it; whe
 
 Each names its consumer, as the admission asks. None was estimated from a file: **verify first** with one in hand, and with the licence of whatever reader the layout is taken from. Each lands by [checklist F](#landing-checklists).
 
+*November 2026 pass.* Landed in both engines: `detect` (formerly 2.4.9, every surface), PLOT3D, the shared netCDF helper, UGRID NetCDF, ADCIRC, Selafin, GIFTI, FreeSurfer, the ZIP container and 3MF, native LAS, glTF and OBJ textures with `bake_texture`, and legacy Fluent `.cas`/`.dat`, each checked against an independent library where one could be installed (xugrid, nibabel, lib3mf, laspy). What remains below needs something this pass did not have: a decoder library (LAZ: LASzip or laz-perf; E57: libE57Format; NanoVDB: its header and a licence check), a vendor-written file (Fluent CFF, ADCIRC, TELEMAC, Delft3D-FM, NASA TMR), or a viewer to open the result (PrusaSlicer, Blender).
+
 #### 2.4.1 Fluent case and data
 
 - **Why.** The `.msh` mesh is read ([`ansys`](./formats/ansys.md)), but not a `.cas`/`.dat` pair nor the HDF5 `.cas.h5`/`.dat.h5` (CFF) Fluent 2020 and later write by default: a Fluent user cannot bring a solution to meshio++ without exporting it first. Consumer: Fluent → ParaView, OpenFOAM or a training set.
@@ -1012,7 +1014,7 @@ Reopened from the non-goals, which record why a native `mesh_boolean` was not qu
 
 #### 9.10.2 Georeferencing
 
-Only if 2.4.3 or 2.4.6 lands, since nothing read today is georeferenced. `field_data["meshio:crs"]` as a WKT2 or `EPSG:<code>` string (8.2's encoding), set by the UGRID, LAS and ADCIRC readers and written back; reprojection as a mode of [`convert_coordinates`](./coordinates.md) (`CoordinateOptions`, `operations/coordinates.hpp` line 119) through PROJ, an optional dependency in the TecIO pattern (2.4.6.2) with a Python twin through `pyproj`; without it the operation refuses by name. glTF and 3D Tiles get the ECEF convention only on request. **S–M**
+Now actionable: 2.4.3 (UGRID NetCDF, ADCIRC, Selafin) and 2.4.6.1 (LAS, whose VLRs carry the CRS verbatim in `las:vlrs`) have landed, so georeferenced meshes are read. `field_data["meshio:crs"]` as a WKT2 or `EPSG:<code>` string (8.2's encoding), set by the UGRID, LAS and ADCIRC readers and written back; reprojection as a mode of [`convert_coordinates`](./coordinates.md) (`CoordinateOptions`, `operations/coordinates.hpp` line 119) through PROJ, an optional dependency in the TecIO pattern (2.4.6.2) with a Python twin through `pyproj`; without it the operation refuses by name. glTF and 3D Tiles get the ECEF convention only on request. **S–M**
 
 ---
 
