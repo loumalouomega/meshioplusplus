@@ -2233,3 +2233,32 @@ class TestCompressedCase:
             meshioplusplus.openfoam.write(
                 tmp_path / "case.foam", TestWrite._hex_grid(1), compression="xz"
             )
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_topo_sets_round_trip_as_set_regions(tmp_path, binary):
+    mesh = _grid(2)
+    ncells = len(mesh.cells[0].data)
+    mesh.regions.append(meshioplusplus.Region("set:inner", "cell", np.array([1, 3, 4])))
+    mesh.regions.append(meshioplusplus.Region("set:rim", "point", np.array([0, 5, 7])))
+    mesh.regions.append(
+        meshioplusplus.Region(
+            "set:baffle", "side", np.array([(c, 0) for c in range(ncells)], np.int64)
+        )
+    )
+    mesh.regions.append(meshioplusplus.Region("zone", "cell", np.array([0, 2])))
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, binary=binary)
+    sets = tmp_path / "constant" / "polyMesh" / "sets"
+    assert sorted(p.name for p in sets.iterdir()) == ["baffle", "inner", "rim"]
+    assert "class       cellSet;" in (sets / "inner").read_text(errors="ignore") or (
+        "cellSet" in (sets / "inner").read_text(errors="ignore")
+    )
+    back = meshioplusplus.openfoam.read(case)
+    got = _region_entries(back)
+    assert got[("set:inner", "cell")] == [1, 3, 4]
+    assert got[("set:rim", "point")] == [0, 5, 7]
+    assert len(got[("set:baffle", "side")]) == ncells
+    assert got[("zone", "cell")] == [0, 2]
+    # a zone is still a zone
+    assert (tmp_path / "constant" / "polyMesh" / "cellZones").is_file()

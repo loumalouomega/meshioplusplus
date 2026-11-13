@@ -80,6 +80,7 @@ for r in mesh.regions:
     print(r.name, r.kind)  # e.g. "porousZone" "cell", "inlet" "side"
 ```
 
+- `polyMesh/sets/<name>` (topoSet's `cellSet`, `faceSet` and `pointSet`, a `labelList` each) → a `cell`, `side` or `point` region named `set:<name>`, read like the zone of that kind (a face set to `(cell, local facet)` pairs through the face's owner). The writer writes the regions with that prefix back into `polyMesh/sets/` and every other region as a zone. A decomposed case's sets are not read, and a decomposed write drops them. Core only, like the zones.
 - `cellZones` → one `Region` of kind `"cell"` per zone, entries the zone's cells as global (block-major) indices.
 - `pointZones` → one `Region` of kind `"point"` per zone, entries the zone's point indices, unchanged (points are never reordered by this reader/writer).
 - `faceZones` → one `Region` of kind `"side"` per zone; a face id becomes `(global cell, local facet)` via its **owner** cell (the same cell OpenFOAM's own `owner` array names) — `flipMap` is never read or written, since a `Side` entry carries no orientation bit to hold it in. A zone member coinciding with a skipped (degenerate) cell is dropped, logged as a count.
