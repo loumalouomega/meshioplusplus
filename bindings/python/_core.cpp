@@ -9671,6 +9671,16 @@ finalizes.
                              core_nogil([&] { return meshioplusplus::read_cgns(path, opts); }));
                      }),
           py::arg("path"), py::arg("time_step") = 0);
+    m.def("cgns_read_base",
+          guard_read("cgns",
+                     [](const std::string& path, const std::string& base, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                             return meshioplusplus::read_cgns_base(path, base, opts);
+                         }));
+                     }),
+          py::arg("path"), py::arg("base"), py::arg("time_step") = 0);
 
     // HMF writer / reader (.hmf).
     m.def("hmf_write", [](const std::string& path, py::object pymesh, int gzip_level) {

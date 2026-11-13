@@ -30,7 +30,7 @@ def _is_hdf5(filename):
         return True  # not our problem to diagnose here; let the reader report
 
 
-def read(filename, time_step: int = 0):
+def read(filename, time_step: int = 0, base=None):
     """Read a CGNS file (C++ core when built with HDF5, Python/h5py fallback).
 
     ``time_step`` selects one step of a transient (`BaseIterativeData_t`/
@@ -39,9 +39,16 @@ def read(filename, time_step: int = 0):
     :func:`meshioplusplus.cgns.read`'s C++ counterpart, ``read_cgns``. A
     non-default value forces the C++ path (the Python h5py reference has no
     transient-step support) and re-raises rather than silently falling back.
+
+    ``base`` selects one base of a multi-base file, by name or by position
+    (0 is the first); by default the first is read, with a warning when there
+    are more. Reading every base into one mesh is not offered: bases may differ
+    in dimension.
     """
     if _HAS_HDF5 and not is_buffer(filename, "r"):
         try:
+            if base is not None:
+                return _core.cgns_read_base(str(filename), str(base), time_step)
             return _core.cgns_read(str(filename), time_step)
         except Exception as exc:
             # Falling back is only sound when the fallback answers the same
@@ -50,9 +57,13 @@ def read(filename, time_step: int = 0):
             # error rather than the real one. (The xdmf `time_step` precedent.)
             if not is_buffer(filename, "r") and not _is_hdf5(filename):
                 raise
-            if time_step or not core_declined(exc, "cgns", "read", filename):
+            if (
+                time_step
+                or base is not None
+                or not core_declined(exc, "cgns", "read", filename)
+            ):
                 raise
-    return _py_read(filename)
+    return _py_read(filename, base=base)
 
 
 def write(filename, mesh, compression="gzip", compression_opts=4):

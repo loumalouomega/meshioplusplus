@@ -142,6 +142,17 @@ MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
 MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions);
 
 /**
+ * @brief `read_cgns` of one base of a multi-base file, by name or by position (`"0"` is the first).
+ *
+ * Reads through the raw HDF5 path (the files a cgnslib-only build can read -- ADF containers --
+ * have no such choice here). Reading every base into one mesh stays out: bases may differ in
+ * dimension.
+ * @throws ReadError when the file has no such base.
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns_base(const std::string& rPath, const std::string& rBase,
+                                       const ReadOptions& rOptions = ReadOptions{});
+
+/**
  * @brief Summarize a CGNS file's shape and available time steps without
  *        decoding point coordinates or cell connectivity.
  *

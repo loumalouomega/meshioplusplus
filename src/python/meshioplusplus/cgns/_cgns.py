@@ -22,6 +22,7 @@ import numpy as np
 from .. import _node_order, _provenance
 from .._common import num_nodes_per_cell
 from .._exceptions import ReadError, WriteError
+from .._grid import lattice_cells
 from .._mesh import Mesh, topological_dimension
 from .._regions import Region, canonical_regions
 from .._units import (
@@ -135,6 +136,26 @@ def _write_solution_array(sol, name, col, gzip_kwargs):
     g.create_dataset(" data", data=col, **kwargs)
 
 
+def _strip_rind(arr, rind):
+    """``arr`` without its rind planes, flat: ``Rind_t`` is ``(lo, hi)`` per index
+    direction, ``i`` first, and the array's own axes are the reverse of that
+    (``(nk, nj, ni)``); a 1-D array (an unstructured zone) uses the first pair.
+    Twin of ``cgns_strip_rind``."""
+    if not any(rind):
+        return arr.reshape(-1)
+    nd = max(arr.ndim, 1)
+    arr = arr.reshape(arr.shape if arr.ndim else (1,))
+    slices = []
+    for ax in range(nd):
+        pair = nd - 1 - ax
+        lo = max(rind[2 * pair], 0) if 2 * pair + 1 < len(rind) else 0
+        hi = max(rind[2 * pair + 1], 0) if 2 * pair + 1 < len(rind) else 0
+        if lo + hi > arr.shape[ax]:
+            raise ReadError("CGNS: a solution's Rind is larger than its array")
+        slices.append(slice(lo, arr.shape[ax] - hi))
+    return arr[tuple(slices)].reshape(-1)
+
+
 def _read_solution(sol, sol_name, expected_rows):
     """Re-join a ``FlowSolution_t``'s ``DataArray_t`` children, undoing the
     ``_0.._k-1`` split. Returns a list of ``(name, (rows, k) array)`` pairs.
@@ -163,8 +184,12 @@ def _read_solution(sol, sol_name, expected_rows):
             components[base] = {}
         components[base][idx] = n
 
+    rind = []
+    if "Rind" in sol and " data" in sol["Rind"]:
+        rind = [int(v) for v in np.asarray(sol["Rind"][" data"][()]).reshape(-1)]
+
     def _one(child):
-        a = np.asarray(sol[child][" data"][()], dtype=np.float64).reshape(-1)
+        a = _strip_rind(np.asarray(sol[child][" data"][()], dtype=np.float64), rind)
         if a.size != expected_rows:
             raise ReadError(
                 f"CGNS: '{sol_name}/{child}' has {a.size} values but the zone has "
@@ -457,7 +482,7 @@ def _write_regions(zone, mesh, starts, firsts, n_points):
         )
 
 
-def _read_regions(zone, sections, n_points, n_cells_before):
+def _read_regions(zone, sections, n_points, n_cells_before, point_offset=0):
     """The ``ZoneSubRegion_t`` children as regions. ``sections`` are the zone's
     ``(first element id, last, first cell index)`` triples."""
     regions = []
@@ -494,7 +519,9 @@ def _read_regions(zone, sections, n_points, n_cells_before):
                 raise ReadError(
                     f"CGNS: ZoneSubRegion '{child}' names a vertex the zone does not have"
                 )
-            regions.append(Region(name, "point", ids - 1, dim=dim, tag=tag))
+            regions.append(
+                Region(name, "point", ids - 1 + point_offset, dim=dim, tag=tag)
+            )
         elif location == "CellCenter":
             cells = []
             for e in ids:
@@ -522,7 +549,98 @@ def _read_regions(zone, sections, n_points, n_cells_before):
     return regions
 
 
-def _read_bcs(zone, sections, n_points, n_cells_before):
+def _expand_range(raw, dims):
+    """The 1-based point ids of a ``PointRange``: a one-dimensional ``(first, last)``
+    pair, or, in a structured zone of ``dims`` points, one pair per index direction
+    (``i`` fastest). ``None`` for a range this reader cannot place. Twin of
+    ``cgns_expand_range``."""
+    rng = np.asarray(raw, dtype=np.int64).reshape(-1)
+    if rng.size == 2:
+        return np.arange(rng[0], rng[1] + 1, dtype=np.int64)
+    if dims is None or rng.size % 2 or rng.size > 6:
+        return None
+    lo = [1, 1, 1]
+    hi = [1, 1, 1]
+    for a in range(rng.size // 2):
+        lo[a], hi[a] = int(rng[2 * a]), int(rng[2 * a + 1])
+    k, j, i = np.meshgrid(
+        np.arange(lo[2], hi[2] + 1),
+        np.arange(lo[1], hi[1] + 1),
+        np.arange(lo[0], hi[0] + 1),
+        indexing="ij",
+    )
+    return (i + dims[0] * ((j - 1) + dims[1] * (k - 1))).reshape(-1).astype(np.int64)
+
+
+def _read_interfaces(zone, n_points, point_offset, dims):
+    """The ``GridConnectivity1to1_t`` children of a zone as point regions named
+    ``cgns:interface:<name>``, and the donor zone's name as
+    ``field_data["cgns:interface_donor:<name>"]`` (``uint8``). Twin of
+    ``cgns_read_interfaces``."""
+    regions, field_data = [], {}
+    for child in zone:
+        if (
+            child.startswith(" ")
+            or _read_attr_str(zone[child], "label") != "ZoneGridConnectivity_t"
+        ):
+            continue
+        for name in zone[child]:
+            if name.startswith(" "):
+                continue
+            node = zone[child][name]
+            if _read_attr_str(node, "label") != "GridConnectivity1to1_t":
+                continue
+            if "PointList" in node and " data" in node["PointList"]:
+                ids = np.asarray(node["PointList"][" data"][()], dtype=np.int64)
+                ids = ids.reshape(-1)
+            elif "PointRange" in node and " data" in node["PointRange"]:
+                ids = _expand_range(node["PointRange"][" data"][()], dims)
+            else:
+                ids = None
+            if ids is None or not len(ids):
+                warnings.warn(
+                    f"CGNS: interface '{name}' lists no points this reader can "
+                    "place; not read.",
+                    stacklevel=3,
+                )
+                continue
+            if ids.min() < 1 or ids.max() > n_points:
+                raise ReadError(
+                    f"CGNS: interface '{name}' names a vertex the zone does not have"
+                )
+            regions.append(
+                Region(f"cgns:interface:{name}", "point", ids - 1 + point_offset)
+            )
+            if " data" in node:
+                donor = _read_c1(node)
+                if donor:
+                    field_data[f"cgns:interface_donor:{name}"] = np.frombuffer(
+                        donor.encode("latin-1"), np.uint8
+                    )
+    return regions, field_data
+
+
+def _merge_regions(regions):
+    """Regions of several zones as one list: those with the same name and kind
+    merge, their entries joined."""
+    merged = {}
+    for r in regions:
+        key = (r.name, r.kind)
+        if key in merged:
+            old = merged[key]
+            merged[key] = Region(
+                r.name,
+                r.kind,
+                np.concatenate([old.entries, r.entries]),
+                dim=old.dim,
+                tag=old.tag,
+            )
+        else:
+            merged[key] = r
+    return list(merged.values())
+
+
+def _read_bcs(zone, sections, n_points, n_cells_before, point_offset=0, dims=None):
     """The ``ZoneBC_t/BC_t`` children as regions, and the BC types as
     ``field_data["cgns:bc_type:<region>"]`` (the type's characters as ``uint8``).
 
@@ -549,16 +667,14 @@ def _read_bcs(zone, sections, n_points, n_cells_before):
                 ids = np.asarray(node["PointList"][" data"][()], dtype=np.int64)
                 ids = ids.reshape(-1)
             elif "PointRange" in node and " data" in node["PointRange"]:
-                rng = np.asarray(node["PointRange"][" data"][()], dtype=np.int64)
-                rng = rng.reshape(-1)
-                if len(rng) != 2:
+                ids = _expand_range(node["PointRange"][" data"][()], dims)
+                if ids is None:
                     warnings.warn(
-                        f"CGNS: BC '{bc_name}' has a multi-dimensional PointRange "
-                        "(a structured zone); not read.",
+                        f"CGNS: BC '{bc_name}' has a PointRange this reader cannot "
+                        "place; not read.",
                         stacklevel=3,
                     )
                     continue
-                ids = np.arange(rng[0], rng[1] + 1, dtype=np.int64)
             else:
                 warnings.warn(
                     f"CGNS: BC '{bc_name}' has no PointList or PointRange; not read.",
@@ -576,7 +692,7 @@ def _read_bcs(zone, sections, n_points, n_cells_before):
                     raise ReadError(
                         f"CGNS: BC '{bc_name}' names a vertex the zone does not have"
                     )
-                kind, entries = "point", ids - 1
+                kind, entries = "point", ids - 1 + point_offset
             else:
                 kind, cells = "cell", []
                 for e in ids:
@@ -855,13 +971,13 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
 # ---- read --------------------------------------------------------------
 
 
-def read(filename):
+def read(filename, base=None):
     import h5py
 
     f = h5py.File(filename, "r")
 
     if _is_spec_layout(f):
-        return _read_spec(f)
+        return _read_spec(f, base)
     return _read_legacy(f)
 
 
@@ -875,20 +991,62 @@ def _is_spec_layout(f):
     return False
 
 
-def _read_spec(f):
-    base_name = None
-    n_bases = 0
-    for name in f:
-        if name.startswith(" "):
-            continue
-        if _read_attr_str(f[name], "label") == "CGNSBase_t":
-            if n_bases == 0:
-                base_name = name
-            n_bases += 1
-    if n_bases > 1:
+def _join_zone_fields(zone_fields):
+    """The per-zone solutions as one ``point_data`` and ``cell_data``: each array
+    concatenated over the zones in block order, a zone without it filled with NaN
+    (``merge``'s ``Fill`` policy)."""
+    point_data, cell_data = {}, {}
+    names = []
+    for _, _, pd, _cd in zone_fields:
+        names += [n for n in pd if n not in names]
+    for name in names:
+        template = next(pd[name] for _, _, pd, _ in zone_fields if name in pd)
+        parts = [
+            (
+                pd[name]
+                if name in pd
+                else np.full((n_points,) + template.shape[1:], np.nan)
+            )
+            for n_points, _, pd, _ in zone_fields
+        ]
+        point_data[name] = parts[0] if len(parts) == 1 else np.concatenate(parts)
+    names = []
+    for _, _, _pd, cd in zone_fields:
+        names += [n for n in cd if n not in names]
+    for name in names:
+        template = next(cd[name][0] for _, _, _, cd in zone_fields if name in cd)
+        blocks = []
+        for _, sizes, _, cd in zone_fields:
+            if name in cd:
+                blocks += cd[name]
+            else:
+                blocks += [np.full((n,) + template.shape[1:], np.nan) for n in sizes]
+        cell_data[name] = blocks
+    return point_data, cell_data
+
+
+def _read_spec(f, base=None):
+    base_names = [
+        name
+        for name in f
+        if not name.startswith(" ") and _read_attr_str(f[name], "label") == "CGNSBase_t"
+    ]
+    n_bases = len(base_names)
+    base_name = base_names[0] if base_names else None
+    if base is not None:
+        # A base is chosen by name, else by its position (0 is the first).
+        if str(base) in base_names:
+            base_name = str(base)
+        elif str(base).isdigit() and int(base) < n_bases:
+            base_name = base_names[int(base)]
+        else:
+            raise ReadError(
+                f"CGNS: the file has no base '{base}' ({n_bases} base(s) found)"
+            )
+    elif n_bases > 1:
         warnings.warn(
             f"CGNS: file has {n_bases} CGNSBase_t nodes; only the first "
-            f"('{base_name}') is read.",
+            f"('{base_name}') is read; pass a base to choose.",
             stacklevel=2,
         )
     base = f[base_name]
@@ -896,21 +1054,11 @@ def _read_spec(f):
 
     point_chunks = []
     cells = []
-    point_data = {}
-    cell_data = {}
+    zone_fields = []  # per zone: points, block sizes, point data, cell data
     field_data = {}
     regions = []
     point_offset = 0
     point_dim_out = 3
-
-    # FlowSolution_t is only read for a single-zone file -- see the C++ twin's
-    # comment: across zones the arrays would have to be concatenated in listing
-    # order and a solution on only some zones has no defensible filler.
-    n_zones = sum(
-        1
-        for z in base
-        if not z.startswith(" ") and _read_attr_str(base[z], "label") == "Zone_t"
-    )
 
     for zname in base:
         if zname.startswith(" "):
@@ -922,13 +1070,30 @@ def _read_spec(f):
         zone_unit = _read_dimensional_units(zone)
         if zone_unit is not None:
             unit = zone_unit
+        # A Structured zone is expanded to its lattice: ``Zone_t``'s value is the
+        # (vertex, cell, boundary-vertex) sizes, one row each, ``i`` the fastest index.
+        structured_dims = None
         if "ZoneType" in zone and " data" in zone["ZoneType"]:
             zt_raw = zone["ZoneType"][" data"][()]
             zt_name = bytes(np.asarray(zt_raw).astype("i1")).decode("ascii", "ignore")
-            if zt_name != "Unstructured":
+            if zt_name == "Structured":
+                zdata = (
+                    np.asarray(zone[" data"][()]).reshape(-1)
+                    if " data" in zone
+                    else np.empty(0, dtype=np.int64)
+                )
+                idim = zdata.size // 3
+                if not 1 <= idim <= 3:
+                    raise ReadError(
+                        f"CGNS: structured zone '{zname}' has a malformed size record"
+                    )
+                structured_dims = [int(v) for v in zdata[:idim]] + [1] * (3 - idim)
+                if min(structured_dims) < 1:
+                    raise ReadError(f"CGNS: structured zone '{zname}' has no points")
+            elif zt_name != "Unstructured":
                 raise ReadError(
                     f"CGNS: zone '{zname}' has ZoneType '{zt_name}'; only "
-                    "Unstructured zones are supported."
+                    "Unstructured and Structured zones are supported."
                 )
 
         coords = zone["GridCoordinates"]
@@ -939,6 +1104,8 @@ def _read_spec(f):
             raise ReadError(f"CGNS: zone '{zname}' has no GridCoordinates")
         point_dim_out = max(2, len(axes))
         cols = [np.asarray(coords[ax][" data"][()], dtype=np.float64) for ax in axes]
+        if structured_dims is not None:
+            cols = [c.reshape(-1) for c in cols]
         n_zone_points = cols[0].shape[0] if cols[0].ndim else 0
         zpts = np.zeros((n_zone_points, point_dim_out), dtype=np.float64)
         for d in range(point_dim_out):
@@ -951,6 +1118,18 @@ def _read_spec(f):
         zone_block_cells = []
         zone_sections = []  # (first element id, last, first cell index in the zone)
         cells_before = sum(len(c[1]) for c in cells)
+
+        if structured_dims is not None:
+            expected = structured_dims[0] * structured_dims[1] * structured_dims[2]
+            if n_zone_points != expected:
+                raise ReadError(
+                    f"CGNS: structured zone '{zname}' lists {n_zone_points} "
+                    f"coordinates for a {' x '.join(map(str, structured_dims))} lattice"
+                )
+            cell_type, lattice = lattice_cells(*structured_dims)
+            if len(lattice):
+                cells.append((cell_type, lattice.astype(np.int64) + point_offset))
+                zone_block_cells.append(len(lattice))
 
         sects = []
         for sname in zone:
@@ -1037,13 +1216,8 @@ def _read_spec(f):
             if not child.startswith(" ")
             and _read_attr_str(zone[child], "label") == "FlowSolution_t"
         ]
-        if sol_names and n_zones > 1:
-            warnings.warn(
-                f"CGNS: file has {n_zones} zones; FlowSolution on zone '{zname}' was "
-                "not read (cross-zone field concatenation is not supported).",
-                stacklevel=2,
-            )
-        elif sol_names:
+        zone_pd, zone_cd = {}, {}
+        if sol_names:
             zone_total_cells = sum(zone_block_cells)
             for child in sol_names:
                 sol = zone[child]
@@ -1053,7 +1227,7 @@ def _read_spec(f):
                     location = bytes(raw).decode("ascii", "ignore").strip("\0 ")
                 if location == "Vertex":
                     for name, arr in _read_solution(sol, child, n_zone_points):
-                        point_data[name] = arr
+                        zone_pd[name] = arr
                 elif location == "CellCenter":
                     for name, arr in _read_solution(sol, child, zone_total_cells):
                         # Split the zone-wide array back across the blocks.
@@ -1061,7 +1235,7 @@ def _read_spec(f):
                         for nb in zone_block_cells:
                             blocks.append(arr[row : row + nb])
                             row += nb
-                        cell_data[name] = blocks
+                        zone_cd[name] = blocks
                 else:
                     warnings.warn(
                         f"CGNS: FlowSolution '{child}' has GridLocation '{location}'; "
@@ -1069,29 +1243,27 @@ def _read_spec(f):
                         stacklevel=2,
                     )
 
-        if n_zones == 1:
-            regions.extend(
-                _read_regions(zone, zone_sections, n_zone_points, cells_before)
+        zone_dims = structured_dims
+        regions.extend(
+            _read_regions(
+                zone, zone_sections, n_zone_points, cells_before, point_offset
             )
-            bc_regions, bc_types = _read_bcs(
-                zone, zone_sections, n_zone_points, cells_before
-            )
-            regions.extend(bc_regions)
-            field_data.update(bc_types)
-            field_data.update(_read_field_data(zone))
-        elif any(
-            _read_attr_str(zone[c], "label") in ("ZoneSubRegion_t", "UserDefinedData_t")
-            for c in zone
-            if not c.startswith(" ")
-        ):
-            warnings.warn(
-                f"CGNS: file has {n_zones} zones; the regions and field data of zone "
-                f"'{zname}' were not read.",
-                stacklevel=2,
-            )
-
+        )
+        bc_regions, bc_types = _read_bcs(
+            zone, zone_sections, n_zone_points, cells_before, point_offset, zone_dims
+        )
+        regions.extend(bc_regions)
+        field_data.update(bc_types)
+        if_regions, if_fields = _read_interfaces(
+            zone, n_zone_points, point_offset, zone_dims
+        )
+        regions.extend(if_regions)
+        field_data.update(if_fields)
+        field_data.update(_read_field_data(zone))
+        zone_fields.append((n_zone_points, list(zone_block_cells), zone_pd, zone_cd))
         point_offset += n_zone_points
 
+    point_data, cell_data = _join_zone_fields(zone_fields)
     if not point_chunks:
         raise ReadError(f"CGNS: base '{base_name}' has no Unstructured zones")
     if len(point_chunks) == 1:
@@ -1109,7 +1281,7 @@ def _read_spec(f):
         point_data=point_data,
         cell_data=cell_data,
         field_data=field_data,
-        regions=regions,
+        regions=_merge_regions(regions),
     )
     if unit is not None:
         set_length_unit(out, unit)

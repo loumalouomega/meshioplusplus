@@ -352,7 +352,7 @@ def test_unverified_ordering_type_raises(tmp_path, write_fn):
             write_fn(p, mesh, compression=None)
 
 
-def test_structured_zone_raises(tmp_path):
+def test_unknown_zone_type_raises(tmp_path):
     import h5py
 
     p = tmp_path / "test.cgns"
@@ -360,9 +360,9 @@ def test_structured_zone_raises(tmp_path):
     with h5py.File(p, "a") as f:
         del f["Base"]["Zone1"]["ZoneType"][" data"]
         f["Base"]["Zone1"]["ZoneType"].create_dataset(
-            " data", data=np.frombuffer(b"Structured", dtype="i1")
+            " data", data=np.frombuffer(b"Weird", dtype="i1")
         )
-    with pytest.raises(ReadError, match="Structured"):
+    with pytest.raises(ReadError, match="Weird"):
         _cgns.read(p)
 
 
@@ -705,3 +705,181 @@ def test_boundary_conditions_are_read_as_regions(tmp_path, engine):
     assert by_name[("walls", "cell")] == [2, 3, 5]
     assert bytes(back.field_data["cgns:bc_type:inlet"]).decode() == "BCInflow"
     assert bytes(back.field_data["cgns:bc_type:walls"]).decode() == "BCWall"
+
+
+def _structured_cgns(path, dims=(3, 2, 2), with_solution=True, extra_zone=False):
+    """A one-base, one-zone *Structured* file written with the writer's own node
+    helpers: coordinates ``(nk, nj, ni)`` (``i`` fastest) and two solutions."""
+    h5py = pytest.importorskip("h5py")
+    ni, nj, nk = dims
+    with h5py.File(path, "w") as f:
+        _cgns._write_node_attrs(f, "HDF5 MotherNode", "Root Node of HDF5 File", "MT")
+        base = _cgns._create_group(f, "Base")
+        _cgns._write_node_attrs(base, "Base", "CGNSBase_t", "I4")
+        base.create_dataset(" data", data=np.array([3, 3], dtype="<i4"))
+        zone = _cgns._create_group(base, "Block1")
+        _cgns._write_node_attrs(zone, "Block1", "Zone_t", "I4")
+        cells = (ni - 1) * (nj - 1) * (nk - 1)
+        zone.create_dataset(
+            " data",
+            data=np.array(
+                [[ni, nj, nk], [ni - 1, nj - 1, nk - 1], [0, 0, 0]], dtype="<i4"
+            ),
+        )
+        _cgns._c1_node(zone, "ZoneType", "ZoneType_t", "Structured")
+        coords = _cgns._create_group(zone, "GridCoordinates")
+        _cgns._write_node_attrs(coords, "GridCoordinates", "GridCoordinates_t", "MT")
+        k, j, i = np.meshgrid(
+            np.arange(nk), np.arange(nj), np.arange(ni), indexing="ij"
+        )
+        for name, values in (
+            ("CoordinateX", i * 1.0),
+            ("CoordinateY", j * 2.0),
+            ("CoordinateZ", k * 3.0),
+        ):
+            node = _cgns._create_group(coords, name)
+            _cgns._write_node_attrs(node, name, "DataArray_t", "R8")
+            node.create_dataset(" data", data=values.astype("<f8"))
+        if with_solution:
+            sol = _cgns._create_group(zone, "Flow")
+            _cgns._write_node_attrs(sol, "Flow", "FlowSolution_t", "MT")
+            _cgns._c1_node(sol, "GridLocation", "GridLocation_t", "Vertex")
+            node = _cgns._create_group(sol, "Temperature")
+            _cgns._write_node_attrs(node, "Temperature", "DataArray_t", "R8")
+            node.create_dataset(
+                " data", data=np.arange(ni * nj * nk, dtype="<f8").reshape(nk, nj, ni)
+            )
+            csol = _cgns._create_group(zone, "CellFlow")
+            _cgns._write_node_attrs(csol, "CellFlow", "FlowSolution_t", "MT")
+            _cgns._c1_node(csol, "GridLocation", "GridLocation_t", "CellCenter")
+            node = _cgns._create_group(csol, "Pressure")
+            _cgns._write_node_attrs(node, "Pressure", "DataArray_t", "R8")
+            node.create_dataset(
+                " data",
+                data=np.arange(cells, dtype="<f8").reshape(nk - 1, nj - 1, ni - 1),
+            )
+        if extra_zone:
+            # a second, 2 x 2 x 2 zone with no solution
+            zone2 = _cgns._create_group(base, "Block2")
+            _cgns._write_node_attrs(zone2, "Block2", "Zone_t", "I4")
+            zone2.create_dataset(
+                " data", data=np.array([[2, 2, 2], [1, 1, 1], [0, 0, 0]], dtype="<i4")
+            )
+            _cgns._c1_node(zone2, "ZoneType", "ZoneType_t", "Structured")
+            coords2 = _cgns._create_group(zone2, "GridCoordinates")
+            _cgns._write_node_attrs(
+                coords2, "GridCoordinates", "GridCoordinates_t", "MT"
+            )
+            k2, j2, i2 = np.meshgrid(
+                np.arange(2), np.arange(2), np.arange(2), indexing="ij"
+            )
+            for name, values in (
+                ("CoordinateX", i2 + 10.0),
+                ("CoordinateY", j2 * 1.0),
+                ("CoordinateZ", k2 * 1.0),
+            ):
+                node = _cgns._create_group(coords2, name)
+                _cgns._write_node_attrs(node, name, "DataArray_t", "R8")
+                node.create_dataset(" data", data=values.astype("<f8"))
+            # an interface of the first zone naming its donor
+            conn = _cgns._create_group(zone, "ZoneGridConnectivity")
+            _cgns._write_node_attrs(
+                conn, "ZoneGridConnectivity", "ZoneGridConnectivity_t", "MT"
+            )
+            link = _cgns._c1_node(conn, "to_block2", "GridConnectivity1to1_t", "Block2")
+            rng = _cgns._create_group(link, "PointRange")
+            _cgns._write_node_attrs(rng, "PointRange", "IndexRange_t", "I4")
+            # the i = ni face of the first zone: i fixed at 3, all j, all k
+            rng.create_dataset(
+                " data", data=np.array([[3, 3], [1, 2], [1, 2]], dtype="<i4")
+            )
+
+
+@pytest.mark.parametrize("engine", ["python", "core"])
+def test_structured_zone_is_expanded_to_a_lattice(tmp_path, engine):
+    if engine == "core" and not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
+    path = str(tmp_path / "s.cgns")
+    _structured_cgns(path)
+    mesh = (_cgns.read if engine == "python" else meshioplusplus.cgns.read)(path)
+    assert len(mesh.points) == 12
+    assert mesh.points[1].tolist() == [1.0, 0.0, 0.0]
+    assert mesh.points[11].tolist() == [2.0, 2.0, 3.0]
+    assert [b.type for b in mesh.cells] == ["hexahedron"]
+    assert mesh.cells[0].data.shape == (2, 8)
+    assert mesh.point_data["Temperature"].tolist() == list(map(float, range(12)))
+    assert mesh.cell_data["Pressure"][0].tolist() == [0.0, 1.0]
+
+
+@pytest.mark.parametrize("engine", ["python", "core"])
+def test_rind_planes_of_a_solution_are_stripped(tmp_path, engine):
+    h5py = pytest.importorskip("h5py")
+    if engine == "core" and not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
+    path = str(tmp_path / "r.cgns")
+    _structured_cgns(path, with_solution=False)
+    ni, nj, nk = 3, 2, 2
+    padded = np.full((nk + 2, nj + 2, ni + 2), -1.0)
+    padded[1:-1, 1:-1, 1:-1] = np.arange(ni * nj * nk, dtype=float).reshape(nk, nj, ni)
+    with h5py.File(path, "r+") as f:
+        zone = f["Base/Block1"]
+        sol = _cgns._create_group(zone, "Flow")
+        _cgns._write_node_attrs(sol, "Flow", "FlowSolution_t", "MT")
+        _cgns._c1_node(sol, "GridLocation", "GridLocation_t", "Vertex")
+        rind = _cgns._create_group(sol, "Rind")
+        _cgns._write_node_attrs(rind, "Rind", "Rind_t", "I4")
+        rind.create_dataset(" data", data=np.ones(6, dtype="<i4"))
+        node = _cgns._create_group(sol, "Temperature")
+        _cgns._write_node_attrs(node, "Temperature", "DataArray_t", "R8")
+        node.create_dataset(" data", data=padded)
+    mesh = (_cgns.read if engine == "python" else meshioplusplus.cgns.read)(path)
+    assert mesh.point_data["Temperature"].tolist() == list(map(float, range(12)))
+
+
+@pytest.mark.parametrize("engine", ["python", "core"])
+def test_solutions_of_several_zones_are_concatenated(tmp_path, engine):
+    if engine == "core" and not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
+    path = str(tmp_path / "two.cgns")
+    _structured_cgns(path, extra_zone=True)
+    mesh = (_cgns.read if engine == "python" else meshioplusplus.cgns.read)(path)
+    assert len(mesh.points) == 12 + 8
+    assert [b.type for b in mesh.cells] == ["hexahedron", "hexahedron"]
+    temperature = mesh.point_data["Temperature"]
+    assert temperature[:12].tolist() == list(map(float, range(12)))
+    assert np.isnan(temperature[12:]).all()
+    pressure = mesh.cell_data["Pressure"]
+    assert pressure[0].tolist() == [0.0, 1.0]
+    assert np.isnan(pressure[1]).all() and len(pressure[1]) == 1
+    # the first zone's interface: the points of the i = 3 face, by their lattice number
+    by_name = {r.name: sorted(r.entries.tolist()) for r in mesh.regions}
+    assert by_name["cgns:interface:to_block2"] == [2, 5, 8, 11]
+    assert bytes(mesh.field_data["cgns:interface_donor:to_block2"]).decode() == "Block2"
+
+
+@pytest.mark.parametrize("engine", ["python", "core"])
+@pytest.mark.parametrize("which", ["Base2", "1", "Base", "0"])
+def test_a_base_of_a_multi_base_file_can_be_chosen(tmp_path, engine, which):
+    h5py = pytest.importorskip("h5py")
+    if engine == "core" and not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
+    path = str(tmp_path / "bases.cgns")
+    _structured_cgns(path)
+    with h5py.File(path, "r+") as f:
+        f.copy(f["Base"], "Base2")
+        node = f["Base2/Block1/GridCoordinates/CoordinateX/ data"]
+        node[...] = node[...] + 100.0
+    mesh = (
+        (lambda p, b: _cgns.read(p, base=b))
+        if engine == "python"
+        else (lambda p, b: meshioplusplus.cgns.read(p, base=b))
+    )(path, which)
+    shifted = which in ("Base2", "1")
+    assert (mesh.points[:, 0].min() >= 100.0) == shifted
+
+
+def test_an_unknown_base_is_refused(tmp_path):
+    path = str(tmp_path / "one.cgns")
+    _structured_cgns(path)
+    with pytest.raises(ReadError, match="base"):
+        _cgns.read(path, base="nope")

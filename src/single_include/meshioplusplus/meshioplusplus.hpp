@@ -16365,6 +16365,17 @@ MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
 MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions);
 
 /**
+ * @brief `read_cgns` of one base of a multi-base file, by name or by position (`"0"` is the first).
+ *
+ * Reads through the raw HDF5 path (the files a cgnslib-only build can read -- ADF containers --
+ * have no such choice here). Reading every base into one mesh stays out: bases may differ in
+ * dimension.
+ * @throws ReadError when the file has no such base.
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns_base(const std::string& rPath, const std::string& rBase,
+                                       const ReadOptions& rOptions = ReadOptions{});
+
+/**
  * @brief Summarize a CGNS file's shape and available time steps without
  *        decoding point coordinates or cell connectivity.
  *
@@ -53307,6 +53318,80 @@ KinematicFit kinematic_fit(const std::vector<PatchVec>& rPts, const std::vector<
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/kinematic_fit.hpp =====
+// ===== begin src/cpp/src/detail/lattice_cells.hpp =====
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+/**
+ * @brief The cells of an `Ni x Nj x Nk` lattice of points numbered with `i` fastest: hexahedra,
+ *        quads or lines by how many of the dimensions are above one (a single point is a
+ *        `vertex`). The twin of `_grid.lattice_cells` in the Python package.
+ *
+ * Connectivity is 0-based over the lattice's own points, `rNodes` per cell.
+ */
+inline void lattice_cells(std::int64_t Ni, std::int64_t Nj, std::int64_t Nk, std::string& rType,
+                          std::vector<std::int64_t>& rConn, std::size_t& rNodes) {
+    const auto at = [&](std::int64_t I, std::int64_t J, std::int64_t K) {
+        return I + Ni * (J + Nj * K);
+    };
+    const int big = (Ni > 1) + (Nj > 1) + (Nk > 1);
+    rConn.clear();
+    if (big == 3) {
+        rType = "hexahedron";
+        rNodes = 8;
+        for (std::int64_t k = 0; k + 1 < Nk; ++k)
+            for (std::int64_t j = 0; j + 1 < Nj; ++j)
+                for (std::int64_t i = 0; i + 1 < Ni; ++i)
+                    for (const auto& c : {std::array<std::int64_t, 3>{i, j, k},
+                                          {i + 1, j, k},
+                                          {i + 1, j + 1, k},
+                                          {i, j + 1, k},
+                                          {i, j, k + 1},
+                                          {i + 1, j, k + 1},
+                                          {i + 1, j + 1, k + 1},
+                                          {i, j + 1, k + 1}})
+                        rConn.push_back(at(c[0], c[1], c[2]));
+        return;
+    }
+    // Flatten the lattice to the (up to) two axes above one, slowest first.
+    std::vector<std::int64_t> dims;
+    std::vector<std::int64_t> strides;
+    const std::int64_t d[3] = {Ni, Nj, Nk};
+    const std::int64_t st[3] = {1, Ni, Ni * Nj};
+    for (int a = 2; a >= 0; --a)
+        if (d[a] > 1) {
+            dims.push_back(d[a]);
+            strides.push_back(st[a]);
+        }
+    if (big == 2) {
+        rType = "quad";
+        rNodes = 4;
+        for (std::int64_t a = 0; a + 1 < dims[0]; ++a)
+            for (std::int64_t b = 0; b + 1 < dims[1]; ++b) {
+                const auto p = [&](std::int64_t A, std::int64_t B) {
+                    return A * strides[0] + B * strides[1];
+                };
+                rConn.insert(rConn.end(), {p(a, b), p(a, b + 1), p(a + 1, b + 1), p(a + 1, b)});
+            }
+    } else if (big == 1) {
+        rType = "line";
+        rNodes = 2;
+        for (std::int64_t a = 0; a + 1 < dims[0]; ++a)
+            rConn.insert(rConn.end(), {a * strides[0], (a + 1) * strides[0]});
+    } else {
+        rType = "vertex";
+        rNodes = 1;
+        rConn.push_back(0);
+    }
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/lattice_cells.hpp =====
 // ===== begin src/cpp/src/detail/layer_sweep.hpp =====
 /**
  * @file detail/layer_sweep.hpp
@@ -138732,9 +138817,162 @@ h5::Hid cgns_create_solution(hid_t zone, const std::string& rName, const std::st
 /// Re-join a zone's `DataArray_t` children into meshio++ arrays, undoing the
 /// `_0.._k-1` split. Returns `name -> (rows, k)` interleaved Float64 arrays.
 /// `rExpectedRows` is `NVertex`/`NCell`; a mismatch is a `ReadError`.
+/// One zone's solutions as read: point arrays and per-block cell arrays, in the order met.
+struct CgnsZoneFields {
+    std::size_t mPoints = 0;
+    std::vector<std::size_t> mBlocks;
+    std::vector<std::string> mPointNames, mCellNames;
+    std::map<std::string, NDArray> mPoint;
+    std::map<std::string, std::vector<NDArray>> mCell;
+
+    void AddPoint(const std::string& rName, NDArray Array) {
+        if (!mPoint.count(rName))
+            mPointNames.push_back(rName);
+        mPoint.insert_or_assign(rName, std::move(Array));
+    }
+    void AddCell(const std::string& rName, std::vector<NDArray> Blocks) {
+        if (!mCell.count(rName))
+            mCellNames.push_back(rName);
+        mCell.insert_or_assign(rName, std::move(Blocks));
+    }
+};
+
+/// A NaN-filled Float64 array of `Rows` rows shaped like `rTemplate`'s trailing dimensions.
+NDArray cgns_nan_like(const NDArray& rTemplate, std::size_t Rows) {
+    std::vector<std::size_t> shape = rTemplate.Shape();
+    if (shape.empty())
+        shape = {Rows};
+    else
+        shape[0] = Rows;
+    NDArray out(DType::Float64, shape);
+    double* p = out.As<double>();
+    std::fill(p, p + out.Size(), std::nan(""));
+    return out;
+}
+
+/// The per-zone solutions of a file as `point_data` and `cell_data`: each array concatenated over
+/// the zones in block order, a zone without it filled with NaN (`merge`'s `Fill` policy); the twin
+/// of the Python `_join_zone_fields`. One zone's arrays are added as they are.
+void cgns_add_zone_fields(Mesh& rMesh, std::vector<CgnsZoneFields>& rZones) {
+    std::vector<std::string> point_names, cell_names;
+    for (const auto& z : rZones) {
+        for (const auto& n : z.mPointNames)
+            if (std::find(point_names.begin(), point_names.end(), n) == point_names.end())
+                point_names.push_back(n);
+        for (const auto& n : z.mCellNames)
+            if (std::find(cell_names.begin(), cell_names.end(), n) == cell_names.end())
+                cell_names.push_back(n);
+    }
+    for (const std::string& name : point_names) {
+        if (rZones.size() == 1) {
+            rMesh.AddPointData(name, std::move(rZones[0].mPoint.at(name)));
+            continue;
+        }
+        const NDArray* tmpl = nullptr;
+        for (const auto& z : rZones)
+            if (z.mPoint.count(name)) {
+                tmpl = &z.mPoint.at(name);
+                break;
+            }
+        std::size_t total = 0, cols = detail::cols(*tmpl);
+        for (const auto& z : rZones)
+            total += z.mPoints;
+        std::vector<std::size_t> shape = tmpl->Shape();
+        shape[0] = total;
+        NDArray out(DType::Float64, shape);
+        double* dst = out.As<double>();
+        std::size_t row = 0;
+        for (const auto& z : rZones) {
+            if (z.mPoint.count(name)) {
+                const detail::DoubleView v(z.mPoint.at(name));
+                for (std::size_t i = 0; i < z.mPoints * cols; ++i)
+                    dst[row * cols + i] = v[i];
+            } else {
+                for (std::size_t i = 0; i < z.mPoints * cols; ++i)
+                    dst[row * cols + i] = std::nan("");
+            }
+            row += z.mPoints;
+        }
+        rMesh.AddPointData(name, std::move(out));
+    }
+    for (const std::string& name : cell_names) {
+        const NDArray* tmpl = nullptr;
+        for (const auto& z : rZones)
+            if (z.mCell.count(name) && !z.mCell.at(name).empty()) {
+                tmpl = &z.mCell.at(name)[0];
+                break;
+            }
+        std::vector<NDArray> blocks;
+        for (auto& z : rZones) {
+            if (z.mCell.count(name)) {
+                for (NDArray& b : z.mCell.at(name))
+                    blocks.push_back(std::move(b));
+            } else if (tmpl) {
+                for (const std::size_t nb : z.mBlocks)
+                    blocks.push_back(cgns_nan_like(*tmpl, nb));
+            }
+        }
+        rMesh.AddCellData(name, std::move(blocks));
+    }
+}
+
+/// A solution array without its rind planes: `Rind_t` is `(lo, hi)` per index direction, `i` first,
+/// and the array's own axes are the reverse of that (`(nk, nj, ni)`); a 1-D array (an unstructured
+/// zone) uses the first pair. The result is flat, as the callers take arrays.
+NDArray cgns_strip_rind(const NDArray& rA, const std::vector<std::int64_t>& rRind) {
+    bool any = false;
+    for (const std::int64_t v : rRind)
+        any = any || v != 0;
+    if (!any)
+        return rA;
+    const std::vector<std::size_t>& shape = rA.Shape();
+    const std::size_t nd = std::max<std::size_t>(shape.size(), 1);
+    std::vector<std::size_t> lo(nd, 0), hi(nd, 0);
+    for (std::size_t ax = 0; ax < nd; ++ax) {
+        const std::size_t pair = nd - 1 - ax;  // axis 0 is the slowest, k
+        if (2 * pair + 1 < rRind.size()) {
+            lo[ax] = static_cast<std::size_t>(std::max<std::int64_t>(rRind[2 * pair], 0));
+            hi[ax] = static_cast<std::size_t>(std::max<std::int64_t>(rRind[2 * pair + 1], 0));
+        }
+    }
+    std::vector<std::size_t> dims = shape.empty() ? std::vector<std::size_t>{rA.Size()} : shape;
+    std::vector<std::size_t> out_dims(nd);
+    std::size_t out_count = 1;
+    for (std::size_t ax = 0; ax < nd; ++ax) {
+        if (lo[ax] + hi[ax] > dims[ax])
+            throw ReadError("CGNS: a solution's Rind is larger than its array");
+        out_dims[ax] = dims[ax] - lo[ax] - hi[ax];
+        out_count *= out_dims[ax];
+    }
+    NDArray out(rA.Dtype(), {out_count});
+    const std::size_t isz = dtype_size(rA.Dtype());
+    std::vector<std::size_t> idx(nd, 0);
+    for (std::size_t n = 0; n < out_count; ++n) {
+        std::size_t src = 0;
+        for (std::size_t ax = 0; ax < nd; ++ax)
+            src = src * dims[ax] + idx[ax] + lo[ax];
+        std::memcpy(out.Data() + n * isz, rA.Data() + src * isz, isz);
+        for (std::size_t ax = nd; ax-- > 0;) {
+            if (++idx[ax] < out_dims[ax])
+                break;
+            idx[ax] = 0;
+        }
+    }
+    return out;
+}
+
 std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
                                                                 const std::string& rSolName,
                                                                 std::size_t expected_rows) {
+    std::vector<std::int64_t> rind;
+    if (h5::exists(sol, "Rind")) {
+        h5::Hid rn = h5::open_group(sol, "Rind");
+        if (h5::exists(rn, " data")) {
+            const NDArray rv = h5::read_dataset(rn, " data");
+            for (std::size_t i = 0; i < rv.Size(); ++i)
+                rind.push_back(detail::read_int(rv, i));
+        }
+    }
     // Collect the raw arrays in name order first; `group_links` is name-sorted,
     // so a `_0.._k-1` run arrives contiguous and in component order for k < 10.
     // For k >= 10 the lexicographic order would interleave, so components are
@@ -138783,7 +139021,7 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
         if (!contiguous || (k == 1 && parts.begin()->first != 0)) {
             for (const auto& kv : parts) {
                 h5::Hid g = h5::open_group(sol, kv.second);
-                NDArray a = h5::read_dataset(g, " data");
+                NDArray a = cgns_strip_rind(h5::read_dataset(g, " data"), rind);
                 if (a.Size() != expected_rows)
                     throw ReadError(detail::format_compat(
                         "CGNS: '{}/{}' has {} values but the zone has {} entities at this "
@@ -138798,7 +139036,7 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
         cols.reserve(k);
         for (const auto& kv : parts) {
             h5::Hid g = h5::open_group(sol, kv.second);
-            NDArray a = h5::read_dataset(g, " data");
+            NDArray a = cgns_strip_rind(h5::read_dataset(g, " data"), rind);
             if (a.Size() != expected_rows)
                 throw ReadError(detail::format_compat(
                     "CGNS: '{}/{}' has {} values but the zone has {} entities at this "
@@ -139083,8 +139321,34 @@ void cgns_read_field_data(hid_t zone, Mesh& rMesh) {
 }
 
 /// The `ZoneSubRegion_t` children of a zone as regions.
-void cgns_read_regions(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRange>& rSections,
-                       std::size_t NumPoints, std::int64_t CellsBefore) {
+/// The 1-based point ids of a `PointRange`: a one-dimensional `(first, last)` pair, or, in a
+/// structured zone of @p pDims points, one `(first, last)` pair per index direction (`i` fastest).
+/// Empty (with a warning by the caller) for a range this reader cannot place.
+std::vector<std::int64_t> cgns_expand_range(const NDArray& rRange,
+                                            const std::array<std::int64_t, 3>* pDims) {
+    std::vector<std::int64_t> ids;
+    if (rRange.Size() == 2) {
+        for (std::int64_t v = detail::read_int(rRange, 0); v <= detail::read_int(rRange, 1); ++v)
+            ids.push_back(v);
+        return ids;
+    }
+    if (pDims == nullptr || rRange.Size() % 2 != 0 || rRange.Size() > 6)
+        return ids;
+    std::int64_t lo[3] = {1, 1, 1}, hi[3] = {1, 1, 1};
+    for (std::size_t a = 0; a < rRange.Size() / 2; ++a) {
+        lo[a] = detail::read_int(rRange, 2 * a);
+        hi[a] = detail::read_int(rRange, 2 * a + 1);
+    }
+    for (std::int64_t k = lo[2]; k <= hi[2]; ++k)
+        for (std::int64_t j = lo[1]; j <= hi[1]; ++j)
+            for (std::int64_t i = lo[0]; i <= hi[0]; ++i)
+                ids.push_back(1 + (i - 1) + (*pDims)[0] * ((j - 1) + (*pDims)[1] * (k - 1)));
+    return ids;
+}
+
+void cgns_read_regions(hid_t zone, std::vector<Region>& rRegions,
+                       const std::vector<CgnsSectionRange>& rSections, std::size_t NumPoints,
+                       std::int64_t CellsBefore, std::int64_t PointOffset) {
     std::size_t dropped = 0;
     for (const std::string& child : h5::group_links(zone)) {
         if (cgns_is_reserved_name(child))
@@ -139132,7 +139396,7 @@ void cgns_read_regions(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRan
                 if (id < 1 || static_cast<std::size_t>(id) > NumPoints)
                     throw ReadError(detail::format_compat(
                         "CGNS: ZoneSubRegion '{}' names a vertex the zone does not have", child));
-                entries.push_back(id - 1);
+                entries.push_back(id - 1 + PointOffset);
             }
         } else if (location == "CellCenter") {
             for (std::size_t i = 0; i < list.Size(); ++i) {
@@ -139156,8 +139420,8 @@ void cgns_read_regions(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRan
         }
         NDArray ids = NDArray::Uninit(DType::Int64, {entries.size()});
         std::copy(entries.begin(), entries.end(), ids.As<std::int64_t>());
-        rMesh.AddRegion(Region(name, location == "Vertex" ? RegionKind::Point : RegionKind::Cell,
-                               static_cast<int>(dim), tag, std::move(ids)));
+        rRegions.push_back(Region(name, location == "Vertex" ? RegionKind::Point : RegionKind::Cell,
+                                  static_cast<int>(dim), tag, std::move(ids)));
     }
     if (dropped)
         log::warn(
@@ -139173,8 +139437,10 @@ void cgns_read_regions(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRan
 /// elements (the boundary elements of the file's own sections), so they become cell
 /// regions. The region is named after the BC's `FamilyName` when it has one, else after
 /// the BC, and BCs sharing a name and kind are merged.
-void cgns_read_bcs(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRange>& rSections,
-                   std::size_t NumPoints, std::int64_t CellsBefore) {
+void cgns_read_bcs(hid_t zone, Mesh& rMesh, std::vector<Region>& rRegions,
+                   const std::vector<CgnsSectionRange>& rSections, std::size_t NumPoints,
+                   std::int64_t CellsBefore, std::int64_t PointOffset,
+                   const std::array<std::int64_t, 3>* pDims) {
     std::vector<std::pair<std::pair<std::string, RegionKind>, std::vector<std::int64_t>>> merged;
     std::vector<std::pair<std::string, std::string>> types;
     std::size_t dropped = 0;
@@ -139200,16 +139466,12 @@ void cgns_read_bcs(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRange>&
             } else if (h5::exists(node, "PointRange")) {
                 h5::Hid pr = h5::open_group(node, "PointRange");
                 const NDArray range = h5::read_dataset(pr, " data");
-                if (range.Size() != 2) {
-                    log::warn(
-                        "CGNS: BC '{}' has a multi-dimensional PointRange (a structured zone); "
-                        "not read.",
-                        bc_name);
+                ids = cgns_expand_range(range, pDims);
+                if (ids.empty() && range.Size() != 2) {
+                    log::warn("CGNS: BC '{}' has a PointRange this reader cannot place; not read.",
+                              bc_name);
                     continue;
                 }
-                for (std::int64_t v = detail::read_int(range, 0); v <= detail::read_int(range, 1);
-                     ++v)
-                    ids.push_back(v);
             } else {
                 log::warn("CGNS: BC '{}' has no PointList or PointRange; not read.", bc_name);
                 continue;
@@ -139236,7 +139498,7 @@ void cgns_read_bcs(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRange>&
                     if (id < 1 || static_cast<std::size_t>(id) > NumPoints)
                         throw ReadError(detail::format_compat(
                             "CGNS: BC '{}' names a vertex the zone does not have", bc_name));
-                    entries.push_back(id - 1);
+                    entries.push_back(id - 1 + PointOffset);
                 }
             } else {
                 kind = RegionKind::Cell;
@@ -139280,13 +139542,98 @@ void cgns_read_bcs(hid_t zone, Mesh& rMesh, const std::vector<CgnsSectionRange>&
     for (auto& [key, entries] : merged) {
         NDArray ids = NDArray::Uninit(DType::Int64, {entries.size()});
         std::copy(entries.begin(), entries.end(), ids.As<std::int64_t>());
-        rMesh.AddRegion(Region(key.first, key.second, std::move(ids)));
+        rRegions.push_back(Region(key.first, key.second, std::move(ids)));
     }
     for (const auto& [name, text] : types) {
         NDArray chars(DType::UInt8, {text.size()});
         std::memcpy(chars.Data(), text.data(), text.size());
         rMesh.AddFieldData("cgns:bc_type:" + name, std::move(chars));
     }
+}
+
+/// The `GridConnectivity1to1_t` children of a zone's `ZoneGridConnectivity_t` as point regions
+/// named `cgns:interface:<name>` over the zone's own points, and the donor zone's name as
+/// `field_data["cgns:interface_donor:<name>"]` (the characters as `uint8`). Abutting and
+/// overset interfaces (`GridConnectivity_t`) are not read.
+void cgns_read_interfaces(hid_t zone, Mesh& rMesh, std::vector<Region>& rRegions,
+                          std::size_t NumPoints, std::int64_t PointOffset,
+                          const std::array<std::int64_t, 3>* pDims) {
+    for (const std::string& child : h5::group_links(zone)) {
+        if (cgns_is_reserved_name(child))
+            continue;
+        h5::Hid conn = h5::open_group(zone, child);
+        if (!(h5::has_attr(conn, "label") &&
+              h5::read_attr_string(conn, "label") == "ZoneGridConnectivity_t"))
+            continue;
+        for (const std::string& name : h5::group_links(conn)) {
+            if (cgns_is_reserved_name(name))
+                continue;
+            h5::Hid node = h5::open_group(conn, name);
+            if (!(h5::has_attr(node, "label") &&
+                  h5::read_attr_string(node, "label") == "GridConnectivity1to1_t"))
+                continue;
+            std::vector<std::int64_t> ids;
+            if (h5::exists(node, "PointList")) {
+                h5::Hid pl = h5::open_group(node, "PointList");
+                const NDArray list = h5::read_dataset(pl, " data");
+                for (std::size_t i = 0; i < list.Size(); ++i)
+                    ids.push_back(detail::read_int(list, i));
+            } else if (h5::exists(node, "PointRange")) {
+                h5::Hid pr = h5::open_group(node, "PointRange");
+                ids = cgns_expand_range(h5::read_dataset(pr, " data"), pDims);
+            }
+            if (ids.empty()) {
+                log::warn("CGNS: interface '{}' lists no points this reader can place; not read.",
+                          name);
+                continue;
+            }
+            std::vector<std::int64_t> entries;
+            for (const std::int64_t id : ids) {
+                if (id < 1 || static_cast<std::size_t>(id) > NumPoints)
+                    throw ReadError(detail::format_compat(
+                        "CGNS: interface '{}' names a vertex the zone does not have", name));
+                entries.push_back(id - 1 + PointOffset);
+            }
+            NDArray arr = NDArray::Uninit(DType::Int64, {entries.size()});
+            std::copy(entries.begin(), entries.end(), arr.As<std::int64_t>());
+            rRegions.push_back(Region("cgns:interface:" + name, RegionKind::Point, std::move(arr)));
+            if (h5::exists(node, " data")) {
+                const std::string donor = cgns_read_c1(node);
+                if (!donor.empty()) {
+                    NDArray chars(DType::UInt8, {donor.size()});
+                    std::memcpy(chars.Data(), donor.data(), donor.size());
+                    rMesh.AddFieldData("cgns:interface_donor:" + name, std::move(chars));
+                }
+            }
+        }
+    }
+}
+
+/// Regions of several zones as one list: those with the same name and kind merge, their entries
+/// joined.
+void cgns_add_regions(Mesh& rMesh, std::vector<Region>& rRegions) {
+    std::vector<Region> merged;
+    for (Region& r : rRegions) {
+        auto it = std::find_if(merged.begin(), merged.end(), [&](const Region& m) {
+            return m.mName == r.mName && m.mKind == r.mKind;
+        });
+        if (it == merged.end()) {
+            merged.push_back(std::move(r));
+            continue;
+        }
+        const std::size_t stride = r.Stride();
+        NDArray joined =
+            NDArray::Uninit(DType::Int64, {(it->NumEntries() + r.NumEntries()) * stride});
+        std::int64_t* dst = joined.As<std::int64_t>();
+        std::copy(it->Entries(), it->Entries() + it->NumEntries() * stride, dst);
+        std::copy(r.Entries(), r.Entries() + r.NumEntries() * stride,
+                  dst + it->NumEntries() * stride);
+        if (stride == 2)
+            joined.Reshape({joined.Size() / 2, 2});
+        it->mEntries = std::move(joined);
+    }
+    for (Region& r : merged)
+        rMesh.AddRegion(std::move(r));
 }
 
 }  // namespace
@@ -139792,7 +140139,8 @@ CgnsIterativeData cgns_read_iterative_data(hid_t base, hid_t zone) {
     return out;
 }
 
-Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
+Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions,
+                    const std::string& rBase) {
     h5::SilenceErrors silence;
     h5::Hid f = h5::open_file_read(rPath);
 
@@ -139802,20 +140150,35 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
     // Locate the first CGNSBase_t child of the root (structural, not by
     // name); warn (never silently drop data) if there is more than one.
     std::string base_name;
-    int n_bases = 0;
+    std::vector<std::string> base_names;
     for (const std::string& name : h5::group_links(f)) {
         if (cgns_is_reserved_name(name))
             continue;
         h5::Hid g = h5::open_group(f, name);
-        if (h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == "CGNSBase_t") {
-            if (n_bases == 0)
-                base_name = name;
-            ++n_bases;
-        }
+        if (h5::has_attr(g, "label") && h5::read_attr_string(g, "label") == "CGNSBase_t")
+            base_names.push_back(name);
     }
-    if (n_bases > 1)
-        log::warn("CGNS: file has {} CGNSBase_t nodes; only the first ('{}') is read.", n_bases,
-                  base_name);
+    const int n_bases = static_cast<int>(base_names.size());
+    if (!base_names.empty())
+        base_name = base_names.front();
+    if (!rBase.empty()) {
+        // A base is chosen by name, else by its position (0 is the first).
+        const auto named = std::find(base_names.begin(), base_names.end(), rBase);
+        if (named != base_names.end()) {
+            base_name = *named;
+        } else if (rBase.find_first_not_of("0123456789") == std::string::npos &&
+                   std::stoul(rBase) < base_names.size()) {
+            base_name = base_names[std::stoul(rBase)];
+        } else {
+            throw ReadError(detail::format_compat(
+                "CGNS: the file has no base '{}' ({} base(s) found)", rBase, n_bases));
+        }
+    } else if (n_bases > 1) {
+        log::warn(
+            "CGNS: file has {} CGNSBase_t nodes; only the first ('{}') is read; pass a base to "
+            "choose.",
+            n_bases, base_name);
+    }
 
     h5::Hid base = h5::open_group(f, base_name);
     double length_unit = cgns_read_dimensional_units(base);
@@ -139830,6 +140193,8 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
     // the point/cell arrays would have to be concatenated in exactly the order
     // the zones happen to be listed in, and a solution present on only some
     // zones has no defensible filler. Our own writer emits one zone.
+    std::vector<CgnsZoneFields> zone_fields;
+    std::vector<Region> all_regions;
     std::size_t n_zones = 0;
     for (const std::string& zname : h5::group_links(base)) {
         if (cgns_is_reserved_name(zname))
@@ -139848,6 +140213,10 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         if (const double zone_unit = cgns_read_dimensional_units(zone); zone_unit > 0.0)
             length_unit = zone_unit;
 
+        // A Structured zone is expanded to its lattice: `Zone_t`'s value is the
+        // (vertex, cell, boundary-vertex) sizes, one row each, `i` the fastest index.
+        bool structured = false;
+        std::array<std::int64_t, 3> structured_dims{1, 1, 1};
         if (h5::exists(zone, "ZoneType")) {
             h5::Hid zt = h5::open_group(zone, "ZoneType");
             if (h5::exists(zt, " data")) {
@@ -139855,11 +140224,25 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                 std::string zt_name(raw.Size(), '\0');
                 for (std::size_t i = 0; i < raw.Size(); ++i)
                     zt_name[i] = static_cast<char>(detail::read_int(raw, i));
-                if (zt_name != "Unstructured")
+                if (zt_name == "Structured") {
+                    structured = true;
+                    const NDArray zdata =
+                        h5::exists(zone, " data") ? h5::read_dataset(zone, " data") : NDArray();
+                    const std::size_t idim = zdata.Size() / 3;
+                    if (idim < 1 || idim > 3)
+                        throw ReadError(detail::format_compat(
+                            "CGNS: structured zone '{}' has a malformed size record", zname));
+                    for (std::size_t a = 0; a < idim; ++a)
+                        structured_dims[a] = detail::read_int(zdata, a);
+                    if (structured_dims[0] < 1 || structured_dims[1] < 1 || structured_dims[2] < 1)
+                        throw ReadError(detail::format_compat(
+                            "CGNS: structured zone '{}' has no points", zname));
+                } else if (zt_name != "Unstructured") {
                     throw ReadError(detail::format_compat(
-                        "CGNS: zone '{}' has ZoneType '{}'; only Unstructured zones are "
-                        "supported.",
+                        "CGNS: zone '{}' has ZoneType '{}'; only Unstructured and Structured "
+                        "zones are supported.",
                         zname, zt_name));
+                }
             }
         }
 
@@ -139877,7 +140260,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         for (const std::string& ax : axes) {
             h5::Hid g = h5::open_group(coords, ax);
             NDArray c = h5::read_dataset(g, " data");
-            if (c.Ndim() != 1)
+            if (c.Ndim() != 1 && !structured)
                 throw ReadError(
                     detail::format_compat("CGNS: zone '{}' coordinate '{}' must be 1-D, found {}-D",
                                           zname, ax, c.Ndim()));
@@ -139914,6 +140297,30 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         std::int64_t cells_before = 0;
         for (std::size_t b = 0; b < mesh.NumCellBlocks(); ++b)
             cells_before += static_cast<std::int64_t>(mesh.Cells(b).NumCells());
+
+        if (structured) {
+            const std::int64_t expected =
+                structured_dims[0] * structured_dims[1] * structured_dims[2];
+            if (static_cast<std::int64_t>(n_zone_points) != expected)
+                throw ReadError(detail::format_compat(
+                    "CGNS: structured zone '{}' lists {} coordinates for a {} x {} x {} lattice",
+                    zname, n_zone_points, structured_dims[0], structured_dims[1],
+                    structured_dims[2]));
+            std::string type;
+            std::vector<std::int64_t> lattice;
+            std::size_t npc = 0;
+            detail::lattice_cells(structured_dims[0], structured_dims[1], structured_dims[2], type,
+                                  lattice, npc);
+            const std::size_t nc = lattice.size() / npc;
+            if (nc > 0) {
+                for (std::int64_t& v : lattice)
+                    v += point_offset;
+                NDArray conn = NDArray::Uninit(DType::Int64, {nc, npc});
+                std::memcpy(conn.Data(), lattice.data(), lattice.size() * sizeof(std::int64_t));
+                mesh.AddCellBlock(type, std::move(conn));
+                zone_block_cells.push_back(nc);
+            }
+        }
 
         std::vector<Sect> sects;
         for (const std::string& sname : h5::group_links(zone)) {
@@ -140174,7 +140581,10 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
         // "CellCenter" arrays become cell_data split back across this zone's
         // blocks in ElementRange order. GridLocation absent => "Vertex", the
         // SIDS default.
-        if (n_zones == 1) {
+        CgnsZoneFields zone_fields_here;
+        zone_fields_here.mPoints = n_zone_points;
+        zone_fields_here.mBlocks = zone_block_cells;
+        {
             std::size_t zone_total_cells = 0;
             for (std::size_t c : zone_block_cells)
                 zone_total_cells += c;
@@ -140241,7 +140651,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                                 "'{}'; the later one wins.",
                                 name, it->second, child);
                         it->second = child;
-                        mesh.AddPointData(name, std::move(arr));
+                        zone_fields_here.AddPoint(name, std::move(arr));
                     }
                 } else if (location == "CellCenter") {
                     for (auto& [name, arr] : cgns_read_solution(sol, child, zone_total_cells)) {
@@ -140268,7 +140678,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                             row += nb;
                             blocks.push_back(std::move(b));
                         }
-                        mesh.AddCellData(name, std::move(blocks));
+                        zone_fields_here.AddCell(name, std::move(blocks));
                     }
                 } else {
                     log::warn(
@@ -140277,46 +140687,23 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions) {
                         child, location);
                 }
             }
-        } else if (n_zones > 1) {
-            for (const std::string& child : h5::group_links(zone)) {
-                if (cgns_is_reserved_name(child))
-                    continue;
-                h5::Hid sol = h5::open_group(zone, child);
-                if (h5::has_attr(sol, "label") &&
-                    h5::read_attr_string(sol, "label") == "FlowSolution_t") {
-                    log::warn(
-                        "CGNS: file has {} zones; FlowSolution '{}' on zone '{}' was not read "
-                        "(cross-zone field concatenation is not supported).",
-                        n_zones, child, zname);
-                    break;
-                }
-            }
         }
+        zone_fields.push_back(std::move(zone_fields_here));
 
-        if (n_zones == 1) {
-            cgns_read_regions(zone, mesh, zone_sections, n_zone_points, cells_before);
-            cgns_read_bcs(zone, mesh, zone_sections, n_zone_points, cells_before);
+        {
+            const std::array<std::int64_t, 3>* dims_ptr = structured ? &structured_dims : nullptr;
+            cgns_read_regions(zone, all_regions, zone_sections, n_zone_points, cells_before,
+                              point_offset);
+            cgns_read_bcs(zone, mesh, all_regions, zone_sections, n_zone_points, cells_before,
+                          point_offset, dims_ptr);
+            cgns_read_interfaces(zone, mesh, all_regions, n_zone_points, point_offset, dims_ptr);
             cgns_read_field_data(zone, mesh);
-        } else {
-            for (const std::string& child : h5::group_links(zone)) {
-                if (cgns_is_reserved_name(child))
-                    continue;
-                h5::Hid node = h5::open_group(zone, child);
-                if (h5::has_attr(node, "label") &&
-                    (h5::read_attr_string(node, "label") == "ZoneSubRegion_t" ||
-                     h5::read_attr_string(node, "label") == "UserDefinedData_t")) {
-                    log::warn(
-                        "CGNS: file has {} zones; the regions and field data of zone '{}' were "
-                        "not read.",
-                        n_zones, zname);
-                    break;
-                }
-            }
         }
-
         point_offset += static_cast<std::int64_t>(n_zone_points);
     }
 
+    cgns_add_zone_fields(mesh, zone_fields);
+    cgns_add_regions(mesh, all_regions);
     if (point_chunks.empty())
         throw ReadError(
             detail::format_compat("CGNS: base '{}' has no Unstructured zones", base_name));
@@ -140475,7 +140862,13 @@ Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions) {
         // layout or reports its own (more specific) error
     }
 #endif
-    return cgns_read_impl(rPath, rOptions);
+    return cgns_read_impl(rPath, rOptions, std::string());
+}
+
+Mesh read_cgns_base(const std::string& rPath, const std::string& rBase,
+                    const ReadOptions& rOptions) {
+    detail::LibraryLock lock;
+    return cgns_read_impl(rPath, rOptions, rBase);
 }
 
 MeshMetadata read_cgns_metadata(const std::string& rPath, const ReadOptions& rOptions) {
@@ -145141,65 +145534,6 @@ bool ensight_ids_in_file(const std::string& rRecord, const char* pWhat) {
     throw ReadError(std::string("EnSight: malformed '") + pWhat + " id' record: " + rRecord);
 }
 
-// The cells of an `ni x nj x nk` lattice of points numbered with `i` fastest,
-// the twin of the Python reader's `_lattice_cells`: hexahedra, quads or lines
-// by how many of the dimensions are above one.
-void ensight_lattice_cells(std::int64_t Ni, std::int64_t Nj, std::int64_t Nk, std::string& rType,
-                           std::vector<std::int64_t>& rConn, std::size_t& rNodes) {
-    const auto at = [&](std::int64_t I, std::int64_t J, std::int64_t K) {
-        return I + Ni * (J + Nj * K);
-    };
-    const int big = (Ni > 1) + (Nj > 1) + (Nk > 1);
-    rConn.clear();
-    if (big == 3) {
-        rType = "hexahedron";
-        rNodes = 8;
-        for (std::int64_t k = 0; k + 1 < Nk; ++k)
-            for (std::int64_t j = 0; j + 1 < Nj; ++j)
-                for (std::int64_t i = 0; i + 1 < Ni; ++i)
-                    for (const auto& c : {std::array<std::int64_t, 3>{i, j, k},
-                                          {i + 1, j, k},
-                                          {i + 1, j + 1, k},
-                                          {i, j + 1, k},
-                                          {i, j, k + 1},
-                                          {i + 1, j, k + 1},
-                                          {i + 1, j + 1, k + 1},
-                                          {i, j + 1, k + 1}})
-                        rConn.push_back(at(c[0], c[1], c[2]));
-        return;
-    }
-    // Flatten the lattice to the (up to) two axes above one, slowest first.
-    std::vector<std::int64_t> dims;
-    std::vector<std::int64_t> strides;
-    const std::int64_t d[3] = {Ni, Nj, Nk};
-    const std::int64_t st[3] = {1, Ni, Ni * Nj};
-    for (int a = 2; a >= 0; --a)
-        if (d[a] > 1) {
-            dims.push_back(d[a]);
-            strides.push_back(st[a]);
-        }
-    if (big == 2) {
-        rType = "quad";
-        rNodes = 4;
-        for (std::int64_t a = 0; a + 1 < dims[0]; ++a)
-            for (std::int64_t b = 0; b + 1 < dims[1]; ++b) {
-                const auto p = [&](std::int64_t A, std::int64_t B) {
-                    return A * strides[0] + B * strides[1];
-                };
-                rConn.insert(rConn.end(), {p(a, b), p(a, b + 1), p(a + 1, b + 1), p(a + 1, b)});
-            }
-    } else if (big == 1) {
-        rType = "line";
-        rNodes = 2;
-        for (std::int64_t a = 0; a + 1 < dims[0]; ++a)
-            rConn.insert(rConn.end(), {a * strides[0], (a + 1) * strides[0]});
-    } else {
-        rType = "vertex";
-        rNodes = 1;
-        rConn.push_back(0);
-    }
-}
-
 Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLayout = nullptr) {
     constexpr std::int64_t plausible_max = 100000000;  // generous id/count bound
 
@@ -145304,7 +145638,7 @@ Mesh ensight_parse_geo(EnsightCursor& rCur, std::vector<EnsightPartLayout>* pLay
             std::string type;
             std::vector<std::int64_t> lattice;
             std::size_t npc = 0;
-            ensight_lattice_cells(dims[0], dims[1], dims[2], type, lattice, npc);
+            detail::lattice_cells(dims[0], dims[1], dims[2], type, lattice, npc);
             for (std::int64_t& v : lattice)
                 v += point_offset;
             NDArray conn = NDArray::Uninit(DType::Int64, {lattice.size() / npc, npc});
