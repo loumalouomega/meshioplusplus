@@ -79,6 +79,11 @@ class _File:
                 "zlib-compressed records are not supported; write the file with "
                 "/FCOMP,RST,0"
             )
+        if flags & _BSPARSE and flags & _WSPARSE:
+            _fail(
+                f"the record at word {ptr} has both the bit-sparse and "
+                f"windowed-sparse flags ({flags}); that layout is not known"
+            )
         if flags & _INT:
             dtype = np.dtype("<i2" if flags & _PREC else "<i4")
         else:

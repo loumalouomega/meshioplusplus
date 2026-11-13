@@ -411,6 +411,21 @@ TEST(AnsysRst, RefusesWrappingRecordPointers) {
     }
 }
 
+TEST(AnsysRst, RefusesBothSparseFlags) {
+    RstWriter w;
+    w.Raw({12}, 0x80 | 0x08 | 0x10);
+    const std::string path = mt::temp_path(".rst");
+    w.Save(path);
+    try {
+        (void)meshioplusplus::read_ansys_rst(path);
+        FAIL() << "A record with both sparse flags must be refused";
+    } catch (const meshioplusplus::ReadError& e) {
+        EXPECT_NE(std::string(e.what()).find("both the bit-sparse and windowed-sparse"),
+                  std::string::npos);
+    }
+    remove_file(path);
+}
+
 TEST(AnsysRst, ElementCategories) {
     using meshioplusplus::detail::AnsysCategory;
     EXPECT_EQ(meshioplusplus::detail::ansys_category(186), AnsysCategory::Brick);
