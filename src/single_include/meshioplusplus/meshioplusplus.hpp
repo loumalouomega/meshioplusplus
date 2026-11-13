@@ -147722,14 +147722,22 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
     points_xyz = NDArray(DType::Float64, {num_nodes, 3});
 
     std::vector<std::string> point_data_names, cell_data_names, global_names;
+    std::array<std::vector<std::string>, 2> set_var_names;  // node sets, side sets
+    std::map<std::array<int, 3>, NDArray> set_var_values;   // (kind, variable, set) -> values
     std::vector<double> global_values;         // the selected step's `vals_glo_var` row
     std::map<int, NDArray> pd;                 // idx -> values (selected step)
     std::map<int, std::map<int, NDArray>> cd;  // idx -> block -> values
     struct Block {
         std::string mType;
         NDArray mData;
+        // Ragged blocks: kind 1 is a polygon block (flat nodes and row offsets), kind 2 a
+        // polyhedron group (faces' nodes, face offsets per cell). A pending NSIDED (3) or NFACED
+        // (4) placeholder is resolved once its counts and face blocks have been met.
+        int mKind = 0;
+        std::vector<std::int64_t> mFlat, mRowOffsets, mFaceOffsets;
     };
     std::vector<std::pair<int, Block>> blocks;  // connect{k} in numeric order
+    std::map<int, std::vector<std::int64_t>> ragged_counts, ragged_faces, face_counts, face_nodes;
 
     // Region raw material, collected here and turned into regions after the
     // cell blocks are in the mesh -- a Cell/Side region needs global block-major
@@ -147788,14 +147796,43 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
         } else if (key.rfind("attrib", 0) == 0) {
             attribs[exo_suffix(key, 6)] =
                 read_var(ncid, varid, std::vector<std::size_t>(dims.size(), 0), dims);
-        } else if (key.rfind("facconn", 0) == 0 || key.rfind("fbconn", 0) == 0) {
-            // NFACED element blocks and their face blocks: read by the Python engine
-            // (which the shim retries on this refusal), not silently dropped.
-            throw ReadError("Exodus: NFACED polyhedral blocks are read by the Python engine only");
+        } else if (key.rfind("ebepecnt", 0) == 0) {
+            ragged_counts[exo_suffix(key, 8)] = read_ints(ncid, varid);
+        } else if (key.rfind("fbepecnt", 0) == 0) {
+            face_counts[exo_suffix(key, 8)] = read_ints(ncid, varid);
+        } else if (key.rfind("fbconn", 0) == 0) {
+            std::vector<std::int64_t> ids = read_ints(ncid, varid);
+            for (std::int64_t& v : ids)
+                --v;
+            face_nodes[exo_suffix(key, 6)] = std::move(ids);
+        } else if (key.rfind("facconn", 0) == 0) {
+            // An NFACED element block: the face ids of every element, resolved below.
+            std::vector<std::int64_t> ids = read_ints(ncid, varid);
+            for (std::int64_t& v : ids)
+                --v;
+            const int blk = exo_suffix(key, 7);
+            ragged_faces[blk] = std::move(ids);
+            Block pending;
+            pending.mType = "polyhedron";
+            pending.mKind = 4;
+            blocks.emplace_back(blk, std::move(pending));
         } else if (key.rfind("connect", 0) == 0) {
             std::string elem_type = read_att_text(ncid, varid, "elem_type");
             std::transform(elem_type.begin(), elem_type.end(), elem_type.begin(),
                            [](unsigned char c) { return std::toupper(c); });
+            if (elem_type == "NSIDED") {
+                // The nodes of every element back to back; `ebepecnt{k}` says how many each has.
+                std::vector<std::int64_t> ids = read_ints(ncid, varid);
+                for (std::int64_t& v : ids)
+                    --v;
+                Block pending;
+                pending.mType = "polygon";
+                pending.mKind = 3;
+                pending.mFlat = std::move(ids);
+                blocks.emplace_back(key.size() > 7 ? std::atoi(key.c_str() + 7) : 1,
+                                    std::move(pending));
+                continue;
+            }
             auto it = exodus_to_meshio().find(elem_type);
             if (it == exodus_to_meshio().end())
                 throw ReadError("Exodus: unknown element type " + elem_type);
@@ -147850,11 +147887,27 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             parallel_for_bw(std::min(num_nodes, v.Size()), [&](std::size_t i) {
                 xyz[i * 3 + static_cast<std::size_t>(c)] = vv[i];
             });
-        } else if (key == "name_nset_var" || key == "name_sset_var" ||
-                   key.rfind("vals_nset_var", 0) == 0 || key.rfind("vals_sset_var", 0) == 0) {
-            // Set variables are read (and written) by the Python engine only.
-            throw ReadError(
-                "Exodus: node and side set variables are read by the Python engine only");
+        } else if (key == "name_nset_var" || key == "name_sset_var") {
+            set_var_names[key == "name_nset_var" ? 0 : 1] = read_names(ncid, varid);
+        } else if (key.rfind("vals_nset_var", 0) == 0 || key.rfind("vals_sset_var", 0) == 0) {
+            // `vals_[ns]set_var<v>[ns]s<s>(time_step, entries)`: the selected step's values.
+            std::size_t p = 13;
+            const std::size_t v_at = p;
+            while (p < key.size() && std::isdigit(static_cast<unsigned char>(key[p])))
+                ++p;
+            if (p == v_at || p + 2 >= key.size() || key[p + 1] != 's')
+                continue;
+            const int v = std::atoi(key.substr(v_at, p - v_at).c_str());
+            const int set_no = std::atoi(key.c_str() + p + 2);
+            std::vector<std::size_t> start(dims.size(), 0), count = dims;
+            if (!count.empty()) {
+                count[0] = 1;
+                start[0] = exo_step_offset(step, dims[0], key);
+            }
+            NDArray values = read_var(ncid, varid, start, count);
+            std::vector<std::size_t> shape(dims.begin() + 1, dims.end());
+            values.Reshape(shape);
+            set_var_values[{key[5] == 'n' ? 0 : 1, v, set_no}] = std::move(values);
         } else if (key == "name_glo_var") {
             global_names = read_names(ncid, varid);
         } else if (key == "vals_glo_var") {
@@ -147911,8 +147964,87 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
     if (!have_coord)
         mesh.AssignPoints(std::move(points_xyz));
 
-    std::sort(blocks.begin(), blocks.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
+    // Resolve the NSIDED and NFACED placeholders now that every variable has been read.
+    {
+        std::vector<std::vector<std::int64_t>> face_rows;  // the face blocks' faces, in block order
+        for (const auto& [j, nodes] : face_nodes) {
+            const auto cit = face_counts.find(j);
+            if (cit == face_counts.end())
+                throw ReadError("Exodus: face block " + std::to_string(j) + " has no fbepecnt" +
+                                std::to_string(j));
+            std::size_t at = 0;
+            for (const std::int64_t count : cit->second) {
+                if (count < 0 || at + static_cast<std::size_t>(count) > nodes.size())
+                    throw ReadError("Exodus: fbepecnt" + std::to_string(j) +
+                                    " does not add up to fbconn" + std::to_string(j));
+                face_rows.emplace_back(nodes.begin() + at, nodes.begin() + at + count);
+                at += static_cast<std::size_t>(count);
+            }
+        }
+        std::vector<std::pair<int, Block>> resolved;
+        for (auto& [blk, block] : blocks) {
+            if (block.mKind < 3) {
+                resolved.emplace_back(blk, std::move(block));
+                continue;
+            }
+            const auto cit = ragged_counts.find(blk);
+            if (cit == ragged_counts.end())
+                throw ReadError("Exodus: ragged block " + std::to_string(blk) + " has no ebepecnt" +
+                                std::to_string(blk));
+            const std::vector<std::int64_t>& per_element = cit->second;
+            if (block.mKind == 3) {
+                Block out;
+                out.mType = "polygon";
+                out.mKind = 1;
+                out.mRowOffsets.push_back(0);
+                std::size_t at = 0;
+                for (const std::int64_t count : per_element) {
+                    if (count < 0 || at + static_cast<std::size_t>(count) > block.mFlat.size())
+                        throw ReadError("Exodus: ebepecnt" + std::to_string(blk) +
+                                        " does not add up to connect" + std::to_string(blk));
+                    out.mFlat.insert(out.mFlat.end(), block.mFlat.begin() + at,
+                                     block.mFlat.begin() + at + count);
+                    at += static_cast<std::size_t>(count);
+                    out.mRowOffsets.push_back(static_cast<std::int64_t>(out.mFlat.size()));
+                }
+                resolved.emplace_back(blk, std::move(out));
+                continue;
+            }
+            const std::vector<std::int64_t>& ids = ragged_faces[blk];
+            std::vector<std::int64_t> flat, rows{0}, faces{0};
+            std::size_t at = 0;
+            for (const std::int64_t count : per_element) {
+                if (count < 0 || at + static_cast<std::size_t>(count) > ids.size())
+                    throw ReadError("Exodus: ebepecnt" + std::to_string(blk) +
+                                    " does not add up to facconn" + std::to_string(blk));
+                for (std::int64_t q = 0; q < count; ++q) {
+                    const std::int64_t id = ids[at + static_cast<std::size_t>(q)];
+                    if (id < 0 || static_cast<std::size_t>(id) >= face_rows.size())
+                        throw ReadError("Exodus: facconn" + std::to_string(blk) +
+                                        " names a face the file does not have");
+                    const auto& face = face_rows[static_cast<std::size_t>(id)];
+                    flat.insert(flat.end(), face.begin(), face.end());
+                    rows.push_back(static_cast<std::int64_t>(flat.size()));
+                }
+                at += static_cast<std::size_t>(count);
+                faces.push_back(static_cast<std::int64_t>(rows.size() - 1));
+            }
+            for (auto& g : detail::group_polyhedra_by_node_count(std::move(flat), std::move(rows),
+                                                                 std::move(faces))) {
+                Block out;
+                out.mType = "polyhedron" + std::to_string(g.mNodeCount);
+                out.mKind = 2;
+                out.mFlat = std::move(g.mFlat);
+                out.mRowOffsets = std::move(g.mRowOffsets);
+                out.mFaceOffsets = std::move(g.mFaceOffsets);
+                resolved.emplace_back(blk, std::move(out));
+            }
+        }
+        blocks = std::move(resolved);
+    }
+
+    std::stable_sort(blocks.begin(), blocks.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
     std::vector<std::string> block_types;
     std::vector<int> block_keys;  // the file's block number per mesh block position
     block_types.reserve(blocks.size());
@@ -147920,7 +148052,15 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
     for (auto& b : blocks) {
         block_types.push_back(b.second.mType);
         block_keys.push_back(b.first);
-        mesh.AddCellBlock(b.second.mType, std::move(b.second.mData));
+        if (b.second.mKind == 1)
+            mesh.AddPolygonBlock(b.second.mType, std::move(b.second.mFlat),
+                                 std::move(b.second.mRowOffsets));
+        else if (b.second.mKind == 2)
+            mesh.AddPolyhedronBlock(b.second.mType, std::move(b.second.mFlat),
+                                    std::move(b.second.mRowOffsets),
+                                    std::move(b.second.mFaceOffsets));
+        else
+            mesh.AddCellBlock(b.second.mType, std::move(b.second.mData));
     }
 
     exo_add_regions(mesh, block_types, eb_names, eb_ids, ns_names, ns_ids, node_sets, ss_names,
@@ -147998,6 +148138,21 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
         NDArray tv(DType::Float64, {1});
         *reinterpret_cast<double*>(tv.Data()) = time_values[step];
         mesh.AddFieldData("exodus:time", std::move(tv));
+    }
+    // Set variables: a value per node (or side) of a set, in the set's own order, under the
+    // set's name as the regions use it.
+    for (auto& [id, values] : set_var_values) {
+        const int kind = id[0], var = id[1], set_no = id[2];
+        const std::vector<std::string>& names = set_var_names[static_cast<std::size_t>(kind)];
+        if (var < 1 || static_cast<std::size_t>(var) > names.size() || set_no < 1)
+            continue;
+        const std::string set_name =
+            kind == 0
+                ? exo_group_name(ns_names, ns_ids, static_cast<std::size_t>(set_no - 1), "Nodeset")
+                : exo_group_name(ss_names, ss_ids, static_cast<std::size_t>(set_no - 1), "Sideset");
+        mesh.AddFieldData(std::string("exodus:") + (kind == 0 ? "nset:" : "sset:") + set_name +
+                              ":" + names[static_cast<std::size_t>(var - 1)],
+                          std::move(values));
     }
     // Global variables (MOOSE's postprocessor values): one scalar each.
     for (std::size_t g = 0; g < global_names.size() && g < global_values.size(); ++g) {
@@ -148165,12 +148320,6 @@ void exo_put_sets(int Ncid, int StringDim, const std::vector<ExoWriteSet>& rSets
 namespace {
 
 void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, bool DoubleTime) {
-    // Set variables (`exodus:nset:<set>:<name>`, `exodus:sset:...`) are written by the
-    // Python engine only: refuse by name so the shim retries there.
-    for (const auto& name : rMesh.FieldDataNames())
-        if (name.rfind("exodus:nset:", 0) == 0 || name.rfind("exodus:sset:", 0) == 0)
-            throw WriteError(
-                "Exodus: node and side set variables are written by the Python engine only");
     // Validate memberships and ids before creating or truncating the destination.
     const auto node_sets = exo_write_sets(rMesh, RegionKind::Point);
     const auto side_sets = exo_write_sets(rMesh, RegionKind::Side);
@@ -148315,8 +148464,82 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
 
     // connectivity blocks
     std::vector<int> block_elem_dims(rMesh.NumCellBlocks(), -1);
+    // NFACED blocks' faces, one face block each: (element block number, the faces' node lists).
+    std::vector<std::pair<std::size_t, std::vector<std::vector<std::int64_t>>>> face_blocks;
     for (std::size_t k = 0; k < rMesh.NumCellBlocks(); ++k) {
         const auto cb = rMesh.Cells(k);
+        if (cb.IsPolyhedron() || cb.IsRagged() || cb.Type().rfind("polygon", 0) == 0 ||
+            cb.Type().rfind("polyhedron", 0) == 0) {
+            // NSIDED (`connect` holding every element's nodes, `ebepecnt` the count of each) or
+            // NFACED (`facconn` holding every element's face ids, `ebepecnt` the count of each;
+            // the faces go to a face block of their own, one row per face).
+            const std::size_t number = k + 1;
+            const std::size_t ne = cb.NumCells();
+            int d_el;
+            check(nc_def_dim(ncid, ("num_el_in_blk" + std::to_string(number)).c_str(), ne, &d_el),
+                  "blk dim", true);
+            block_elem_dims[k] = d_el;
+            std::vector<std::int32_t> counts(ne);
+            std::vector<std::int32_t> ids;
+            if (cb.IsPolyhedron() || cb.Type().rfind("polyhedron", 0) == 0) {
+                std::size_t first = 0;
+                for (const auto& fb : face_blocks)
+                    first += fb.second.size();
+                std::vector<std::vector<std::int64_t>> faces;
+                for (std::size_t r = 0; r < ne; ++r) {
+                    counts[r] = static_cast<std::int32_t>(cb.NumFaces(r));
+                    for (std::size_t q = 0; q < cb.NumFaces(r); ++q) {
+                        const auto face = cb.Face(r, q);
+                        faces.emplace_back(face.first, face.first + face.second);
+                        ids.push_back(static_cast<std::int32_t>(first + faces.size()));
+                    }
+                }
+                int d_fac;
+                check(nc_def_dim(ncid, ("num_fac_per_el" + std::to_string(number)).c_str(),
+                                 ids.size(), &d_fac),
+                      "blk dim", true);
+                int var;
+                check(nc_def_var(ncid, ("facconn" + std::to_string(number)).c_str(), NC_INT, 1,
+                                 &d_fac, &var),
+                      "def facconn", true);
+                check(nc_put_att_text(ncid, var, "elem_type", 6, "NFACED"), "elem_type", true);
+                if (!ids.empty())
+                    check(nc_put_var_int(ncid, var, ids.data()), "facconn", true);
+                face_blocks.emplace_back(number, std::move(faces));
+            } else {
+                const bool csr = cb.IsRagged();
+                const std::size_t width = csr ? 0 : cb.NodesPerCell();
+                std::optional<detail::Int64View> rect;
+                if (!csr && ne > 0)
+                    rect.emplace(cb.Conn());
+                for (std::size_t r = 0; r < ne; ++r) {
+                    const std::size_t count = csr ? cb.RowSize(r) : width;
+                    counts[r] = static_cast<std::int32_t>(count);
+                    for (std::size_t q = 0; q < count; ++q)
+                        ids.push_back(
+                            static_cast<std::int32_t>(csr ? cb.Row(r)[q] : (*rect)[r * width + q]) +
+                            1);
+                }
+                int d_nod;
+                check(nc_def_dim(ncid, ("num_nod_per_el" + std::to_string(number)).c_str(),
+                                 ids.size(), &d_nod),
+                      "blk dim", true);
+                int var;
+                check(nc_def_var(ncid, ("connect" + std::to_string(number)).c_str(), NC_INT, 1,
+                                 &d_nod, &var),
+                      "def connect", true);
+                check(nc_put_att_text(ncid, var, "elem_type", 6, "NSIDED"), "elem_type", true);
+                if (!ids.empty())
+                    check(nc_put_var_int(ncid, var, ids.data()), "connect", true);
+            }
+            int count_var;
+            check(nc_def_var(ncid, ("ebepecnt" + std::to_string(number)).c_str(), NC_INT, 1, &d_el,
+                             &count_var),
+                  "def ebepecnt", true);
+            if (!counts.empty())
+                check(nc_put_var_int(ncid, count_var, counts.data()), "ebepecnt", true);
+            continue;
+        }
         auto it = meshio_to_exodus().find(cb.Type());
         if (it == meshio_to_exodus().end())
             throw WriteError("Exodus: unsupported cell type " + cb.Type());
@@ -148367,6 +148590,39 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
         }
         if (shifted.Size() > 0)
             check(nc_put_var(ncid, var, shifted.Data()), "connect", true);
+    }
+
+    if (!face_blocks.empty()) {
+        std::size_t total_faces = 0;
+        for (const auto& fb : face_blocks)
+            total_faces += fb.second.size();
+        int d_blk, d_face;
+        check(nc_def_dim(ncid, "num_fa_blk", face_blocks.size(), &d_blk), "num_fa_blk", true);
+        check(nc_def_dim(ncid, "num_face", total_faces, &d_face), "num_face", true);
+        for (std::size_t j = 0; j < face_blocks.size(); ++j) {
+            const auto& faces = face_blocks[j].second;
+            std::vector<std::int32_t> counts, nodes;
+            for (const auto& face : faces) {
+                counts.push_back(static_cast<std::int32_t>(face.size()));
+                for (const std::int64_t v : face)
+                    nodes.push_back(static_cast<std::int32_t>(v) + 1);
+            }
+            const std::string suffix = std::to_string(j + 1);
+            int d_fa, d_nod, var, count_var;
+            check(nc_def_dim(ncid, ("num_fa_in_blk" + suffix).c_str(), faces.size(), &d_fa),
+                  "face dim", true);
+            check(nc_def_dim(ncid, ("num_nod_per_fa" + suffix).c_str(), nodes.size(), &d_nod),
+                  "face dim", true);
+            check(nc_def_var(ncid, ("fbconn" + suffix).c_str(), NC_INT, 1, &d_nod, &var),
+                  "def fbconn", true);
+            check(nc_put_att_text(ncid, var, "elem_type", 6, "NSIDED"), "elem_type", true);
+            if (!nodes.empty())
+                check(nc_put_var_int(ncid, var, nodes.data()), "fbconn", true);
+            check(nc_def_var(ncid, ("fbepecnt" + suffix).c_str(), NC_INT, 1, &d_fa, &count_var),
+                  "def fbepecnt", true);
+            if (!counts.empty())
+                check(nc_put_var_int(ncid, count_var, counts.data()), "fbepecnt", true);
+        }
     }
 
     // Per-element attributes: every cell_data array whose name starts with
@@ -148618,6 +148874,88 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
 
     exo_put_sets(ncid, d_str, node_sets, false);
     exo_put_sets(ncid, d_str, side_sets, true);
+    if (EmitStep) {
+        // Set variables: `field_data["exodus:nset:<set>:<name>"]` (and `sset`) as `name_nset_var`
+        // and `vals_nset_var{v}ns{s}`, one value per node (side) of the set in its own order.
+        for (const bool sides : {false, true}) {
+            const std::string label = sides ? "sset" : "nset";
+            const std::string prefix = "exodus:" + label + ":";
+            const auto& sets = sides ? side_sets : node_sets;
+            struct Entry {
+                std::size_t mSet;
+                std::string mVar;
+                std::vector<double> mValues;
+            };
+            std::vector<Entry> entries;
+            for (const auto& name : rMesh.FieldDataNames()) {
+                if (name.rfind(prefix, 0) != 0)
+                    continue;
+                const std::string rest = name.substr(prefix.size());
+                const std::size_t colon = rest.rfind(':');
+                const NDArray& arr = rMesh.FieldData(name);
+                std::size_t found = sets.size();
+                if (colon != std::string::npos)
+                    for (std::size_t k = 0; k < sets.size(); ++k)
+                        if (sets[k].mName == rest.substr(0, colon))
+                            found = k;
+                const std::size_t expected = found < sets.size() ? sets[found].mEntities.size() : 0;
+                if (colon == std::string::npos || colon + 1 == rest.size() ||
+                    found == sets.size() || arr.Size() != expected) {
+                    log::warn(
+                        "Exodus: field_data '{}' does not match a set of that name and size; "
+                        "dropped",
+                        name);
+                    continue;
+                }
+                Entry e{found, rest.substr(colon + 1), {}};
+                const detail::DoubleView values(arr);
+                for (std::size_t i = 0; i < arr.Size(); ++i)
+                    e.mValues.push_back(values[i]);
+                entries.push_back(std::move(e));
+            }
+            if (entries.empty())
+                continue;
+            std::vector<std::string> var_names;
+            for (const Entry& e : entries)
+                if (std::find(var_names.begin(), var_names.end(), e.mVar) == var_names.end())
+                    var_names.push_back(e.mVar);
+            std::sort(var_names.begin(), var_names.end());
+            int d_nv, name_var;
+            check(nc_def_dim(ncid, ("num_" + label + "_var").c_str(), var_names.size(), &d_nv),
+                  "set var dim", true);
+            const int ndims[2] = {d_nv, d_str};
+            check(
+                nc_def_var(ncid, ("name_" + label + "_var").c_str(), NC_CHAR, 2, ndims, &name_var),
+                "name set var", true);
+            for (std::size_t v = 0; v < var_names.size(); ++v) {
+                const std::size_t start[2] = {v, 0},
+                                  count[2] = {1, std::min<std::size_t>(var_names[v].size(), 33)};
+                if (count[1] > 0)
+                    check(nc_put_vara_text(ncid, name_var, start, count, var_names[v].c_str()),
+                          "name set var", true);
+            }
+            for (const Entry& e : entries) {
+                const std::size_t v =
+                    static_cast<std::size_t>(std::find(var_names.begin(), var_names.end(), e.mVar) -
+                                             var_names.begin()) +
+                    1;
+                const std::string dim_name =
+                    std::string(sides ? "num_side_ss" : "num_nod_ns") + std::to_string(e.mSet + 1);
+                int d_entry, var;
+                check(nc_inq_dimid(ncid, dim_name.c_str(), &d_entry), "set dim", true);
+                const int vdims[2] = {d_time, d_entry};
+                const std::string vname = "vals_" + label + "_var" + std::to_string(v) +
+                                          (sides ? "ss" : "ns") + std::to_string(e.mSet + 1);
+                check(nc_def_var(ncid, vname.c_str(), NC_DOUBLE, 2, vdims, &var), "def set var",
+                      true);
+                check(nc_def_var_fill(ncid, var, NC_NOFILL, nullptr), "nofill", true);
+                const std::size_t vstart[2] = {0, 0}, vcount[2] = {1, e.mValues.size()};
+                if (!e.mValues.empty())
+                    check(nc_put_vara_double(ncid, var, vstart, vcount, e.mValues.data()),
+                          "vals set var", true);
+            }
+        }
+    }
 }
 
 struct ExoSeriesField {

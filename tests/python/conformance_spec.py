@@ -1975,11 +1975,6 @@ PARTIAL_ENGINE_EXEMPT = {
         "winding repair is a discrete branch two implementations could resolve "
         "differently (doc/formats/cgns.md)."
     ),
-    "exodus": (
-        "Exempt, not a gap (roadmap non-goals: every format reads and writes): NSIDED and NFACED "
-        "(polygon and polyhedron) blocks are Python-only; the core refuses them by name and the "
-        "shim retries on the twin (doc/formats/exodus.md)."
-    ),
     "openfoam": (
         "Exempt, not a gap (roadmap non-goals: every format reads and writes): zone, field and multi-region reading "
         "are core-only; the Python reader covers the single-region polyMesh "

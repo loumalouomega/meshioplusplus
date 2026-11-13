@@ -10019,7 +10019,10 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // Exodus II writer / reader (.e/.exo/.ex2).
     m.def("exodus_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
-        const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        // NSIDED and NFACED are written natively, so jagged polygon and polyhedron blocks are
+        // accepted (copied out of their Python lists).
+        const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         core_nogil([&] { return meshioplusplus::write_exodus(path, cpp); });
     });
     m.def("exodus_read",
