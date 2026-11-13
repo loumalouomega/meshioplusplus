@@ -229,8 +229,8 @@ def _parse_case_info(case_path):
     if not tokens:
         raise ReadError("EnSight: malformed 'model:' line in case file")
     geo_name = tokens[0]
-    if "*" in geo_name:
-        raise ReadError("EnSight: transient (wildcard) geometry is not supported")
+    info["geo_pattern"] = geo_name
+    info["change_coords_only"] = "change_coords_only" in tokens[1:]
     info["geo_path"] = pathlib.Path(case_path).parent / geo_name
     return info
 
@@ -431,6 +431,7 @@ def _parse_geo(cur, layout=None):
     all_points = []
     blocks = []  # (cell_type, data, num_cells, part_id)
     parts = []  # (part_id, point_offset, num_points), in file order
+    iblank_parts = []  # (point_offset, iblank array or None) of the block parts
     num_parts = 0
 
     while not cur.at_end():
@@ -443,6 +444,14 @@ def _parse_geo(cur, layout=None):
         cur.next_record()  # part description
 
         rec = cur.next_record()
+        if rec.startswith("block"):
+            point_offset = sum(p.shape[0] for p in all_points)
+            xyz, cell_type, conn, iblank = _read_block(cur, rec, node_ids_in_file)
+            parts.append((part_id, point_offset, xyz.shape[0]))
+            all_points.append(xyz)
+            blocks.append((cell_type, conn + point_offset, len(conn), part_id))
+            iblank_parts.append((point_offset, iblank))
+            continue
         if not rec.startswith("coordinates"):
             raise ReadError(f"EnSight: expected 'coordinates' record, got: {rec}")
         cur.check_swap(_PLAUSIBLE_MAX)
@@ -549,7 +558,96 @@ def _parse_geo(cur, layout=None):
         cell_data["ensight:part"] = [
             np.full(ne, part_id, dtype=np.int64) for _, _, ne, part_id in blocks
         ]
-    return Mesh(points, cells, cell_data=cell_data)
+    point_data = {}
+    if any(ib is not None for _, ib in iblank_parts):
+        # EnSight's iblank array is per node: 0 blanked, 1 visible, others
+        # (ghost, boundary markers) kept as they are.
+        mask = np.ones(points.shape[0], dtype=np.uint8)
+        for offset, ib in iblank_parts:
+            if ib is not None:
+                mask[offset : offset + len(ib)] = ib
+        point_data["ensight:iblank"] = mask
+    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+
+
+def _lattice_cells(ni, nj, nk):
+    """``(cell_type, 0-based connectivity)`` of the cells of an ``ni x nj x nk``
+    lattice of points numbered with ``i`` fastest: hexahedra, quads or lines
+    by how many of the dimensions are above one."""
+    idx = np.arange(ni * nj * nk).reshape(nk, nj, ni)
+    dims = [d for d in (ni, nj, nk) if d > 1]
+    if len(dims) == 3:
+        c = np.stack(
+            [
+                idx[:-1, :-1, :-1],
+                idx[:-1, :-1, 1:],
+                idx[:-1, 1:, 1:],
+                idx[:-1, 1:, :-1],
+                idx[1:, :-1, :-1],
+                idx[1:, :-1, 1:],
+                idx[1:, 1:, 1:],
+                idx[1:, 1:, :-1],
+            ],
+            axis=-1,
+        )
+        return "hexahedron", c.reshape(-1, 8)
+    plane = idx.reshape([d for d in (nk, nj, ni) if d > 1] or [1])
+    if len(dims) == 2:
+        c = np.stack(
+            [plane[:-1, :-1], plane[:-1, 1:], plane[1:, 1:], plane[1:, :-1]], axis=-1
+        )
+        return "quad", c.reshape(-1, 4)
+    if len(dims) == 1:
+        return "line", np.stack([plane[:-1], plane[1:]], axis=-1)
+    return "vertex", plane.reshape(-1, 1)
+
+
+def _read_block(cur, record, node_ids_in_file):
+    """A structured ``block`` part: ``(points, cell type, connectivity, iblank)``.
+
+    ``block`` is curvilinear (every coordinate given), ``block uniform`` is an
+    origin and a spacing, ``block rectilinear`` one coordinate line per axis;
+    ``iblanked`` adds a per-node integer array. The points are expanded with
+    ``i`` fastest, and the lattice becomes hexahedra, quads or lines.
+    """
+    words = record.split()[1:]
+    kind = "curvilinear"
+    for w in words:
+        if w in ("uniform", "rectilinear"):
+            kind = w
+    iblanked = "iblanked" in words
+    cur.check_swap(_PLAUSIBLE_MAX)
+    ni, nj, nk = (int(v) for v in cur.read_ints(3))
+    if min(ni, nj, nk) < 1:
+        raise ReadError("EnSight: a block needs at least one node in each direction")
+    n = ni * nj * nk
+    if kind == "uniform":
+        org = cur.read_floats(3)
+        delta = cur.read_floats(3)
+        z, y, x = np.meshgrid(
+            org[2] + delta[2] * np.arange(nk),
+            org[1] + delta[1] * np.arange(nj),
+            org[0] + delta[0] * np.arange(ni),
+            indexing="ij",
+        )
+        xyz = np.column_stack([x.reshape(-1), y.reshape(-1), z.reshape(-1)])
+    elif kind == "rectilinear":
+        xs = cur.read_floats(ni)
+        ys = cur.read_floats(nj)
+        zs = cur.read_floats(nk)
+        z, y, x = np.meshgrid(zs, ys, xs, indexing="ij")
+        xyz = np.column_stack([x.reshape(-1), y.reshape(-1), z.reshape(-1)])
+    else:
+        if node_ids_in_file:
+            cur.skip_ints(n)
+        xyz = np.column_stack(
+            [cur.read_floats(n), cur.read_floats(n), cur.read_floats(n)]
+        )
+    iblank = None
+    if iblanked:
+        iblank = np.asarray(cur.read_ints(n), dtype=np.uint8)
+    cell_type, conn = _lattice_cells(ni, nj, nk)
+    return xyz, cell_type, conn.astype(np.int64), iblank
 
 
 def _unframe_fortran(data):
@@ -672,36 +770,8 @@ def _swap_tensor_symm(arr):
     return out
 
 
-def read(filename, time_step=0):
-    filename = pathlib.Path(filename)
-    case_info = None
-    if filename.suffix == ".case":
-        case_info = _parse_case_info(filename)
-        geo_path = case_info["geo_path"]
-    else:
-        geo_path = filename
-    with open(geo_path, "rb") as f:
-        data = f.read()
-    layout = []
-    unframed = _unframe_fortran(data)
-    if unframed is not None:
-        encoding = "fortran"
-        mesh = _parse_geo(_BinaryCursor(*unframed), layout)
-    elif len(data) >= 80 and data.startswith(b"C Binary"):
-        encoding = "cbinary"
-        mesh = _parse_geo(_BinaryCursor(data), layout)
-    else:
-        encoding = "ascii"
-        mesh = _parse_geo(_AsciiCursor(data.decode("utf-8", errors="replace")), layout)
-
-    if case_info is None or not (case_info["variables"] or case_info["constants"]):
-        return mesh
-
-    for name, value in case_info["constants"]:
-        mesh.field_data[name] = np.array([value], dtype=np.float64)
-    if not case_info["variables"]:
-        return mesh
-
+def _step_file_number(case_info, time_step):
+    """The file number of a time step: ``start + step * increment``."""
     times = case_info["time_values"]
     step = 0
     if times:
@@ -717,7 +787,67 @@ def read(filename, time_step=0):
             "EnSight: mTimeStep requested but the case file has no TIME section to "
             "resolve it against"
         )
-    file_number = case_info["start"] + step * case_info["increment"]
+    return case_info["start"] + step * case_info["increment"]
+
+
+def _read_geo_file(geo_path, layout):
+    with open(geo_path, "rb") as f:
+        data = f.read()
+    unframed = _unframe_fortran(data)
+    if unframed is not None:
+        return "fortran", _parse_geo(_BinaryCursor(*unframed), layout)
+    if len(data) >= 80 and data.startswith(b"C Binary"):
+        return "cbinary", _parse_geo(_BinaryCursor(data), layout)
+    return "ascii", _parse_geo(
+        _AsciiCursor(data.decode("utf-8", errors="replace")), layout
+    )
+
+
+def read(filename, time_step=0):
+    filename = pathlib.Path(filename)
+    case_info = None
+    file_number = None
+    if filename.suffix == ".case":
+        case_info = _parse_case_info(filename)
+        geo_path = case_info["geo_path"]
+        if "*" in case_info["geo_pattern"] or case_info["variables"]:
+            file_number = _step_file_number(case_info, time_step)
+        if "*" in case_info["geo_pattern"]:
+            parent = filename.parent
+            geo_path = parent / _resolve_wildcard(case_info["geo_pattern"], file_number)
+            if case_info["change_coords_only"]:
+                # Connectivity from the first file, coordinates from the step's.
+                first = parent / _resolve_wildcard(
+                    case_info["geo_pattern"], case_info["start"]
+                )
+                layout = []
+                encoding, mesh = _read_geo_file(first, layout)
+                if geo_path != first:
+                    _, moved = _read_geo_file(geo_path, [])
+                    if moved.points.shape != mesh.points.shape:
+                        raise ReadError(
+                            "EnSight: a change_coords_only geometry file holds a "
+                            "different number of points than the first"
+                        )
+                    mesh.points = moved.points
+                return _finish_read(
+                    mesh, case_info, filename, encoding, layout, file_number
+                )
+    else:
+        geo_path = filename
+    layout = []
+    encoding, mesh = _read_geo_file(geo_path, layout)
+    return _finish_read(mesh, case_info, filename, encoding, layout, file_number)
+
+
+def _finish_read(mesh, case_info, filename, encoding, layout, file_number):
+    if case_info is None or not (case_info["variables"] or case_info["constants"]):
+        return mesh
+
+    for name, value in case_info["constants"]:
+        mesh.field_data[name] = np.array([value], dtype=np.float64)
+    if not case_info["variables"]:
+        return mesh
 
     for var in case_info["variables"]:
         per_node = "per node" in var["kind"]
@@ -776,14 +906,88 @@ def _ragged_layout(cell_block):
     return "nsided", [ring.size for ring in rings], [], rings
 
 
-def _write_geo_ascii(fh, points, cells):
+class _Part:
+    """One ``part`` of a geometry file: its id and description, its points,
+    its cell blocks and where they come from in the mesh (``node_idx`` indexes
+    the mesh's points, ``block_idx`` its cell blocks)."""
+
+    def __init__(self, part_id, name, points, cells, node_idx, block_idx):
+        self.id = part_id
+        self.name = name
+        self.points = points
+        self.cells = cells
+        self.node_idx = node_idx
+        self.block_idx = block_idx
+
+
+def _remap_block(cell_block, lookup):
+    """``cell_block`` with its node ids mapped through ``lookup``."""
+    if cell_block.type.startswith("polyhedron"):
+        data = [
+            [lookup[np.asarray(face, dtype=np.int64)] for face in cell]
+            for cell in cell_block.data
+        ]
+    elif cell_block.type.startswith("polygon"):
+        data = [lookup[np.asarray(row, dtype=np.int64)] for row in cell_block.data]
+    else:
+        data = lookup[np.asarray(cell_block.data, dtype=np.int64)]
+    return CellBlock(cell_block.type, data)
+
+
+def _block_nodes(cell_block):
+    if cell_block.type.startswith("polyhedron"):
+        rings = [np.asarray(f, dtype=np.int64) for c in cell_block.data for f in c]
+    elif cell_block.type.startswith("polygon"):
+        rings = [np.asarray(r, dtype=np.int64) for r in cell_block.data]
+    else:
+        return np.asarray(cell_block.data, dtype=np.int64).reshape(-1)
+    return np.concatenate(rings) if rings else np.empty(0, dtype=np.int64)
+
+
+def _parts_to_write(mesh, points):
+    """The parts a mesh is written as: one per distinct ``cell_data["ensight:part"]``
+    value, in first-seen order, each with the points its blocks use; a mesh
+    without the array is one part holding every point and block."""
+    ids = mesh.cell_data.get("ensight:part")
+    if ids is None or len(ids) != len(mesh.cells) or len(mesh.cells) == 0:
+        return [_Part(1, "Mesh", points, list(mesh.cells), None, None)]
+    block_part = []
+    for arr in ids:
+        arr = np.asarray(arr)
+        block_part.append(int(arr[0]) if arr.size else None)
+    order = []
+    for pid in block_part:
+        if pid is not None and pid not in order:
+            order.append(pid)
+    if len(order) < 2:
+        return [_Part(1, "Mesh", points, list(mesh.cells), None, None)]
+    parts = []
+    for pid in order:
+        block_idx = [i for i, p in enumerate(block_part) if p == pid]
+        used = np.unique(
+            np.concatenate([_block_nodes(mesh.cells[i]) for i in block_idx])
+        )
+        lookup = np.full(points.shape[0], -1, dtype=np.int64)
+        lookup[used] = np.arange(used.size)
+        cells = [_remap_block(mesh.cells[i], lookup) for i in block_idx]
+        parts.append(_Part(pid, f"Part {pid}", points[used], cells, used, block_idx))
+    return parts
+
+
+def _write_geo_ascii(fh, parts):
     fh.write(b"EnSight Gold Geometry File\n")
     fh.write(f"{_provenance.lines(_provenance.SlotTier.BOUNDED)[0]}\n".encode())
     fh.write(b"node id assign\n")
     fh.write(b"element id assign\n")
+    for part in parts:
+        _write_part_ascii(fh, part)
+
+
+def _write_part_ascii(fh, part):
+    points, cells = part.points, part.cells
     fh.write(b"part\n")
-    fh.write(f"{1:10d}\n".encode())
-    fh.write(b"Mesh\n")
+    fh.write(f"{part.id:10d}\n".encode())
+    fh.write(f"{part.name}\n".encode())
     fh.write(b"coordinates\n")
     fh.write(f"{points.shape[0]:10d}\n".encode())
     for c in range(3):
@@ -808,7 +1012,7 @@ def _write_geo_ascii(fh, points, cells):
         )
 
 
-def _write_geo_binary(fh, points, cells, fortran=False):
+def _write_geo_binary(fh, parts, fortran=False):
     # One record per string, count or array: Fortran binary frames each as a
     # Fortran sequential unformatted record (native 4-byte length markers), the
     # layout vtkEnSightGoldBinaryReader reads.
@@ -824,16 +1028,22 @@ def _write_geo_binary(fh, points, cells, fortran=False):
             fh.write(payload)
 
     int32_max = np.iinfo(np.int32).max
-    if points.shape[0] > int32_max:
-        raise WriteError("EnSight: mesh too large for 32-bit binary EnSight output")
     record(_str80("Fortran Binary" if fortran else "C Binary"))
     record(_str80("EnSight Gold Geometry File"))
     record(_str80(_provenance.lines(_provenance.SlotTier.BOUNDED)[0]))
     record(_str80("node id assign"))
     record(_str80("element id assign"))
+    for part in parts:
+        _write_part_binary(record, part, int32_max)
+
+
+def _write_part_binary(record, part, int32_max):
+    points, cells = part.points, part.cells
+    if points.shape[0] > int32_max:
+        raise WriteError("EnSight: mesh too large for 32-bit binary EnSight output")
     record(_str80("part"))
-    record(np.int32(1).tobytes())
-    record(_str80("Mesh"))
+    record(np.int32(part.id).tobytes())
+    record(_str80(part.name))
     record(_str80("coordinates"))
     record(np.int32(points.shape[0]).tobytes())
     for c in range(3):
@@ -953,40 +1163,51 @@ def _variable_columns(array, kind, written):
     return columns
 
 
-def _write_variable(path, mesh, variable, binary, fortran):
+def _write_variable(path, mesh, variable, parts, binary, fortran):
     name, kind, written, per_node = variable
-    if per_node:
-        sections = [
-            ("coordinates", _variable_columns(mesh.point_data[name], kind, written))
-        ]
-    else:
-        sections = [
-            (_block_keyword(block), _variable_columns(data, kind, written))
-            for block, data in zip(mesh.cells, mesh.cell_data[name])
-        ]
     with open(path, "wb") as fh:
+
+        def record(payload):
+            if fortran:
+                marker = np.int32(len(payload)).tobytes()
+                fh.write(marker + payload + marker)
+            else:
+                fh.write(payload)
+
         if binary:
-
-            def record(payload):
-                if fortran:
-                    marker = np.int32(len(payload)).tobytes()
-                    fh.write(marker + payload + marker)
-                else:
-                    fh.write(payload)
-
             record(_str80("variable"))
-            record(_str80("part"))
-            record(np.int32(1).tobytes())
-            for keyword, columns in sections:
-                record(_str80(keyword))
-                for column in columns:
-                    record(np.ascontiguousarray(column, dtype=np.float32).tobytes())
         else:
-            fh.write(b"variable\npart\n" + f"{1:10d}\n".encode())
-            for keyword, columns in sections:
-                fh.write(f"{keyword}\n".encode())
-                for column in columns:
-                    fh.write("".join(f"{v:12.5e}\n" for v in column).encode())
+            fh.write(b"variable\n")
+        for part in parts:
+            if per_node:
+                data = np.asarray(mesh.point_data[name])
+                if part.node_idx is not None:
+                    data = data[part.node_idx]
+                sections = [("coordinates", _variable_columns(data, kind, written))]
+            else:
+                idx = (
+                    range(len(mesh.cells)) if part.block_idx is None else part.block_idx
+                )
+                sections = [
+                    (
+                        _block_keyword(mesh.cells[i]),
+                        _variable_columns(mesh.cell_data[name][i], kind, written),
+                    )
+                    for i in idx
+                ]
+            if binary:
+                record(_str80("part"))
+                record(np.int32(part.id).tobytes())
+                for keyword, columns in sections:
+                    record(_str80(keyword))
+                    for column in columns:
+                        record(np.ascontiguousarray(column, dtype=np.float32).tobytes())
+            else:
+                fh.write(b"part\n" + f"{part.id:10d}\n".encode())
+                for keyword, columns in sections:
+                    fh.write(f"{keyword}\n".encode())
+                    for column in columns:
+                        fh.write("".join(f"{v:12.5e}\n" for v in column).encode())
 
 
 def write(filename, mesh, binary=True, fortran=False):
@@ -1029,13 +1250,14 @@ def write(filename, mesh, binary=True, fortran=False):
     with open(case_path, "wb") as fh:
         fh.write(text.encode())
 
+    parts = _parts_to_write(mesh, points)
     with open(geo_path, "wb") as fh:
         if binary:
-            _write_geo_binary(fh, points, mesh.cells, fortran)
+            _write_geo_binary(fh, parts, fortran)
         else:
-            _write_geo_ascii(fh, points, mesh.cells)
+            _write_geo_ascii(fh, parts)
 
     for variable in variables:
         name, kind, _, per_node = variable
         var_path = geo_path.parent / f"{name}.{_variable_extension(kind, per_node)}"
-        _write_variable(var_path, mesh, variable, binary, fortran)
+        _write_variable(var_path, mesh, variable, parts, binary, fortran)
