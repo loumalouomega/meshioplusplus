@@ -146957,7 +146957,8 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
     bool have_coord = false;
     points_xyz = NDArray(DType::Float64, {num_nodes, 3});
 
-    std::vector<std::string> point_data_names, cell_data_names;
+    std::vector<std::string> point_data_names, cell_data_names, global_names;
+    std::vector<double> global_values;         // the selected step's `vals_glo_var` row
     std::map<int, NDArray> pd;                 // idx -> values (selected step)
     std::map<int, std::map<int, NDArray>> cd;  // idx -> block -> values
     struct Block {
@@ -147023,6 +147024,10 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
         } else if (key.rfind("attrib", 0) == 0) {
             attribs[exo_suffix(key, 6)] =
                 read_var(ncid, varid, std::vector<std::size_t>(dims.size(), 0), dims);
+        } else if (key.rfind("facconn", 0) == 0 || key.rfind("fbconn", 0) == 0) {
+            // NFACED element blocks and their face blocks: read by the Python engine
+            // (which the shim retries on this refusal), not silently dropped.
+            throw ReadError("Exodus: NFACED polyhedral blocks are read by the Python engine only");
         } else if (key.rfind("connect", 0) == 0) {
             std::string elem_type = read_att_text(ncid, varid, "elem_type");
             std::transform(elem_type.begin(), elem_type.end(), elem_type.begin(),
@@ -147081,6 +147086,25 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             parallel_for_bw(std::min(num_nodes, v.Size()), [&](std::size_t i) {
                 xyz[i * 3 + static_cast<std::size_t>(c)] = vv[i];
             });
+        } else if (key == "name_nset_var" || key == "name_sset_var" ||
+                   key.rfind("vals_nset_var", 0) == 0 || key.rfind("vals_sset_var", 0) == 0) {
+            // Set variables are read (and written) by the Python engine only.
+            throw ReadError(
+                "Exodus: node and side set variables are read by the Python engine only");
+        } else if (key == "name_glo_var") {
+            global_names = read_names(ncid, varid);
+        } else if (key == "vals_glo_var") {
+            // (time_step, num_glo_var): the requested step's row of globals.
+            std::vector<std::size_t> start(dims.size(), 0), count = dims;
+            if (!count.empty()) {
+                count[0] = 1;
+                start[0] = exo_step_offset(step, dims[0], key);
+            }
+            NDArray v = read_var(ncid, varid, start, count);
+            const detail::DoubleView vv(v);
+            global_values.assign(v.Size(), 0.0);
+            for (std::size_t i = 0; i < v.Size(); ++i)
+                global_values[i] = vv[i];
         } else if (key == "name_nod_var") {
             point_data_names = read_names(ncid, varid);
         } else if (key.rfind("vals_nod_var", 0) == 0) {
@@ -147210,6 +147234,12 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
         NDArray tv(DType::Float64, {1});
         *reinterpret_cast<double*>(tv.Data()) = time_values[step];
         mesh.AddFieldData("exodus:time", std::move(tv));
+    }
+    // Global variables (MOOSE's postprocessor values): one scalar each.
+    for (std::size_t g = 0; g < global_names.size() && g < global_values.size(); ++g) {
+        NDArray gv(DType::Float64, {1});
+        *gv.As<double>() = global_values[g];
+        mesh.AddFieldData("exodus:global:" + global_names[g], std::move(gv));
     }
 
     return mesh;
@@ -147371,6 +147401,12 @@ void exo_put_sets(int Ncid, int StringDim, const std::vector<ExoWriteSet>& rSets
 namespace {
 
 void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, bool DoubleTime) {
+    // Set variables (`exodus:nset:<set>:<name>`, `exodus:sset:...`) are written by the
+    // Python engine only: refuse by name so the shim retries there.
+    for (const auto& name : rMesh.FieldDataNames())
+        if (name.rfind("exodus:nset:", 0) == 0 || name.rfind("exodus:sset:", 0) == 0)
+            throw WriteError(
+                "Exodus: node and side set variables are written by the Python engine only");
     // Validate memberships and ids before creating or truncating the destination.
     const auto node_sets = exo_write_sets(rMesh, RegionKind::Point);
     const auto side_sets = exo_write_sets(rMesh, RegionKind::Side);
@@ -147779,6 +147815,40 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
                 check(nc_put_vara(ncid, var, startv.data(), countv.data(), data.Data()),
                       "vals_nod_var", true);
             ++k;
+        }
+    }
+
+    // Global variables: `field_data` entries named `exodus:global:<name>`.
+    if (EmitStep) {
+        static const std::string kGlobalPrefix = "exodus:global:";
+        std::vector<std::pair<std::string, double>> globals;
+        for (const auto& name : rMesh.FieldDataNames())
+            if (name.rfind(kGlobalPrefix, 0) == 0 && name.size() > kGlobalPrefix.size()) {
+                const NDArray& gv = rMesh.FieldData(name);
+                if (gv.Size() == 1)
+                    globals.emplace_back(name.substr(kGlobalPrefix.size()),
+                                         detail::read_double(gv, 0));
+            }
+        if (!globals.empty()) {
+            int d_ngv;
+            check(nc_def_dim(ncid, "num_glo_var", globals.size(), &d_ngv), "num_glo_var", true);
+            int name_var, vals_var;
+            int ndims[2] = {d_ngv, d_str};
+            check(nc_def_var(ncid, "name_glo_var", NC_CHAR, 2, ndims, &name_var), "name_glo_var",
+                  true);
+            int vdims[2] = {d_time, d_ngv};
+            check(nc_def_var(ncid, "vals_glo_var", NC_DOUBLE, 2, vdims, &vals_var), "vals_glo_var",
+                  true);
+            for (std::size_t g = 0; g < globals.size(); ++g) {
+                std::size_t start[2] = {g, 0};
+                std::size_t count[2] = {1, std::min<std::size_t>(globals[g].first.size(), 33)};
+                if (count[1] > 0)
+                    check(nc_put_vara_text(ncid, name_var, start, count, globals[g].first.c_str()),
+                          "name_glo_var", true);
+                const std::size_t vstart[2] = {0, g}, vcount[2] = {1, 1};
+                check(nc_put_vara_double(ncid, vals_var, vstart, vcount, &globals[g].second),
+                      "vals_glo_var", true);
+            }
         }
     }
 

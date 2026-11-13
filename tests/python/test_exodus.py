@@ -669,3 +669,97 @@ def test_quadratic_solids_are_written_in_seacas_order(tmp_path, engine, cell_typ
     np.testing.assert_array_equal(vtk_to_numpy(block.GetPoints().GetData())[ids], pts)
     back = meshioplusplus.read(out)
     np.testing.assert_array_equal(back.points[back.cells[0].data[0]], pts)
+
+
+def test_global_variables_round_trip(tmp_path):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], float)
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2]]))],
+        field_data={
+            "exodus:global:residual": np.array([0.5]),
+            "exodus:global:iterations": np.array([7.0]),
+        },
+    )
+    path = tmp_path / "g.e"
+    meshioplusplus.write(path, mesh, file_format="exodus")
+    back = meshioplusplus.read(path)
+    assert back.field_data["exodus:global:residual"].tolist() == [0.5]
+    assert back.field_data["exodus:global:iterations"].tolist() == [7.0]
+    import netCDF4
+
+    with netCDF4.Dataset(path) as nc:
+        names = sorted(
+            b"".join(c).decode().rstrip("\x00") for c in nc["name_glo_var"][:]
+        )
+    assert names == ["iterations", "residual"]
+
+
+def _polyhedral_mesh():
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [1, 0, 0],
+            [1, 1, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+            [1, 0, 1],
+            [1, 1, 1],
+            [0, 1, 1],
+            [2, 0, 0],
+        ],
+        float,
+    )
+    cube = [
+        [
+            np.array(f)
+            for f in (
+                [0, 3, 2, 1],
+                [4, 5, 6, 7],
+                [0, 1, 5, 4],
+                [1, 2, 6, 5],
+                [2, 3, 7, 6],
+                [3, 0, 4, 7],
+            )
+        ]
+    ]
+    polys = [np.array([1, 8, 2]), np.array([1, 8, 2, 5])]
+    return meshioplusplus.Mesh(pts, [("polygon", polys), ("polyhedron8", cube)])
+
+
+def test_nsided_and_nfaced_blocks_round_trip(tmp_path):
+    path = tmp_path / "p.e"
+    meshioplusplus.write(path, _polyhedral_mesh(), file_format="exodus")
+    back = meshioplusplus.read(path)
+    assert [c.type for c in back.cells] == ["polygon", "polyhedron8"]
+    assert [list(map(int, r)) for r in back.cells[0].data] == [[1, 8, 2], [1, 8, 2, 5]]
+    faces = [list(map(int, f)) for f in back.cells[1].data[0]]
+    assert faces[0] == [0, 3, 2, 1] and len(faces) == 6
+
+
+def test_set_variables_round_trip(tmp_path):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        regions=[meshioplusplus.Region("inlet", "point", np.array([0, 2]))],
+        field_data={"exodus:nset:inlet:temperature": np.array([300.0, 310.0])},
+    )
+    path = tmp_path / "s.e"
+    meshioplusplus.write(path, mesh, file_format="exodus")
+    back = meshioplusplus.read(path)
+    assert back.field_data["exodus:nset:inlet:temperature"].tolist() == [300.0, 310.0]
+
+
+def test_info_records_are_written_back(tmp_path):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], float)
+    mesh = meshioplusplus.Mesh(
+        pts, [("triangle", np.array([[0, 1, 2]]))], info=["made by a test", "twice"]
+    )
+    path = tmp_path / "i.e"
+    meshioplusplus.write(path, mesh, file_format="exodus")
+    assert meshioplusplus.read(path).info == ["made by a test", "twice"]
+    import netCDF4
+
+    with netCDF4.Dataset(path) as nc:
+        assert "info_records" in nc.variables
