@@ -652,3 +652,56 @@ def test_every_zone_is_read_and_a_narrower_zone_is_padded(tmp_path, engine):
     np.testing.assert_array_equal(out.points[3:, 2], 0.0)
     assert [c.type for c in out.cells] == ["triangle", "triangle"]
     np.testing.assert_array_equal(out.cells[1].data, [[3, 4, 5]])
+
+
+def _add_bc(
+    zone, name, bc_type, location, point_list=None, point_range=None, family=None
+):
+    """A ``BC_t`` under ``ZoneBC``, written with the writer's own node helpers."""
+    if "ZoneBC" not in zone:
+        bc_root = _cgns._create_group(zone, "ZoneBC")
+        _cgns._write_node_attrs(bc_root, "ZoneBC", "ZoneBC_t", "MT")
+    node = _cgns._c1_node(zone["ZoneBC"], name, "BC_t", bc_type)
+    if point_list is not None:
+        pl = _cgns._create_group(node, "PointList")
+        _cgns._write_node_attrs(pl, "PointList", "IndexArray_t", "I4")
+        pl.create_dataset(" data", data=np.array([point_list], dtype="<i4"))
+    if point_range is not None:
+        pr = _cgns._create_group(node, "PointRange")
+        _cgns._write_node_attrs(pr, "PointRange", "IndexRange_t", "I4")
+        pr.create_dataset(" data", data=np.array([point_range], dtype="<i4"))
+    _cgns._c1_node(node, "GridLocation", "GridLocation_t", location)
+    if family:
+        _cgns._c1_node(node, "FamilyName", "FamilyName_t", family)
+
+
+@pytest.mark.parametrize("engine", ["python", "core"])
+def test_boundary_conditions_are_read_as_regions(tmp_path, engine):
+    h5py = pytest.importorskip("h5py")
+    if engine == "core" and not _HAS_HDF5:
+        pytest.skip("needs the C++ HDF5-enabled core")
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0], [1, 0], [1, 1], [0, 1.0]]),
+        [
+            ("triangle", np.array([[0, 1, 2], [0, 2, 3]])),
+            ("line", np.array([[0, 1], [1, 2], [2, 3], [3, 0]])),
+        ],
+    )
+    path = str(tmp_path / "bc.cgns")
+    _cgns.write(path, mesh)
+    with h5py.File(path, "r+") as f:
+        zone = f["Base/Zone1"]
+        # the line section's elements are ids 3 to 6
+        _add_bc(zone, "inlet", "BCInflow", "Vertex", point_list=[1, 4])
+        _add_bc(
+            zone, "wall_a", "BCWall", "EdgeCenter", point_range=[3, 4], family="walls"
+        )
+        _add_bc(zone, "wall_b", "BCWall", "EdgeCenter", point_list=[6], family="walls")
+    read = _cgns.read if engine == "python" else meshioplusplus.cgns.read
+    back = read(path)
+    by_name = {(r.name, r.kind): sorted(r.entries.tolist()) for r in back.regions}
+    assert by_name[("inlet", "point")] == [0, 3]
+    # the two BCs of the family merge; the lines start at cell 2
+    assert by_name[("walls", "cell")] == [2, 3, 5]
+    assert bytes(back.field_data["cgns:bc_type:inlet"]).decode() == "BCInflow"
+    assert bytes(back.field_data["cgns:bc_type:walls"]).decode() == "BCWall"

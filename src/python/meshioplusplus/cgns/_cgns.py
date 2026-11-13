@@ -522,6 +522,89 @@ def _read_regions(zone, sections, n_points, n_cells_before):
     return regions
 
 
+def _read_bcs(zone, sections, n_points, n_cells_before):
+    """The ``ZoneBC_t/BC_t`` children as regions, and the BC types as
+    ``field_data["cgns:bc_type:<region>"]`` (the type's characters as ``uint8``).
+
+    A BC lists its points (``PointList``) or their range (``PointRange``) at its
+    ``GridLocation``: ``Vertex`` names points, ``FaceCenter``, ``EdgeCenter`` and
+    ``CellCenter`` name elements (the boundary elements of the file's own
+    sections), so they become cell regions over those blocks. The region is named
+    after the BC's ``FamilyName`` when it has one, else after the BC, and BCs
+    sharing a name and kind are merged.
+    """
+    merged = {}  # (name, kind) -> entries
+    types = {}
+    dropped = 0
+    for child in zone:
+        if child.startswith(" ") or _read_attr_str(zone[child], "label") != "ZoneBC_t":
+            continue
+        for bc_name in zone[child]:
+            if bc_name.startswith(" "):
+                continue
+            node = zone[child][bc_name]
+            if _read_attr_str(node, "label") != "BC_t":
+                continue
+            if "PointList" in node and " data" in node["PointList"]:
+                ids = np.asarray(node["PointList"][" data"][()], dtype=np.int64)
+                ids = ids.reshape(-1)
+            elif "PointRange" in node and " data" in node["PointRange"]:
+                rng = np.asarray(node["PointRange"][" data"][()], dtype=np.int64)
+                rng = rng.reshape(-1)
+                if len(rng) != 2:
+                    warnings.warn(
+                        f"CGNS: BC '{bc_name}' has a multi-dimensional PointRange "
+                        "(a structured zone); not read.",
+                        stacklevel=3,
+                    )
+                    continue
+                ids = np.arange(rng[0], rng[1] + 1, dtype=np.int64)
+            else:
+                warnings.warn(
+                    f"CGNS: BC '{bc_name}' has no PointList or PointRange; not read.",
+                    stacklevel=3,
+                )
+                continue
+            location = "Vertex"
+            if "GridLocation" in node and " data" in node["GridLocation"]:
+                location = _read_c1(node["GridLocation"])
+            name = bc_name
+            if "FamilyName" in node and " data" in node["FamilyName"]:
+                name = _read_c1(node["FamilyName"]) or bc_name
+            if location == "Vertex":
+                if len(ids) and (ids.min() < 1 or ids.max() > n_points):
+                    raise ReadError(
+                        f"CGNS: BC '{bc_name}' names a vertex the zone does not have"
+                    )
+                kind, entries = "point", ids - 1
+            else:
+                kind, cells = "cell", []
+                for e in ids:
+                    for first, last, start in sections:
+                        if first <= e <= last:
+                            cells.append(n_cells_before + start + (e - first))
+                            break
+                    else:
+                        dropped += 1
+                entries = np.array(cells, dtype=np.int64)
+            merged.setdefault((name, kind), []).append(entries)
+            if " data" in node:
+                bc_type = _read_c1(node)
+                if bc_type:
+                    types[name] = np.frombuffer(bc_type.encode("latin-1"), np.uint8)
+    if dropped:
+        warnings.warn(
+            f"CGNS: {dropped} BC element(s) name elements outside the zone's "
+            "fixed-size sections; dropped.",
+            stacklevel=3,
+        )
+    regions = [
+        Region(name, kind, np.concatenate(parts))
+        for (name, kind), parts in merged.items()
+    ]
+    return regions, {f"cgns:bc_type:{n}": v for n, v in types.items()}
+
+
 @_provenance.slotless_writer
 def write(filename, mesh, compression="gzip", compression_opts=4):
     import h5py
@@ -990,6 +1073,11 @@ def _read_spec(f):
             regions.extend(
                 _read_regions(zone, zone_sections, n_zone_points, cells_before)
             )
+            bc_regions, bc_types = _read_bcs(
+                zone, zone_sections, n_zone_points, cells_before
+            )
+            regions.extend(bc_regions)
+            field_data.update(bc_types)
             field_data.update(_read_field_data(zone))
         elif any(
             _read_attr_str(zone[c], "label") in ("ZoneSubRegion_t", "UserDefinedData_t")
