@@ -8944,6 +8944,10 @@ PYBIND11_MODULE(_core, m) {
                                   py::arg("gzip_level") = 4));
 #endif
 
+    // A time series in one Tecplot ASCII file: the core half of `meshioplusplus.tecplot.SeriesWriter`.
+    core_def_step_writer(py::class_<meshioplusplus::TecplotSeriesWriter>(m, "TecplotSeriesWriter")
+                             .def(py::init<const std::string&>(), py::arg("path")));
+
     // A time series as one EnSight case: the core half of `meshioplusplus.ensight.SeriesWriter`.
     core_def_step_writer(
         py::class_<meshioplusplus::EnsightSeriesWriter>(m, "EnsightSeriesWriter")

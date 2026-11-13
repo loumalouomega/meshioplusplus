@@ -200,6 +200,11 @@ def write_plan(mesh):
     return cell_blocks, variables, shared_data, cell_var_blocks, bases
 
 
+# The solution time the zones of an ASCII write carry (with ``STRANDID = 1``), set around a
+# write by ``SeriesWriter``; ``None`` for a plain write, which writes a static file.
+_SERIES_TIME = None
+
+
 def write(filename, mesh):
     cell_blocks, variables, shared_data, cell_var_blocks, bases = write_plan(mesh)
     num_nodes = len(mesh.points)
@@ -242,6 +247,8 @@ def write(filename, mesh):
                     "NUMCONNECTEDBOUNDARYFACES = 0, TOTALNUMBOUNDARYCONNECTIONS = 0,\n"
                 )
             f.write(f"DATAPACKING = BLOCK, ZONETYPE = {zone_type}")
+            if _SERIES_TIME is not None:
+                f.write(f",\nSTRANDID = 1, SOLUTIONTIME = {_SERIES_TIME:.17g}")
             if bi > 0:
                 f.write(f",\nVARSHARELIST = ([1-{num_shared}] = 1)")
             if present:
@@ -405,3 +412,88 @@ def _write_table(f, data, ncol=20):
 
 # NOTE: format registration now lives in meshioplusplus/tecplot/__init__.py, which wraps
 # the reader/writer above with the C++-backed fast paths.
+
+
+class SeriesWriter:
+    """The Python twin of ``TecplotSeriesWriter``: every step's zones, each with
+    ``STRANDID = 1`` and its step's ``SOLUTIONTIME``. A step is written as a file of its own
+    and its zones appended, so each step repeats the coordinates. ASCII only. Use as a
+    context manager."""
+
+    def __init__(self, filename):
+        if str(filename).lower().endswith(".plt"):
+            raise WriteError(
+                "Tecplot series: only the ASCII layout is written (not a .plt path)"
+            )
+        self._path = str(filename)
+        with open(self._path, "wb"):
+            pass
+        self._steps = 0
+        self._zones = 0
+        self._variables = None
+        self._closed = False
+
+    def write(self, time, mesh):
+        import os
+        import tempfile
+
+        global _SERIES_TIME
+
+        if self._closed:
+            raise WriteError("Tecplot series: the writer is finalized")
+        fd, scratch = tempfile.mkstemp(suffix=".dat")
+        os.close(fd)
+        _SERIES_TIME = float(time)
+        try:
+            write(scratch, mesh)
+            with open(scratch, "rb") as fh:
+                text = fh.read().decode("utf-8")
+        finally:
+            _SERIES_TIME = None
+            os.remove(scratch)
+        first = text.find("\nZONE ")
+        if first < 0:
+            raise WriteError("Tecplot series: a step wrote no zone")
+        header, zones = text[: first + 1], text[first + 1 :]
+        line = next((x for x in header.split("\n") if x.startswith("VARIABLES = ")), "")
+        if self._steps and line != self._variables:
+            raise WriteError(
+                f"Tecplot series: step {self._steps}'s variables differ from the "
+                "first step's"
+            )
+        # A later zone of the step shares its variables with the step's first zone:
+        # point that at the first zone's number in the combined file.
+        share = "VARSHARELIST = (["
+        at = zones.find(share)
+        while at >= 0:
+            tail = zones.find("] = 1)", at)
+            if tail < 0:
+                break
+            zones = zones[:tail] + f"] = {self._zones + 1})" + zones[tail + 6 :]
+            at = zones.find(share, tail)
+        count = ("\n" + zones).count("\nZONE ")
+        with open(self._path, "ab") as fh:
+            if self._steps == 0:
+                fh.write(header.encode())
+            fh.write(zones.encode())
+        if self._steps == 0:
+            self._variables = line
+        self._zones += count
+        self._steps += 1
+
+    def close(self):
+        if self._closed:
+            return
+        if self._steps == 0:
+            raise WriteError("Tecplot series: no step was written")
+        self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if exc[0] is None:
+            self.close()
+        else:
+            self._closed = True
+        return False

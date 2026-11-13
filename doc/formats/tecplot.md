@@ -120,6 +120,10 @@ A transient Tecplot file marks each `ZONE`'s place in a series with `SOLUTIONTIM
 
 `read_tecplot_metadata` is the native (no data-body decode) counterpart: every `ZONE` header is scanned the same way — including the token-budget walk that locates where one zone's data ends and the next one's header begins — without decoding the tokens themselves. `mNumPoints`/`mCellBlocks` describe every zone of the resolved timeline's first step; `mTimeValues` is the timeline's `SOLUTIONTIME`s in the same sorted order `mTimeStep` indexes into (one value per step, taken from that step's first zone), empty when no zone carries one.
 
+## Writing a series
+
+`meshioplusplus.tecplot.SeriesWriter` (C++: `TecplotSeriesWriter`, and `write_sequence` / `sequence_to_timeseries`) writes a transient ASCII file: each step is written as a file of its own and its zones appended, every zone carrying `STRANDID = 1` and the step's `SOLUTIONTIME`, which `read(..., time_step=k)` groups into steps. Each step repeats the coordinates (a zone of a later step shares its variables only with its own step's first zone, whose number in the combined file is put into `VARSHARELIST`), and every step must have the same variables. A `.plt` path is refused: the binary layout is not written as a series. A plain `write` still writes a static file.
+
 ## Quirks & limitations
 
 - Data columns are wrapped at 20 values per line on write.

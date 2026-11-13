@@ -46,6 +46,7 @@
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/tecplot.hpp"
 #include "meshioplusplus/formats/unv.hpp"
 #include "meshioplusplus/formats/gid.hpp"
 #include "meshioplusplus/formats/pvd.hpp"
@@ -308,13 +309,13 @@ bool sequence_write_supports_time(const std::string& rFormat, std::string& rWhy)
         rFormat == "nastran_h5" || rFormat == "radioss_anim" || rFormat == "xplt" ||
         rFormat == "vtx" || rFormat == "szplt" || rFormat == "marc_t19" ||
         rFormat == "ansys_rst" || rFormat == "lsdyna_d3plot" || rFormat == "openfoam" ||
-        rFormat == "unv" || rFormat == "gmsh" || rFormat == "ensight") {
+        rFormat == "unv" || rFormat == "gmsh" || rFormat == "ensight" || rFormat == "tecplot") {
         rWhy.clear();
         return true;
     }
     rWhy = "meshio++: sequence: format '" + rFormat +
            "' cannot hold a multi-step series (only 'xdmf', 'gid', 'vtkhdf', 'pvd', 'femap', "
-           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil', 'unv', 'gmsh', 'ensight', 'cgns' and 'exodus' can); "
+           "'frd', 'radioss_th', 'radioss_anim', 'xplt', 'vtx', 'szplt', 'marc_t19', 'ansys_rst', 'lsdyna_d3plot', 'openfoam', 'nastran_op2', 'nastran_h5', 'lsdyna_binout', 'abaqus_fil', 'unv', 'gmsh', 'ensight', 'cgns', 'tecplot' and 'exodus' can); "
            "write one file per step with an Output path containing '{step}' instead";
     return false;
 }
@@ -623,6 +624,7 @@ inline constexpr SeqSeriesFormat kSeqSeriesFormats[] = {
     {"gmsh", "Gmsh", nullptr},
     {"ensight", "EnSight", nullptr},
     {"cgns", "CGNS", "CGNS"},
+    {"tecplot", "Tecplot", "Tecplot"},
 };
 
 const SeqSeriesFormat& seq_series_format(const std::string& rFormat) {
@@ -736,6 +738,8 @@ std::unique_ptr<SeqSeriesSink> seq_make_series_sink(const std::string& rFormat,
     if (rFormat == "cgns")
         return std::make_unique<SeqStepSink<CgnsSeriesWriter>>(rPath);
 #endif
+    if (rFormat == "tecplot")
+        return std::make_unique<SeqStepSink<TecplotSeriesWriter>>(rPath);
     if (rFormat == "ensight")
         return std::make_unique<SeqStepSink<EnsightSeriesWriter>>(
             rPath, rOptions.mEncoding != WriteEncoding::Ascii, false);
