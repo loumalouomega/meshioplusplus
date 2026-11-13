@@ -1144,7 +1144,8 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
-        "regions": [],
+        "regions": ["cell"],
+        "note": "A cell region is a `usemtl` material (the faces in none get one more, `material0`).",
     },
     "off": {
         "cells": {"triangle": "exact", "quad": "exact"},

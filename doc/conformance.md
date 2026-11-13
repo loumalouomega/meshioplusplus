@@ -69,7 +69,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="nastran-op2">`nastran_op2`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | — | — | — | — |
 | <span id="netgen">`netgen`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | ✓ | — |
 | <span id="neuroglancer">`neuroglancer`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
-| <span id="obj">`obj`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
+| <span id="obj">`obj`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | cell |
 | <span id="off">`off`</span> |  |  | ✓ | ✓ |  |  |  |  | exact | — | — | — | — |
 | <span id="openfoam">`openfoam`</span> |  |  |  |  | ↻ | ↻ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell, point, side |
 | <span id="patran">`patran`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
@@ -146,6 +146,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`nastran_h5`**: Results are the schema's own tables: point data is nodal tables (float64), cell data only `<G>:<M>` centre values, so the canonical cell arrays, field data and regions (derived from property ids on read) have no place.
 - **`nastran_op2`**: Single precision; results are the OP2 tables' own point and cell data (`DISPLACEMENT`, `STRESS:<M>`...), so the canonical arrays have no place; the property and material values are field data (`nastran:<CARD>_<id>:<MEMBER>`), and the regions come from the property ids; cells come back ordered by element card.
 - **`netgen`**: Field data is interpreted as Netgen name tables ([id, dimension]), not arbitrary numeric arrays; periodic tables use reserved netgen:* keys.
+- **`obj`**: A cell region is a `usemtl` material (the faces in none get one more, `material0`).
 - **`openfoam`**: Fields are written to time directory 0 as volume and point fields (float64); OpenFOAM has no field_data.
 - **`pcd`**: A point cloud: every node is kept as a vertex, cells are not.
 - **`plot3d`**: PLOT3D holds lattice blocks (`plot3d:dims`); the canonical mesh is not one, so the writer refuses it by name.

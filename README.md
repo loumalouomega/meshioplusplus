@@ -686,6 +686,8 @@ d = out.point_data["geodesic:distance"]
 
 **`meshioplusplus.parameterize(mesh)`** gives a triangle surface a UV atlas: it cuts the surface into charts, flattens each without flipping a triangle (least-squares conformal maps, else mean-value coordinates, the kernels `fit_cad` uses), halves a chart that stretches too much, and shelf-packs the charts into the unit square. The result is split at its seams and carries `uv` point data, which the OBJ (`vt`), glTF (`TEXCOORD_0`) and USD (`primvars:st`) writers turn into texture coordinates, and their readers turn back. On every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs (`parameterize`), the pipeline (`Parameterize`) and MCP. See `doc/parameterize.md`.
 
+**`meshioplusplus.bake_texture(mesh, array)`** draws a point or cell array into an RGBA texture through `uv`, so a field travels as a picture: glTF embeds it as the base-colour texture and OBJ writes it beside the file with a `.mtl` (`usemtl` groups are cell regions both ways). Python, C++, both CLIs (`bake-texture`) and MCP. See `doc/bake_texture.md`.
+
 <!--pytest-codeblocks:skip-->
 
 ```python

@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** textures (roadmap 2.4.8): glTF embeds `field_data["texture:png"]` as the material's `baseColorTexture` (a `texture=` write option takes a path, PNG bytes or an image) and reads the first image back; OBJ reads `usemtl` groups as cell regions and the `.mtl` `Kd` and `map_Kd`, and writes `mtllib`, `usemtl` and a `.mtl`/`.png` beside the file; and `bake_texture` draws a point or cell array into a texture through `uv` (core, Python, both CLIs as `bake-texture`, MCP). Both engines write the same glTF bytes and draw the same pixels.
+
+
 - **Added:** a native `las` format: ASPRS LAS 1.2 to 1.4, point formats 0 to 10 read (laspy's field names and types, VLRs kept verbatim, `every=` subsampling) and LAS 1.4 formats 6 to 8 written with identical bytes from both engines, checked against laspy (roadmap 2.4.6.1).
 
 

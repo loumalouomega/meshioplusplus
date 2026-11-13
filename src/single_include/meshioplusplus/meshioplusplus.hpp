@@ -26860,6 +26860,68 @@ MESHIOPLUSPLUS_API AutoAlignResult auto_align(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/auto_align.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/bake_texture.hpp =====
+/**
+ * @file operations/bake_texture.hpp
+ * @brief Bake a point or cell array into a texture image through the mesh's `uv`
+ * (roadmap 2.4.8), so a field travels as a picture in glTF and OBJ.
+ *
+ * Each 2-D cell (a triangle; a quad split along its 0-2 diagonal; a polygon fanned
+ * from its first node) is drawn in texture space, `x = u * width` and
+ * `y = (1 - v) * height` (the image's top row is `v = 1`). A pixel whose centre lies
+ * in a triangle (all three barycentric weights non-negative; a later cell draws over
+ * an earlier one) takes the array's value there: the weighted value of a point
+ * array, the cell's own value of a cell array. A multi-component array reduces to
+ * `mComponent`, else to its magnitude. The value maps through the colormap
+ * (`detail/colormap.hpp`) over `[mVMin, mVMax]` (the finite range by default);
+ * a pixel no cell covers, or whose value is not finite, stays transparent.
+ *
+ * The result is the RGBA image and the mesh with it as `field_data["texture:png"]`
+ * (PNG, zlib level 9 when the build has zlib, stored otherwise). The Python twin is
+ * `meshioplusplus.bake_texture`, which draws the same pixels.
+ * @see doc/bake_texture.md
+ */
+
+// System includes
+#include <optional>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/** @brief What to bake and how. */
+struct BakeTextureOptions {
+    std::string mArray;          ///< a point or cell data array
+    std::int64_t mWidth = 512;   ///< image width in pixels
+    std::int64_t mHeight = 512;  ///< image height in pixels
+    std::string mCmap = "viridis";
+    std::optional<double> mVMin;   ///< low end of the colour range; the finite minimum when unset
+    std::optional<double> mVMax;   ///< high end; the finite maximum when unset
+    std::int64_t mComponent = -1;  ///< the component of a vector array; -1 is the magnitude
+};
+
+/** @brief The baked image and the mesh carrying it. */
+struct BakeTextureResult {
+    Mesh mMesh;          ///< the input with `field_data["texture:png"]`
+    NDArray mImage;      ///< `(height, width, 4)` uint8, top row first
+    double mVMin = 0.0;  ///< the range used
+    double mVMax = 0.0;
+    std::int64_t mCoveredPixels = 0;  ///< pixels some cell drew
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Bake @p rOptions.mArray into a texture through `point_data["uv"]`.
+ * @throws std::invalid_argument when the mesh has no `uv`, the array is missing or
+ *         has the wrong length, the size is not positive, or the colormap is unknown.
+ */
+MESHIOPLUSPLUS_API BakeTextureResult bake_texture(const Mesh& rMesh,
+                                                  const BakeTextureOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/bake_texture.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/blend.hpp =====
 /**
  * @file operations/blend.hpp
@@ -159428,6 +159490,9 @@ private:
 };
 
 // The binary chunk: little-endian whatever the host is.
+/// The field-data key of an embedded texture (PNG bytes), read and written.
+constexpr const char* kGltfTextureKey = "texture:png";
+
 class GltfBin {
 public:
     void U32(std::uint32_t Value) {
@@ -159439,6 +159504,7 @@ public:
         std::memcpy(&bits, &Value, sizeof(bits));
         U32(bits);
     }
+    void Raw(const char* pData, std::size_t Size) { mBytes.append(pData, Size); }
     std::size_t Size() const { return mBytes.size(); }
     const std::string& Bytes() const { return mBytes; }
 
@@ -160408,6 +160474,22 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
     }
     js.EndObject();
     const bool unlit = color.mActive && rOpt.mUnlit;
+    // A texture (`field_data["texture:png"]`) is embedded when the surface carries
+    // TEXCOORD_0: a buffer view after the accessors' data, one image, one texture.
+    bool has_uv = false;
+    for (const GltfNodeOut& node : out_nodes)
+        for (const GltfPrimOut& po : node.mPrims)
+            for (const auto& attr : po.mAttrs)
+                has_uv = has_uv || attr.first == "TEXCOORD_0";
+    const bool textured = has_uv && rMesh.HasFieldData(kGltfTextureKey) &&
+                          rMesh.FieldData(kGltfTextureKey).Size() > 0;
+    std::size_t texture_offset = 0, texture_length = 0;
+    if (textured) {
+        const NDArray& png = rMesh.FieldData(kGltfTextureKey);
+        texture_offset = bin.Size();
+        texture_length = png.Size();
+        bin.Raw(reinterpret_cast<const char*>(png.Data()), png.Size());
+    }
     if (unlit) {
         js.Key("extensionsUsed");
         js.BeginArray();
@@ -160519,12 +160601,19 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         js.BeginObject();
         js.Key("baseColorFactor");
         js.BeginArray();
-        const double base = color.mActive ? 1.0 : 0.8;
+        const double base = color.mActive || textured ? 1.0 : 0.8;
         js.Num(base);
         js.Num(base);
         js.Num(base);
         js.Num(1.0);
         js.EndArray();
+        if (textured) {
+            js.Key("baseColorTexture");
+            js.BeginObject();
+            js.Key("index");
+            js.Int(0);
+            js.EndObject();
+        }
         js.Key("metallicFactor");
         js.Num(0.0);
         js.Key("roughnessFactor");
@@ -160590,6 +160679,16 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
             js.Int(a.mTarget);
             js.EndObject();
         }
+        if (textured) {
+            js.BeginObject();
+            js.Key("buffer");
+            js.Int(0);
+            js.Key("byteOffset");
+            js.Int(static_cast<std::int64_t>(texture_offset));
+            js.Key("byteLength");
+            js.Int(static_cast<std::int64_t>(texture_length));
+            js.EndObject();
+        }
         js.EndArray();
 
         js.Key("buffers");
@@ -160603,6 +160702,31 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         }
         js.EndObject();
         js.EndArray();
+        if (textured) {
+            js.Key("textures");
+            js.BeginArray();
+            js.BeginObject();
+            js.Key("sampler");
+            js.Int(0);
+            js.Key("source");
+            js.Int(0);
+            js.EndObject();
+            js.EndArray();
+            js.Key("images");
+            js.BeginArray();
+            js.BeginObject();
+            js.Key("bufferView");
+            js.Int(static_cast<std::int64_t>(accessors.size()));
+            js.Key("mimeType");
+            js.Str("image/png");
+            js.EndObject();
+            js.EndArray();
+            js.Key("samplers");
+            js.BeginArray();
+            js.BeginObject();
+            js.EndObject();
+            js.EndArray();
+        }
     }
     js.EndObject();
 
@@ -161171,6 +161295,42 @@ GltfrAccessor gltfr_read_accessor(const GltfrFile& rFile, const GltfrBuffers& rB
 
 // ---- transforms ---------------------------------------------------------- //
 
+// The first image's bytes as `field_data["texture:png"]` (or `texture:jpeg`), from a
+// buffer view or a `uri`, undecoded, so a round trip writes it back.
+void gltfr_add_texture(const GltfrFile& rFile, const GltfrBuffers& rBuffers, Mesh& rMesh) {
+    const auto& images = gltfr_list(rFile.mRoot, "images");
+    if (images.empty())
+        return;
+    const JsonValue& image = gltfr_object(&images[0], "images[0]");
+    std::string mime;
+    if (const JsonValue* m = gltfr_get(image, "mimeType"); m && m->IsString())
+        mime = m->mString;
+    std::string bytes;
+    if (const JsonValue* view = gltfr_get(image, "bufferView")) {
+        const std::uint64_t index = gltfr_uint(*view, "image.bufferView");
+        const auto& views = gltfr_list(rFile.mRoot, "bufferViews");
+        if (index >= views.size())
+            gltfr_fail("an image names a bufferView that does not exist");
+        const std::uint64_t length =
+            gltfr_uint_or(gltfr_object(&views[index], "bufferView"), "byteLength", 0, "bufferView");
+        std::uint64_t stride = 1;
+        const unsigned char* p =
+            gltfr_span(rFile, rBuffers, index, 0, 1, length, stride, /*UseViewStride=*/false);
+        bytes.assign(reinterpret_cast<const char*>(p), static_cast<std::size_t>(length));
+    } else if (const JsonValue* uri = gltfr_get(image, "uri"); uri && uri->IsString()) {
+        bytes = gltfr_uri_bytes(rFile, uri->mString);
+    } else {
+        return;
+    }
+    const bool jpeg = mime == "image/jpeg" ||
+                      (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF &&
+                       static_cast<unsigned char>(bytes[1]) == 0xD8);
+    NDArray out(DType::UInt8, {bytes.size()});
+    if (!bytes.empty())
+        std::memcpy(out.Data(), bytes.data(), bytes.size());
+    rMesh.AddFieldData(jpeg ? "texture:jpeg" : "texture:png", std::move(out));
+}
+
 GltfrMat4 gltfr_identity() {
     GltfrMat4 m{};
     m[0] = m[5] = m[10] = m[15] = 1.0;
@@ -161537,8 +161697,8 @@ Mesh read_gltf(const std::string& rPath, const GltfReadOptions& rOptions,
     for (const char* key : {"animations", "skins"})
         if (!gltfr_list(file.mRoot, key).empty())
             skipped.emplace_back(key);
-    if (!gltfr_list(file.mRoot, "textures").empty() || !gltfr_list(file.mRoot, "images").empty())
-        skipped.emplace_back("textures");
+    if (gltfr_list(file.mRoot, "images").size() > 1)
+        skipped.emplace_back("images beyond the first");
     if (!skipped.empty()) {
         std::string joined;
         for (std::size_t i = 0; i < skipped.size(); ++i)
@@ -161654,6 +161814,8 @@ Mesh read_gltf(const std::string& rPath, const GltfReadOptions& rOptions,
         std::copy(ids.begin(), ids.end(), arr.As<std::int64_t>());
         mesh.AddRegion(Region(name, RegionKind::Cell, std::move(arr)));
     }
+    if (state.mWantData)
+        gltfr_add_texture(file, buffers, mesh);
     return mesh;
 }
 
@@ -199606,12 +199768,14 @@ void write_neuroglancer(const std::string& rPath, const Mesh& rMesh) {
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/neuroglancer.cpp =====
 // ===== begin src/cpp/src/formats/obj.cpp =====
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -199632,6 +199796,7 @@ struct FaceBlock {
     std::vector<std::int64_t> mVt;   // per corner, the 0-based `vt` index (-1 none)
     std::vector<std::int64_t> mVn;   // per corner, the 0-based `vn` index (-1 none)
     std::vector<std::int64_t> mGids;
+    std::vector<std::int64_t> mMats;  // per face, the `usemtl` index (-1 none)
     std::size_t mCount = 0;
 };
 
@@ -199684,8 +199849,7 @@ std::int64_t obj_stoll(std::string_view Token) {
     if (i >= Token.size() || Token[i] < '0' || Token[i] > '9')
         throw std::invalid_argument("stoll");
     std::uint64_t magnitude = 0;
-    const auto parsed =
-        std::from_chars(Token.data() + i, Token.data() + Token.size(), magnitude);
+    const auto parsed = std::from_chars(Token.data() + i, Token.data() + Token.size(), magnitude);
     constexpr auto maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
     if (parsed.ec == std::errc::result_out_of_range || magnitude > maximum + (negative ? 1u : 0u))
         throw std::out_of_range("stoll");
@@ -199701,6 +199865,69 @@ void obj_read_numbers(std::string_view Rest, std::vector<double>& rOut) {
         rOut.push_back(x);
 }
 
+/// The `.mtl` libraries beside @p rObjPath: each material's `Kd` as
+/// `field_data["obj:material:<name>:Kd"]`, and the first `map_Kd` image's bytes as
+/// `texture:png` (`texture:jpeg` for a JPEG). A missing library or image is skipped.
+void obj_read_materials(Mesh& rMesh, const std::string& rObjPath,
+                        const std::vector<std::string>& rLibraries) {
+    const std::filesystem::path dir = std::filesystem::path(rObjPath).parent_path();
+    bool have_texture = false;
+    for (const std::string& lib : rLibraries) {
+        std::error_code ec;
+        const std::filesystem::path path = dir / lib;
+        if (!std::filesystem::is_regular_file(path, ec))
+            continue;
+        const detail::FileSource source = detail::open_source(path.string(), "");
+        detail::TextCursor cursor(source.View());
+        std::string current;
+        while (!cursor.AtEnd()) {
+            std::string_view line = cursor.Line();
+            std::size_t b = 0, e = line.size();
+            while (b < e && detail::text_is_blank(line[b]))
+                ++b;
+            while (e > b && detail::text_is_blank(line[e - 1]))
+                --e;
+            line = line.substr(b, e - b);
+            std::size_t t = 0;
+            while (t < line.size() && !detail::text_is_blank(line[t]))
+                ++t;
+            const std::string_view tag = line.substr(0, t);
+            std::string_view rest = line.substr(t);
+            while (!rest.empty() && detail::text_is_blank(rest.front()))
+                rest.remove_prefix(1);
+            if (tag == "newmtl") {
+                current = std::string(rest);
+            } else if (tag == "Kd" && !current.empty()) {
+                std::vector<double> kd;
+                obj_read_numbers(rest, kd);
+                if (kd.size() >= 3) {
+                    NDArray a(DType::Float64, {3});
+                    std::copy_n(kd.begin(), 3, a.As<double>());
+                    rMesh.AddFieldData("obj:material:" + current + ":Kd", std::move(a));
+                }
+            } else if (tag == "map_Kd" && !have_texture && !rest.empty()) {
+                // The file name is the last token (options such as -s come first).
+                std::size_t s = rest.size();
+                while (s > 0 && !detail::text_is_blank(rest[s - 1]))
+                    --s;
+                const std::filesystem::path image = dir / std::string(rest.substr(s));
+                if (!std::filesystem::is_regular_file(image, ec))
+                    continue;
+                const detail::FileSource img = detail::open_source(image.string(), "");
+                const std::string_view bytes = img.View();
+                const bool jpeg = bytes.size() >= 2 &&
+                                  static_cast<unsigned char>(bytes[0]) == 0xFF &&
+                                  static_cast<unsigned char>(bytes[1]) == 0xD8;
+                NDArray a(DType::UInt8, {bytes.size()});
+                if (!bytes.empty())
+                    std::memcpy(a.Data(), bytes.data(), bytes.size());
+                rMesh.AddFieldData(jpeg ? "texture:jpeg" : "texture:png", std::move(a));
+                have_texture = true;
+            }
+        }
+    }
+}
+
 }  // namespace
 
 Mesh read_obj(const std::string& rPath) {
@@ -199711,6 +199938,8 @@ Mesh read_obj(const std::string& rPath) {
     AttributeRows vn, vt;
     std::vector<FaceBlock> blocks;
     std::int64_t group_id = -1;
+    std::int64_t material = -1;
+    std::vector<std::string> materials, mtllibs;
     std::vector<double> row;
     std::vector<std::int64_t> dat;
     std::vector<std::int64_t> dat_vt;
@@ -199803,7 +200032,21 @@ Mesh read_obj(const std::string& rPath) {
             cur.mVt.insert(cur.mVt.end(), dat_vt.begin(), dat_vt.end());
             cur.mVn.insert(cur.mVn.end(), dat_vn.begin(), dat_vn.end());
             cur.mGids.push_back(group_id);
+            cur.mMats.push_back(material);
             ++cur.mCount;
+        } else if (tag == "usemtl" || tag == "mtllib") {
+            std::size_t a = 0;
+            while (a < rest.size() && detail::text_is_blank(rest[a]))
+                ++a;
+            const std::string name(rest.substr(a));
+            if (tag == "mtllib") {
+                mtllibs.push_back(name);
+            } else {
+                const auto it = std::find(materials.begin(), materials.end(), name);
+                material = static_cast<std::int64_t>(it - materials.begin());
+                if (it == materials.end())
+                    materials.push_back(name);
+            }
         } else if (tag == "g") {
             FaceBlock fb;
             blocks.push_back(std::move(fb));
@@ -199942,6 +200185,19 @@ Mesh read_obj(const std::string& rPath) {
         }
         mesh.AddCellData("obj:group_ids", std::move(gid_blocks));
     }
+    // `usemtl` groups as cell regions; the `.mtl` libraries' Kd and first map_Kd.
+    std::vector<std::vector<std::int64_t>> members(materials.size());
+    std::int64_t cell = 0;
+    for (const auto& fb : nonempty)
+        for (std::size_t k = 0; k < fb.mCount; ++k, ++cell)
+            if (fb.mMats[k] >= 0)
+                members[static_cast<std::size_t>(fb.mMats[k])].push_back(cell);
+    for (std::size_t m = 0; m < materials.size(); ++m) {
+        NDArray ids(DType::Int64, {members[m].size()});
+        std::copy(members[m].begin(), members[m].end(), ids.As<std::int64_t>());
+        mesh.AddRegion(Region(materials[m], RegionKind::Cell, std::move(ids)));
+    }
+    obj_read_materials(mesh, rPath, mtllibs);
     return mesh;
 }
 
@@ -199961,6 +200217,83 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t dim = rMesh.PointDim();
 
     os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    // Materials: each face's first cell region is its `usemtl`, and a texture
+    // (`field_data["texture:png"]`) is every material's `map_Kd`, in a `.mtl` and
+    // a `.png` beside the file.
+    const std::size_t total_cells = [&] {
+        std::size_t n = 0;
+        for (const auto cb : rMesh.CellRange())
+            n += cb.NumCells();
+        return n;
+    }();
+    std::vector<int> face_material(total_cells, -1);
+    std::vector<std::string> material_names;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell)
+            continue;
+        bool used = false;
+        for (std::size_t k = 0; k < r.mEntries.Size(); ++k) {
+            const std::int64_t c = detail::read_int(r.mEntries, k);
+            if (c >= 0 && static_cast<std::size_t>(c) < total_cells &&
+                face_material[static_cast<std::size_t>(c)] < 0) {
+                face_material[static_cast<std::size_t>(c)] =
+                    static_cast<int>(material_names.size());
+                used = true;
+            }
+        }
+        if (used)
+            material_names.push_back(r.mName);
+    }
+    const bool textured =
+        rMesh.HasFieldData("texture:png") && rMesh.FieldData("texture:png").Size() > 0;
+    // A face in no region would inherit the previous `usemtl`: give those faces one
+    // more material.
+    if ((textured || !material_names.empty()) &&
+        std::find(face_material.begin(), face_material.end(), -1) != face_material.end()) {
+        for (int& m : face_material)
+            if (m < 0)
+                m = static_cast<int>(material_names.size());
+        material_names.push_back("material0");
+    }
+    const bool with_materials = !material_names.empty();
+    if (with_materials) {
+        const std::filesystem::path path(rPath);
+        const std::string stem = path.stem().string();
+        const std::filesystem::path dir = path.parent_path();
+        std::string mtl = "# meshio++\n";
+        for (const std::string& name : material_names) {
+            mtl += "newmtl " + name + "\nKd";
+            const std::string key = "obj:material:" + name + ":Kd";
+            for (std::size_t c = 0; c < 3; ++c) {
+                const double v = rMesh.HasFieldData(key) && rMesh.FieldData(key).Size() == 3
+                                     ? detail::read_double(rMesh.FieldData(key), c)
+                                     : 1.0;
+                char buf[40];
+                detail::snprintf_c(buf, sizeof buf, " %.17g", v);
+                mtl += buf;
+            }
+            mtl += "\n";
+            if (textured)
+                mtl += "map_Kd " + stem + ".png\n";
+        }
+        auto ms = detail::make_classic_ofstream((dir / (stem + ".mtl")).string(), std::ios::binary);
+        if (!ms)
+            throw WriteError("Could not open file for writing: " +
+                             (dir / (stem + ".mtl")).string());
+        ms << mtl;
+        if (textured) {
+            const NDArray& png = rMesh.FieldData("texture:png");
+            auto ps =
+                detail::make_classic_ofstream((dir / (stem + ".png")).string(), std::ios::binary);
+            if (!ps)
+                throw WriteError("Could not open file for writing: " +
+                                 (dir / (stem + ".png")).string());
+            ps.write(reinterpret_cast<const char*>(png.Data()),
+                     static_cast<std::streamsize>(png.Size()));
+        }
+        os << "mtllib " << stem << ".mtl\n";
+    }
     // One `CNumber::Append` per value (row_writer.hpp: `to_chars` for the
     // plain precisions, roadmap 5.7.1) into a line, written whole; every value
     // is formatted in the C convention, whatever the process locale.
@@ -200022,11 +200355,19 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         write_pd("obj:vt", "vt");
     }
 
+    std::size_t face = 0;
+    int current_material = -1;
     for (const auto cb : rMesh.CellRange()) {
         const NDArray& conn_array = cb.Conn();
         std::size_t k = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
         const detail::Int64View conn(conn_array);
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+        for (std::size_t r = 0; r < cb.NumCells(); ++r, ++face) {
+            if (with_materials && face_material[face] >= 0 &&
+                face_material[face] != current_material) {
+                current_material = face_material[face];
+                os << "usemtl " << material_names[static_cast<std::size_t>(current_material)]
+                   << '\n';
+            }
             os << 'f';
             for (std::size_t j = 0; j < k; ++j) {
                 os << ' ' << (conn[r * k + j] + 1);
@@ -241077,6 +241418,177 @@ AutoAlignResult auto_align(const Mesh& rMesh, const AutoAlignOptions& rOptions) 
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/auto_align.cpp =====
+// ===== begin src/cpp/src/operations/bake_texture.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+/// One value per row of @p rArray: the component, or the magnitude.
+std::vector<double> bake_values(const NDArray& rArray, std::size_t Rows, std::int64_t Component) {
+    const std::size_t width = Rows ? rArray.Size() / Rows : 0;
+    if (width == 0 || rArray.Size() != Rows * width)
+        throw std::invalid_argument(
+            "meshio++: bake_texture: the array does not hold one row per "
+            "entry");
+    if (Component >= static_cast<std::int64_t>(width))
+        throw std::invalid_argument("meshio++: bake_texture: component " +
+                                    std::to_string(Component) + " is out of range");
+    std::vector<double> out(Rows);
+    for (std::size_t r = 0; r < Rows; ++r) {
+        if (width == 1) {
+            out[r] = detail::read_double(rArray, r);
+        } else if (Component >= 0) {
+            out[r] = detail::read_double(rArray, r * width + static_cast<std::size_t>(Component));
+        } else {
+            double s = 0.0;
+            for (std::size_t c = 0; c < width; ++c) {
+                const double v = detail::read_double(rArray, r * width + c);
+                s += v * v;
+            }
+            out[r] = std::sqrt(s);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+BakeTextureResult bake_texture(const Mesh& rMesh, const BakeTextureOptions& rOptions) {
+    if (rOptions.mWidth < 1 || rOptions.mHeight < 1 || rOptions.mWidth > 16384 ||
+        rOptions.mHeight > 16384)
+        throw std::invalid_argument(
+            "meshio++: bake_texture: width and height must lie in [1, 16384]");
+    const std::size_t np = rMesh.NumPoints();
+    if (!rMesh.HasPointData("uv") || rMesh.PointData("uv").Size() != 2 * np)
+        throw std::invalid_argument(
+            "meshio++: bake_texture: the mesh has no point_data['uv'] "
+            "(two per point); run parameterize first");
+    const NDArray& uv = rMesh.PointData("uv");
+    const std::uint8_t* table = detail::colormap_table(rOptions.mCmap);
+    const bool on_points = rMesh.HasPointData(rOptions.mArray);
+    std::size_t total_cells = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+        total_cells += rMesh.Cells(b).NumCells();
+    std::vector<double> values;
+    if (on_points) {
+        values = bake_values(rMesh.PointData(rOptions.mArray), np, rOptions.mComponent);
+    } else if (rMesh.HasCellData(rOptions.mArray) &&
+               rMesh.CellDataNumBlocks(rOptions.mArray) == rMesh.NumCellBlocks()) {
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto v = bake_values(rMesh.CellData(rOptions.mArray, b),
+                                       rMesh.Cells(b).NumCells(), rOptions.mComponent);
+            values.insert(values.end(), v.begin(), v.end());
+        }
+    } else {
+        throw std::invalid_argument("meshio++: bake_texture: no point or cell data array '" +
+                                    rOptions.mArray + "'");
+    }
+    double lo = std::numeric_limits<double>::infinity(), hi = -lo;
+    for (const double v : values)
+        if (std::isfinite(v)) {
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+    if (!std::isfinite(lo))
+        lo = hi = 0.0;
+    BakeTextureResult out;
+    out.mVMin = rOptions.mVMin.value_or(lo);
+    out.mVMax = rOptions.mVMax.value_or(hi);
+    const std::size_t w = static_cast<std::size_t>(rOptions.mWidth);
+    const std::size_t h = static_cast<std::size_t>(rOptions.mHeight);
+    std::vector<std::uint8_t> rgba(w * h * 4, 0);
+    const double W = static_cast<double>(w), H = static_cast<double>(h);
+    const auto draw = [&](std::int64_t A, std::int64_t B, std::int64_t C, std::size_t Cell) {
+        const double xa = detail::read_double(uv, 2 * static_cast<std::size_t>(A)) * W;
+        const double ya = (1.0 - detail::read_double(uv, 2 * static_cast<std::size_t>(A) + 1)) * H;
+        const double xb = detail::read_double(uv, 2 * static_cast<std::size_t>(B)) * W;
+        const double yb = (1.0 - detail::read_double(uv, 2 * static_cast<std::size_t>(B) + 1)) * H;
+        const double xc = detail::read_double(uv, 2 * static_cast<std::size_t>(C)) * W;
+        const double yc = (1.0 - detail::read_double(uv, 2 * static_cast<std::size_t>(C) + 1)) * H;
+        const double area = (xb - xa) * (yc - ya) - (xc - xa) * (yb - ya);
+        if (!(area != 0.0) || !std::isfinite(area))
+            return;
+        const double x_lo = std::max(0.0, std::ceil(std::min({xa, xb, xc}) - 0.5));
+        const double x_hi = std::min(W - 1.0, std::floor(std::max({xa, xb, xc}) - 0.5));
+        const double y_lo = std::max(0.0, std::ceil(std::min({ya, yb, yc}) - 0.5));
+        const double y_hi = std::min(H - 1.0, std::floor(std::max({ya, yb, yc}) - 0.5));
+        if (!(x_lo <= x_hi) || !(y_lo <= y_hi))
+            return;
+        for (std::size_t py = static_cast<std::size_t>(y_lo); py <= static_cast<std::size_t>(y_hi);
+             ++py) {
+            const double cy = static_cast<double>(py) + 0.5;
+            for (std::size_t px = static_cast<std::size_t>(x_lo);
+                 px <= static_cast<std::size_t>(x_hi); ++px) {
+                const double cx = static_cast<double>(px) + 0.5;
+                const double w0 = ((xb - cx) * (yc - cy) - (xc - cx) * (yb - cy)) / area;
+                const double w1 = ((xc - cx) * (ya - cy) - (xa - cx) * (yc - cy)) / area;
+                const double w2 = ((xa - cx) * (yb - cy) - (xb - cx) * (ya - cy)) / area;
+                if (!(w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0))
+                    continue;
+                const double value = on_points ? w0 * values[static_cast<std::size_t>(A)] +
+                                                     w1 * values[static_cast<std::size_t>(B)] +
+                                                     w2 * values[static_cast<std::size_t>(C)]
+                                               : values[Cell];
+                std::uint8_t* p = rgba.data() + (py * w + px) * 4;
+                if (!std::isfinite(value)) {
+                    p[0] = p[1] = p[2] = p[3] = 0;
+                    continue;
+                }
+                const double t =
+                    out.mVMax > out.mVMin ? (value - out.mVMin) / (out.mVMax - out.mVMin) : 0.5;
+                const detail::Rgb c = detail::colormap_lookup(table, t);
+                p[0] = c.mR;
+                p[1] = c.mG;
+                p[2] = c.mB;
+                p[3] = 255;
+            }
+        }
+    };
+    std::size_t cell = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::string type = cb.Type();
+        const bool face = type == "triangle" || type == "quad" || type == "polygon";
+        for (std::size_t r = 0; r < cb.NumCells(); ++r, ++cell) {
+            if (!face)
+                continue;
+            const std::size_t n = cb.IsRagged() ? cb.RowSize(r) : cb.NodesPerCell();
+            const auto node = [&](std::size_t k) -> std::int64_t {
+                return cb.IsRagged() ? cb.Row(r)[k] : detail::read_int(cb.Conn(), r * n + k);
+            };
+            for (std::size_t k = 1; k + 1 < n; ++k)
+                draw(node(0), node(k), node(k + 1), cell);
+        }
+    }
+    for (std::size_t k = 3; k < rgba.size(); k += 4)
+        out.mCoveredPixels += rgba[k] != 0;
+    out.mImage = NDArray(DType::UInt8, {h, w, 4});
+    std::memcpy(out.mImage.Data(), rgba.data(), rgba.size());
+    const std::string png =
+        detail::png_encode_rgba(rgba.data(), w, h, detail::zlib_available() ? 9 : 0);
+    out.mMesh = detail::clone_mesh(rMesh);
+    NDArray bytes(DType::UInt8, {png.size()});
+    std::memcpy(bytes.Data(), png.data(), png.size());
+    out.mMesh.AddFieldData("texture:png", std::move(bytes));
+    if (out.mCoveredPixels == 0)
+        out.mWarnings.push_back("bake_texture: no 2-D cell covers a pixel of the texture");
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/bake_texture.cpp =====
 // ===== begin src/cpp/src/operations/blend.cpp =====
 #include <cstddef>
 #include <stdexcept>

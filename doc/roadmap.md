@@ -317,13 +317,10 @@ Reopened: [`compute_sdf`](./sdf.md), [`voxelize`](./voxelize.md) and [`octree`](
 - **Decisions to take first.** (1) Whether NanoVDB's header (verify its licence, Apache-2.0 or MPL-2.0†, and that it is self-contained) reads and writes `.nvdb` only, which is what its viewers and Blender's importer need to be checked for, or whether `.vdb` proper is required, which means the OpenVDB library and its dependencies (then a provider add-on, not the core). (2) The shape on the meshio++ side: recommended, an export of a lattice array (a narrow band of `sdf:distance`, or `voxelize`'s occupancy) and an import to a lattice mesh, registered as a format `nvdb` whose writer refuses a mesh that is not a lattice by name, as `vti` does.
 - **Done when.** Blender or `nanovdb_viewer` opens a narrow-band level set written from `compute_sdf`'s output.
 
-#### 2.4.8 Materials and textures
+#### 2.4.8 Materials and textures: remaining
 
-Reopened: [`parameterize`](./parameterize.md) now produces texture coordinates, so a baked field or a scan's colour can travel as an image. **S–M**
+A texture travels as `field_data["texture:png"]` through glTF (embedded as `baseColorTexture`, read back from the first image) and OBJ (`usemtl` groups as regions, `.mtl` `Kd` and `map_Kd`), and [`bake_texture`](./bake_texture.md) makes one from a field (core, Python, both CLIs, MCP), all in both engines. Still open: `bake_texture` in the C API, the flat bindings and the pipeline (checklist O steps 3, 4 and 6), and a `gltf-validator` and Blender check of a baked `.glb`. **S**
 
-- **State today.** Texture coordinates already round-trip: `uv` (`kUvName`, `operations/parameterize.hpp` line 70) to OBJ `vt` with `f v/vt` corners (`obj.cpp` lines 225–303) and to glTF `TEXCOORD_0` with `v` flipped (`gltf.cpp` lines 939–971). Missing: OBJ writes no `mtllib`/`usemtl` and reads none; glTF writes one fixed `baseColorFactor` material and no image (lines 1308–1340) and skips textures on read (`gltf_read.cpp` lines 835–836). A PNG encoder exists (`png_encode_rgba`, `detail/png_write.hpp` line 49); there is no PNG decoder.
-- **Steps.** (1) glTF: a `texture=` write option taking an RGBA array or a PNG path, embedded as a buffer view in `.glb` and referenced as `baseColorTexture`; on read, keep the image bytes in a side channel (`GltfInfo`) and its texture index, undecoded, so a round trip returns it. (2) OBJ: write `mtllib` and one `usemtl` with a sibling `.mtl` (`map_Kd`) and the PNG beside it; read `usemtl` groups as cell regions and the `.mtl`'s `Kd` and `map_Kd` into `field_data`. (3) A `bake_texture(mesh, array, size)` helper that rasterizes a point or cell array through `uv` with the existing rasterizer and colormaps (`detail/raster`), so a field becomes an image: Python and the core, by [checklist O](#landing-checklists). No material model beyond base colour.
-- **Done when.** `gltf-validator` (the `gltf-validator` CI job) accepts a textured `.glb`, and a parameterized mesh with a baked field opens textured in Blender.
 
 ---
 

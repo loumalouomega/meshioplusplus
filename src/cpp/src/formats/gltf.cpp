@@ -223,6 +223,9 @@ private:
 };
 
 // The binary chunk: little-endian whatever the host is.
+/// The field-data key of an embedded texture (PNG bytes), read and written.
+constexpr const char* kGltfTextureKey = "texture:png";
+
 class GltfBin {
 public:
     void U32(std::uint32_t Value) {
@@ -234,6 +237,7 @@ public:
         std::memcpy(&bits, &Value, sizeof(bits));
         U32(bits);
     }
+    void Raw(const char* pData, std::size_t Size) { mBytes.append(pData, Size); }
     std::size_t Size() const { return mBytes.size(); }
     const std::string& Bytes() const { return mBytes; }
 
@@ -1203,6 +1207,22 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
     }
     js.EndObject();
     const bool unlit = color.mActive && rOpt.mUnlit;
+    // A texture (`field_data["texture:png"]`) is embedded when the surface carries
+    // TEXCOORD_0: a buffer view after the accessors' data, one image, one texture.
+    bool has_uv = false;
+    for (const GltfNodeOut& node : out_nodes)
+        for (const GltfPrimOut& po : node.mPrims)
+            for (const auto& attr : po.mAttrs)
+                has_uv = has_uv || attr.first == "TEXCOORD_0";
+    const bool textured = has_uv && rMesh.HasFieldData(kGltfTextureKey) &&
+                          rMesh.FieldData(kGltfTextureKey).Size() > 0;
+    std::size_t texture_offset = 0, texture_length = 0;
+    if (textured) {
+        const NDArray& png = rMesh.FieldData(kGltfTextureKey);
+        texture_offset = bin.Size();
+        texture_length = png.Size();
+        bin.Raw(reinterpret_cast<const char*>(png.Data()), png.Size());
+    }
     if (unlit) {
         js.Key("extensionsUsed");
         js.BeginArray();
@@ -1314,12 +1334,19 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         js.BeginObject();
         js.Key("baseColorFactor");
         js.BeginArray();
-        const double base = color.mActive ? 1.0 : 0.8;
+        const double base = color.mActive || textured ? 1.0 : 0.8;
         js.Num(base);
         js.Num(base);
         js.Num(base);
         js.Num(1.0);
         js.EndArray();
+        if (textured) {
+            js.Key("baseColorTexture");
+            js.BeginObject();
+            js.Key("index");
+            js.Int(0);
+            js.EndObject();
+        }
         js.Key("metallicFactor");
         js.Num(0.0);
         js.Key("roughnessFactor");
@@ -1385,6 +1412,16 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
             js.Int(a.mTarget);
             js.EndObject();
         }
+        if (textured) {
+            js.BeginObject();
+            js.Key("buffer");
+            js.Int(0);
+            js.Key("byteOffset");
+            js.Int(static_cast<std::int64_t>(texture_offset));
+            js.Key("byteLength");
+            js.Int(static_cast<std::int64_t>(texture_length));
+            js.EndObject();
+        }
         js.EndArray();
 
         js.Key("buffers");
@@ -1398,6 +1435,31 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
         }
         js.EndObject();
         js.EndArray();
+        if (textured) {
+            js.Key("textures");
+            js.BeginArray();
+            js.BeginObject();
+            js.Key("sampler");
+            js.Int(0);
+            js.Key("source");
+            js.Int(0);
+            js.EndObject();
+            js.EndArray();
+            js.Key("images");
+            js.BeginArray();
+            js.BeginObject();
+            js.Key("bufferView");
+            js.Int(static_cast<std::int64_t>(accessors.size()));
+            js.Key("mimeType");
+            js.Str("image/png");
+            js.EndObject();
+            js.EndArray();
+            js.Key("samplers");
+            js.BeginArray();
+            js.BeginObject();
+            js.EndObject();
+            js.EndArray();
+        }
     }
     js.EndObject();
 

@@ -287,6 +287,7 @@ export default defineConfig({
           { text: "Untangling", link: "/untangle" },
           { text: "Geodesic distance (heat method)", link: "/geodesic" },
           { text: "UV parameterization", link: "/parameterize" },
+          { text: "Baking a texture", link: "/bake_texture" },
           { text: "Laplacian eigenmodes", link: "/eigenmodes" },
           { text: "Curved tessellation", link: "/tessellation" },
           { text: "Geometry guardrails", link: "/geometry_guardrails" },

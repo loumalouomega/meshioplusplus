@@ -3404,6 +3404,28 @@ def _register_operations(server: FastMCP) -> None:
         heat_iterations, poisson_iterations and converged."""
 
     @server.tool()
+    @_forward(_tools.tool_bake_texture)
+    def bake_texture(
+        input_path: str,
+        output_path: str,
+        array: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        width: int = 512,
+        height: int = 512,
+        cmap: str = "viridis",
+        vmin: Optional[float] = None,
+        vmax: Optional[float] = None,
+        component: Optional[int] = None,
+        image_path: Optional[str] = None,
+    ) -> dict:
+        """Bake a point or cell array into an RGBA texture through point_data uv
+        (run parameterize first): each 2-D cell drawn in texture space, the value
+        mapped through cmap over vmin..vmax. The mesh is written with the texture
+        (embedded in glTF, a .mtl/.png beside OBJ) and the PNG to image_path when
+        given. Reports vmin, vmax, covered_pixels and warnings."""
+
+    @server.tool()
     @_forward(_tools.tool_parameterize)
     def parameterize(
         input_path: str,

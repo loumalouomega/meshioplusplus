@@ -70,7 +70,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`nastran_op2`](./formats/nastran_op2.md) | `.op2` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#nastran-op2) |
 | [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — | [8/8 cells · data F](./conformance.md#netgen) |
 | [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#neuroglancer) |
-| [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#obj) |
+| [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — | [2/8 cells · no data · regions C](./conformance.md#obj) |
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#off) |
 | [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | ✓ | — | [4/8 cells · data PC · regions CPS](./conformance.md#openfoam) |
 | [`patran`](./formats/patran.md) | `.pat`, `.out` | ✓ | ✓ | — | [7/8 cells · no data · regions CP](./conformance.md#patran) |

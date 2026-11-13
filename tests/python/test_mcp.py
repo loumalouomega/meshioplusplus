@@ -575,6 +575,31 @@ def test_detect(mesh_file):
     }
 
 
+def test_bake_texture(tmp_path):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float)
+    src = tmp_path / "s.vtu"
+    meshioplusplus.write(
+        src,
+        meshioplusplus.Mesh(
+            pts,
+            [("triangle", np.array([[0, 1, 2]]))],
+            point_data={"uv": pts[:, :2], "h": np.array([0.0, 1.0, 2.0])},
+        ),
+    )
+    out = _dump(
+        _tools.tool_bake_texture(
+            str(src),
+            str(tmp_path / "t.glb"),
+            "h",
+            width=16,
+            height=16,
+            image_path=str(tmp_path / "t.png"),
+        )
+    )
+    assert out["covered_pixels"] > 0
+    assert (tmp_path / "t.png").read_bytes()[:4] == b"\x89PNG"
+
+
 def test_sniff_directory(tmp_path):
     case = tmp_path / "case"
     (case / "constant" / "polyMesh").mkdir(parents=True)

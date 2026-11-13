@@ -3,21 +3,64 @@ I/O for the Wavefront .obj file format, cf.
 <https://en.wikipedia.org/wiki/Wavefront_.obj_file>.
 """
 
+import os
+
 import numpy as np
 
 from .. import _provenance
 from .._exceptions import WriteError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._regions import Region
 
 
 def read(filename):
+    directory = (
+        os.path.dirname(os.fspath(filename))
+        if isinstance(filename, (str, os.PathLike))
+        else None
+    )
     with open_file(filename, "r") as f:
-        mesh = read_buffer(f)
+        mesh = read_buffer(f, directory)
     return mesh
 
 
-def read_buffer(f):
+def _read_materials(mesh, directory, libraries):
+    """The ``.mtl`` libraries' ``Kd`` per material and their first ``map_Kd`` image:
+    the twin of ``obj_read_materials``."""
+    have_texture = False
+    for lib in libraries:
+        path = os.path.join(directory, lib)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "rb") as fh:
+            text = fh.read().decode("utf-8", "replace")
+        current = ""
+        for line in text.splitlines():
+            line = line.strip()
+            tag, _, rest = line.partition(" ")
+            rest = rest.strip()
+            if tag == "newmtl":
+                current = rest
+            elif tag == "Kd" and current:
+                try:
+                    kd = [float(v) for v in rest.split()[:3]]
+                except ValueError:
+                    kd = []
+                if len(kd) == 3:
+                    mesh.field_data[f"obj:material:{current}:Kd"] = np.array(kd)
+            elif tag == "map_Kd" and not have_texture and rest:
+                image = os.path.join(directory, rest.split()[-1])
+                if not os.path.isfile(image):
+                    continue
+                with open(image, "rb") as fh:
+                    data = fh.read()
+                key = "texture:jpeg" if data[:2] == b"\xff\xd8" else "texture:png"
+                mesh.field_data[key] = np.frombuffer(data, np.uint8).copy()
+                have_texture = True
+
+
+def read_buffer(f, directory=None):
     points = []
     vertex_normals = []
     texture_coords = []
@@ -26,6 +69,9 @@ def read_buffer(f):
     face_vns = []
     face_group_ids = []
     face_group_id = -1
+    face_mats = []
+    material = -1
+    materials, mtllibs = [], []
     while True:
         line = f.readline()
 
@@ -60,17 +106,28 @@ def read_buffer(f):
                 face_vts.append([])
                 face_vns.append([])
                 face_group_ids.append([])
+                face_mats.append([])
 
             face_groups[-1].append(dat)
+            face_mats[-1].append(material)
             face_vts[-1].append(vts)
             face_vns[-1].append(vns)
             face_group_ids[-1].append(face_group_id)
+        elif split[0] in ("usemtl", "mtllib"):
+            name = strip[len(split[0]) :].strip()
+            if split[0] == "mtllib":
+                mtllibs.append(name)
+            else:
+                if name not in materials:
+                    materials.append(name)
+                material = materials.index(name)
         elif split[0] == "g":
             # new group
             face_groups.append([])
             face_vts.append([])
             face_vns.append([])
             face_group_ids.append([])
+            face_mats.append([])
             face_group_id += 1
         else:
             # who knows
@@ -81,6 +138,7 @@ def read_buffer(f):
     face_vts = [v for f, v in zip(face_groups, face_vts) if len(f) > 0]
     face_vns = [v for f, v in zip(face_groups, face_vns) if len(f) > 0]
     face_groups = [f for f in face_groups if len(f) > 0]
+    face_mats = [m for f, m in zip(face_groups, face_mats) if len(f) > 0]
     face_group_ids = [g for g in face_group_ids if len(g) > 0]
 
     points = np.array(points)
@@ -129,7 +187,21 @@ def read_buffer(f):
             cells.append(CellBlock("polygon", conn))
         cell_data["obj:group_ids"].append(gid)
 
-    return Mesh(points, cells, point_data=point_data, cell_data=cell_data)
+    flat = (
+        np.concatenate([np.asarray(m, dtype=np.int64) for m in face_mats])
+        if face_mats
+        else []
+    )
+    regions = [
+        Region(name, "cell", np.flatnonzero(np.asarray(flat) == k))
+        for k, name in enumerate(materials)
+    ]
+    mesh = Mesh(
+        points, cells, point_data=point_data, cell_data=cell_data, regions=regions
+    )
+    if directory is not None and mtllibs:
+        _read_materials(mesh, directory, mtllibs)
+    return mesh
 
 
 def _corner_index(token, slot):
@@ -223,8 +295,16 @@ def write(filename, mesh):
                 "Wavefront .obj files can only contain triangle or quad cells."
             )
 
+    face_material, names = _materials(mesh)
+    if names and isinstance(filename, (str, os.PathLike)):
+        _write_mtl(filename, mesh, names)
+    else:
+        names = []
     with open_file(filename, "w") as f:
         f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "# "))
+        if names:
+            stem = os.path.splitext(os.path.basename(os.fspath(filename)))[0]
+            f.write(f"mtllib {stem}.mtl\n")
         for p in mesh.points:
             f.write(f"v {p[0]} {p[1]} {p[2]}\n")
 
@@ -254,14 +334,75 @@ def write(filename, mesh):
             for vt in dat:
                 f.write(fmt.format(*vt))
 
+        face = 0
+        current = -1
         for cell_block in mesh.cells:
-            if with_uv:
-                for c in cell_block.data:
-                    f.write("f " + " ".join(f"{i}/{i}" for i in c + 1) + "\n")
-                continue
-            fmt = "f " + " ".join(["{}"] * cell_block.data.shape[1]) + "\n"
+            fmt = "f " + " ".join(["{}"] * np.shape(cell_block.data)[1]) + "\n"
             for c in cell_block.data:
-                f.write(fmt.format(*(c + 1)))
+                if (
+                    names
+                    and face_material[face] >= 0
+                    and face_material[face] != current
+                ):
+                    current = face_material[face]
+                    f.write(f"usemtl {names[current]}\n")
+                face += 1
+                if with_uv:
+                    f.write("f " + " ".join(f"{i}/{i}" for i in c + 1) + "\n")
+                else:
+                    f.write(fmt.format(*(c + 1)))
+
+
+def _materials(mesh):
+    """Each face's material (its first cell region; one more for faces in none when
+    there are materials or a texture) and the material names: the twin of
+    ``write_obj``'s."""
+    total = sum(len(b.data) for b in mesh.cells)
+    face_material = [-1] * total
+    names = []
+    for r in sorted(
+        (r for r in mesh.regions if r.kind == "cell"),
+        key=lambda r: (r.name, r.dim, r.tag),
+    ):
+        used = False
+        for c in np.asarray(r.entries, dtype=np.int64).reshape(-1):
+            if 0 <= c < total and face_material[c] < 0:
+                face_material[c] = len(names)
+                used = True
+        if used:
+            names.append(r.name)
+    png = mesh.field_data.get("texture:png")
+    textured = png is not None and np.asarray(png).size > 0
+    if (textured or names) and -1 in face_material:
+        face_material = [len(names) if m < 0 else m for m in face_material]
+        names.append("material0")
+    return face_material, names
+
+
+def _write_mtl(filename, mesh, names):
+    path = os.fspath(filename)
+    directory = os.path.dirname(path)
+    stem = os.path.splitext(os.path.basename(path))[0]
+    png = mesh.field_data.get("texture:png")
+    textured = png is not None and np.asarray(png).size > 0
+    lines = ["# meshio++\n"]
+    for name in names:
+        kd = mesh.field_data.get(f"obj:material:{name}:Kd")
+        kd = (
+            [1.0, 1.0, 1.0]
+            if kd is None or np.size(kd) != 3
+            else np.asarray(kd).tolist()
+        )
+        lines.append(f"newmtl {name}\nKd" + "".join(" %.17g" % v for v in kd) + "\n")
+        if textured:
+            lines.append(f"map_Kd {stem}.png\n")
+    with open(
+        os.path.join(directory, stem + ".mtl"), "w", encoding="utf-8", newline="\n"
+    ) as f:
+        f.write("".join(lines))
+    if textured:
+        with open(os.path.join(directory, stem + ".png"), "wb") as f:
+            f.write(np.asarray(png, dtype=np.uint8).tobytes())
 
 
 # NOTE: format registration now lives in meshioplusplus/obj/__init__.py, which wraps the

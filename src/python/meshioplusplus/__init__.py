@@ -124,6 +124,7 @@ if TYPE_CHECKING:
     from ._adapt_volume import adapt_volume
     from ._adjacency import adjacency, write_graph
     from ._agglomerate import agglomerate
+    from ._bake_texture import bake_texture
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
     from ._check_conformity import check_conformity
@@ -607,6 +608,7 @@ _LAZY_ATTRS = {
     "smooth": "_smooth",
     "sniff_format": "_sniff",
     "detect": "_sniff",
+    "bake_texture": "_bake_texture",
     "sobolev_deform": "_sobolev_deform",
     "split": "_split",
     "compute_stats": "_stats",
@@ -781,6 +783,7 @@ __all__ = [
     "colorize",
     "sniff_format",
     "detect",
+    "bake_texture",
     "reorder",
     "compute_bandwidth",
     "diff",

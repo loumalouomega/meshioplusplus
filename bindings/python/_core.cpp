@@ -226,6 +226,7 @@
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/operations/bake_texture.hpp"
 #include "meshioplusplus/operations/detect.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
@@ -7516,6 +7517,37 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("padding") = 0.02, py::arg("max_depth") = 8,
         py::arg("max_stretch") = 2.0);
+
+    m.def(
+        "bake_texture",
+        [](py::object pymesh, const std::string& array, std::int64_t width, std::int64_t height,
+           const std::string& cmap, std::optional<double> vmin, std::optional<double> vmax,
+           std::int64_t component) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::BakeTextureOptions options;
+            options.mArray = array;
+            options.mWidth = width;
+            options.mHeight = height;
+            options.mCmap = cmap;
+            options.mVMin = vmin;
+            options.mVMax = vmax;
+            options.mComponent = component;
+            meshioplusplus::BakeTextureResult r =
+                core_nogil([&] { return meshioplusplus::bake_texture(cpp, options); });
+            py::dict out;
+            out["image"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mImage));
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["vmin"] = r.mVMin;
+            out["vmax"] = r.mVMax;
+            out["covered_pixels"] = r.mCoveredPixels;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("width") = 512, py::arg("height") = 512,
+        py::arg("cmap") = "viridis", py::arg("vmin") = py::none(), py::arg("vmax") = py::none(),
+        py::arg("component") = -1);
 
     m.def(
         "hessian",

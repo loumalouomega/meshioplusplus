@@ -295,6 +295,12 @@ _VERBS = (
         "Surface distance from source points (heat method)",
     ),
     _Verb(
+        "bake-texture",
+        "_bake_texture",
+        "bake_texture_cmd",
+        "Bake a point or cell array into a texture through uv",
+    ),
+    _Verb(
         "parameterize",
         "_parameterize",
         "parameterize_cmd",

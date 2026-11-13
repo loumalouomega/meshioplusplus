@@ -16,12 +16,14 @@
 //
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <limits>
 #include <stdexcept>
@@ -36,6 +38,7 @@
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/obj_off.hpp"
+#include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/open_source.hpp"
@@ -53,6 +56,7 @@ struct FaceBlock {
     std::vector<std::int64_t> mVt;   // per corner, the 0-based `vt` index (-1 none)
     std::vector<std::int64_t> mVn;   // per corner, the 0-based `vn` index (-1 none)
     std::vector<std::int64_t> mGids;
+    std::vector<std::int64_t> mMats;  // per face, the `usemtl` index (-1 none)
     std::size_t mCount = 0;
 };
 
@@ -105,8 +109,7 @@ std::int64_t obj_stoll(std::string_view Token) {
     if (i >= Token.size() || Token[i] < '0' || Token[i] > '9')
         throw std::invalid_argument("stoll");
     std::uint64_t magnitude = 0;
-    const auto parsed =
-        std::from_chars(Token.data() + i, Token.data() + Token.size(), magnitude);
+    const auto parsed = std::from_chars(Token.data() + i, Token.data() + Token.size(), magnitude);
     constexpr auto maximum = static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max());
     if (parsed.ec == std::errc::result_out_of_range || magnitude > maximum + (negative ? 1u : 0u))
         throw std::out_of_range("stoll");
@@ -122,6 +125,69 @@ void obj_read_numbers(std::string_view Rest, std::vector<double>& rOut) {
         rOut.push_back(x);
 }
 
+/// The `.mtl` libraries beside @p rObjPath: each material's `Kd` as
+/// `field_data["obj:material:<name>:Kd"]`, and the first `map_Kd` image's bytes as
+/// `texture:png` (`texture:jpeg` for a JPEG). A missing library or image is skipped.
+void obj_read_materials(Mesh& rMesh, const std::string& rObjPath,
+                        const std::vector<std::string>& rLibraries) {
+    const std::filesystem::path dir = std::filesystem::path(rObjPath).parent_path();
+    bool have_texture = false;
+    for (const std::string& lib : rLibraries) {
+        std::error_code ec;
+        const std::filesystem::path path = dir / lib;
+        if (!std::filesystem::is_regular_file(path, ec))
+            continue;
+        const detail::FileSource source = detail::open_source(path.string(), "");
+        detail::TextCursor cursor(source.View());
+        std::string current;
+        while (!cursor.AtEnd()) {
+            std::string_view line = cursor.Line();
+            std::size_t b = 0, e = line.size();
+            while (b < e && detail::text_is_blank(line[b]))
+                ++b;
+            while (e > b && detail::text_is_blank(line[e - 1]))
+                --e;
+            line = line.substr(b, e - b);
+            std::size_t t = 0;
+            while (t < line.size() && !detail::text_is_blank(line[t]))
+                ++t;
+            const std::string_view tag = line.substr(0, t);
+            std::string_view rest = line.substr(t);
+            while (!rest.empty() && detail::text_is_blank(rest.front()))
+                rest.remove_prefix(1);
+            if (tag == "newmtl") {
+                current = std::string(rest);
+            } else if (tag == "Kd" && !current.empty()) {
+                std::vector<double> kd;
+                obj_read_numbers(rest, kd);
+                if (kd.size() >= 3) {
+                    NDArray a(DType::Float64, {3});
+                    std::copy_n(kd.begin(), 3, a.As<double>());
+                    rMesh.AddFieldData("obj:material:" + current + ":Kd", std::move(a));
+                }
+            } else if (tag == "map_Kd" && !have_texture && !rest.empty()) {
+                // The file name is the last token (options such as -s come first).
+                std::size_t s = rest.size();
+                while (s > 0 && !detail::text_is_blank(rest[s - 1]))
+                    --s;
+                const std::filesystem::path image = dir / std::string(rest.substr(s));
+                if (!std::filesystem::is_regular_file(image, ec))
+                    continue;
+                const detail::FileSource img = detail::open_source(image.string(), "");
+                const std::string_view bytes = img.View();
+                const bool jpeg = bytes.size() >= 2 &&
+                                  static_cast<unsigned char>(bytes[0]) == 0xFF &&
+                                  static_cast<unsigned char>(bytes[1]) == 0xD8;
+                NDArray a(DType::UInt8, {bytes.size()});
+                if (!bytes.empty())
+                    std::memcpy(a.Data(), bytes.data(), bytes.size());
+                rMesh.AddFieldData(jpeg ? "texture:jpeg" : "texture:png", std::move(a));
+                have_texture = true;
+            }
+        }
+    }
+}
+
 }  // namespace
 
 Mesh read_obj(const std::string& rPath) {
@@ -132,6 +198,8 @@ Mesh read_obj(const std::string& rPath) {
     AttributeRows vn, vt;
     std::vector<FaceBlock> blocks;
     std::int64_t group_id = -1;
+    std::int64_t material = -1;
+    std::vector<std::string> materials, mtllibs;
     std::vector<double> row;
     std::vector<std::int64_t> dat;
     std::vector<std::int64_t> dat_vt;
@@ -224,7 +292,21 @@ Mesh read_obj(const std::string& rPath) {
             cur.mVt.insert(cur.mVt.end(), dat_vt.begin(), dat_vt.end());
             cur.mVn.insert(cur.mVn.end(), dat_vn.begin(), dat_vn.end());
             cur.mGids.push_back(group_id);
+            cur.mMats.push_back(material);
             ++cur.mCount;
+        } else if (tag == "usemtl" || tag == "mtllib") {
+            std::size_t a = 0;
+            while (a < rest.size() && detail::text_is_blank(rest[a]))
+                ++a;
+            const std::string name(rest.substr(a));
+            if (tag == "mtllib") {
+                mtllibs.push_back(name);
+            } else {
+                const auto it = std::find(materials.begin(), materials.end(), name);
+                material = static_cast<std::int64_t>(it - materials.begin());
+                if (it == materials.end())
+                    materials.push_back(name);
+            }
         } else if (tag == "g") {
             FaceBlock fb;
             blocks.push_back(std::move(fb));
@@ -363,6 +445,19 @@ Mesh read_obj(const std::string& rPath) {
         }
         mesh.AddCellData("obj:group_ids", std::move(gid_blocks));
     }
+    // `usemtl` groups as cell regions; the `.mtl` libraries' Kd and first map_Kd.
+    std::vector<std::vector<std::int64_t>> members(materials.size());
+    std::int64_t cell = 0;
+    for (const auto& fb : nonempty)
+        for (std::size_t k = 0; k < fb.mCount; ++k, ++cell)
+            if (fb.mMats[k] >= 0)
+                members[static_cast<std::size_t>(fb.mMats[k])].push_back(cell);
+    for (std::size_t m = 0; m < materials.size(); ++m) {
+        NDArray ids(DType::Int64, {members[m].size()});
+        std::copy(members[m].begin(), members[m].end(), ids.As<std::int64_t>());
+        mesh.AddRegion(Region(materials[m], RegionKind::Cell, std::move(ids)));
+    }
+    obj_read_materials(mesh, rPath, mtllibs);
     return mesh;
 }
 
@@ -382,6 +477,83 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
     const std::size_t dim = rMesh.PointDim();
 
     os << detail::provenance_render_lines(detail::SlotTier::Block, "# ");
+    // Materials: each face's first cell region is its `usemtl`, and a texture
+    // (`field_data["texture:png"]`) is every material's `map_Kd`, in a `.mtl` and
+    // a `.png` beside the file.
+    const std::size_t total_cells = [&] {
+        std::size_t n = 0;
+        for (const auto cb : rMesh.CellRange())
+            n += cb.NumCells();
+        return n;
+    }();
+    std::vector<int> face_material(total_cells, -1);
+    std::vector<std::string> material_names;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Cell)
+            continue;
+        bool used = false;
+        for (std::size_t k = 0; k < r.mEntries.Size(); ++k) {
+            const std::int64_t c = detail::read_int(r.mEntries, k);
+            if (c >= 0 && static_cast<std::size_t>(c) < total_cells &&
+                face_material[static_cast<std::size_t>(c)] < 0) {
+                face_material[static_cast<std::size_t>(c)] =
+                    static_cast<int>(material_names.size());
+                used = true;
+            }
+        }
+        if (used)
+            material_names.push_back(r.mName);
+    }
+    const bool textured =
+        rMesh.HasFieldData("texture:png") && rMesh.FieldData("texture:png").Size() > 0;
+    // A face in no region would inherit the previous `usemtl`: give those faces one
+    // more material.
+    if ((textured || !material_names.empty()) &&
+        std::find(face_material.begin(), face_material.end(), -1) != face_material.end()) {
+        for (int& m : face_material)
+            if (m < 0)
+                m = static_cast<int>(material_names.size());
+        material_names.push_back("material0");
+    }
+    const bool with_materials = !material_names.empty();
+    if (with_materials) {
+        const std::filesystem::path path(rPath);
+        const std::string stem = path.stem().string();
+        const std::filesystem::path dir = path.parent_path();
+        std::string mtl = "# meshio++\n";
+        for (const std::string& name : material_names) {
+            mtl += "newmtl " + name + "\nKd";
+            const std::string key = "obj:material:" + name + ":Kd";
+            for (std::size_t c = 0; c < 3; ++c) {
+                const double v = rMesh.HasFieldData(key) && rMesh.FieldData(key).Size() == 3
+                                     ? detail::read_double(rMesh.FieldData(key), c)
+                                     : 1.0;
+                char buf[40];
+                detail::snprintf_c(buf, sizeof buf, " %.17g", v);
+                mtl += buf;
+            }
+            mtl += "\n";
+            if (textured)
+                mtl += "map_Kd " + stem + ".png\n";
+        }
+        auto ms = detail::make_classic_ofstream((dir / (stem + ".mtl")).string(), std::ios::binary);
+        if (!ms)
+            throw WriteError("Could not open file for writing: " +
+                             (dir / (stem + ".mtl")).string());
+        ms << mtl;
+        if (textured) {
+            const NDArray& png = rMesh.FieldData("texture:png");
+            auto ps =
+                detail::make_classic_ofstream((dir / (stem + ".png")).string(), std::ios::binary);
+            if (!ps)
+                throw WriteError("Could not open file for writing: " +
+                                 (dir / (stem + ".png")).string());
+            ps.write(reinterpret_cast<const char*>(png.Data()),
+                     static_cast<std::streamsize>(png.Size()));
+        }
+        os << "mtllib " << stem << ".mtl\n";
+    }
     // One `CNumber::Append` per value (row_writer.hpp: `to_chars` for the
     // plain precisions, roadmap 5.7.1) into a line, written whole; every value
     // is formatted in the C convention, whatever the process locale.
@@ -443,11 +615,19 @@ void write_obj(const std::string& rPath, const Mesh& rMesh) {
         write_pd("obj:vt", "vt");
     }
 
+    std::size_t face = 0;
+    int current_material = -1;
     for (const auto cb : rMesh.CellRange()) {
         const NDArray& conn_array = cb.Conn();
         std::size_t k = conn_array.Shape().size() >= 2 ? conn_array.Shape()[1] : 1;
         const detail::Int64View conn(conn_array);
-        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+        for (std::size_t r = 0; r < cb.NumCells(); ++r, ++face) {
+            if (with_materials && face_material[face] >= 0 &&
+                face_material[face] != current_material) {
+                current_material = face_material[face];
+                os << "usemtl " << material_names[static_cast<std::size_t>(current_material)]
+                   << '\n';
+            }
             os << 'f';
             for (std::size_t j = 0; j < k; ++j) {
                 os << ' ' << (conn[r * k + j] + 1);

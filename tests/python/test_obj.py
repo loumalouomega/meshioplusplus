@@ -85,3 +85,41 @@ def test_one_normal_per_vertex_is_unchanged(tmp_path):
     assert len(mesh.points) == 3
     assert "obj:parent_point" not in mesh.point_data
     assert mesh.point_data["obj:vn"].shape == (3, 3)
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_materials_and_a_texture_round_trip(tmp_path, engine, monkeypatch):
+    from meshioplusplus import _fallback, _png
+    from meshioplusplus._regions import Region
+    from meshioplusplus.obj import _obj
+
+    image = np.full((2, 2, 4), 200, dtype=np.uint8)
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]], dtype=float),
+        [("triangle", np.array([[0, 1, 2], [0, 2, 3]]))],
+        point_data={"uv": np.array([[0, 0], [1, 0], [1, 1], [0, 1]], dtype=float)},
+        field_data={
+            "texture:png": np.frombuffer(_png.encode(image), np.uint8),
+            "obj:material:red:Kd": np.array([1.0, 0.0, 0.0]),
+        },
+        regions=[Region("red", "cell", [0])],
+    )
+    path = tmp_path / "part.obj"
+    if engine == "core":
+        monkeypatch.setattr(_fallback, "_strict", True)
+        meshioplusplus.obj.write(path, mesh)
+    else:
+        _obj.write(path, mesh)
+    text = path.read_text()
+    assert (
+        "mtllib part.mtl" in text
+        and "usemtl red" in text
+        and "usemtl material0" in text
+    )
+    assert (tmp_path / "part.png").read_bytes() == _png.encode(image)
+    for read in (meshioplusplus.obj.read, _obj.read):
+        back = read(path)
+        regions = {r.name: np.asarray(r.entries).tolist() for r in back.regions}
+        assert regions == {"red": [0], "material0": [1]}
+        assert bytes(back.field_data["texture:png"]) == _png.encode(image)
+        assert np.allclose(back.field_data["obj:material:red:Kd"], [1, 0, 0])

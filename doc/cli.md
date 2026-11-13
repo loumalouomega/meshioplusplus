@@ -186,6 +186,16 @@ The exit codes are unchanged by `--json`.
 
 ---
 
+## meshioplusplus bake-texture
+
+Bake a point or cell array into a texture through the mesh's `uv` ([bake_texture](./bake_texture.md)):
+
+```sh
+meshioplusplus bake-texture part_uv.vtu part.glb --array height --width 1024 --height 1024 --cmap turbo --vmin 0 --vmax 10 --image part.png
+```
+
+`--component` picks one component of a vector array (the magnitude otherwise). The output mesh carries the texture (glTF embeds it, OBJ writes a `.mtl` and `.png` beside it); `--image` also writes the PNG. `--json` prints `output`, `vmin`, `vmax` and `covered_pixels`.
+
 ## meshioplusplus detect
 
 Rank every format a file could be (roadmap 2.4.9):
