@@ -42,6 +42,8 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [COMSOL](https://www.comsol.com) mesh (`.mphtxt` text and `.mphbin` binary; Selections as named regions, COMSOL's own node order),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [DXF](https://loumalouomega.github.io/meshioplusplus/formats/dxf) (`.dxf`; ASCII R2000: a line mesh as `LINE`s and a `fit_curves` sketch as `LINE`, `ARC` and `CIRCLE` entities, read back from `LINE`, `ARC`, `CIRCLE`, `LWPOLYLINE` and `SPLINE`),
+> [ADCIRC](https://loumalouomega.github.io/meshioplusplus/formats/adcirc) (`fort.14` grids with their boundaries, `fort.63`/`fort.64` results as steps),
+> [TELEMAC Selafin](https://loumalouomega.github.io/meshioplusplus/formats/selafin) (`.slf`; single or double precision, 2-D and 3-D, steps),
 > [UGRID NetCDF](https://loumalouomega.github.io/meshioplusplus/formats/ugrid_nc) (`.nc`; the UGRID conventions Delft3D-FM, SCHISM and xugrid write: mixed polygons, edges, data by location, time steps),
 > [PLOT3D](https://loumalouomega.github.io/meshioplusplus/formats/plot3d) (`.p3d`, `.x`, `.g`; multi-block structured grids with `.q` solutions and `.f` function files, the ASCII, Fortran-unformatted or raw variant inferred from the file's size),
 > [Elmer](https://www.elmerfem.org) mesh directory (`mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names`, text or ElmerGrid's binary; bodies and boundaries as named regions, ElmerGrid partitions merged, `partition:part` written as `partitioning.N`, recognised by content),

@@ -15872,6 +15872,65 @@ private:
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/abaqus_fil.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/adcirc.hpp =====
+/**
+ * @file formats/adcirc.hpp
+ * @brief ADCIRC `fort.14` grids, with `fort.63`/`fort.64` ASCII results as steps
+ * (roadmap 2.4.3.3).
+ *
+ * `fort.14`: a title, `NE NP`, `NP` lines `id x y depth`, `NE` lines
+ * `id 3 n1 n2 n3`, then the open boundaries (`NOPE`, `NETA`, per boundary
+ * `NVDLL [IBTYPEE]` and its node ids) and the land boundaries (`NBOU`, `NVEL`, per
+ * boundary `NVELL IBTYPE` and its nodes; the barrier columns after a node are
+ * skipped). Text after the numbers on a line (ADCIRC's `! comment` or `= NE NP`
+ * labels) is ignored. The grid becomes points `(x, y, 0)` with `depth` point data,
+ * one triangle block, and point regions `open_boundary_<k>` / `land_boundary_<k>`
+ * whose tag is the boundary type. The title is `field_data["adcirc:title"]` (bytes).
+ *
+ * Results: `fort.63` (elevation, `zeta`) and `fort.64` (depth-averaged velocity,
+ * `velocity`, two components) beside a `fort.14` are read automatically, or any
+ * `fort.NN` through `AdcircReadOptions::mResults` (`fort.73` `pressure`, `fort.74`
+ * `wind_velocity`, others `adcirc:fort.NN`); full and sparse (`TIME IT NNONDEF
+ * DEFAULT`) record layouts. `mTimeStep` (and `ReadOptions::mTimeStep` through the
+ * registry) picks the dataset; its time is `field_data["meshio:time"]`.
+ *
+ * The writer emits `fort.14` from a triangle mesh: `depth` point data (0 when
+ * absent), the `open_boundary_*` and `land_boundary_*` point regions (a land type
+ * whose records carry barrier columns is refused by name). Results are not written.
+ * The Python twin is `meshioplusplus.adcirc`.
+ * @see doc/formats/adcirc.md
+ */
+
+// System includes
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/** @brief What to read beside an ADCIRC grid. */
+struct AdcircReadOptions {
+    std::vector<std::string> mResults;  ///< result files; empty reads the fort.63/64 siblings
+    bool mSiblings = true;              ///< read fort.63/fort.64 beside a file named fort.14
+    long long mTimeStep = 0;            ///< 0 the first dataset, negatives from the end
+};
+
+/** @brief Read an ADCIRC grid and one dataset of its results. */
+MESHIOPLUSPLUS_API Mesh read_adcirc(const std::string& rPath, const AdcircReadOptions& rOptions);
+
+/** @brief Read an ADCIRC grid through the registry's options (the time step). */
+MESHIOPLUSPLUS_API Mesh read_adcirc(const std::string& rPath, const ReadOptions& rOptions = {});
+
+/** @brief The summary, with every dataset's time. */
+MESHIOPLUSPLUS_API MeshMetadata read_adcirc_metadata(const std::string& rPath,
+                                                     const ReadOptions& rOptions);
+
+/** @brief Write a triangle mesh as an ADCIRC `fort.14` grid. */
+MESHIOPLUSPLUS_API void write_adcirc(const std::string& rPath, const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/adcirc.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/ansys.hpp =====
 /**
  * @file ansys.hpp
@@ -22739,6 +22798,53 @@ private:
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/radioss_th.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/formats/selafin.hpp =====
+/**
+ * @file formats/selafin.hpp
+ * @brief TELEMAC Selafin (`.slf`) results (roadmap 2.4.3.4).
+ *
+ * Big-endian Fortran sequential records (`detail/fortran_records.hpp`): an
+ * 80-character title (its last eight `SERAFIN ` or `SERAFIND`), `NBV1 NBV2`, one
+ * 32-character name-and-unit record per variable, `IPARAM` (ten integers; a date
+ * record follows when `IPARAM[9] == 1`), `NELEM NPOIN NDP 1`, the 1-based `IKLE`
+ * connectivity, `IPOBO` and the `X` and `Y` coordinates; then per step a time
+ * record and one record of `NPOIN` values per variable. Single or double precision
+ * is the size of the `X` record.
+ *
+ * `NDP` 3 is a triangle block, 4 a quad block (a tetra block when `IPARAM[6]`, the
+ * plane count, exceeds 1), 6 a wedge block (TELEMAC-3D prisms). Each variable is
+ * point data under its name (trailing blanks trimmed), its unit in
+ * `field_data["selafin:unit:<name>"]` (bytes); in a 3-D file the `ELEVATION Z`
+ * (or `COTE Z`) variable of the chosen step is also the points' z. `IPOBO` is the
+ * Int32 point data `selafin:ipobo`, the title `field_data["selafin:title"]`.
+ * `ReadOptions::mTimeStep` picks the step, its time `field_data["meshio:time"]`.
+ *
+ * The writer emits a 2-D double-precision file (`SERAFIND`) with one step: one
+ * triangle or quad block, the floating-point point data as variables (names cut
+ * to 16 characters), `selafin:ipobo` when present, the time from `meshio:time`
+ * (0 otherwise). The Python twin is `meshioplusplus.selafin`.
+ * @see doc/formats/selafin.md
+ */
+
+// System includes
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/** @brief Read a Selafin file's mesh and one time step. */
+MESHIOPLUSPLUS_API Mesh read_selafin(const std::string& rPath, const ReadOptions& rOptions = {});
+
+/** @brief The summary, with every step's time. */
+MESHIOPLUSPLUS_API MeshMetadata read_selafin_metadata(const std::string& rPath,
+                                                      const ReadOptions& rOptions);
+
+/** @brief Write a 2-D triangle or quad mesh as a one-step double-precision Selafin file. */
+MESHIOPLUSPLUS_API void write_selafin(const std::string& rPath, const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/formats/selafin.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/step.hpp =====
 /**
  * @file formats/step.hpp
@@ -132706,6 +132812,460 @@ void AbaqusFilSeriesWriter::Finalize() {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/abaqus_fil.cpp =====
+// ===== begin src/cpp/src/formats/adcirc.cpp =====
+#include <algorithm>
+#include <cctype>
+#include <charconv>
+#include <cstdint>
+#include <filesystem>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kAdcBoundaryPrefix = "adcirc:boundary:";
+
+/// A file's lines, read one at a time.
+struct AdcLines {
+    std::vector<std::string> mLines;
+    std::size_t mAt = 0;
+    std::string mPath;
+
+    explicit AdcLines(const std::string& rPath) : mPath(rPath) {
+        const detail::FileSource source =
+            detail::open_source(rPath, "meshio++: adcirc: could not open file: " + rPath);
+        const std::string_view data = source.View();
+        std::size_t b = 0;
+        while (b < data.size()) {
+            std::size_t e = data.find('\n', b);
+            if (e == std::string_view::npos)
+                e = data.size();
+            std::string line(data.substr(b, e - b));
+            if (!line.empty() && line.back() == '\r')
+                line.pop_back();
+            mLines.push_back(std::move(line));
+            b = e + 1;
+        }
+    }
+
+    bool Eof() const { return mAt >= mLines.size(); }
+
+    const std::string& Next(const char* pWhat) {
+        if (mAt >= mLines.size())
+            throw ReadError("meshio++: adcirc: '" + mPath + "' ends before its " + pWhat);
+        return mLines[mAt++];
+    }
+};
+
+/// The leading numeric tokens of a line (ADCIRC puts labels and `!` comments after
+/// the numbers).
+std::vector<std::string> adc_numbers(const std::string& rLine) {
+    std::vector<std::string> out;
+    std::size_t i = 0;
+    while (i < rLine.size()) {
+        while (i < rLine.size() && (rLine[i] == ' ' || rLine[i] == '\t' || rLine[i] == ','))
+            ++i;
+        const std::size_t b = i;
+        while (i < rLine.size() && rLine[i] != ' ' && rLine[i] != '\t' && rLine[i] != ',')
+            ++i;
+        if (i == b)
+            break;
+        std::string tok = rLine.substr(b, i - b);
+        const char c = tok[0];
+        if (!(std::isdigit(static_cast<unsigned char>(c)) || c == '-' || c == '+' || c == '.'))
+            break;
+        out.push_back(std::move(tok));
+    }
+    return out;
+}
+
+std::vector<std::string> adc_need(AdcLines& rIn, const char* pWhat, std::size_t Count) {
+    std::vector<std::string> t = adc_numbers(rIn.Next(pWhat));
+    if (t.size() < Count)
+        throw ReadError(std::string("meshio++: adcirc: ") + pWhat + " needs " +
+                        std::to_string(Count) + " numbers");
+    return t;
+}
+
+long long adc_int(const std::string& rTok) {
+    long long v = 0;
+    const auto [p, ec] = std::from_chars(rTok.data(), rTok.data() + rTok.size(), v);
+    if (ec != std::errc() || p != rTok.data() + rTok.size()) {
+        // Some writers print integers as reals ("3.0").
+        const char* end = nullptr;
+        const double d = detail::parse_double(rTok.c_str(), end);
+        if (end == rTok.c_str())
+            throw ReadError("meshio++: adcirc: '" + rTok + "' is not an integer");
+        return detail::checked_integer<long long>(d, "adcirc");
+    }
+    return v;
+}
+
+double adc_real(const std::string& rTok) {
+    std::string t = rTok;
+    for (char& c : t)
+        if (c == 'd' || c == 'D')
+            c = 'e';
+    const char* end = nullptr;
+    const double v = detail::parse_double(t.c_str(), end);
+    if (end == t.c_str())
+        throw ReadError("meshio++: adcirc: '" + rTok + "' is not a number");
+    return v;
+}
+
+/// Land boundary types whose node records carry barrier columns (heights,
+/// coefficients, connected nodes): read past them, never written.
+bool adc_is_barrier(long long Type) {
+    const long long t = Type % 10;
+    return t == 3 || t == 4 || t == 5;
+}
+
+/// The result variable a `fort.NN` file holds.
+std::string adc_result_name(const std::string& rPath) {
+    const std::string base = std::filesystem::path(rPath).filename().string();
+    if (base == "fort.63")
+        return "zeta";
+    if (base == "fort.64")
+        return "velocity";
+    if (base == "fort.73")
+        return "pressure";
+    if (base == "fort.74")
+        return "wind_velocity";
+    return "adcirc:" + base;
+}
+
+struct AdcResult {
+    std::string mName;
+    std::size_t mWidth = 1;
+    std::vector<double> mTimes;
+    std::vector<std::size_t> mStarts;  ///< the line of each dataset's header
+};
+
+/// A result file's header and the position of every dataset.
+AdcResult adc_scan_result(AdcLines& rIn, std::size_t NumPoints) {
+    AdcResult r;
+    r.mName = adc_result_name(rIn.mPath);
+    rIn.Next("title");
+    const auto head = adc_need(rIn, "dataset header (NDSETS NP DT NSPOOL IRTYPE)", 5);
+    const long long nsets = adc_int(head[0]);
+    if (static_cast<std::size_t>(adc_int(head[1])) != NumPoints)
+        throw ReadError("meshio++: adcirc: '" + rIn.mPath + "' has " + head[1] +
+                        " nodes but the grid has " + std::to_string(NumPoints));
+    const long long irtype = adc_int(head[4]);
+    if (irtype < 1 || irtype > 3)
+        throw ReadError("meshio++: adcirc: '" + rIn.mPath + "' has record type " + head[4]);
+    r.mWidth = static_cast<std::size_t>(irtype);
+    // NDSETS can be a placeholder (-1 or larger than written): walk what is there.
+    (void)nsets;
+    while (!rIn.Eof()) {
+        const std::string& line = rIn.Next("dataset");
+        const auto t = adc_numbers(line);
+        if (t.empty())
+            continue;
+        if (t.size() < 2)
+            throw ReadError("meshio++: adcirc: a dataset header needs TIME IT");
+        r.mStarts.push_back(rIn.mAt - 1);
+        r.mTimes.push_back(adc_real(t[0]));
+        const std::size_t rows =
+            t.size() >= 4 ? static_cast<std::size_t>(adc_int(t[2])) : NumPoints;
+        if (rows > NumPoints)
+            throw ReadError("meshio++: adcirc: a sparse dataset lists more nodes than the grid");
+        rIn.mAt += rows;
+    }
+    return r;
+}
+
+/// Dataset @p K of a scanned result, as a `(NP[, width])` array.
+NDArray adc_read_dataset(AdcLines& rIn, const AdcResult& rR, std::size_t K,
+                         const std::unordered_map<long long, std::size_t>& rIndex,
+                         std::size_t NumPoints) {
+    rIn.mAt = rR.mStarts[K];
+    const auto t = adc_numbers(rIn.Next("dataset header"));
+    const bool sparse = t.size() >= 4;
+    const std::size_t rows = sparse ? static_cast<std::size_t>(adc_int(t[2])) : NumPoints;
+    const double fill = sparse ? adc_real(t[3]) : 0.0;
+    NDArray out(DType::Float64, rR.mWidth == 1 ? std::vector<std::size_t>{NumPoints}
+                                               : std::vector<std::size_t>{NumPoints, rR.mWidth});
+    std::fill_n(out.As<double>(), out.Size(), fill);
+    for (std::size_t r = 0; r < rows; ++r) {
+        const auto v = adc_need(rIn, "dataset value", 1 + rR.mWidth);
+        const auto it = rIndex.find(adc_int(v[0]));
+        if (it == rIndex.end())
+            throw ReadError("meshio++: adcirc: a dataset names node " + v[0] +
+                            ", which the grid does not have");
+        for (std::size_t c = 0; c < rR.mWidth; ++c)
+            out.As<double>()[it->second * rR.mWidth + c] = adc_real(v[1 + c]);
+    }
+    return out;
+}
+
+std::vector<std::string> adc_result_paths(const std::string& rPath,
+                                          const AdcircReadOptions& rOptions) {
+    if (!rOptions.mResults.empty())
+        return rOptions.mResults;
+    std::vector<std::string> out;
+    const std::filesystem::path p(rPath);
+    if (!rOptions.mSiblings || p.filename() != "fort.14")
+        return out;
+    for (const char* name : {"fort.63", "fort.64"}) {
+        const auto sib = p.parent_path() / name;
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(sib, ec))
+            out.push_back(sib.string());
+    }
+    return out;
+}
+
+/// The grid: points, depth, triangles, boundaries; @p rIndex maps ids to rows.
+Mesh adc_read_grid(const std::string& rPath, std::unordered_map<long long, std::size_t>& rIndex) {
+    AdcLines in(rPath);
+    const std::string title = in.Next("title");
+    const auto counts = adc_need(in, "element and node counts (NE NP)", 2);
+    const std::size_t limit = in.mLines.size();
+    const std::size_t ne = detail::checked_count(adc_int(counts[0]), limit, "adcirc", "element");
+    const std::size_t np = detail::checked_count(adc_int(counts[1]), limit, "adcirc", "node");
+    NDArray pts(DType::Float64, {np, 3});
+    NDArray depth(DType::Float64, {np});
+    for (std::size_t i = 0; i < np; ++i) {
+        const auto t = adc_need(in, "node", 4);
+        if (!rIndex.emplace(adc_int(t[0]), i).second)
+            throw ReadError("meshio++: adcirc: duplicate node id " + t[0]);
+        pts.As<double>()[i * 3] = adc_real(t[1]);
+        pts.As<double>()[i * 3 + 1] = adc_real(t[2]);
+        pts.As<double>()[i * 3 + 2] = 0.0;
+        depth.As<double>()[i] = adc_real(t[3]);
+    }
+    const auto node = [&](const std::string& rTok) {
+        const auto it = rIndex.find(adc_int(rTok));
+        if (it == rIndex.end())
+            throw ReadError("meshio++: adcirc: node " + rTok + " is not in the grid");
+        return static_cast<std::int64_t>(it->second);
+    };
+    NDArray tri(DType::Int64, {ne, 3});
+    for (std::size_t e = 0; e < ne; ++e) {
+        const auto t = adc_need(in, "element", 5);
+        if (adc_int(t[1]) != 3)
+            throw ReadError("meshio++: adcirc: element " + t[0] + " has " + t[1] +
+                            " nodes; ADCIRC grids are triangles");
+        for (std::size_t k = 0; k < 3; ++k)
+            tri.As<std::int64_t>()[e * 3 + k] = node(t[2 + k]);
+    }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    if (ne > 0)
+        mesh.AddCellBlock("triangle", std::move(tri));
+    mesh.AddPointData("depth", std::move(depth));
+    NDArray tbytes(DType::UInt8, {title.size()});
+    std::copy(title.begin(), title.end(), reinterpret_cast<char*>(tbytes.Data()));
+    mesh.AddFieldData("adcirc:title", std::move(tbytes));
+
+    // Boundaries are optional: a grid can end after its elements.
+    const auto skip_blank = [&] {
+        while (!in.Eof() && adc_numbers(in.mLines[in.mAt]).empty())
+            ++in.mAt;
+    };
+    skip_blank();
+    if (in.Eof())
+        return mesh;
+    const auto read_strings = [&](const char* pKind, bool Open) {
+        const std::size_t count = detail::checked_count(
+            adc_int(adc_need(in, Open ? "NOPE" : "NBOU", 1)[0]), limit, "adcirc", "boundary");
+        adc_need(in, Open ? "NETA" : "NVEL", 1);
+        for (std::size_t k = 0; k < count; ++k) {
+            const auto h = adc_need(in, "boundary header", 1);
+            const std::size_t n = detail::checked_count(adc_int(h[0]), limit, "adcirc", "node");
+            const long long type = h.size() > 1 ? adc_int(h[1]) : 0;
+            NDArray ids(DType::Int64, {n});
+            for (std::size_t r = 0; r < n; ++r)
+                ids.As<std::int64_t>()[r] = node(adc_need(in, "boundary node", 1)[0]);
+            const std::string name = std::string(pKind) + "_" + std::to_string(k);
+            // A region's entries are a sorted set; the string's order rides beside it.
+            mesh.AddFieldData(std::string(kAdcBoundaryPrefix) + name, ids);
+            mesh.AddRegion(Region(name, RegionKind::Point, -1, type, std::move(ids)));
+        }
+    };
+    read_strings("open_boundary", true);
+    skip_blank();
+    if (!in.Eof())
+        read_strings("land_boundary", false);
+    return mesh;
+}
+
+}  // namespace
+
+Mesh read_adcirc(const std::string& rPath, const AdcircReadOptions& rOptions) {
+    std::unordered_map<long long, std::size_t> index;
+    Mesh mesh = adc_read_grid(rPath, index);
+    const std::size_t np = mesh.NumPoints();
+    const std::vector<std::string> paths = adc_result_paths(rPath, rOptions);
+    std::vector<double> times;
+    bool first = true;
+    std::size_t step = 0;
+    for (const std::string& path : paths) {
+        AdcLines in(path);
+        const AdcResult r = adc_scan_result(in, np);
+        if (first) {
+            times = r.mTimes;
+            ReadOptions o;
+            o.mTimeStep = rOptions.mTimeStep;
+            step = o.ResolveTimeStep(times.size());
+            first = false;
+        } else if (r.mTimes.size() != times.size()) {
+            throw ReadError("meshio++: adcirc: '" + path + "' has " +
+                            std::to_string(r.mTimes.size()) + " datasets but '" + paths.front() +
+                            "' has " + std::to_string(times.size()));
+        }
+        if (r.mTimes.empty())
+            continue;
+        mesh.AddPointData(r.mName, adc_read_dataset(in, r, step, index, np));
+    }
+    if (!times.empty()) {
+        NDArray t(DType::Float64, {1});
+        t.As<double>()[0] = times[step];
+        mesh.AddFieldData("meshio:time", std::move(t));
+    }
+    return mesh;
+}
+
+Mesh read_adcirc(const std::string& rPath, const ReadOptions& rOptions) {
+    AdcircReadOptions o;
+    o.mTimeStep = rOptions.mTimeStep;
+    return read_adcirc(rPath, o);
+}
+
+MeshMetadata read_adcirc_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    MeshMetadata meta = metadata_from_mesh(read_adcirc(rPath, rOptions));
+    meta.mFellBackToFullRead = true;
+    std::unordered_map<long long, std::size_t> index;
+    const Mesh grid = adc_read_grid(rPath, index);
+    const auto paths = adc_result_paths(rPath, AdcircReadOptions{});
+    if (!paths.empty()) {
+        AdcLines in(paths.front());
+        meta.mTimeValues = adc_scan_result(in, grid.NumPoints()).mTimes;
+    }
+    return meta;
+}
+
+void write_adcirc(const std::string& rPath, const Mesh& rMesh) {
+    std::vector<std::size_t> tris;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const std::string type = rMesh.Cells(b).Type();
+        if (type != "triangle")
+            throw WriteError("meshio++: adcirc: a '" + type +
+                             "' block; ADCIRC grids hold triangles only");
+        tris.push_back(b);
+    }
+    std::vector<const Region*> open, land;
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const Region& r = rMesh.Region(i);
+        if (r.mKind != RegionKind::Point)
+            continue;
+        if (r.mName.rfind("open_boundary", 0) == 0)
+            open.push_back(&r);
+        else if (r.mName.rfind("land_boundary", 0) == 0) {
+            if (adc_is_barrier(r.mTag))
+                throw WriteError("meshio++: adcirc: land boundary '" + r.mName + "' has type " +
+                                 std::to_string(r.mTag) +
+                                 ", whose records need barrier columns meshio++ does not keep");
+            land.push_back(&r);
+        }
+    }
+    std::string title = "meshio++";
+    if (rMesh.HasFieldData("adcirc:title")) {
+        const NDArray& t = rMesh.FieldData("adcirc:title");
+        title.assign(reinterpret_cast<const char*>(t.Data()), t.Size());
+    }
+    const std::size_t np = rMesh.NumPoints();
+    const NDArray* depth = rMesh.HasPointData("depth") ? &rMesh.PointData("depth") : nullptr;
+    std::size_t ne = 0;
+    for (std::size_t b : tris)
+        ne += rMesh.Cells(b).NumCells();
+    std::string out = title + "\n" + std::to_string(ne) + " " + std::to_string(np) + "\n";
+    char buf[128];
+    const std::size_t pd = rMesh.PointDim();
+    for (std::size_t i = 0; i < np; ++i) {
+        const double x = detail::read_double(rMesh.Points(), i * pd);
+        const double y = pd > 1 ? detail::read_double(rMesh.Points(), i * pd + 1) : 0.0;
+        const double d = depth ? detail::read_double(*depth, i) : 0.0;
+        detail::snprintf_c(buf, sizeof buf, "%zu %.17g %.17g %.17g\n", i + 1, x, y, d);
+        out += buf;
+    }
+    std::size_t e = 0;
+    for (std::size_t b : tris) {
+        const auto cb = rMesh.Cells(b);
+        for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+            detail::snprintf_c(buf, sizeof buf, "%zu 3 %lld %lld %lld\n", ++e,
+                               static_cast<long long>(detail::read_int(cb.Conn(), r * 3)) + 1,
+                               static_cast<long long>(detail::read_int(cb.Conn(), r * 3 + 1)) + 1,
+                               static_cast<long long>(detail::read_int(cb.Conn(), r * 3 + 2)) + 1);
+            out += buf;
+        }
+    }
+    const auto strings = [&](const std::vector<const Region*>& rList, bool Open) {
+        std::size_t total = 0;
+        for (const Region* r : rList)
+            total += r->mEntries.Size();
+        out += std::to_string(rList.size()) +
+               (Open ? " = Number of open boundaries\n" : " = Number of land boundaries\n");
+        out += std::to_string(total) + (Open ? " = Total number of open boundary nodes\n"
+                                             : " = Total number of land boundary nodes\n");
+        for (std::size_t k = 0; k < rList.size(); ++k) {
+            const Region& r = *rList[k];
+            out += std::to_string(r.mEntries.Size());
+            if (!Open || r.mTag >= 0)
+                out += " " + std::to_string(std::max<std::int64_t>(r.mTag, 0));
+            out += " = Number of nodes for " + std::string(Open ? "open" : "land") + " boundary " +
+                   std::to_string(k + 1) + "\n";
+            // The string's own order when the mesh kept it and it is the same set.
+            const NDArray* order = nullptr;
+            const std::string key = std::string(kAdcBoundaryPrefix) + r.mName;
+            if (rMesh.HasFieldData(key) && rMesh.FieldData(key).Size() == r.mEntries.Size()) {
+                std::vector<std::int64_t> a, b;
+                for (std::size_t i = 0; i < r.mEntries.Size(); ++i) {
+                    a.push_back(detail::read_int(rMesh.FieldData(key), i));
+                    b.push_back(detail::read_int(r.mEntries, i));
+                }
+                std::sort(a.begin(), a.end());
+                if (a == b)
+                    order = &rMesh.FieldData(key);
+            }
+            const NDArray& ids = order ? *order : r.mEntries;
+            for (std::size_t i = 0; i < ids.Size(); ++i)
+                out += std::to_string(detail::read_int(ids, i) + 1) + "\n";
+        }
+    };
+    // Boundaries in their number's order (`open_boundary_10` after `_2`).
+    const auto by_number = [](const Region* pA, const Region* pB) {
+        const auto key = [](const std::string& rName) {
+            const std::size_t u = rName.rfind('_');
+            const std::string tail = u == std::string::npos ? "" : rName.substr(u + 1);
+            const bool digits = !tail.empty() && tail.size() < 18 &&
+                                std::all_of(tail.begin(), tail.end(),
+                                            [](unsigned char c) { return std::isdigit(c) != 0; });
+            return std::make_pair(digits ? std::stoll(tail) : (1LL << 62), rName);
+        };
+        return key(pA->mName) < key(pB->mName);
+    };
+    std::sort(open.begin(), open.end(), by_number);
+    std::sort(land.begin(), land.end(), by_number);
+    strings(open, true);
+    strings(land, false);
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("meshio++: adcirc: could not open file for writing: " + rPath);
+    os << out;
+    if (!os)
+        throw WriteError("meshio++: adcirc: failed writing " + rPath);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/adcirc.cpp =====
 // ===== begin src/cpp/src/formats/ansys.cpp =====
 #include <algorithm>
 #include <array>
@@ -211490,6 +212050,357 @@ void RadiossThSeriesWriter::Finalize() {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/radioss_th.cpp =====
+// ===== begin src/cpp/src/formats/selafin.cpp =====
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kSlfUnitPrefix = "selafin:unit:";
+
+struct SlfRecords {
+    std::string mBytes;
+    std::vector<detail::FortranRecord> mRecords;
+    std::size_t mAt = 0;
+
+    std::string_view Next(const char* pWhat) {
+        if (mAt >= mRecords.size())
+            throw ReadError(std::string("meshio++: selafin: the file ends before its ") + pWhat);
+        const auto& r = mRecords[mAt++];
+        return std::string_view(mBytes.data() + r.mOffset, r.mSize);
+    }
+};
+
+std::int32_t slf_i32(std::string_view Rec, std::size_t K) {
+    std::uint32_t u;
+    std::memcpy(&u, Rec.data() + K * 4, 4);
+    if constexpr (std::endian::native == std::endian::little)
+        u = detail::bswap32(u);
+    return static_cast<std::int32_t>(u);
+}
+
+double slf_real(std::string_view Rec, std::size_t K, std::size_t W) {
+    if (W == 4) {
+        std::uint32_t u;
+        std::memcpy(&u, Rec.data() + K * 4, 4);
+        if constexpr (std::endian::native == std::endian::little)
+            u = detail::bswap32(u);
+        return static_cast<double>(std::bit_cast<float>(u));
+    }
+    std::uint64_t u;
+    std::memcpy(&u, Rec.data() + K * 8, 8);
+    if constexpr (std::endian::native == std::endian::little)
+        u = detail::bswap64(u);
+    return std::bit_cast<double>(u);
+}
+
+std::string slf_trim(std::string_view Text) {
+    std::size_t e = Text.size();
+    while (e > 0 && (Text[e - 1] == ' ' || Text[e - 1] == '\0'))
+        --e;
+    std::size_t b = 0;
+    while (b < e && Text[b] == ' ')
+        ++b;
+    return std::string(Text.substr(b, e - b));
+}
+
+NDArray slf_bytes(const std::string& rText) {
+    NDArray out(DType::UInt8, {rText.size()});
+    std::memcpy(out.Data(), rText.data(), rText.size());
+    return out;
+}
+
+struct SlfHeader {
+    std::string mTitle;
+    std::vector<std::string> mNames, mUnits;
+    std::int64_t mNplan = 0;
+    std::size_t mNelem = 0, mNpoin = 0, mNdp = 0, mW = 4;
+    std::vector<std::int64_t> mIkle;
+    std::vector<std::int32_t> mIpobo;
+    std::vector<double> mX, mY;
+    std::size_t mFirstStep = 0;  ///< record index of the first step's time
+    std::vector<double> mTimes;
+};
+
+SlfRecords slf_load(const std::string& rPath) {
+    const detail::FileSource source =
+        detail::open_source(rPath, "meshio++: selafin: could not open file: " + rPath);
+    SlfRecords s;
+    s.mBytes.assign(source.View());
+    const detail::FortranRecordLayout layout{4, true};
+    s.mRecords = detail::fortran_records(s.mBytes.data(), s.mBytes.size(), layout, "selafin",
+                                         /*Lenient=*/true);
+    return s;
+}
+
+SlfHeader slf_header(SlfRecords& rS) {
+    SlfHeader h;
+    const std::string_view title = rS.Next("title");
+    if (title.size() != 80)
+        throw ReadError(
+            "meshio++: selafin: the title record is not 80 characters (not a Selafin "
+            "file, or not big-endian)");
+    h.mTitle = slf_trim(title);
+    const std::string_view nbv = rS.Next("variable counts");
+    if (nbv.size() != 8)
+        throw ReadError("meshio++: selafin: the NBV1 NBV2 record is malformed");
+    const std::size_t nvar = detail::checked_count(slf_i32(nbv, 0) + std::int64_t{slf_i32(nbv, 1)},
+                                                   rS.mRecords.size(), "selafin", "variable");
+    for (std::size_t v = 0; v < nvar; ++v) {
+        const std::string_view rec = rS.Next("variable name");
+        if (rec.size() != 32)
+            throw ReadError("meshio++: selafin: a variable record is not 32 characters");
+        h.mNames.push_back(slf_trim(rec.substr(0, 16)));
+        h.mUnits.push_back(slf_trim(rec.substr(16, 16)));
+    }
+    const std::string_view iparam = rS.Next("IPARAM");
+    if (iparam.size() != 40)
+        throw ReadError("meshio++: selafin: IPARAM is not ten integers");
+    h.mNplan = slf_i32(iparam, 6);
+    if (slf_i32(iparam, 9) == 1)
+        rS.Next("date");
+    const std::string_view counts = rS.Next("NELEM NPOIN NDP");
+    if (counts.size() != 16)
+        throw ReadError("meshio++: selafin: the NELEM NPOIN NDP 1 record is malformed");
+    const std::size_t limit = rS.mBytes.size();
+    h.mNelem = detail::checked_count(slf_i32(counts, 0), limit, "selafin", "element");
+    h.mNpoin = detail::checked_count(slf_i32(counts, 1), limit, "selafin", "point");
+    h.mNdp = detail::checked_count(slf_i32(counts, 2), 64, "selafin", "node-per-element");
+    const std::string_view ikle = rS.Next("IKLE");
+    if (ikle.size() != h.mNelem * h.mNdp * 4)
+        throw ReadError("meshio++: selafin: IKLE does not hold NELEM * NDP integers");
+    h.mIkle.resize(h.mNelem * h.mNdp);
+    for (std::size_t k = 0; k < h.mIkle.size(); ++k) {
+        const std::int64_t v = slf_i32(ikle, k);
+        if (v < 1 || static_cast<std::size_t>(v) > h.mNpoin)
+            throw ReadError("meshio++: selafin: IKLE names point " + std::to_string(v));
+        h.mIkle[k] = v - 1;
+    }
+    const std::string_view ipobo = rS.Next("IPOBO");
+    if (ipobo.size() != h.mNpoin * 4)
+        throw ReadError("meshio++: selafin: IPOBO does not hold NPOIN integers");
+    h.mIpobo.resize(h.mNpoin);
+    for (std::size_t k = 0; k < h.mNpoin; ++k)
+        h.mIpobo[k] = slf_i32(ipobo, k);
+    const std::string_view x = rS.Next("X");
+    if (h.mNpoin > 0 && x.size() == h.mNpoin * 8)
+        h.mW = 8;
+    else if (x.size() != h.mNpoin * 4)
+        throw ReadError("meshio++: selafin: X does not hold NPOIN reals");
+    const std::string_view y = rS.Next("Y");
+    if (y.size() != x.size())
+        throw ReadError("meshio++: selafin: Y does not match X");
+    h.mX.resize(h.mNpoin);
+    h.mY.resize(h.mNpoin);
+    for (std::size_t k = 0; k < h.mNpoin; ++k) {
+        h.mX[k] = slf_real(x, k, h.mW);
+        h.mY[k] = slf_real(y, k, h.mW);
+    }
+    h.mFirstStep = rS.mAt;
+    // Every complete step: a time record and one record per variable.
+    for (std::size_t r = rS.mAt; r + nvar < rS.mRecords.size() + 1; r += 1 + nvar) {
+        if (rS.mRecords[r].mSize != h.mW)
+            break;
+        bool complete = true;
+        for (std::size_t v = 0; v < nvar && complete; ++v)
+            complete =
+                r + 1 + v < rS.mRecords.size() && rS.mRecords[r + 1 + v].mSize == h.mNpoin * h.mW;
+        if (!complete)
+            break;
+        h.mTimes.push_back(
+            slf_real(std::string_view(rS.mBytes.data() + rS.mRecords[r].mOffset, h.mW), 0, h.mW));
+    }
+    return h;
+}
+
+}  // namespace
+
+Mesh read_selafin(const std::string& rPath, const ReadOptions& rOptions) {
+    SlfRecords s = slf_load(rPath);
+    const SlfHeader h = slf_header(s);
+    const std::size_t step = rOptions.ResolveTimeStep(h.mTimes.size());
+    NDArray pts(DType::Float64, {h.mNpoin, 3});
+    for (std::size_t k = 0; k < h.mNpoin; ++k) {
+        pts.As<double>()[k * 3] = h.mX[k];
+        pts.As<double>()[k * 3 + 1] = h.mY[k];
+        pts.As<double>()[k * 3 + 2] = 0.0;
+    }
+    std::string type;
+    if (h.mNdp == 3)
+        type = "triangle";
+    else if (h.mNdp == 4)
+        type = h.mNplan > 1 ? "tetra" : "quad";
+    else if (h.mNdp == 6)
+        type = "wedge";
+    else
+        throw ReadError("meshio++: selafin: elements of " + std::to_string(h.mNdp) +
+                        " nodes are not a TELEMAC element");
+    std::vector<NDArray> values;
+    if (!h.mTimes.empty()) {
+        const std::size_t base = h.mFirstStep + step * (1 + h.mNames.size()) + 1;
+        for (std::size_t v = 0; v < h.mNames.size(); ++v) {
+            const auto& r = s.mRecords[base + v];
+            const std::string_view rec(s.mBytes.data() + r.mOffset, r.mSize);
+            NDArray a(DType::Float64, {h.mNpoin});
+            for (std::size_t k = 0; k < h.mNpoin; ++k)
+                a.As<double>()[k] = slf_real(rec, k, h.mW);
+            values.push_back(std::move(a));
+        }
+        // TELEMAC-3D keeps the plane elevations as its first variable.
+        if (h.mNplan > 1)
+            for (std::size_t v = 0; v < h.mNames.size(); ++v)
+                if (h.mNames[v].rfind("ELEVATION Z", 0) == 0 ||
+                    h.mNames[v].rfind("COTE Z", 0) == 0) {
+                    for (std::size_t k = 0; k < h.mNpoin; ++k)
+                        pts.As<double>()[k * 3 + 2] = values[v].As<double>()[k];
+                    break;
+                }
+    }
+    Mesh mesh;
+    mesh.AssignPoints(std::move(pts));
+    if (h.mNelem > 0) {
+        NDArray conn(DType::Int64, {h.mNelem, h.mNdp});
+        std::copy(h.mIkle.begin(), h.mIkle.end(), conn.As<std::int64_t>());
+        mesh.AddCellBlock(type, std::move(conn));
+    }
+    mesh.AddFieldData("selafin:title", slf_bytes(h.mTitle));
+    if (!h.mTimes.empty()) {
+        NDArray t(DType::Float64, {1});
+        t.As<double>()[0] = h.mTimes[step];
+        mesh.AddFieldData("meshio:time", std::move(t));
+    }
+    if (!rOptions.WantsAnyData())
+        return mesh;
+    for (std::size_t v = 0; v < values.size(); ++v) {
+        if (!rOptions.WantsArray(h.mNames[v]))
+            continue;
+        mesh.AddPointData(h.mNames[v], std::move(values[v]));
+        mesh.AddFieldData(kSlfUnitPrefix + h.mNames[v], slf_bytes(h.mUnits[v]));
+    }
+    if (rOptions.WantsArray("selafin:ipobo")) {
+        NDArray ipobo(DType::Int32, {h.mNpoin});
+        std::copy(h.mIpobo.begin(), h.mIpobo.end(), ipobo.As<std::int32_t>());
+        mesh.AddPointData("selafin:ipobo", std::move(ipobo));
+    }
+    return mesh;
+}
+
+MeshMetadata read_selafin_metadata(const std::string& rPath, const ReadOptions& rOptions) {
+    MeshMetadata meta = metadata_from_mesh(read_selafin(rPath, rOptions));
+    meta.mFellBackToFullRead = true;
+    SlfRecords s = slf_load(rPath);
+    meta.mTimeValues = slf_header(s).mTimes;
+    return meta;
+}
+
+namespace {
+
+std::string slf_padded(const std::string& rText, std::size_t Width) {
+    std::string out = rText.substr(0, Width);
+    out.resize(Width, ' ');
+    return out;
+}
+
+}  // namespace
+
+void write_selafin(const std::string& rPath, const Mesh& rMesh) {
+    if (rMesh.NumCellBlocks() != 1 || (std::string(rMesh.Cells(0).Type()) != "triangle" &&
+                                       std::string(rMesh.Cells(0).Type()) != "quad"))
+        throw WriteError(
+            "meshio++: selafin: the writer takes one triangle or quad block (a 2-D "
+            "TELEMAC mesh)");
+    const auto cb = rMesh.Cells(0);
+    const std::size_t npoin = rMesh.NumPoints(), nelem = cb.NumCells(), ndp = cb.NodesPerCell();
+    std::vector<std::string> names;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& a = rMesh.PointData(name);
+        if (name == "selafin:ipobo" || a.Size() != npoin ||
+            !(a.Dtype() == DType::Float64 || a.Dtype() == DType::Float32))
+            continue;
+        names.push_back(name);
+    }
+    const detail::FortranRecordLayout layout{4, true};
+    std::string out, rec;
+    const auto flush = [&] {
+        detail::fortran_append_record(out, rec.data(), rec.size(), layout);
+        rec.clear();
+    };
+    std::string title = "meshio++";
+    if (rMesh.HasFieldData("selafin:title")) {
+        const NDArray& t = rMesh.FieldData("selafin:title");
+        title.assign(reinterpret_cast<const char*>(t.Data()), t.Size());
+    }
+    rec = slf_padded(title, 72) + "SERAFIND";
+    flush();
+    detail::fortran_put_int32(rec, static_cast<std::int32_t>(names.size()), true);
+    detail::fortran_put_int32(rec, 0, true);
+    flush();
+    for (const std::string& name : names) {
+        std::string unit;
+        const std::string key = kSlfUnitPrefix + name;
+        if (rMesh.HasFieldData(key)) {
+            const NDArray& u = rMesh.FieldData(key);
+            unit.assign(reinterpret_cast<const char*>(u.Data()), u.Size());
+        }
+        rec = slf_padded(name, 16) + slf_padded(unit, 16);
+        flush();
+    }
+    for (int k = 0; k < 10; ++k)
+        detail::fortran_put_int32(rec, k == 0 ? 1 : 0, true);
+    flush();
+    for (const std::size_t v : {nelem, npoin, ndp, std::size_t{1}})
+        detail::fortran_put_int32(rec, static_cast<std::int32_t>(v), true);
+    flush();
+    const detail::Int64View conn(cb.Conn());
+    for (std::size_t k = 0; k < nelem * ndp; ++k)
+        detail::fortran_put_int32(rec, static_cast<std::int32_t>(conn[k] + 1), true);
+    flush();
+    const NDArray* ipobo =
+        rMesh.HasPointData("selafin:ipobo") ? &rMesh.PointData("selafin:ipobo") : nullptr;
+    for (std::size_t k = 0; k < npoin; ++k)
+        detail::fortran_put_int32(rec,
+                                  ipobo && ipobo->Size() == npoin
+                                      ? static_cast<std::int32_t>(detail::read_int(*ipobo, k))
+                                      : 0,
+                                  true);
+    flush();
+    const std::size_t pd = rMesh.PointDim();
+    for (std::size_t c = 0; c < 2; ++c) {
+        for (std::size_t k = 0; k < npoin; ++k)
+            detail::fortran_put_float64(
+                rec, c < pd ? detail::read_double(rMesh.Points(), k * pd + c) : 0.0, true);
+        flush();
+    }
+    const double time = rMesh.HasFieldData("meshio:time") && rMesh.FieldData("meshio:time").Size()
+                            ? detail::read_double(rMesh.FieldData("meshio:time"), 0)
+                            : 0.0;
+    detail::fortran_put_float64(rec, time, true);
+    flush();
+    for (const std::string& name : names) {
+        const NDArray& a = rMesh.PointData(name);
+        for (std::size_t k = 0; k < npoin; ++k)
+            detail::fortran_put_float64(rec, detail::read_double(a, k), true);
+        flush();
+    }
+    auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("meshio++: selafin: could not open file for writing: " + rPath);
+    os.write(out.data(), static_cast<std::streamsize>(out.size()));
+    if (!os)
+        throw WriteError("meshio++: selafin: failed writing " + rPath);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/formats/selafin.cpp =====
 // ===== begin src/cpp/src/formats/step.cpp =====
 #include <algorithm>
 #include <cmath>
@@ -312469,6 +313380,22 @@ const std::vector<RegistryRow>& registry_rows() {
         // DXF R2000 drawings (roadmap 7.6.4): LINE/ARC/CIRCLE/LWPOLYLINE/SPLINE in,
         // a line mesh or a fit_curves sketch out.
         {.mName = "dxf", .mRead = meshioplusplus::read_dxf, .mWrite = meshioplusplus::write_dxf},
+        {.mName = "adcirc",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_adcirc(rPath); },
+         .mWrite = meshioplusplus::write_adcirc,
+         .mReadEx =
+             [](const std::string& rPath, const ReadOptions& rOpts) {
+                 return meshioplusplus::read_adcirc(rPath, rOpts);
+             },
+         .mMetadata = meshioplusplus::read_adcirc_metadata},
+        {.mName = "selafin",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_selafin(rPath); },
+         .mWrite = meshioplusplus::write_selafin,
+         .mReadEx =
+             [](const std::string& rPath, const ReadOptions& rOpts) {
+                 return meshioplusplus::read_selafin(rPath, rOpts);
+             },
+         .mMetadata = meshioplusplus::read_selafin_metadata},
         {.mName = "plot3d",
          .mRead = [](const std::string& rPath) { return meshioplusplus::read_plot3d(rPath); },
          .mWrite = meshioplusplus::write_plot3d},
@@ -312907,6 +313834,10 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".glb", "gltf"},
         {".gltf", "gltf"},
         {".dxf", "dxf"},
+        {".14", "adcirc"},
+        {".slf", "selafin"},
+        {".srf", "selafin"},
+        {".grd", "adcirc"},
         {".p3d", "plot3d"},
         {".p3dfmt", "plot3d"},
         {".x", "plot3d"},

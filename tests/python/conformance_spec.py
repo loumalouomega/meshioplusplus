@@ -414,6 +414,15 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell", "point", "side"],
     },
+    "adcirc": {
+        "cells": {"triangle": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A fort.14 grid holds triangles, a depth per node and named boundary strings (`open_boundary_*`, `land_boundary_*`); results are separate fort.63/64 files, which meshio++ reads but does not write.",
+    },
     "ansys": {
         "cells": {
             "triangle": "lost",
@@ -1517,6 +1526,11 @@ SPEC: dict[str, dict] = {
         "read back through OpenCASCADE as its triangulation: volume cells come back "
         "as their skin, and data is not kept. Checked only in a build with "
         "OpenCASCADE (the meshioplusplus-occt wheel carries it).",
+    },
+    "selafin": {
+        "cells": {"triangle": "?", "quad": "?"},
+        "error": "WriteError",
+        "note": "A Selafin mesh has one element shape (NDP): the writer takes one triangle or quad block, so the canonical triangle-and-quad mesh is refused by name.",
     },
     "stl": {
         "cells": {

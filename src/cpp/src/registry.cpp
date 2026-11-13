@@ -65,6 +65,8 @@
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
+#include "meshioplusplus/formats/adcirc.hpp"
+#include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
 #include "meshioplusplus/formats/plot3d.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
@@ -546,6 +548,22 @@ const std::vector<RegistryRow>& registry_rows() {
         // DXF R2000 drawings (roadmap 7.6.4): LINE/ARC/CIRCLE/LWPOLYLINE/SPLINE in,
         // a line mesh or a fit_curves sketch out.
         {.mName = "dxf", .mRead = meshioplusplus::read_dxf, .mWrite = meshioplusplus::write_dxf},
+        {.mName = "adcirc",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_adcirc(rPath); },
+         .mWrite = meshioplusplus::write_adcirc,
+         .mReadEx =
+             [](const std::string& rPath, const ReadOptions& rOpts) {
+                 return meshioplusplus::read_adcirc(rPath, rOpts);
+             },
+         .mMetadata = meshioplusplus::read_adcirc_metadata},
+        {.mName = "selafin",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_selafin(rPath); },
+         .mWrite = meshioplusplus::write_selafin,
+         .mReadEx =
+             [](const std::string& rPath, const ReadOptions& rOpts) {
+                 return meshioplusplus::read_selafin(rPath, rOpts);
+             },
+         .mMetadata = meshioplusplus::read_selafin_metadata},
         {.mName = "plot3d",
          .mRead = [](const std::string& rPath) { return meshioplusplus::read_plot3d(rPath); },
          .mWrite = meshioplusplus::write_plot3d},
@@ -984,6 +1002,10 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".glb", "gltf"},
         {".gltf", "gltf"},
         {".dxf", "dxf"},
+        {".14", "adcirc"},
+        {".slf", "selafin"},
+        {".srf", "selafin"},
+        {".grd", "adcirc"},
         {".p3d", "plot3d"},
         {".p3dfmt", "plot3d"},
         {".x", "plot3d"},

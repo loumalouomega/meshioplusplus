@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 import meshioplusplus as mio
+from meshioplusplus import _fallback
 from meshioplusplus.ugrid_nc import _ugrid_nc
 
 netCDF4 = pytest.importorskip("netCDF4")
@@ -16,6 +17,7 @@ def reader(request, monkeypatch):
         if not getattr(mio._core, "__has_netcdf__", False):
             pytest.skip("this build has no netCDF")
         monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+        monkeypatch.setattr(_fallback, "_strict", True)
         return mio.ugrid_nc.read
     return _ugrid_nc.read
 

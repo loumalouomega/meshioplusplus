@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from . import (
         abaqus,
         abaqus_fil,
+        adcirc,
         ansys,
         ansys_rst,
         ansysInp,
@@ -86,6 +87,7 @@ if TYPE_CHECKING:
         radioss,
         radioss_anim,
         radioss_th,
+        selafin,
         step,
         stl,
         su2,
@@ -639,6 +641,7 @@ _LAZY_ATTRS = {
 __all__ = [
     "abaqus",
     "abaqus_fil",
+    "adcirc",
     "ansys",
     "ansys_rst",
     "ansysInp",
@@ -703,6 +706,7 @@ __all__ = [
     "radioss",
     "radioss_anim",
     "radioss_th",
+    "selafin",
     "step",
     "stl",
     "su2",

@@ -331,6 +331,7 @@ export default defineConfig({
         items: [
           { text: "abaqus", link: "/formats/abaqus" },
           { text: "abaqus_fil", link: "/formats/abaqus_fil" },
+          { text: "adcirc", link: "/formats/adcirc" },
           { text: "ansys", link: "/formats/ansys" },
           { text: "ansysInp", link: "/formats/ansysinp" },
           { text: "ansys_rst", link: "/formats/ansys_rst" },
@@ -396,6 +397,7 @@ export default defineConfig({
           { text: "radioss_anim", link: "/formats/radioss_anim" },
           { text: "radioss_th", link: "/formats/radioss_th" },
           { text: "step", link: "/formats/step" },
+          { text: "selafin", link: "/formats/selafin" },
           { text: "stl", link: "/formats/stl" },
           { text: "su2", link: "/formats/su2" },
           { text: "svg", link: "/formats/svg" },

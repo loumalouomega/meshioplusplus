@@ -1504,10 +1504,9 @@ def test_ghost_elements_become_partition_ghost(tmp_path, monkeypatch):
     path = tmp_path / "g.msh"
     path.write_text(_GHOST_MSH)
     for strict in ("1", None):
-        if strict:
-            monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
-        else:
-            monkeypatch.delenv("MESHIOPLUSPLUS_STRICT_CORE", raising=False)
+        from meshioplusplus import _fallback
+
+        monkeypatch.setattr(_fallback, "_strict", bool(strict))
         mesh = meshioplusplus.read(path, "gmsh")
         assert [list(b) for b in mesh.cell_data["partition:ghost"]] == [[0, 1, 1]]
         assert "gmsh:section:GhostElements" in mesh.field_data

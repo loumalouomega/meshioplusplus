@@ -9,6 +9,7 @@ this is how it finds them without importing the others first.
 FORMAT_MODULES = {
     "abaqus": "abaqus",
     "abaqus_fil": "abaqus_fil",
+    "adcirc": "adcirc",
     "ansys": "ansys",
     "ansysInp": "ansysInp",
     "ansys_rst": "ansys_rst",
@@ -76,6 +77,7 @@ FORMAT_MODULES = {
     "radioss": "radioss",
     "radioss_anim": "radioss_anim",
     "radioss_th": "radioss_th",
+    "selafin": "selafin",
     "step": "step",
     "stl": "stl",
     "su2": "su2",
@@ -110,6 +112,7 @@ FORMAT_MODULES = {
 
 # Every extension -> the subpackages that register it, in registration order.
 EXTENSION_MODULES = {
+    ".14": ("adcirc",),
     ".asc": ("xyz",),
     ".avs": ("avsucd",),
     ".bdf": ("nastran",),
@@ -138,6 +141,7 @@ EXTENSION_MODULES = {
     ".geo": ("ensight",),
     ".glb": ("gltf",),
     ".gltf": ("gltf",),
+    ".grd": ("adcirc",),
     ".h5": ("nastran_h5",),
     ".h5m": ("h5m",),
     ".hdf": ("vtkhdf",),
@@ -192,9 +196,11 @@ EXTENSION_MODULES = {
     ".rad": ("radioss",),
     ".rst": ("ansys_rst",),
     ".rth": ("ansys_rst",),
+    ".slf": ("selafin",),
     ".smesh": ("tetgen",),
     ".sol": ("medit_sol",),
     ".solb": ("medit_sol",),
+    ".srf": ("selafin",),
     ".step": ("step",),
     ".stl": ("stl",),
     ".stp": ("step",),
@@ -243,6 +249,7 @@ EXTENSION_MODULES = {
 ALL_MODULES = (
     "abaqus",
     "abaqus_fil",
+    "adcirc",
     "ansys",
     "ansysInp",
     "ansys_rst",
@@ -307,6 +314,7 @@ ALL_MODULES = (
     "radioss",
     "radioss_anim",
     "radioss_th",
+    "selafin",
     "step",
     "stl",
     "su2",
@@ -341,6 +349,7 @@ ALL_MODULES = (
 READER_NAMES = (
     "abaqus",
     "abaqus_fil",
+    "adcirc",
     "ansys",
     "ansysInp",
     "ansys_rst",
@@ -407,6 +416,7 @@ READER_NAMES = (
     "radioss",
     "radioss_anim",
     "radioss_th",
+    "selafin",
     "step",
     "stl",
     "su2",
@@ -441,6 +451,7 @@ READER_NAMES = (
 WRITER_NAMES = (
     "abaqus",
     "abaqus_fil",
+    "adcirc",
     "ansys",
     "ansysInp",
     "ansys_rst",
@@ -503,6 +514,7 @@ WRITER_NAMES = (
     "radioss",
     "radioss_anim",
     "radioss_th",
+    "selafin",
     "step",
     "stl",
     "su2",

@@ -18,6 +18,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 |---|---|---|---|---|---|
 | [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — | [6/8 cells · no data · regions CPS](./conformance.md#abaqus) |
 | [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#abaqus-fil) |
+| [`adcirc`](./formats/adcirc.md) | `.14`, `.grd` | ✓ (`fort.14` grid; `fort.63`/`fort.64` results as steps) | ✓ (grid) | — | [1/8 cells · no data](./conformance.md#adcirc) |
 | [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — | [4/8 cells · no data · regions C](./conformance.md#ansys) |
 | [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansysinp) |
 | [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansys-rst) |
@@ -85,6 +86,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | ✓ | — | [8/8 cells · data PC · regions C](./conformance.md#radioss-anim) |
 | [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#radioss-th) |
 | [`step`](./formats/step.md) | `.step`, `.stp` | ✓ (OpenCASCADE) | ✓ | reading: OpenCASCADE | [0/8 cells · no data](./conformance.md#step) |
+| [`selafin`](./formats/selafin.md) | `.slf`, `.srf` | ✓ (TELEMAC 2-D/3-D, steps) | ✓ (2-D, one step) | — | [fails](./conformance.md#selafin) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
 | [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#svg) |

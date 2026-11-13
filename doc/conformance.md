@@ -17,6 +17,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
 | <span id="abaqus">`abaqus`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |  | exact | — | — | — | cell, point, side |
 | <span id="abaqus-fil">`abaqus_fil`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
+| <span id="adcirc">`adcirc`</span> |  |  | ✓ |  |  |  |  |  | exact | — | — | — | — |
 | <span id="ansys">`ansys`</span> |  |  | ✗ | ✗ | ↻ | ↻ | ✓ | ✓ | exact | — | — | — | cell |
 | <span id="ansys-rst">`ansys_rst`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
 | <span id="ansysinp">`ansysInp`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point |
@@ -79,6 +80,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="radioss">`radioss`</span> |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="radioss-anim">`radioss_anim`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | approx | `p_f64` float64, `p_i32` float64, `p_vec` float64 | `c_f64` float64, `c_i32` float64 | — | cell |
 | <span id="radioss-th">`radioss_th`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | none | — | — | — | — |
+| <span id="selafin">`selafin`</span> |  |  | ? | ? |  |  |  |  | fails: `WriteError` | | | | |
 | <span id="step">`step`</span> |  |  |  |  | → tri | → tri | → tri | → tri | exact | — | — | — | — |
 | <span id="stl">`stl`</span> |  |  | ✗ |  | → tri | → tri | → tri | → tri | subset | — | — | — | — |
 | <span id="su2">`su2`</span> |  |  | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | — |
@@ -113,6 +115,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 ## Notes
 
 - **`abaqus_fil`**: A results file holds the model and the results Abaqus names: only point data named like a nodal result (`U`, `RF`...) and cell data named like an element result (`S`, `E`...) are written, so the canonical arrays and `fd` have no place; a `vertex` has no Abaqus element. Side regions are contact surfaces.
+- **`adcirc`**: A fort.14 grid holds triangles, a depth per node and named boundary strings (`open_boundary_*`, `land_boundary_*`); results are separate fort.63/64 files, which meshio++ reads but does not write.
 - **`ansys`**: A Fluent mesh stores volume cells and the faces that bound them; lower-dimensional cells that are not boundary faces of a volume cell are dropped with a warning.
 - **`ansys_rst`**: A results file holds the solution MAPDL names: point data called `U`, `ROT`, `TEMP` ... (and `RF` reactions) and cell data `S`, `EPEL`, `EPPL`, `EPCR`, `EPTH` come back; arbitrary arrays such as the probe's are not kept. Side regions are dropped with a warning.
 - **`cad_json`**: Kratos IGA geometry: without a B-rep side channel, quads are written as bilinear NURBS faces and lines as edges.
@@ -143,6 +146,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`radioss`**: A starter deck holds no data arrays; a `vertex` has no element card.
 - **`radioss_anim`**: Everything is stored as 32-bit floats, so coordinates and data are approximate and integers come back as float64; the animation holds one state, so the data are the state's and field data other than the time are not kept.
 - **`radioss_th`**: A time-history file holds `radioss_th:*` field data only: points, cells, regions and other data are not kept (a warning names the field data dropped); the canonical `fd` is not a `radioss_th:` name.
+- **`selafin`**: A Selafin mesh has one element shape (NDP): the writer takes one triangle or quad block, so the canonical triangle-and-quad mesh is refused by name.
 - **`step`**: A B-rep solid for CAD tools (coplanar facets merged into one face), read back through OpenCASCADE as its triangulation: volume cells come back as their skin, and data is not kept. Checked only in a build with OpenCASCADE (the meshioplusplus-occt wheel carries it).
 - **`stl`**: STL stores triangles: volume cells are written as their skin, and other blocks are dropped when volume cells are present.
 - **`su2`**: SU2 holds volume cells and boundary markers: a volume region has no slot (separate meshes are `NZONE` zones, `su2:zone`), and data arrays are not stored.

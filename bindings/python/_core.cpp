@@ -86,6 +86,8 @@
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
 #include "meshioplusplus/formats/plot3d.hpp"
+#include "meshioplusplus/formats/adcirc.hpp"
+#include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
@@ -8278,6 +8280,44 @@ PYBIND11_MODULE(_core, m) {
     core_def_read(m, "off_read", "off", &meshioplusplus::read_off);
     core_def_write(m, "dxf_write", &meshioplusplus::write_dxf);
     core_def_read(m, "dxf_read", "dxf", &meshioplusplus::read_dxf);
+    core_def_write(m, "adcirc_write", &meshioplusplus::write_adcirc);
+    m.def("adcirc_read",
+          guard_read("adcirc",
+                     [](const std::string& path, const std::vector<std::string>& results,
+                        bool siblings, long long time_step) {
+                         meshioplusplus::AdcircReadOptions o;
+                         o.mResults = results;
+                         o.mSiblings = siblings;
+                         o.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_adcirc(path, o); }));
+                     }),
+          py::arg("path"), py::arg("results") = std::vector<std::string>{},
+          py::arg("siblings") = true, py::arg("time_step") = 0);
+    m.def(
+        "adcirc_time_values",
+        [](const std::string& path) {
+            return core_nogil(
+                [&] { return meshioplusplus::read_adcirc_metadata(path, {}).mTimeValues; });
+        },
+        py::arg("path"));
+    core_def_write(m, "selafin_write", &meshioplusplus::write_selafin);
+    m.def("selafin_read",
+          guard_read("selafin",
+                     [](const std::string& path, long long time_step) {
+                         meshioplusplus::ReadOptions o;
+                         o.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_selafin(path, o); }));
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
+    m.def(
+        "selafin_time_values",
+        [](const std::string& path) {
+            return core_nogil(
+                [&] { return meshioplusplus::read_selafin_metadata(path, {}).mTimeValues; });
+        },
+        py::arg("path"));
     core_def_write(m, "plot3d_write", &meshioplusplus::write_plot3d);
     m.def("plot3d_read",
           guard_read(

@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** `adcirc` (ADCIRC `fort.14` grids, open and land boundaries as tagged point regions with their order kept, `fort.63`/`fort.64` full and sparse results as steps; the grid is written) and `selafin` (TELEMAC Selafin `.slf`, single or double precision, 2-D triangles and quads and 3-D prisms, steps; 2-D one-step files are written), both in both engines with byte-identical writes (roadmap 2.4.3.3, 2.4.3.4).
+
+
 - **Added:** a `ugrid_nc` format: UGRID-conventions NetCDF (`.nc`) in both engines, 1-D and 2-D topologies with mixed polygons (`start_index`, fill values, transposed connectivity), edges, node/face/edge data and time steps, written as netCDF-4 and checked against xugrid both ways (roadmap 2.4.3.2). The netCDF helpers Exodus had file-local are now `detail/netcdf_util` (2.4.3.1).
 
 

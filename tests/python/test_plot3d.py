@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 import meshioplusplus as mio
+from meshioplusplus import _fallback
 from meshioplusplus._fortran_records import fortran_record
 from meshioplusplus.plot3d import _plot3d
 
@@ -60,6 +61,7 @@ def _encode(blocks, *, dim=3, w=8, iblank=False, multi=True, enc="fortran", big=
 def engine(request, monkeypatch):
     if request.param == "core":
         monkeypatch.setenv("MESHIOPLUSPLUS_STRICT_CORE", "1")
+        monkeypatch.setattr(_fallback, "_strict", True)
         return mio.plot3d.read
     return _plot3d.read
 
