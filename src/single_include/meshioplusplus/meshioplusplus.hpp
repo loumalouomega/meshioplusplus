@@ -302518,8 +302518,8 @@ std::string sniff_format(const std::string& rPath) {
             const char* mValue;
             const char* mFormat;
         } kIndexTypes[] = {
-            {"Collection", "pvd"}, {"PUnstructuredGrid", "pvtu"}, {"PPolyData", "pvtp"},
-            {"PImageData", ""},    {"PStructuredGrid", ""},       {"PRectilinearGrid", ""},
+            {"Collection", "pvd"},  {"PUnstructuredGrid", "pvtu"}, {"PPolyData", "pvtp"},
+            {"PImageData", "pvti"}, {"PStructuredGrid", "pvts"},   {"PRectilinearGrid", "pvtr"},
         };
         for (const char quote : {'"', '\''})
             for (const auto& index_type : kIndexTypes) {
