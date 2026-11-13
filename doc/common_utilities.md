@@ -77,6 +77,7 @@ Core-private: no installed header names them, so they change freely. The general
 | Header | Contents |
 | --- | --- |
 | `math_utils.hpp`, `geometry_utils.hpp`, `bounding_box_utils.hpp` | The Kratos-style utility classes `MathUtils`, `GeometryUtils` (with `PointInPolygon2D`, the even-odd test of a parameter-space trim), `BoundingBoxUtils` ([kernels](./geometry_kernels.md)). |
+| `lattice_cells.hpp` | `detail::lattice_cells`, the cells of a structured lattice (hexahedra, quads or lines, `i` fastest); the twin of the Python `_grid.lattice_cells`, used by the EnSight block parts and the CGNS structured zones. |
 | `fem_kernels.hpp`, `cell_centroids.hpp`, `predicates.hpp`, `expansion.hpp` | Tet volume, scaled-Jacobian corner factors and corner tables; per-cell centroids; exact predicates and expansion arithmetic. |
 | `size_field_utils.hpp` | `SizeFieldUtils`: metric edge length of a geometrically graded isotropic size field, the metric midpoint of an edge, size interpolation and the Dijkstra gradation `h(v) <= h(u) + (hgrad - 1) |uv|` (`adapt_volume`). |
 | `tet_flips.hpp` | `optimize_volume`'s worst-cell moves over a flat xyz buffer and a vector of tetrahedra, moved verbatim so `adapt_volume` runs them too: the 2-3 and 3-2 flips, edge removal and multi-face removal, the guarded ODT relocation and the worst-cell smoothing, each touching only faces and edges interior to the vector it is given. |
