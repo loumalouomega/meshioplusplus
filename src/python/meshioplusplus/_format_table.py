@@ -123,6 +123,7 @@ EXTENSION_MODULES = {
     ".bdf": ("nastran",),
     ".bp": ("vtx",),
     ".cad.json": ("cad_json",),
+    ".cas": ("ansys",),
     ".case": ("ensight",),
     ".cdb": ("ansysInp",),
     ".cgns": ("cgns",),

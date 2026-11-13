@@ -5,7 +5,7 @@ The ANSYS Fluent `.msh` mesh format, also written by TGrid, GAMBIT and ANSYS Mes
 | | |
 |---|---|
 | **Format name** | `ansys` |
-| **Extensions** | `.msh` |
+| **Extensions** | `.msh`, `.cas` (a legacy Fluent case) |
 | **Read / Write** | ✓ / ✓ |
 | **Extra dependencies** | — |
 
@@ -19,6 +19,20 @@ meshioplusplus.ansys.write("out.msh", mesh, binary=True)
 ```
 
 - **`binary`** — write binary (`True`) or ASCII section bodies.
+
+## Cases and data files
+
+A legacy Fluent case (`.cas`) is the `.msh` grammar with the solver's sections added; it is read as a `.msh` is, every section that is not mesh skipped (roadmap 2.4.1). Each zone's type from sections 39 and 45 (`fluid`, `wall`, `interior`, `velocity-inlet`, ...) is `field_data["fluent:zone_type:<name>"]` (bytes), beside the zone's cell region.
+
+```python
+import meshioplusplus
+
+case = meshioplusplus.read("run.cas")                              # run.dat beside it too
+case = meshioplusplus.ansys.read("run.cas", data="run-0200.dat")
+mesh = meshioplusplus.ansys.read("run.cas", sibling_data=False)    # the mesh alone
+```
+
+The data file's sections `300` (ASCII), `2300` (float32) and `3300` (float64), `(sub-section zone size n-time n-phase first last)` with decimal integers, become cell data: a cell zone's values on its cells, by cell id, and a face zone's values on its boundary faces, by face id; every other cell is NaN, and interior faces, which the reader does not keep, drop their values. A section of several values per entry gives components. The variable is named after its sub-section id: `1` `pressure`, `2`/`3`/`4` `x_velocity`/`y_velocity`/`z_velocity`, `5` `temperature`, any other `fluent:<id>` (the full table is Fluent's `xfile.h`, not reproduced here). The C++ option is `AnsysReadOptions::mData` / `mSiblingData`. HDF5 cases (`.cas.h5`, CFF) are not read.
 
 ## File structure
 

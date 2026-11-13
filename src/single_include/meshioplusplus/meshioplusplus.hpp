@@ -16008,6 +16008,26 @@ MESHIOPLUSPLUS_API void write_ansys(const std::string& rPath, const Mesh& rMesh,
  */
 MESHIOPLUSPLUS_API Mesh read_ansys(const std::string& rPath);
 
+/** @brief What to read beside a Fluent case (roadmap 2.4.1). */
+struct AnsysReadOptions {
+    /// A Fluent `.dat` data file; empty reads the `.dat` beside a `.cas` when there is one.
+    std::string mData;
+    /// Look for the sibling `.dat` of a `.cas` when `mData` is empty.
+    bool mSiblingData = true;
+};
+
+/**
+ * @brief Read a Fluent mesh or case, and the solution data of a `.dat` file.
+ *
+ * A `.cas` file is read as a `.msh` is (its solver sections skipped). The `.dat`
+ * sections `300` (ASCII), `2300` (float32) and `3300` (float64) become cell data:
+ * a cell zone's values on its cells, a face zone's on its boundary faces, NaN
+ * elsewhere; the variable is named from its sub-section id (`1` pressure, `2`/`3`/`4`
+ * the x/y/z velocity, `5` temperature, others `fluent:<id>`), a multi-value
+ * section's values as components.
+ */
+MESHIOPLUSPLUS_API Mesh read_ansys(const std::string& rPath, const AnsysReadOptions& rOptions);
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/formats/ansys.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/formats/ansys_rst.hpp =====
@@ -133694,10 +133714,12 @@ void write_adcirc(const std::string& rPath, const Mesh& rMesh) {
 // ===== begin src/cpp/src/formats/ansys.cpp =====
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -133833,7 +133855,7 @@ struct FluentReader {
 
     // The `(a b c ...)` group after a section index, as hex integers; returns
     // whether a body follows.
-    bool Header(std::vector<std::int64_t>& rValues) {
+    bool Header(std::vector<std::int64_t>& rValues, int Base = 16) {
         SkipWs();
         if (Eof() || At() != '(')
             throw ReadError("Fluent: expected a section header");
@@ -133849,7 +133871,7 @@ struct FluentReader {
                 ++i;
             if (i > j)
                 rValues.push_back(
-                    std::strtoll(std::string(mD.substr(j, i - j)).c_str(), nullptr, 16));
+                    std::strtoll(std::string(mD.substr(j, i - j)).c_str(), nullptr, Base));
         }
         mP = q + 1;
         // A body opens with '(' after nothing but blanks; anything else (a
@@ -133954,6 +133976,7 @@ struct FluentNodeZone {
 struct FluentFace {
     std::int64_t mZone, mBc, mC0, mC1;
     std::vector<std::int64_t> mNodes;
+    std::int64_t mId = 0;  ///< the face id, for `.dat` face-zone values
 };
 
 struct FluentCellZone {
@@ -134004,7 +134027,98 @@ void fluent_face_rows(const std::vector<std::int64_t>& rValues, std::size_t Coun
 
 }  // namespace
 
+namespace {
+
+/// One `.dat` data section: `(300 (sub zone size ntime nphase first last) (values))`.
+struct FluentDataSection {
+    std::int64_t mSub, mZone, mSize, mFirst, mLast;
+    std::vector<double> mValues;
+};
+
+/// The data sections of a Fluent `.dat` file (`300` ASCII, `2300` float32, `3300` float64;
+/// the header integers are decimal). Every other section is skipped.
+std::vector<FluentDataSection> fluent_read_dat(const std::string& rPath) {
+    const detail::FileSource source =
+        detail::open_source(rPath, "Fluent: could not open data file " + rPath);
+    const std::string_view data = source.View();
+    FluentReader rd(data);
+    std::vector<FluentDataSection> out;
+    std::vector<std::int64_t> head;
+    while (true) {
+        rd.SkipWs();
+        if (rd.Eof())
+            break;
+        if (rd.At() != '(')
+            throw ReadError("Fluent: expected a section in the data file at byte " +
+                            std::to_string(rd.mP));
+        ++rd.mP;
+        rd.SkipWs();
+        const std::size_t idx0 = rd.mP;
+        while (!rd.Eof() && std::isdigit(static_cast<unsigned char>(rd.At())))
+            ++rd.mP;
+        const std::string index(data.substr(idx0, rd.mP - idx0));
+        if (index == "300" || index == "2300" || index == "3300") {
+            const bool has_body = rd.Header(head, 10);
+            if (head.size() < 7)
+                throw ReadError("Fluent: a data section header needs seven integers");
+            FluentDataSection s{head[0], head[1], head[2], head[5], head[6], {}};
+            const std::size_t count = fluent_id_span(s.mFirst, s.mLast);
+            if (s.mSize < 1 || count > data.size() ||
+                static_cast<std::uint64_t>(s.mSize) > data.size() / std::max<std::size_t>(count, 1))
+                throw ReadError("Fluent: a data section declares more values than the file holds");
+            const std::size_t n = count * static_cast<std::size_t>(s.mSize);
+            if (has_body) {
+                if (index == "300") {
+                    for (std::string_view t : rd.AsciiBody())
+                        s.mValues.push_back(detail::parse_double(std::string(t)));
+                } else if (index == "2300") {
+                    for (float x : rd.Binary<float>(n))
+                        s.mValues.push_back(x);
+                } else {
+                    s.mValues = rd.Binary<double>(n);
+                }
+                if (s.mValues.size() != n)
+                    throw ReadError("Fluent: a data section holds " +
+                                    std::to_string(s.mValues.size()) + " values, not " +
+                                    std::to_string(n));
+                out.push_back(std::move(s));
+            }
+        } else if (index.size() > 2 && (index.rfind("20", 0) == 0 || index.rfind("30", 0) == 0)) {
+            std::size_t q = data.find("End of Binary Section", rd.mP);
+            q = q == std::string::npos ? q : data.find(')', q);
+            rd.mP = q == std::string::npos ? data.size() : q + 1;
+        } else {
+            rd.SkipBalanced(1);
+        }
+    }
+    return out;
+}
+
+/// The variable a data sub-section id holds, by the documented ids.
+std::string fluent_data_name(std::int64_t Sub) {
+    switch (Sub) {
+        case 1:
+            return "pressure";
+        case 2:
+            return "x_velocity";
+        case 3:
+            return "y_velocity";
+        case 4:
+            return "z_velocity";
+        case 5:
+            return "temperature";
+        default:
+            return "fluent:" + std::to_string(Sub);
+    }
+}
+
+}  // namespace
+
 Mesh read_ansys(const std::string& rPath) {
+    return read_ansys(rPath, AnsysReadOptions{});
+}
+
+Mesh read_ansys(const std::string& rPath, const AnsysReadOptions& rOptions) {
     fluent_refuse_early(rPath);
     const detail::FileSource source = detail::open_source(rPath, "Could not open file: " + rPath);
     const std::string_view data = source.View();
@@ -134021,6 +134135,7 @@ Mesh read_ansys(const std::string& rPath) {
     };
     std::vector<Legacy> legacy;
     std::map<std::int64_t, std::string> names;
+    std::map<std::string, std::string> zone_types;
     std::vector<std::int64_t> head;
 
     while (true) {
@@ -134055,8 +134170,10 @@ Mesh read_ansys(const std::string& rPath) {
                     detail::TextStream iss(data.substr(rd.mP + 1, q - rd.mP - 1));
                     std::int64_t id = 0;
                     std::string type, name;
-                    if (iss >> id >> type >> name)
+                    if (iss >> id >> type >> name) {
                         names[id] = name;
+                        zone_types[name] = type;
+                    }
                 }
             }
             rd.SkipBalanced(1);
@@ -134114,7 +134231,10 @@ Mesh read_ansys(const std::string& rPath) {
                 } else {
                     values = rd.BinaryMixedFaces<std::int64_t>(count);
                 }
+                const std::size_t before = faces.size();
                 fluent_face_rows(values, count, face_type, zone, bc, faces);
+                for (std::size_t k = before; k < faces.size(); ++k)
+                    faces[k].mId = first + static_cast<std::int64_t>(k - before);
             } else {
                 const std::int64_t zone_type = head[3];
                 const std::int64_t element_type = head.size() > 4 ? head[4] : 0;
@@ -134236,6 +134356,7 @@ Mesh read_ansys(const std::string& rPath) {
         std::vector<std::int64_t> mFlat;
         std::vector<std::int64_t> mRows{0};
         std::vector<std::int64_t> mFaces{0};
+        std::vector<std::int64_t> mIds;  // the Fluent cell (or face) id of each row
     };
     std::vector<Bucket> volume, surface;
     auto bucket = [](std::vector<Bucket>& rList, std::int64_t Zone,
@@ -134243,7 +134364,7 @@ Mesh read_ansys(const std::string& rPath) {
         for (auto& b : rList)
             if (b.mZone == Zone && b.mType == rType)
                 return b;
-        rList.push_back({Zone, rType, {}, {}, {0}, {0}});
+        rList.push_back({Zone, rType, {}, {}, {0}, {0}, {}});
         return rList.back();
     };
     auto face_type_name = [](std::size_t N, bool Surface) -> std::string {
@@ -134274,7 +134395,9 @@ Mesh read_ansys(const std::string& rPath) {
                 ++skipped;
                 continue;
             }
-            bucket(volume, zone, face_type_name(ring.size(), false)).mConn.push_back(ring);
+            Bucket& b = bucket(volume, zone, face_type_name(ring.size(), false));
+            b.mConn.push_back(ring);
+            b.mIds.push_back(cid);
             continue;
         }
         auto [type, conn] = face_cells::reconstruct_cell(cf, p3);
@@ -134287,10 +134410,13 @@ Mesh read_ansys(const std::string& rPath) {
                 poly.mRows.push_back(static_cast<std::int64_t>(poly.mFlat.size()));
             }
             poly.mFaces.push_back(static_cast<std::int64_t>(poly.mRows.size() - 1));
+            poly.mIds.push_back(cid);
         } else if (conn.empty()) {
             ++skipped;
         } else {
-            bucket(volume, zone, type).mConn.push_back(std::move(conn));
+            Bucket& b = bucket(volume, zone, type);
+            b.mConn.push_back(std::move(conn));
+            b.mIds.push_back(cid);
         }
     }
     if (skipped)
@@ -134308,10 +134434,14 @@ Mesh read_ansys(const std::string& rPath) {
         // Outward from the domain: the normal points into c0.
         if (live(f.mC0) && !live(f.mC1))
             std::reverse(g.begin(), g.end());
-        bucket(surface, f.mZone, face_type_name(g.size(), true)).mConn.push_back(std::move(g));
+        Bucket& b = bucket(surface, f.mZone, face_type_name(g.size(), true));
+        b.mConn.push_back(std::move(g));
+        b.mIds.push_back(f.mId);
     }
 
     std::vector<NDArray> zone_data;
+    std::vector<std::vector<std::int64_t>> block_ids;  // Fluent ids per output block
+    std::vector<bool> block_volume;
     // (zone, dim) -> global cell ids, first-seen order
     std::vector<std::pair<std::pair<std::int64_t, int>, std::vector<std::int64_t>>> regions;
     std::int64_t offset = 0;
@@ -134332,6 +134462,8 @@ Mesh read_ansys(const std::string& rPath) {
                     std::copy(b.mConn[r].begin(), b.mConn[r].end(), c + r * k);
                 mesh.AddCellBlock(b.mType, std::move(conn));
             }
+            block_ids.push_back(b.mIds);
+            block_volume.push_back(pGroup == &volume);
             NDArray z(DType::Int64, {n});
             std::fill(z.As<std::int64_t>(), z.As<std::int64_t>() + n, b.mZone);
             zone_data.push_back(std::move(z));
@@ -134356,6 +134488,67 @@ Mesh read_ansys(const std::string& rPath) {
         NDArray e(DType::Int64, {ids.size()});
         std::copy(ids.begin(), ids.end(), e.As<std::int64_t>());
         mesh.AddRegion(Region(name, RegionKind::Cell, key.second, key.first, std::move(e)));
+    }
+    // Zone types (section 39/45), by zone name.
+    for (const auto& [name, type] : zone_types) {
+        NDArray t(DType::UInt8, {type.size()});
+        std::memcpy(t.Data(), type.data(), type.size());
+        mesh.AddFieldData("fluent:zone_type:" + name, std::move(t));
+    }
+    // The solution data of a `.dat`: by cell id on the cell zones, by face id on the
+    // face zones' boundary faces.
+    std::string dat = rOptions.mData;
+    if (dat.empty() && rOptions.mSiblingData && rPath.size() > 4 &&
+        rPath.compare(rPath.size() - 4, 4, ".cas") == 0) {
+        const std::string sibling = rPath.substr(0, rPath.size() - 4) + ".dat";
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(sibling, ec))
+            dat = sibling;
+    }
+    if (!dat.empty()) {
+        std::set<std::int64_t> cell_zone_ids;
+        for (const auto& z : cell_zones)
+            cell_zone_ids.insert(z.mZone);
+        // name -> (width, cell id -> values, face id -> values)
+        struct Field {
+            std::size_t mWidth = 1;
+            std::unordered_map<std::int64_t, std::size_t> mCell, mFace;
+            std::vector<double> mValues;
+        };
+        std::map<std::string, Field> fields;
+        for (const FluentDataSection& s : fluent_read_dat(dat)) {
+            Field& f = fields[fluent_data_name(s.mSub)];
+            f.mWidth = static_cast<std::size_t>(s.mSize);
+            const bool on_cells = cell_zone_ids.count(s.mZone) > 0;
+            for (std::size_t k = 0; k < fluent_id_span(s.mFirst, s.mLast); ++k) {
+                const std::int64_t id = s.mFirst + static_cast<std::int64_t>(k);
+                (on_cells ? f.mCell : f.mFace)[id] = f.mValues.size();
+                f.mValues.insert(
+                    f.mValues.end(), s.mValues.begin() + static_cast<std::ptrdiff_t>(k * f.mWidth),
+                    s.mValues.begin() + static_cast<std::ptrdiff_t>((k + 1) * f.mWidth));
+            }
+        }
+        for (const auto& [name, f] : fields) {
+            std::vector<NDArray> blocks;
+            for (std::size_t b = 0; b < block_ids.size(); ++b) {
+                const auto& ids = block_ids[b];
+                NDArray a(DType::Float64, f.mWidth == 1
+                                              ? std::vector<std::size_t>{ids.size()}
+                                              : std::vector<std::size_t>{ids.size(), f.mWidth});
+                double* ap = a.As<double>();
+                std::fill(ap, ap + a.Size(), std::nan(""));
+                const auto& lookup = block_volume[b] ? f.mCell : f.mFace;
+                for (std::size_t r = 0; r < ids.size(); ++r) {
+                    const auto it = lookup.find(ids[r]);
+                    if (it != lookup.end())
+                        std::copy_n(f.mValues.begin() + static_cast<std::ptrdiff_t>(it->second),
+                                    f.mWidth, ap + r * f.mWidth);
+                }
+                blocks.push_back(std::move(a));
+            }
+            if (!blocks.empty())
+                mesh.AddCellData(name, std::move(blocks));
+        }
     }
     return mesh;
 }
@@ -315512,7 +315705,7 @@ const std::vector<RegistryRow>& registry_rows() {
                        const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); },
          .mMetadata = meshioplusplus::read_frd_metadata},
         {.mName = "ansys",
-         .mRead = meshioplusplus::read_ansys,
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_ansys(rPath); },
          .mWrite = [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
         {.mName = "avsucd",
@@ -316162,6 +316355,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".gltf", "gltf"},
         {".dxf", "dxf"},
         {".14", "adcirc"},
+        {".cas", "ansys"},
         {".gii", "gifti"},
         {".3mf", "3mf"},
         {".las", "las"},

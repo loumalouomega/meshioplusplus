@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** legacy Fluent cases (`.cas`, read as a `.msh` with zone types as `fluent:zone_type:<name>`) and their `.dat` data files (sections 300, 2300 and 3300 as cell data by cell and boundary-face id; `data=` or the sibling `.dat`), both engines (roadmap 2.4.1.1, 2.4.1.2).
+
+
 - **Added:** textures (roadmap 2.4.8): glTF embeds `field_data["texture:png"]` as the material's `baseColorTexture` (a `texture=` write option takes a path, PNG bytes or an image) and reads the first image back; OBJ reads `usemtl` groups as cell regions and the `.mtl` `Kd` and `map_Kd`, and writes `mtllib`, `usemtl` and a `.mtl`/`.png` beside the file; and `bake_texture` draws a point or cell array into a texture through `uv` (core, Python, both CLIs as `bake-texture`, MCP). Both engines write the same glTF bytes and draw the same pixels.
 
 

@@ -10230,7 +10230,16 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         core_nogil([&] { return meshioplusplus::write_ansys(path, cpp, binary); });
     });
-    core_def_read(m, "ansys_read", "ansys", &meshioplusplus::read_ansys);
+    m.def("ansys_read",
+          guard_read("ansys",
+                     [](const std::string& path, const std::string& data, bool sibling_data) {
+                         meshioplusplus::AnsysReadOptions o;
+                         o.mData = data;
+                         o.mSiblingData = sibling_data;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_ansys(path, o); }));
+                     }),
+          py::arg("path"), py::arg("data") = "", py::arg("sibling_data") = true);
 
     // Ansys MAPDL coded database (.cdb/.inp). CMBLOCK components arrive as
     // point/cell regions (the Python point_sets/cell_sets views read them).
