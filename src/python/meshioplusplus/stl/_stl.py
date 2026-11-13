@@ -15,6 +15,7 @@ from .._common import warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
+from .._regions import Region
 
 
 def read(filename):
@@ -42,8 +43,8 @@ def read(filename):
 
         # rewind and skip header
         f.seek(0)
-        f.readline()
-        return _read_ascii(f)
+        header = f.readline().decode(errors="replace").strip()
+        return _read_ascii(f, header)
 
 
 # np.loadtxt is super slow
@@ -54,8 +55,12 @@ def iter_loadtxt(
     comments: Union[str, tuple[str, ...]] = "#",
     dtype=float,
     usecols: Union[tuple[int], None] = None,
+    solids: Union[list, None] = None,
 ):
+    nrows = 0
+
     def iter_func():
+        nonlocal nrows
         items = None
         for _ in range(skiprows):
             try:
@@ -66,7 +71,10 @@ def iter_loadtxt(
         for line in infile:
             line = line.decode().strip()
             if line.startswith(comments):
+                if solids is not None and line.startswith("solid"):
+                    solids.append((line[5:].strip(), nrows // 4))
                 continue
+            nrows += 1
             # remove all text
             items = line.split()[-3:]
             usecols_ = range(len(items)) if usecols is None else usecols
@@ -83,7 +91,7 @@ def iter_loadtxt(
     return data.reshape((-1, iter_loadtxt.rowlength))
 
 
-def _read_ascii(f):
+def _read_ascii(f, header=None):
     # The file has the form
     # ```
     # solid foo
@@ -115,10 +123,14 @@ def _read_ascii(f):
     #     comments=["solid", "facet", "outer loop", "endloop", "endfacet", "endsolid"],
     #     usecols=(1, 2, 3),
     # )
+    solids = []
+    if header is not None and header.startswith("solid"):
+        solids.append((header[5:].strip(), 0))
     data = iter_loadtxt(
         f,
         comments=("solid", "outer loop", "endloop", "endfacet", "endsolid"),
         # usecols=(1, 2, 3),
+        solids=solids,
     )
 
     if data.shape[0] % 4 != 0:
@@ -139,7 +151,25 @@ def _read_ascii(f):
         points, cells = data_from_facets(facets)
         cell_data = {"facet_normals": [facet_normals]}
 
-    return Mesh(points, cells, cell_data=cell_data)
+    regions = _solid_regions(solids, len(data) // 3) if len(cells) else []
+    return Mesh(points, cells, cell_data=cell_data, regions=regions)
+
+
+def _solid_regions(solids, num_facets):
+    """Several ``solid`` records of an ASCII file as cell regions named after
+    them (``solid_<k>`` when unnamed, ``_<k>`` appended to repeated names)."""
+    if len(solids) < 2:
+        return []
+    regions = []
+    used = set()
+    for k, (name, first) in enumerate(solids):
+        last = solids[k + 1][1] if k + 1 < len(solids) else num_facets
+        name = name or f"solid_{k}"
+        while name in used:
+            name = f"{name}_{k}"
+        used.add(name)
+        regions.append(Region(name, "cell", np.arange(first, last, dtype=np.int64)))
+    return regions
 
 
 def data_from_facets(facets):
@@ -242,35 +272,72 @@ def write(filename, mesh, binary=False, skin=True):
         nrm = np.sqrt(np.einsum("ij,ij->i", normals, normals))
         normals = (normals.T / nrm).T
 
+    solids = _solids_to_write(mesh) if not binary else None
     if binary:
         attr = None
         if "stl:attribute" in mesh.cell_data:
             attr = mesh.get_cell_data("stl:attribute", "triangle")
         _write_binary(filename, pts, normals, attr)
     else:
-        _write_ascii(filename, pts, normals)
+        _write_ascii(filename, pts, normals, solids)
 
 
-def _write_ascii(filename, pts, normals):
+def _solids_to_write(mesh):
+    """``[(name, triangle positions)]`` when the mesh has two or more cell
+    regions over its triangles, with the triangles no region holds in a final
+    unnamed solid; else ``None`` (one solid)."""
+    regions = [r for r in getattr(mesh, "regions", []) if r.kind == "cell"]
+    if len(regions) < 2:
+        return None
+    position = {}
+    n = 0
+    base = 0
+    for block in mesh.cells:
+        if block.type == "triangle":
+            for i in range(len(block.data)):
+                position[base + i] = n
+                n += 1
+        base += len(block.data)
+    out = []
+    held = set()
+    for r in regions:
+        tris = [position[int(c)] for c in r.entries if int(c) in position]
+        held.update(tris)
+        out.append((r.name, np.array(sorted(tris), dtype=np.int64)))
+    rest = np.array([i for i in range(n) if i not in held], dtype=np.int64)
+    if len(rest):
+        out.append(("", rest))
+    return out
+
+
+def _write_ascii(filename, pts, normals, solids=None):
     with open_file(filename, "w") as fh:
-        fh.write("solid\n")
-        for local_pts, normal in zip(pts, normals):
-            out = (
-                "\n".join(
-                    [
-                        "facet normal {} {} {}".format(*normal),
-                        " outer loop",
-                        "  vertex {} {} {}".format(*local_pts[0]),
-                        "  vertex {} {} {}".format(*local_pts[1]),
-                        "  vertex {} {} {}".format(*local_pts[2]),
-                        " endloop",
-                        "endfacet",
-                    ]
-                )
-                + "\n"
+        if solids is None:
+            _write_solid(fh, "", pts, normals)
+        else:
+            for name, idx in solids:
+                _write_solid(fh, name, pts[idx], normals[idx])
+
+
+def _write_solid(fh, name, pts, normals):
+    fh.write(f"solid {name}\n" if name else "solid\n")
+    for local_pts, normal in zip(pts, normals):
+        out = (
+            "\n".join(
+                [
+                    "facet normal {} {} {}".format(*normal),
+                    " outer loop",
+                    "  vertex {} {} {}".format(*local_pts[0]),
+                    "  vertex {} {} {}".format(*local_pts[1]),
+                    "  vertex {} {} {}".format(*local_pts[2]),
+                    " endloop",
+                    "endfacet",
+                ]
             )
-            fh.write(out)
-        fh.write("endsolid\n")
+            + "\n"
+        )
+        fh.write(out)
+    fh.write(f"endsolid {name}\n" if name else "endsolid\n")
 
 
 def _write_binary(filename, pts, normals, attr=None):

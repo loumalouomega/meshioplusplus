@@ -12,6 +12,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 The first steps of the [freeform fit CAD plan](doc/fit_cad_freeform_plan.md). Everything is off by default, so no default output changes: the `fit_cad` golden digests are as they were.
 
+- **STL solids** (roadmap 2.3.9.2, [STL](doc/formats/stl.md)): several `solid` records of an ASCII file are read as cell regions named after them, and an ASCII mesh with two or more cell regions is written as that many solids, in both engines.
 - **PLY** (roadmap 2.3.9.4, [PLY](doc/formats/ply.md)): a list-typed vertex property is refused by name in both engines (the Python twin raised a bare `KeyError`, against what the page said), and a point index above 2³¹ − 1 is refused on write instead of wrapping to int32.
 - **Medit normals** (roadmap 2.3.9.5, [Medit](doc/formats/medit.md)): ASCII `Normals` and `NormalAtVertices` are read into `point_data["medit:normal"]` (`NaN` where a vertex has none) and written back, in both engines; the binary `.meshb` path still skips them.
 - **OBJ normal indices** (roadmap 2.3.9.3, [OBJ](doc/formats/obj.md)): the per-corner `vn` index of `f v//vn` and `f v/vt/vn` is read, and a point whose corners name different normals is split on the distinct `(vt, vn)` pairs, with `obj:parent_point`, in both engines. Before, the index was dropped and normals that were not one per vertex were scrambled.
