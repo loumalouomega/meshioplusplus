@@ -3,6 +3,8 @@ wheel (wheels.yml's CIBW_TEST_COMMAND; standalone, no pytest): the add-on
 registers its tetrahedral mesher with the base wheel's shared core, and
 ``tetrahedralize`` fills a cube skin with tetrahedra, keeping its triangles."""
 
+from importlib import metadata
+
 import meshioplusplus as mp
 from meshioplusplus import _core, _plugins
 
@@ -17,8 +19,6 @@ assert report["backend"] == "netgen", report["backend"]
 assert report["boundary_preserved"] and report["num_tetrahedra"] > 0, report
 assert abs(report["volume"] - 1.0) < 1e-9, report["volume"]
 print("Netgen wheel smoke OK:", report["num_tetrahedra"], "tetrahedra")
-
-from importlib import metadata
 
 _files = {str(f) for f in metadata.files("meshioplusplus-netgen")}
 for _name in ("COPYING.LESSER", "RELINKING.md", "LICENSE"):

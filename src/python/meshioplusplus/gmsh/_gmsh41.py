@@ -13,11 +13,11 @@ from .._mesh import CellBlock, Mesh
 from .common import (
     ELEMENT_TAGS,
     KEPT_SECTIONS,
-    _ghost_cell_data,
     _capture_section,
     _element_node_cell_data,
     _fast_forward_over_blank_lines,
     _fast_forward_to_end_block,
+    _ghost_cell_data,
     _gmsh_to_meshio_order,
     _gmsh_to_meshio_type,
     _meshio_to_gmsh_order,

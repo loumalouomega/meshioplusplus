@@ -3,6 +3,8 @@ wheel (wheels.yml's CIBW_TEST_COMMAND; standalone, no pytest): the add-on
 registers its remesher with the base wheel's shared core, ``adapt`` remeshes a
 tetrahedral sphere, and ``move`` (which needs ELAS) raises naming it."""
 
+from importlib import metadata
+
 import numpy as np
 
 import meshioplusplus as mp
@@ -24,8 +26,6 @@ except (NotImplementedError, RuntimeError) as exc:
 else:
     raise AssertionError("move must not run without ELAS")
 print("MMG wheel smoke OK:", len(adapted.points), "points")
-
-from importlib import metadata
 
 _files = {str(f) for f in metadata.files("meshioplusplus-mmg")}
 for _name in ("COPYING.LESSER", "RELINKING.md", "LICENSE"):
