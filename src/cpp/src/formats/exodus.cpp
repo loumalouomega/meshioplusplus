@@ -36,6 +36,7 @@
 
 // Project includes
 #include "../detail/library_lock.hpp"
+#include "../detail/netcdf_util.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
@@ -56,13 +57,9 @@ namespace meshioplusplus {
 
 namespace {
 
+// The shared netCDF helpers (detail/netcdf_util.hpp), with Exodus's own messages.
 void check(int status, const char* pWhat, bool writing = false) {
-    if (status != NC_NOERR) {
-        std::string msg = std::string("Exodus/netCDF: ") + pWhat + ": " + nc_strerror(status);
-        if (writing)
-            throw WriteError(msg);
-        throw ReadError(msg);
-    }
+    detail::nc::check(status, pWhat, writing, "Exodus/netCDF");
 }
 
 const std::unordered_map<std::string, std::string>& exodus_to_meshio() {
@@ -115,127 +112,31 @@ NDArray exo_gather_columns(const NDArray& rIn, const std::vector<int>& rPerm) {
     return out;
 }
 
-nc_type nc_type_of(DType dt) {
-    return detail::DTypeUtils::Pick<nc_type>(
-        dt, {NC_FLOAT, NC_DOUBLE, NC_BYTE, NC_SHORT, NC_INT, NC_INT64, NC_UBYTE, NC_USHORT, NC_UINT,
-             NC_UINT64});
-}
+using detail::nc::nc_type_of;
 
 DType dtype_of(nc_type t) {
-    switch (t) {
-        case NC_FLOAT:
-            return DType::Float32;
-        case NC_DOUBLE:
-            return DType::Float64;
-        case NC_BYTE:
-            return DType::Int8;
-        case NC_SHORT:
-            return DType::Int16;
-        case NC_INT:
-            return DType::Int32;
-        case NC_INT64:
-            return DType::Int64;
-        case NC_UBYTE:
-            return DType::UInt8;
-        case NC_USHORT:
-            return DType::UInt16;
-        case NC_UINT:
-            return DType::UInt32;
-        case NC_UINT64:
-            return DType::UInt64;
-        default:
-            throw ReadError("Exodus: unsupported netCDF variable type");
-    }
+    return detail::nc::dtype_of(t, "Exodus");
 }
 
-// Read a whole variable (or a start/count hyperslab) into an NDArray.
 NDArray read_var(int ncid, int varid, const std::vector<std::size_t>& rStart,
                  const std::vector<std::size_t>& rCount) {
-    nc_type t;
-    check(nc_inq_vartype(ncid, varid, &t), "inq_vartype");
-    DType dt = dtype_of(t);
-    std::vector<std::size_t> shape;
-    shape.reserve(rCount.size());
-    for (std::size_t c : rCount)
-        shape.push_back(c);
-    NDArray out(dt, shape);
-    if (out.Size() > 0)
-        check(nc_get_vara(ncid, varid, rStart.data(), rCount.data(), out.Data()), "get_vara");
-    return out;
+    return detail::nc::read_var(ncid, varid, rStart, rCount, "Exodus/netCDF", "Exodus");
 }
 
 std::vector<std::size_t> var_dims(int ncid, int varid) {
-    int ndims;
-    check(nc_inq_varndims(ncid, varid, &ndims), "inq_varndims");
-    std::vector<int> dimids(ndims);
-    check(nc_inq_vardimid(ncid, varid, dimids.data()), "inq_vardimid");
-    std::vector<std::size_t> out;
-    for (int d : dimids) {
-        std::size_t len;
-        check(nc_inq_dimlen(ncid, d, &len), "inq_dimlen");
-        out.push_back(len);
-    }
-    return out;
+    return detail::nc::var_dims(ncid, varid, "Exodus/netCDF");
 }
 
-// A char variable whose LAST dimension is the string width -> list of strings.
-//
-// Covers both shapes Exodus uses: the 2-D `(n, len_string)` name arrays
-// (`eb_names`, `ns_names`, `ss_names`, `name_nod_var`, ...) and the 3-D
-// `(num_qa_rec, four, len_string)` QA records, which flatten to 4 strings per
-// record -- the same order the Python reference reader appends them in.
 std::vector<std::string> read_names(int ncid, int varid) {
-    std::vector<std::size_t> dims = var_dims(ncid, varid);
-    if (dims.empty())
-        return {};
-    const std::size_t w = dims.back();
-    std::size_t n = 1;
-    for (std::size_t k = 0; k + 1 < dims.size(); ++k)
-        n *= dims[k];
-    std::vector<char> buf(n * w, '\0');
-    if (n * w > 0)
-        check(nc_get_var_text(ncid, varid, buf.data()), "get names");
-    std::vector<std::string> out;
-    out.reserve(n);
-    for (std::size_t i = 0; i < n; ++i)
-        out.emplace_back(buf.data() + i * w, strnlen(buf.data() + i * w, w));
-    return out;
+    return detail::nc::read_names(ncid, varid, "Exodus/netCDF");
 }
 
-// A netCDF text attribute, with the padding some writers count as part of its
-// own length trimmed off.
-//
-// NetCDF.jl -- what PeriLab and other Julia solvers write Exodus with -- stores
-// the C string's terminating NUL *inside* the attribute, so a SPHERE block's
-// `elem_type` arrives as the 7 characters "SPHERE\0" and matches no key in
-// `exodus_to_meshio()`. The read then failed with "unknown element type SPHERE"
-// -- the NUL invisible, since `std::runtime_error::what()` is a `const char*`
-// that stops at it. netCDF4-python strips the NUL on the way in, so the Python
-// reference never saw this and the shim's fallback hid it everywhere except
-// WASM, which has no fallback. Fixed-width writers pad with spaces instead;
-// both are trimmed here.
 std::string read_att_text(int ncid, int varid, const char* pName) {
-    std::size_t attlen = 0;
-    check(nc_inq_attlen(ncid, varid, pName, &attlen), pName);
-    std::string out(attlen, '\0');
-    if (attlen > 0)
-        check(nc_get_att_text(ncid, varid, pName, out.data()), pName);
-    // The set is built with an explicit length: a `const char*` would end at
-    // the NUL that is the whole point of this trim.
-    const std::size_t last = out.find_last_not_of(std::string("\0 \t\r\n", 5));
-    out.erase(last == std::string::npos ? 0 : last + 1);
-    return out;
+    return detail::nc::read_att_text(ncid, varid, pName, "Exodus/netCDF");
 }
 
-// Read a 1-D integer variable as int64 (ids, set members, side numbers).
 std::vector<std::int64_t> read_ints(int ncid, int varid) {
-    std::vector<std::size_t> dims = var_dims(ncid, varid);
-    const std::size_t n = dims.empty() ? 0 : dims[0];
-    std::vector<std::int64_t> out(n, 0);
-    if (n > 0)
-        check(nc_get_var_longlong(ncid, varid, reinterpret_cast<long long*>(out.data())),
-              "get ints");
-    return out;
+    return detail::nc::read_ints(ncid, varid, "Exodus/netCDF");
 }
 
 // The numeric suffix of a variable name, e.g. "connect12" -> 12, "connect" -> 1.
