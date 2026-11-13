@@ -48,6 +48,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 | <span id="h5m">`h5m`</span> |  | ✓ | ✓ |  | ✓ |  |  |  | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | — | — | — |
 | <span id="hmf">`hmf`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | `p_f64` float64, `p_i32` int32, `p_vec` float64 | `c_f64` float64, `c_i32` int32 | — | — |
 | <span id="ip">`ip`</span> | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | ✗ | exact | `p_f64` float64, `p_i32` float64 | — | — | — |
+| <span id="las">`las`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | exact | — | — | — | — |
 | <span id="libmesh">`libmesh`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="lsdyna">`lsdyna`</span> | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | exact | — | — | — | cell, point, side |
 | <span id="lsdyna-binout">`lsdyna_binout`</span> | ✓ | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | → vtx | approx | `p_f64` float64, `p_i32` float64 | — | — | — |
@@ -132,6 +133,7 @@ The per-format pages say *why* something is lost; this page says *what*. Region 
 - **`gifti`**: A GIFTI surface is one triangle set with per-vertex arrays in float32 or int32; a point region is written only as a LabelTable entry (a non-negative tag).
 - **`gltf`**: A surface export: volume and 2-D cells come back as their triangulated skin, positions are `float32`, and `weld=True` merges the vertices split per smooth fan.
 - **`ip`**: An integration-point cloud: points and nodal values, no cells.
+- **`las`**: A LAS file is a point cloud with a fixed set of per-point fields (intensity, returns, classification, GPS time, colour); every node is kept as a vertex, and other arrays have no field to go in.
 - **`libmesh`**: A `.xda`/`.xdr` holds geometry, subdomains, p-levels, boundaries and the refinement tree, and no data arrays; `libmesh:level` is derived from the tree.
 - **`lsdyna_binout`**: A binout holds `nodout`'s nodes, not elements: the points come back as a `vertex` cloud, single precision, and only `nodout`'s own vectors (`displacement`...) are `(n, 3)`; per-point scalars come back as float64 (an integer one is stored as `int32`, and the reader widens every per-point array to float64), and the canonical `fd` is not a `binout:` name.
 - **`lsdyna_d3plot`**: Single-precision words, so coordinates and data come back rounded to float32. Only what the state layout names is kept: the nodal variables (`displacement`, `velocity`, `temperature` ...), the element variables (`stress`, `strain`, `history_variables`, the shell and beam resultants ...), `lsdyna:alive` and the `global_*` field data; the probe's arrays are not. Blocks come back by family (solids, beams, shells, SPH particles; a vertex is an SPH particle), and a cell belongs to one part, so only the first cell region holding it survives.

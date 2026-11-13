@@ -1185,6 +1185,24 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": ["cell", "point"],
     },
+    "las": {
+        "cells": {
+            "vertex": "exact",
+            "line": "as vertex",
+            "triangle": "as vertex",
+            "quad": "as vertex",
+            "tetra": "as vertex",
+            "hexahedron": "as vertex",
+            "wedge": "as vertex",
+            "pyramid": "as vertex",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A LAS file is a point cloud with a fixed set of per-point fields (intensity, returns, classification, GPS time, colour); every node is kept as a vertex, and other arrays have no field to go in.",
+    },
     "pcd": {
         "cells": {
             "vertex": "exact",

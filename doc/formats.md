@@ -74,6 +74,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#off) |
 | [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | ✓ | — | [4/8 cells · data PC · regions CPS](./conformance.md#openfoam) |
 | [`patran`](./formats/patran.md) | `.pat`, `.out` | ✓ | ✓ | — | [7/8 cells · no data · regions CP](./conformance.md#patran) |
+| [`las`](./formats/las.md) | `.las` | ✓ (1.2 to 1.4, point formats 0 to 10) | ✓ (1.4, formats 6 to 8) | — | [1/8 cells · no data](./conformance.md#las) |
 | [`pcd`](./formats/pcd.md) | `.pcd` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#pcd) |
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#permas) |
 | [`plot3d`](./formats/plot3d.md) | `.p3d`, `.p3dfmt`, `.x`, `.g` | ✓ (ASCII, Fortran unformatted or raw; the variant inferred) | ✓ (unformatted, double) | — | [fails](./conformance.md#plot3d) |

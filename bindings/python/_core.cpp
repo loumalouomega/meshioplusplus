@@ -89,6 +89,7 @@
 #include "meshioplusplus/formats/adcirc.hpp"
 #include "meshioplusplus/formats/gifti.hpp"
 #include "meshioplusplus/formats/threemf.hpp"
+#include "meshioplusplus/formats/las.hpp"
 #include "meshioplusplus/formats/freesurfer.hpp"
 #include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
@@ -8304,6 +8305,22 @@ PYBIND11_MODULE(_core, m) {
                 [&] { return meshioplusplus::read_adcirc_metadata(path, {}).mTimeValues; });
         },
         py::arg("path"));
+    core_def_write(m, "las_write", &meshioplusplus::write_las);
+    m.def("las_read",
+          guard_read(
+              "las",
+              [](const std::string& path, std::size_t every, py::object arrays, bool points_only) {
+                  meshioplusplus::ReadOptions o;
+                  o.mPointsOnly = points_only;
+                  if (!arrays.is_none())
+                      o.mDataArrays = arrays.cast<std::vector<std::string>>();
+                  meshioplusplus::LasReadOptions las;
+                  las.mEvery = every;
+                  return meshioplusplus_py::mesh_to_py(
+                      core_nogil([&] { return meshioplusplus::read_las(path, o, las); }));
+              }),
+          py::arg("path"), py::arg("every") = 1, py::arg("arrays") = py::none(),
+          py::arg("points_only") = false);
     core_def_write(m, "threemf_write", &meshioplusplus::write_3mf);
     core_def_read(m, "threemf_read", "3mf", &meshioplusplus::read_3mf);
     core_def_write(m, "gifti_write", &meshioplusplus::write_gifti);

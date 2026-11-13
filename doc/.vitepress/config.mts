@@ -367,6 +367,7 @@ export default defineConfig({
           { text: "lsdyna_binout", link: "/formats/lsdyna_binout" },
           { text: "lsdyna_d3plot", link: "/formats/lsdyna_d3plot" },
           { text: "marc", link: "/formats/marc" },
+          { text: "las", link: "/formats/las" },
           { text: "mdpa", link: "/formats/mdpa" },
           { text: "med", link: "/formats/med" },
           { text: "medit", link: "/formats/medit" },

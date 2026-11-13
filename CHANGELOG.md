@@ -10,6 +10,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Added:** a native `las` format: ASPRS LAS 1.2 to 1.4, point formats 0 to 10 read (laspy's field names and types, VLRs kept verbatim, `every=` subsampling) and LAS 1.4 formats 6 to 8 written with identical bytes from both engines, checked against laspy (roadmap 2.4.6.1).
+
+
 - **Added:** a `3mf` format (the 3MF core specification: build items, objects, components and their transforms, units as `meshio:length_unit`, base materials as `3mf:color`; written one object per cell region), both engines with identical bytes, checked against lib3mf both ways; and `detail/zip_archive`, a ZIP reader and writer the single-member `.zip` input now goes through (roadmap 2.4.5).
 
 
