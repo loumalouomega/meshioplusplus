@@ -129,6 +129,7 @@ Under `src/python/meshioplusplus/`.
 | `_shims.py` | `plain_shims` and `vtk_xml_shims`, the read and write shims of the format packages that only try one `_core` entry point. |
 | `_common.py`, `_vtk_common.py`, `vtk/_legacy_common.py`, `vti/_vti.py` | Cell-type tables, warnings and XML helpers; the VTK cell conversions (with `FIXED_LAGRANGE`, the fixed-order high types written as VTK Lagrange cells); the legacy VTK sections and writer pieces; the lattice reader and writer. |
 | `_lagrange.py` (C++ twin `formats/lagrange_common.hpp`) | Arbitrary-order Lagrange cells: VTK's node lattice (`vtk_lattice`), Gmsh's (`gmsh_lattice`) and the permutation between them (`gmsh_to_vtk_order`), lattice weights and nodal interpolation. |
+| `_grid.py` (C++ twin `detail/lattice_cells.hpp`) | The lattice of structured data: `lattice_cells` gives the hexahedra (quads, lines) of an `ni x nj x nk` lattice of points with `i` fastest; the EnSight blocks, CGNS structured zones and VTKHDF `ImageData` readers share it. |
 | `_set_remap.py`, `_side_carry.py`, `_regions.py` | The shim-only `point_sets`/`cell_sets` carried through an operation; side regions by containment (the twin of `region_remap.cpp`); region helpers. |
 | `_data_common.py` | The data operations' shared vocabulary. |
 | `_ragged.py`, `_files.py`, `_compressed.py` | Ragged blocks that carry their CSR (`CsrRows`, `csr_of`), a polyhedron block's CSR whatever its storage (`polyhedron_csr`) and the gather of segments laid end to end (`ragged_gather`); buffer and path handling; compressed input. |
