@@ -3245,9 +3245,9 @@ meshioplusplus::SequenceResample val_to_resample(const val& rObject, const char*
 }
 
 SettingsDocument val_to_settings(const val& rSettings) {
-    check_settings_keys(
-        rSettings, "the settings object",
-        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
+    check_settings_keys(rSettings, "the settings object",
+                        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Prefetch",
+                         "Workers", "Resample"});
     SettingsDocument parsed;
     meshioplusplus::SequencePipeline& pipeline = parsed.mSeq;
     val version = rSettings["Version"];
@@ -3263,6 +3263,11 @@ SettingsDocument val_to_settings(const val& rSettings) {
     if (!parallel.isUndefined() && !parallel.isNull()) {
         parsed.mSequenceKeys = true;
         pipeline.mParallel = parallel.as<bool>();
+    }
+    val prefetch = rSettings["Prefetch"];
+    if (!prefetch.isUndefined() && !prefetch.isNull()) {
+        parsed.mSequenceKeys = true;
+        pipeline.mPrefetch = prefetch.as<bool>();
     }
     val workers = rSettings["Workers"];
     if (!workers.isUndefined() && !workers.isNull()) {

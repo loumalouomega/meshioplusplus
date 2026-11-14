@@ -4344,9 +4344,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     }
     if (!doc.is_object())
         pipe_schema_error("the settings document must be a JSON object");
-    pipe_check_keys(
-        doc, "the settings document",
-        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
+    pipe_check_keys(doc, "the settings document",
+                    {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Prefetch",
+                     "Workers", "Resample"});
 
     PipeDocument parsed;
     SequencePipeline& pipeline = parsed.mSeq;
@@ -4367,6 +4367,17 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     if (pipe_get(doc, "Parallel")) {
         parsed.mSequenceKeys = true;
         pipeline.mParallel = pipe_get_bool(doc, "Parallel", "the settings document", false);
+    }
+    if (const pipe_json* v = pipe_get(doc, "Prefetch")) {
+        parsed.mSequenceKeys = true;
+        // True or false, or the integers 1 and 0 (`"Prefetch": 1`).
+        if (v->is_boolean())
+            pipeline.mPrefetch = v->get<bool>();
+        else if ((v->is_number_integer() || v->is_number_unsigned()) &&
+                 (v->get<std::int64_t>() == 0 || v->get<std::int64_t>() == 1))
+            pipeline.mPrefetch = v->get<std::int64_t>() == 1;
+        else
+            pipe_schema_error("the settings document.Prefetch must be true, false, 1 or 0");
     }
     if (const pipe_json* v = pipe_get(doc, "Workers")) {
         parsed.mSequenceKeys = true;

@@ -40429,6 +40429,12 @@ struct SequencePipeline {
     /// already parallelizes internally, so a step-level parallel region nested
     /// over them would oversubscribe on every backend.
     bool mParallel = false;
+    /// Read step `i + 1` on a second thread while step `i` is processed and
+    /// written (`"Prefetch"` in a settings document; sequence and fan-out
+    /// modes and fan-in). Output, order and bytes are unchanged; the cost is a
+    /// second mesh alive. It sits in the padding after `mParallel`, so the
+    /// struct keeps its size and every other offset.
+    bool mPrefetch = false;
     /// Worker count for `mParallel`; 0 means "as many as there are cores".
     /// Ignored, with `mParallel`, by the C++ engine.
     int mWorkers = 0;
@@ -285568,9 +285574,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     }
     if (!doc.is_object())
         pipe_schema_error("the settings document must be a JSON object");
-    pipe_check_keys(
-        doc, "the settings document",
-        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
+    pipe_check_keys(doc, "the settings document",
+                    {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Prefetch",
+                     "Workers", "Resample"});
 
     PipeDocument parsed;
     SequencePipeline& pipeline = parsed.mSeq;
@@ -285591,6 +285597,17 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     if (pipe_get(doc, "Parallel")) {
         parsed.mSequenceKeys = true;
         pipeline.mParallel = pipe_get_bool(doc, "Parallel", "the settings document", false);
+    }
+    if (const pipe_json* v = pipe_get(doc, "Prefetch")) {
+        parsed.mSequenceKeys = true;
+        // True or false, or the integers 1 and 0 (`"Prefetch": 1`).
+        if (v->is_boolean())
+            pipeline.mPrefetch = v->get<bool>();
+        else if ((v->is_number_integer() || v->is_number_unsigned()) &&
+                 (v->get<std::int64_t>() == 0 || v->get<std::int64_t>() == 1))
+            pipeline.mPrefetch = v->get<std::int64_t>() == 1;
+        else
+            pipe_schema_error("the settings document.Prefetch must be true, false, 1 or 0");
     }
     if (const pipe_json* v = pipe_get(doc, "Workers")) {
         parsed.mSequenceKeys = true;
@@ -304094,6 +304111,7 @@ SelectResult select_region(const Mesh& rMesh, const SelectOptions& rOpt) {
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -305235,6 +305253,47 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
     return report;
 }
 
+// Reads the steps of a sequence in order, and with `Enabled` reads step
+// `i + 1` on a second thread while step `i` is processed and written. The
+// read goes through the same `sequence_read_step`, so the mesh, the errors and
+// their order are the serial ones: a failed read surfaces when its step is asked
+// for, after the step before it was written. A reader that uses HDF5 or netCDF
+// already takes the library lock, so the two threads never enter the library
+// together. The cost is a second mesh alive.
+class SeqReadAhead {
+public:
+    SeqReadAhead(const std::vector<SequenceEntry>& rEntries, const std::string& rFormat,
+                 const ReadOptions& rOptions, bool Enabled)
+        : mEntries(rEntries), mFormat(rFormat), mOptions(rOptions), mEnabled(Enabled) {}
+    SeqReadAhead(const SeqReadAhead&) = delete;
+    SeqReadAhead& operator=(const SeqReadAhead&) = delete;
+    ~SeqReadAhead() {
+        // A pending read is waited for, not abandoned: it holds references.
+        if (mNext.valid())
+            mNext.wait();
+    }
+    Mesh Read(std::size_t Index) {
+        Mesh mesh = mNext.valid() && mNextIndex == Index
+                        ? mNext.get()
+                        : sequence_read_step(mEntries, Index, mFormat, mOptions);
+        if (mEnabled && Index + 1 < mEntries.size()) {
+            mNextIndex = Index + 1;
+            mNext = std::async(std::launch::async, [this, Index] {
+                return sequence_read_step(mEntries, Index + 1, mFormat, mOptions);
+            });
+        }
+        return mesh;
+    }
+
+private:
+    const std::vector<SequenceEntry>& mEntries;
+    const std::string& mFormat;
+    const ReadOptions& mOptions;
+    bool mEnabled;
+    std::future<Mesh> mNext;
+    std::size_t mNextIndex = 0;
+};
+
 }  // namespace
 
 PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
@@ -305275,9 +305334,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
             throw WriteError(why);
         seq_check_series_write_options(ofmt, rPipeline.mOutput.mOptions);
         // One step, read and run through the pipeline, with its time.
+        SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
+                           rPipeline.mPrefetch);
         auto step = [&](std::size_t i, double& rTime) {
-            Mesh mesh =
-                sequence_read_step(entries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
+            Mesh mesh = ahead.Read(i);
             rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
                 rPipeline.mInput.mTimeFrom != SequenceTimeFrom::Index) {
@@ -305319,9 +305379,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
 
     // Sequence / FanOut: both write one file per entry, and differ only in
     // where the entries came from -- which sequence_expand already settled.
+    SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
+                       rPipeline.mPrefetch);
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        Mesh mesh =
-            sequence_read_step(entries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
+        Mesh mesh = ahead.Read(i);
         double time = entries[i].mTime;
         if (entries[i].mTimeSource == SequenceTimeSource::Index &&
             rPipeline.mInput.mTimeFrom != SequenceTimeFrom::Index) {

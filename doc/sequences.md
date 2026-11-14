@@ -190,7 +190,9 @@ An explicit `--time-step` / `Input.Options.TimeStep` **is** a deliberate single-
 
 > At most **one** `Mesh` is alive at any point inside a fan-in, a fan-out or a per-step run, and `read_sequence` yields at most one live mesh per iteration.
 
-> **Resampling** is the one exception, and it is bounded: a resampled run holds at most **two** source meshes (the pair bracketing the current target time) plus the blended step being written, whatever the step count. See [Resampling onto new times](#resampling-onto-new-times).
+> **`Prefetch`** is the other, and it is opt-in: it holds **two** meshes, the one being processed and the next step already read. See [`Prefetch`](#prefetch).
+
+> **Resampling** is an exception too, and it is bounded: a resampled run holds at most **two** source meshes (the pair bracketing the current target time) plus the blended step being written, whatever the step count. See [Resampling onto new times](#resampling-onto-new-times).
 
 This is a **contract, not an optimization** — the whole feature exists so a 500-step dataset is traversable on a laptop. No implementation may buffer the sequence, including "just for sorting" or "just to compute the time range": expansion returns the *plan* (paths, step indices and times), never meshes.
 
@@ -305,6 +307,12 @@ Two deliberate restrictions:
 
 - **`Parallel` with a fan-in is an error**, not a silent serialization. The series writer is one stateful handle whose steps must be appended in order, and the obvious workaround — parallel reads feeding an ordered queue into one writer — would hold `Workers + 1` meshes and break the streaming guarantee. If that trade is ever worth making it should be an explicit, named opt-in with its memory cost stated.
 - **The C++ engine runs serially** and records a warning when a document asks for parallelism. Every operation already parallelizes internally, so a step-level parallel region nested over them would oversubscribe on every backend.
+
+### `Prefetch`
+
+`"Prefetch": true` (or `1`; default off) reads step `i + 1` on a second thread while step `i` is processed and written, in the sequence, fan-out and fan-in modes. Output is unchanged: the same files, names, order and bytes, in both engines. It is a scheduling option, and it costs a second mesh alive, so it is the one place the [streaming guarantee](#the-streaming-guarantee) relaxes from one mesh to two (never more: the read of step `i + 2` starts only after step `i + 1` is taken). A step that cannot be read stops the run when its turn comes, as it does without `Prefetch`: the steps before it are written and nothing after it is.
+
+It pays where a run is I/O-bound or single-threaded, which is the release CLI (a serial build): on eight 83,000-tetrahedron VTU files, one thread, a copy ran 11% faster and an `ExtractSurface` chain 26% faster, and at two threads 14% and 28%. At the default of one thread per core the extra thread competes with the operations' own parallel loops and measured no gain (a copy), 14% slower (`ExtractSurface`) and 9% slower (`Smooth`), which is why it is off by default ([benchmarks](./benchmarks.md#read-ahead-in-sequences)). The readers that use HDF5 or netCDF take the library lock as they always do, so the two threads never enter the library together; with `Parallel` the Python driver already reads files concurrently and `Prefetch` adds nothing.
 
 ## Per-surface entry points
 

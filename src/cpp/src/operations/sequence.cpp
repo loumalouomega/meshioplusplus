@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -1200,6 +1201,47 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
     return report;
 }
 
+// Reads the steps of a sequence in order, and with `Enabled` reads step
+// `i + 1` on a second thread while step `i` is processed and written. The
+// read goes through the same `sequence_read_step`, so the mesh, the errors and
+// their order are the serial ones: a failed read surfaces when its step is asked
+// for, after the step before it was written. A reader that uses HDF5 or netCDF
+// already takes the library lock, so the two threads never enter the library
+// together. The cost is a second mesh alive.
+class SeqReadAhead {
+public:
+    SeqReadAhead(const std::vector<SequenceEntry>& rEntries, const std::string& rFormat,
+                 const ReadOptions& rOptions, bool Enabled)
+        : mEntries(rEntries), mFormat(rFormat), mOptions(rOptions), mEnabled(Enabled) {}
+    SeqReadAhead(const SeqReadAhead&) = delete;
+    SeqReadAhead& operator=(const SeqReadAhead&) = delete;
+    ~SeqReadAhead() {
+        // A pending read is waited for, not abandoned: it holds references.
+        if (mNext.valid())
+            mNext.wait();
+    }
+    Mesh Read(std::size_t Index) {
+        Mesh mesh = mNext.valid() && mNextIndex == Index
+                        ? mNext.get()
+                        : sequence_read_step(mEntries, Index, mFormat, mOptions);
+        if (mEnabled && Index + 1 < mEntries.size()) {
+            mNextIndex = Index + 1;
+            mNext = std::async(std::launch::async, [this, Index] {
+                return sequence_read_step(mEntries, Index + 1, mFormat, mOptions);
+            });
+        }
+        return mesh;
+    }
+
+private:
+    const std::vector<SequenceEntry>& mEntries;
+    const std::string& mFormat;
+    const ReadOptions& mOptions;
+    bool mEnabled;
+    std::future<Mesh> mNext;
+    std::size_t mNextIndex = 0;
+};
+
 }  // namespace
 
 PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
@@ -1240,9 +1282,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
             throw WriteError(why);
         seq_check_series_write_options(ofmt, rPipeline.mOutput.mOptions);
         // One step, read and run through the pipeline, with its time.
+        SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
+                           rPipeline.mPrefetch);
         auto step = [&](std::size_t i, double& rTime) {
-            Mesh mesh =
-                sequence_read_step(entries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
+            Mesh mesh = ahead.Read(i);
             rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
                 rPipeline.mInput.mTimeFrom != SequenceTimeFrom::Index) {
@@ -1284,9 +1327,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
 
     // Sequence / FanOut: both write one file per entry, and differ only in
     // where the entries came from -- which sequence_expand already settled.
+    SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
+                       rPipeline.mPrefetch);
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        Mesh mesh =
-            sequence_read_step(entries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
+        Mesh mesh = ahead.Read(i);
         double time = entries[i].mTime;
         if (entries[i].mTimeSource == SequenceTimeSource::Index &&
             rPipeline.mInput.mTimeFrom != SequenceTimeFrom::Index) {

@@ -153,12 +153,13 @@ meshioplusplus pipeline settings.json --json     # machine-readable report
 
 ## Sequences (transient / multi-file runs)
 
-Since v9.12.0 the same document can describe a whole **transient** run: a glob/list input, the chain applied per step, and a fan-out or fan-in output. Eight additional keys, all optional:
+Since v9.12.0 the same document can describe a whole **transient** run: a glob/list input, the chain applied per step, and a fan-out or fan-in output. Nine additional keys, all optional:
 
 | Key | Where | Meaning |
 | --- | --- | --- |
 | `Mode` | top level | `"sequence"` / `"fan-in"` / `"fan-out"`; **asserts** the inferred shape rather than selecting it, and errors naming both on a mismatch |
 | `Parallel` | top level | run the steps in a thread pool (**Python driver only**; an error for a fan-in, and the C++ engine warns and runs serially) |
+| `Prefetch` | top level | read step `i + 1` on a second thread while step `i` runs (`true`/`false` or `1`/`0`; default off); same output, two meshes alive. See [sequences](./sequences.md#prefetch) |
 | `Workers` | top level | worker count for `Parallel`; 0 means one per core |
 | `Pattern` | `Input` | a glob (`*` and `?` only); mutually exclusive with `Path`/`Paths` |
 | `Paths` | `Input` | an explicit, ordered list; not re-sorted |

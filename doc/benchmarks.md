@@ -1107,6 +1107,22 @@ No kernel qualifies. Base64 is the largest byte kernel and 17% to 22% of a read 
 
 The profile did show a cost that needs no vector unit: `vtu_parse_ascii` counted and skipped tokens through libc's `isspace`, a function call per byte. It now uses `text_is_blank`, the classic-locale test the other text readers share. Output is unchanged (the tier S sweep's digests agree on SEQ and OpenMP at one and four threads); `read_vtu_ascii` falls from 24.7 M to 19.0 M instructions (−23%) at tier S and from 31.7 ms to 24.5 ms at tier M.
 
+### Read-ahead in sequences
+
+Roadmap 5.11.1. `"Prefetch": true` reads step `i + 1` on a second thread while step `i` is processed and written ([sequences](./sequences.md#prefetch)). Eight VTU files of 82,944 tetrahedra, one per step, through the C++ engine (`run_sequence_json`), best of three, written one file per step:
+
+| Chain | Threads | Serial | Prefetch |
+| --- | ---: | ---: | ---: |
+| none (a copy) | 1 | 0.630 s | 0.562 s (−11%) |
+| `ExtractSurface` | 1 | 0.242 s | 0.180 s (−26%) |
+| none | 2 | 0.337 s | 0.290 s (−14%) |
+| `ExtractSurface` | 2 | 0.182 s | 0.131 s (−28%) |
+| none | 4 | 0.195 s | 0.192 s |
+| `ExtractSurface` | 4 | 0.141 s | 0.161 s (+14%) |
+| `Smooth`, 5 iterations | 4 | 0.763 s | 0.829 s (+9%) |
+
+With fewer threads than cores the second thread has a core of its own and the read hides behind the processing; with a thread per core it competes with the operations' parallel loops for them. So the option is off by default and aimed at the serial build the release CLI is. At two threads, with `ExtractSurface`, a prefetching run is already faster than the serial run at four threads. The files are bit-identical to the serial run's (a test in `test_sequence.py` compares them, for both engines, and the failure case: a step that cannot be read).
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.

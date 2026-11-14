@@ -382,6 +382,14 @@ MIO_ABI_LAYOUT(meshioplusplus::SequenceInput, 192, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SequenceOutput, 112, 8);
 // ABI 19 (v16.25.0): `mResample`, an optional SequenceResample, appended.
 MIO_ABI_LAYOUT(meshioplusplus::SequencePipeline, 424, 8);
+// ABI 46: `mPrefetch` took the padding after `mParallel` (offset 341), so the
+// size and `mWorkers` (344) did not move.
+static_assert(offsetof(meshioplusplus::SequencePipeline, mParallel) == 340,
+              "meshio++ ABI: SequencePipeline::mParallel moved");
+static_assert(offsetof(meshioplusplus::SequencePipeline, mPrefetch) == 341,
+              "meshio++ ABI: SequencePipeline::mPrefetch moved (ABI 46 placed it at offset 341)");
+static_assert(offsetof(meshioplusplus::SequencePipeline, mWorkers) == 344,
+              "meshio++ ABI: SequencePipeline::mWorkers moved");
 MIO_ABI_LAYOUT(meshioplusplus::SequenceResample, 64, 8);
 
 // The distance/voxelization aggregates, pinned from the release that introduced

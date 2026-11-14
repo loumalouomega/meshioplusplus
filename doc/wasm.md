@@ -609,7 +609,7 @@ m.runPipeline({
 });
 ```
 
-`runPipeline` **routes** a transient document (a `Pattern`/`Paths` input, a `{step}`/`{index}` output, or `Mode`/`Parallel`/`Workers`) to the sequence driver automatically; a plain single-mesh document takes the unchanged path, so nobody has to know which kind of document they hold.
+`runPipeline` **routes** a transient document (a `Pattern`/`Paths` input, a `{step}`/`{index}` output, or `Mode`/`Parallel`/`Prefetch`/`Workers`) to the sequence driver automatically; a plain single-mesh document takes the unchanged path, so nobody has to know which kind of document they hold.
 
 The pattern language is deliberately just `*` and `?` — **no** `**`, no `[set]`, and the directory component is literal — identical to the core's, so the browser and the CLIs accept exactly the same words.
 
