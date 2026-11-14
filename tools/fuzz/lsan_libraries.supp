@@ -1,0 +1,10 @@
+# LeakSanitizer suppressions for the instrumented HDF5/netCDF campaign (doc/fuzzing.md).
+#
+# netCDF-4's `nc_open` leaks the memory it allocated when it fails halfway through a
+# corrupt file: the object-header buffer of `H5Gopen2` and the variable hash map it had
+# already built (`NC_hashmapnew`). Both are inside the libraries and reproduce with the
+# pinned netcdf-c and HDF5 on a one-byte mutation of a valid file (the "pipeline-copy
+# leaks on failed dataset opens" class of the known library limitations), so the reader
+# cannot free them. Only stacks that pass through `NC_open` are matched: a leak in
+# meshio++'s own code is a bug to fix, never a line in this file.
+leak:NC_open
