@@ -1091,6 +1091,22 @@ Two things were tried for the superlinear growth and not kept. A sorted merge in
 
 The cap is 25 times faster and ends in degenerate and, in two of the six configurations, inverted tetrahedra: the collapses it forbids are the ones that were absorbing the slivers. The penalty gives better quality and is 3.5 times slower, and a factor of 2 changed nothing against 0.5. Neither is a better default, so the rule stands as it was; a cap would be an option, a layout change to `DecimateVolumeOptions` ([roadmap](./roadmap.md#performance)). The unchanged rule's time at 16 cells a side (24,576 tets) is 38 s, with 234,410 rejected collapses; 30 cells a side was not run. The meshes are Kuhn cubes: the roadmap's graded Netgen mesh needs Netgen, which was not installed.
 
+### Which byte-level kernels dominate a read (vector kernels, measured)
+
+Roadmap 5.15 asked whether a kernel dominates enough to justify variants selected at run time. `valgrind --tool=callgrind` over the rows below at tier M (SEQ), collecting only the registry call a row times; the new rows `read_vtu_base64`, `read_vtk_binary` and `write_vtu_base64` exist for this and sit beside `read_vtu_ascii`:
+
+| Row | Largest shares |
+| --- | --- |
+| `read_vtu_ascii` | `vtu_parse_ascii` 57%, libc `isspace` 17%, `std::from_chars` 8%, the XML parse 8% |
+| `read_vtu_base64` (zlib-compressed, the writer's default) | zlib inflate 46% and `adler32` 16%, base64 decoding 17% (`vtub_decode_groups_window`) and 5% (its constructor), the XML parse 3% |
+| `write_vtu_base64` | zlib deflate over 90%; base64 encoding is under 1% |
+| `read_vtk_binary` (big-endian legacy VTK) | buffer zero-fill 49% (`memset`, in array construction), the byte-swapping read loop 35%; the row takes 0.13 ms at tier S and 2.3 ms at M |
+| `distance_to_surface` | `sd_nearest_triangle` (with the bounding-volume box tests inlined in it) 74% and `closest_point_on_triangle` 21%, both floating-point arithmetic |
+
+No kernel qualifies. Base64 is the largest byte kernel and 17% to 22% of a read dominated by zlib; encoding is not visible on the write side. The byte swap is 35% of a read that takes two milliseconds at 160,000 tetrahedra. The floating-point paths (number text, the distance query) are arithmetic and not the comparisons whose vector form is bit-identical to the scalar one. So the dispatch layer (`target_clones` on GCC and Clang, a `cpuid` pointer for MSVC, a WASM build flag, a scalar-against-vector test and an environment override) is not built, and the decision against intrinsics and `-march` flags stands.
+
+The profile did show a cost that needs no vector unit: `vtu_parse_ascii` counted and skipped tokens through libc's `isspace`, a function call per byte. It now uses `text_is_blank`, the classic-locale test the other text readers share. Output is unchanged (the tier S sweep's digests agree on SEQ and OpenMP at one and four threads); `read_vtu_ascii` falls from 24.7 M to 19.0 M instructions (−23%) at tier S and from 31.7 ms to 24.5 ms at tier M.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
