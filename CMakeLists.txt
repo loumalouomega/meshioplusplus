@@ -769,6 +769,46 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   list(APPEND _mio_core_copts -ffp-contract=off)
 endif()
 
+# Profile-guided optimisation (roadmap 5.12). Two stages in ONE build directory:
+# configure with -DMESHIOPLUSPLUS_PGO=GENERATE, build, run a training workload
+# (meshioplusplus_bench_ops --tier M, benchmark/bench.py), then reconfigure the
+# same directory with -DMESHIOPLUSPLUS_PGO=USE and rebuild. The directory has
+# to be the same because GCC names a profile after the object's path. Off by
+# default; doc/benchmarks.md ("Profile-guided optimisation") records what it
+# gains and whether the release builds use it. Clang needs the raw profiles
+# merged first (llvm-profdata merge -o <dir>/merged.profdata <dir>/*.profraw).
+# MSVC is not wired (/GENPROFILE and /USEPROFILE are untested here).
+set(MESHIOPLUSPLUS_PGO "OFF" CACHE STRING "Profile-guided optimisation stage: OFF, GENERATE or USE")
+set_property(CACHE MESHIOPLUSPLUS_PGO PROPERTY STRINGS OFF GENERATE USE)
+set(MESHIOPLUSPLUS_PGO_DIR "${CMAKE_BINARY_DIR}/pgo" CACHE PATH "Where the PGO profiles are written and read")
+if(NOT MESHIOPLUSPLUS_PGO STREQUAL "OFF")
+  if(NOT MESHIOPLUSPLUS_PGO STREQUAL "GENERATE" AND NOT MESHIOPLUSPLUS_PGO STREQUAL "USE")
+    message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_PGO must be OFF, GENERATE or USE, not '${MESHIOPLUSPLUS_PGO}'")
+  endif()
+  file(MAKE_DIRECTORY "${MESHIOPLUSPLUS_PGO_DIR}")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    if(MESHIOPLUSPLUS_PGO STREQUAL "GENERATE")
+      list(APPEND _mio_core_copts -fprofile-generate -fprofile-update=atomic
+           "-fprofile-dir=${MESHIOPLUSPLUS_PGO_DIR}")
+      list(APPEND _mio_core_lopts -fprofile-generate)
+    else()
+      list(APPEND _mio_core_copts -fprofile-use -fprofile-correction -Wno-missing-profile
+           "-fprofile-dir=${MESHIOPLUSPLUS_PGO_DIR}")
+      list(APPEND _mio_core_lopts -fprofile-use)
+    endif()
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(MESHIOPLUSPLUS_PGO STREQUAL "GENERATE")
+      list(APPEND _mio_core_copts "-fprofile-instr-generate=${MESHIOPLUSPLUS_PGO_DIR}/%p.profraw")
+      list(APPEND _mio_core_lopts "-fprofile-instr-generate=${MESHIOPLUSPLUS_PGO_DIR}/%p.profraw")
+    else()
+      list(APPEND _mio_core_copts "-fprofile-instr-use=${MESHIOPLUSPLUS_PGO_DIR}/merged.profdata")
+    endif()
+  else()
+    message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_PGO is wired for GCC and Clang only (not ${CMAKE_CXX_COMPILER_ID})")
+  endif()
+  message(STATUS "meshio++: profile-guided optimisation: ${MESHIOPLUSPLUS_PGO} (${MESHIOPLUSPLUS_PGO_DIR})")
+endif()
+
 # On MSVC, /MT vs /MD is a *compile*-time flag baked into each .obj (unlike
 # GNU's -static-libgcc/-static-libstdc++, which is link-only) -- every object
 # library feeding a static-runtime final link must be compiled with the same
