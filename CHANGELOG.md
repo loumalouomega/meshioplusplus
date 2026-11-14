@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Benchmarks:** `meshioplusplus_bench_ops` rows for the four result-file readers (`read_d3plot`, `read_op2`, `read_rst`, `read_xplt`, the last of four states written through each series writer) and for `transform`, `mirror`, `flip_normals` and `pipeline_transform_chain` (roadmap 5.1.2, [benchmarks](doc/benchmarks.md#result-file-reader-and-transform-rows)).
+- **Decided:** no in-place `transform` (formerly roadmap 5.14): at tier L the copies are at most 2.5% of a three-transform chain that ends in a `vtu` write, which takes 88% of it; the data-only operations are under 1% each ([benchmarks](doc/benchmarks.md#what-an-in-place-transform-could-save)).
 - **Performance:** a paired physics-ML walk (`target_offset >= 1`) reads each step once (roadmap 5.11.3, [PhysicsNeMo](doc/physicsnemo.md)): `iter_samples`, the Gen-2 reader and the PyG dataset keep the last pair's two meshes, so an n-step entry costs n reads instead of 2(n − offset), and at most two meshes stay alive as before.
 - **Fix:** the `kahip` extra is held below 3.27 (`pip install meshioplusplus[kahip]`): the 3.27 wheel on PyPI crashes with an illegal instruction when imported on the CI runners, where 3.25 works (roadmap 3.22).
 - **Added:** the Catalyst 2 and Ascent route (roadmap 10.2, [route](doc/routes/catalyst.md)): `contrib/catalyst/blueprint_series.py` writes the Mesh Blueprint an in situ pipeline receives as a `.vtkhdf` series or a file per step, through `from_conduit`.

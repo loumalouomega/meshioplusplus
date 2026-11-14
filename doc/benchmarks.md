@@ -1038,6 +1038,28 @@ Roadmap 5.1.2. The two operations had no row in `meshioplusplus_bench_ops` becau
 | `decimate_volume` | 1.48 s | 0.86 s | 8.89 G |
 | `conservative_interpolate` | 0.60 s | 0.29 s | 3.14 G |
 
+### Result-file reader and transform rows
+
+Roadmap 5.1.2 and 5.14. `meshioplusplus_bench_ops` gains rows for the four result-file readers and for the operations an in-place `transform` would touch. Every existing row's digest is unchanged against the run before them (SEQ), and the new rows agree on SEQ and OpenMP at one and four threads (tier S).
+
+- **`read_d3plot`, `read_op2`, `read_rst`, `read_xplt`** read the last of four states of a file written through each format's series writer (`LsdynaD3plotSeriesWriter`, `NastranOp2SeriesWriter`, `AnsysRstSeriesWriter`, `XpltSeriesWriter`), the tetrahedral cube with a displacement field under the name each writer keeps (`displacement`, `DISPLACEMENT`, `U`). The cost is in the state records: OP2 and the Ansys results file are four to six times the d3plot and xplt reads of the same mesh. From Python, `benchmark/bench.py`'s `all_formats()` already sweeps the four as volume formats.
+- **`transform`** applies a skew rotation and a translation to the cube with a vector point field and a vector cell field, rotating both; **`mirror`** reflects it across `x = 0.5` with its vector data; **`flip_normals`** reverses the cube's surface; **`pipeline_transform_chain`** runs three `Transform` steps through `run_pipeline_steps` and writes the result as `vtu`.
+
+| Row (SEQ) | S | M | L |
+| --- | ---: | ---: | ---: |
+| `read_d3plot` | 0.95 ms | 16.6 ms | 132 ms |
+| `read_op2` | 2.9 ms | 68.9 ms | 623 ms |
+| `read_rst` | 4.3 ms | 77.7 ms | 457 ms |
+| `read_xplt` | 1.0 ms | 16.2 ms | 106 ms |
+| `transform` | 0.04 ms | 1.2 ms | 6.8 ms |
+| `mirror` | 0.19 ms | 4.0 ms | 23.9 ms |
+| `flip_normals` | 0.01 ms | 0.09 ms | 0.28 ms |
+| `pipeline_transform_chain` | 11.7 ms | 170 ms | 824 ms |
+
+#### What an in-place `transform` could save
+
+Roadmap 5.14 asked what share of a transform chain the copies are. The answer bounds it from above without stubbing anything: at tier L the chain's `vtu` write alone is 694 ms of its 789 ms (88%), and the three `transform` calls together are at most 20 ms (2.5%) even if every instruction in them were a copy, which it is not (each also transforms the points and rotates the vectors). A whole clone of the mesh is 2.2 ms (0.3%). The data-only operations are the same question with the points untouched, and the answer is the same: `data_rename` 3.7 ms, `data_drop` 3.5 ms and `data_calc` (`norm(velocity)`) 7.3 ms at tier L, each under 1% of the write that follows them in any pipeline that ends in a file. Tier M gives the same proportions (write 149 of 164 ms; `transform` 1.1 ms). The second, in-place entry point was therefore not added; the decision is recorded in the [roadmap's non-goals](./roadmap.md#non-goals-and-decisions-taken).
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
