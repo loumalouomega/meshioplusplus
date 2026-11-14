@@ -1,0 +1,11 @@
+# UBSan suppressions for the instrumented HDF5/netCDF campaign (doc/fuzzing.md).
+#
+# HDF5's high-level dimension-scale code (`H5DSiterate_scales`, reached from netCDF-4's
+# `nc_inq_var` through `get_attached_info`) reads the reference array of a corrupt
+# `DIMENSION_LIST` attribute without checking it: the load is of a garbage pointer
+# (0xbebebebe..., ASan's malloc fill) and UBSan reports it as misaligned. It is in the
+# pinned HDF5 1.14.6's `hl/src/H5DS.c`, reproduces on a mutated valid file, and has no
+# meshio++ frame above `nc_inq_varndims`, so the reader cannot prevent it. Matched by
+# source file and kind only: every other UBSan report, in the libraries and in meshio++,
+# still fails the campaign.
+alignment:H5DS.c
