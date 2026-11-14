@@ -17,7 +17,7 @@ from ._openfoam import read as _py_read
 _HAS_WRITE = hasattr(_core, "openfoam_write")
 
 
-def read(filename, region="", points_only=False, arrays=None, time_step=0):
+def read(filename, region="", points_only=False, arrays=None, time_step=0, cloud=None):
     """Read an OpenFOAM polyMesh case (C++ core, Python fallback).
 
     ``region`` selects one region of a multi-region case (v11.4.0, roadmap §1
@@ -30,7 +30,18 @@ def read(filename, region="", points_only=False, arrays=None, time_step=0):
     field reading at all -- so a ``region``/non-default ``time_step``
     request, or a case the compiled core recognised as multi-region, re-raises
     rather than silently falling back to a worse or plain-wrong result.
+
+    ``cloud`` reads one Lagrangian cloud (``<case>/<time>/lagrangian/<cloud>/``)
+    instead of the mesh: its particles as ``vertex`` cells at the Cartesian
+    ``coordinates``, with the cloud's per-particle fields as ``point_data``.
+    ``time_step`` selects among the time directories that hold the cloud. A particle
+    is not a node of the case's mesh, so this is a separate mesh; clouds with only
+    barycentric ``positions`` are refused. Core only.
     """
+    if cloud:
+        return _core.openfoam_read_cloud(
+            str(filename), cloud, points_only, arrays, time_step
+        )
     try:
         return _core.openfoam_read(
             str(filename), region, points_only, arrays, time_step

@@ -242,3 +242,48 @@ def test_binary_plt_writer_is_byte_identical_across_engines_and_reads_back(
     for key in dat.cell_data:
         for x, y in zip(plt.cell_data[key], dat.cell_data[key]):
             np.testing.assert_allclose(x, y)
+
+
+def _series_mesh(scale):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [2, 0, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [
+            ("triangle", np.array([[0, 1, 2], [1, 3, 2]])),
+            ("line", np.array([[1, 4]])),
+        ],
+        point_data={"T": scale * np.arange(5.0)},
+    )
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_series_writer_writes_a_transient_file(tmp_path, engine):
+    from meshioplusplus.tecplot import _tecplot
+
+    path = tmp_path / "series.dat"
+    cls = (
+        meshioplusplus.tecplot.SeriesWriter
+        if engine == "core"
+        else _tecplot.SeriesWriter
+    )
+    with cls(str(path)) as writer:
+        for t in (0.0, 0.5, 2.0):
+            writer.write(t, _series_mesh(1.0 + t))
+    text = path.read_text()
+    assert text.count("SOLUTIONTIME") == 6  # two zones a step
+    assert "VARSHARELIST = ([1-4] = 3)" in text  # the second step's own first zone
+    for k, t in enumerate((0.0, 0.5, 2.0)):
+        mesh = meshioplusplus.tecplot.read(str(path), time_step=k)
+        np.testing.assert_allclose(mesh.point_data["T"], (1.0 + t) * np.arange(5.0))
+        assert [b.type for b in mesh.cells] == ["triangle", "line"]
+
+
+def test_series_writer_refuses_plt_and_changed_variables(tmp_path):
+    with pytest.raises(meshioplusplus.WriteError):
+        meshioplusplus.tecplot.SeriesWriter(str(tmp_path / "s.plt"))
+    with meshioplusplus.tecplot.SeriesWriter(str(tmp_path / "s.dat")) as writer:
+        writer.write(0.0, _series_mesh(1.0))
+        other = _series_mesh(1.0)
+        other.point_data = {"U": other.point_data["T"]}
+        with pytest.raises(meshioplusplus.WriteError):
+            writer.write(1.0, other)

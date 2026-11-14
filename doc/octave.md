@@ -138,6 +138,10 @@ end
 
 A `mio_status` code never reaches user code. Temporary memory is MEX-managed and is released if a call raises, and native objects a call has allocated are freed before it raises.
 
+## Format detection
+
+`mio.sniff_format(path)` returns the format a content signature names, or `''`; `mio.detect(path)` returns a struct array with fields `format`, `confidence` (`'certain'`, `'likely'` or `'guess'`) and `reason`, best first, the R binding's data frame as rows. See the [CLI's `detect`](./cli.md#meshioplusplus-detect).
+
 ## Named regions, selective reads and series
 
 These follow the R binding exactly, apart from the layout rules above:

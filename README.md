@@ -42,6 +42,14 @@ Serial VTK XML readers (`.vtu`, `.vtp`, `.vts`, `.vtr`, `.vti`) accept multiple 
 > [COMSOL](https://www.comsol.com) mesh (`.mphtxt` text and `.mphbin` binary; Selections as named regions, COMSOL's own node order),
 > [Exodus](https://nschloe.github.io/meshio/exodus.pdf) (`.e`, `.exo`),
 > [DXF](https://loumalouomega.github.io/meshioplusplus/formats/dxf) (`.dxf`; ASCII R2000: a line mesh as `LINE`s and a `fit_curves` sketch as `LINE`, `ARC` and `CIRCLE` entities, read back from `LINE`, `ARC`, `CIRCLE`, `LWPOLYLINE` and `SPLINE`),
+> [LAS](https://loumalouomega.github.io/meshioplusplus/formats/las) (`.las`; ASPRS point clouds, versions 1.2 to 1.4, point formats 0 to 10, checked against laspy),
+> [3MF](https://loumalouomega.github.io/meshioplusplus/formats/3mf) (`.3mf`; the core specification's objects, components and build transforms, units and base-material colours, checked against lib3mf),
+> [GIFTI](https://loumalouomega.github.io/meshioplusplus/formats/gifti) (`.gii`; neuroimaging surfaces with per-vertex arrays and label tables, checked against nibabel),
+> [FreeSurfer](https://loumalouomega.github.io/meshioplusplus/formats/freesurfer) surfaces (`lh.pial`, `rh.white`, ...; with `curv` overlays and `annot` parcellations),
+> [ADCIRC](https://loumalouomega.github.io/meshioplusplus/formats/adcirc) (`fort.14` grids with their boundaries, `fort.63`/`fort.64` results as steps),
+> [TELEMAC Selafin](https://loumalouomega.github.io/meshioplusplus/formats/selafin) (`.slf`; single or double precision, 2-D and 3-D, steps),
+> [UGRID NetCDF](https://loumalouomega.github.io/meshioplusplus/formats/ugrid_nc) (`.nc`; the UGRID conventions Delft3D-FM, SCHISM and xugrid write: mixed polygons, edges, data by location, time steps),
+> [PLOT3D](https://loumalouomega.github.io/meshioplusplus/formats/plot3d) (`.p3d`, `.x`, `.g`; multi-block structured grids with `.q` solutions and `.f` function files, the ASCII, Fortran-unformatted or raw variant inferred from the file's size),
 > [Elmer](https://www.elmerfem.org) mesh directory (`mesh.header`/`.nodes`/`.elements`/`.boundary`/`.names`, text or ElmerGrid's binary; bodies and boundaries as named regions, ElmerGrid partitions merged, `partition:part` written as `partitioning.N`, recognised by content),
 > [EnSight Gold](https://vis.lbl.gov/archive/NERSC/Software/ensight/doc/OnlineHelp/UM-C11.pdf) (geometry, `.case`/`.geo`; C and Fortran binary),
 > [FEBio](https://febio.org) input (`.feb`, spec 2.5/3.0/4.0 read, 4.0 written; sets and surfaces as named regions, MeshData read and written) and plot files (`.xplt`; every state is a step, remeshed runs included, surface variables on facet blocks),
@@ -677,6 +685,8 @@ d = out.point_data["geodesic:distance"]
 #### UV parameterization
 
 **`meshioplusplus.parameterize(mesh)`** gives a triangle surface a UV atlas: it cuts the surface into charts, flattens each without flipping a triangle (least-squares conformal maps, else mean-value coordinates, the kernels `fit_cad` uses), halves a chart that stretches too much, and shelf-packs the charts into the unit square. The result is split at its seams and carries `uv` point data, which the OBJ (`vt`), glTF (`TEXCOORD_0`) and USD (`primvars:st`) writers turn into texture coordinates, and their readers turn back. On every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs (`parameterize`), the pipeline (`Parameterize`) and MCP. See `doc/parameterize.md`.
+
+**`meshioplusplus.bake_texture(mesh, array)`** draws a point or cell array into an RGBA texture through `uv`, so a field travels as a picture: glTF embeds it as the base-colour texture and OBJ writes it beside the file with a `.mtl` (`usemtl` groups are cell regions both ways). Python, C++, both CLIs (`bake-texture`) and MCP. See `doc/bake_texture.md`.
 
 <!--pytest-codeblocks:skip-->
 

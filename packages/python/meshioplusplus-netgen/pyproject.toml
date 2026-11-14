@@ -9,6 +9,7 @@ description = "Netgen tetrahedral mesher for meshio++: the Netgen backend of tet
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT AND LGPL-2.1-only"
+license-files = ["LICENSE", "COPYING*", "RELINKING.md"]
 dependencies = ["meshioplusplus==20.1.0"]
 
 [project.entry-points."meshioplusplus.plugins"]

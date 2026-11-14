@@ -31,6 +31,7 @@
 
 // System includes
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <string>
@@ -530,6 +531,77 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
                       rPath);
 }
 
+/// The solutions of several zones as `point_data` / `cell_data` of `rMesh`: each array stacked
+/// over the zones in block order, a zone without it filled with NaN -- the raw-HDF5 reader's
+/// rule (`cgns_add_zone_fields`). `rZones` are per-zone scratch meshes holding that zone's
+/// blocks and solution arrays; `rZonePoints` their point counts.
+void cgns_mll_add_zone_fields(Mesh& rMesh, const std::vector<Mesh>& rZones,
+                              const std::vector<std::size_t>& rZonePoints) {
+    std::vector<std::string> point_names, cell_names;
+    for (const Mesh& z : rZones) {
+        for (const auto& n : z.PointDataNames())
+            if (std::find(point_names.begin(), point_names.end(), n) == point_names.end())
+                point_names.push_back(n);
+        for (const auto& n : z.CellDataNames())
+            if (std::find(cell_names.begin(), cell_names.end(), n) == cell_names.end())
+                cell_names.push_back(n);
+    }
+    auto nan_like = [](const NDArray& rTmpl, std::size_t Rows) {
+        std::vector<std::size_t> shape = rTmpl.Shape();
+        shape[0] = Rows;
+        NDArray out = NDArray::Uninit(DType::Float64, shape);
+        std::fill(out.As<double>(), out.As<double>() + out.Size(), std::nan(""));
+        return out;
+    };
+    for (const std::string& name : point_names) {
+        const NDArray* tmpl = nullptr;
+        for (const Mesh& z : rZones)
+            if (z.HasPointData(name)) {
+                tmpl = &z.PointData(name);
+                break;
+            }
+        std::size_t total = 0;
+        for (std::size_t n : rZonePoints)
+            total += n;
+        const std::size_t cols = tmpl->Shape().size() > 1 ? tmpl->Shape()[1] : 1;
+        std::vector<std::size_t> shape = tmpl->Shape();
+        shape[0] = total;
+        NDArray out = NDArray::Uninit(DType::Float64, shape);
+        double* dst = out.As<double>();
+        for (std::size_t zi = 0; zi < rZones.size(); ++zi) {
+            const std::size_t n = rZonePoints[zi] * cols;
+            if (rZones[zi].HasPointData(name))
+                std::memcpy(dst, rZones[zi].PointData(name).As<double>(), n * sizeof(double));
+            else
+                std::fill(dst, dst + n, std::nan(""));
+            dst += n;
+        }
+        rMesh.AddPointData(name, std::move(out));
+    }
+    for (const std::string& name : cell_names) {
+        const NDArray* tmpl = nullptr;
+        for (const Mesh& z : rZones)
+            if (z.HasCellData(name) && z.NumCellBlocks() > 0) {
+                tmpl = &z.CellData(name, 0);
+                break;
+            }
+        std::vector<NDArray> blocks;
+        for (const Mesh& z : rZones) {
+            for (std::size_t b = 0; b < z.NumCellBlocks(); ++b) {
+                if (z.HasCellData(name)) {
+                    const NDArray& src = z.CellData(name, b);
+                    NDArray copy = NDArray::Uninit(DType::Float64, src.Shape());
+                    std::memcpy(copy.Data(), src.Data(), src.Size() * sizeof(double));
+                    blocks.push_back(std::move(copy));
+                } else {
+                    blocks.push_back(nan_like(*tmpl, z.Cells(b).NumCells()));
+                }
+            }
+        }
+        rMesh.AddCellData(name, std::move(blocks));
+    }
+}
+
 /// Read zone `Z`'s element sections into blocks appended to `rMesh`, node ids
 /// shifted by `PointOffset` (the points of the zones read before it), in
 /// ascending ElementRange order -- the raw-HDF5 reader's rule per zone.
@@ -749,6 +821,8 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
 
     Mesh mesh;
     std::vector<NDArray> point_chunks;
+    std::vector<Mesh> zone_meshes;
+    std::vector<std::size_t> zone_point_counts;
     std::int64_t point_offset = 0;
     std::size_t npoints = 0;
     for (const auto& [zone_name, Z] : zones) {
@@ -770,18 +844,14 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
         point_chunks.push_back(cgns_mll_read_coords(fn, B, Z, zone_points, rPath));
         cgns_mll_read_zone_cells(fn, B, Z, point_offset, rPath, mesh);
 
-        // FlowSolution_t is read for a single-zone file only: across zones the
-        // arrays would have to be concatenated, and a solution on only some
-        // zones has no defensible filler -- the raw reader's rule and warning.
-        int nsols = 0;
-        if (nzones > 1 && cg_nsols(fn, B, Z, &nsols) == CG_OK && nsols > 0) {
-            char sol_name[33] = {0};
-            CGNS_ENUMT(GridLocation_t) loc = CGNS_ENUMV(GridLocationNull);
-            if (cg_sol_info(fn, B, Z, 1, sol_name, &loc) == CG_OK)
-                log::warn(
-                    "CGNS: file has {} zones; FlowSolution '{}' on zone '{}' was not read "
-                    "(cross-zone field concatenation is not supported).",
-                    nzones, sol_name, zone_name);
+        // Across zones every zone's FlowSolution_t is read into a scratch mesh of just
+        // that zone and the arrays are stacked afterwards (NaN where a zone lacks one).
+        if (nzones > 1) {
+            Mesh scratch;
+            cgns_mll_read_zone_cells(fn, B, Z, 0, rPath, scratch);
+            cgns_mll_read_solutions(fn, B, Z, zone_points, scratch, rPath, nullptr);
+            zone_meshes.push_back(std::move(scratch));
+            zone_point_counts.push_back(zone_points);
         }
         point_offset += static_cast<std::int64_t>(zone_points);
         npoints += zone_points;
@@ -817,6 +887,9 @@ Mesh read_cgns_mll(const std::string& rPath, const ReadOptions& rOptions) {
             cgns_mll_read_solutions(fn, B, Z, npoints, mesh, rPath, nullptr);
         }
     }
+
+    if (nzones > 1)
+        cgns_mll_add_zone_fields(mesh, zone_meshes, zone_point_counts);
 
     // DimensionalUnits_t: a zone's overrides the base's, and with several
     // zones the last one that names a unit wins, as in the raw reader.

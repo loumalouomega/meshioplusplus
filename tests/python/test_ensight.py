@@ -276,13 +276,54 @@ def test_shim_writes_ragged_blocks_through_the_core(tmp_path):
     assert [c.type for c in _ensight.read(case).cells][:2] == ["triangle", "polygon"]
 
 
-def test_wildcard_model_raises(tmp_path):
-    p = tmp_path / "transient.case"
-    p.write_text(
-        "FORMAT\ntype: ensight gold\n\nGEOMETRY\nmodel: 1 transient.****.geo\n"
+def _transient_case(tmp_path, change_coords_only):
+    """Two geometry files, ``moving.000.geo`` and ``moving.001.geo``."""
+    mesh = copy.deepcopy(helpers.tri_mesh)
+    meshioplusplus.ensight.write(tmp_path / "moving.000.case", mesh, binary=False)
+    shifted = copy.deepcopy(mesh)
+    shifted.points = shifted.points + 10.0
+    meshioplusplus.ensight.write(tmp_path / "moving.001.case", shifted, binary=False)
+    second = tmp_path / "moving.001.geo"
+    if change_coords_only:
+        # a coordinates-only file: the geometry without its element sections
+        lines = second.read_text().split("\n")
+        cut = next(
+            i
+            for i, line in enumerate(lines)
+            if line.split() and line.split()[0] in ("tria3", "quad4", "nsided")
+        )
+        second.write_text("\n".join(lines[:cut]) + "\n")
+    case = tmp_path / "moving.case"
+    case.write_text(
+        "FORMAT\ntype: ensight gold\n\nGEOMETRY\n"
+        "model: 1 moving.***.geo"
+        + (" change_coords_only" if change_coords_only else "")
+        + "\n\nTIME\ntime set: 1\nnumber of steps: 2\n"
+        "filename start number: 0\nfilename increment: 1\ntime values: 0.0 1.0\n"
     )
+    return case, mesh
+
+
+@pytest.mark.parametrize("change_coords_only", [False, True])
+@pytest.mark.parametrize("engine", ["python", "core"])
+def test_transient_geometry(tmp_path, change_coords_only, engine):
+    case, mesh = _transient_case(tmp_path, change_coords_only)
+    if engine == "python":
+        read = _ensight.read
+        step0, step1 = read(case), read(case, time_step=1)
+    else:
+        step0 = meshioplusplus.ensight.read(case)
+        step1 = meshioplusplus.ensight.read(case, time_step=1)
+    assert np.allclose(step0.points, mesh.points)
+    assert np.allclose(step1.points, mesh.points + 10.0)
+    assert [b.type for b in step1.cells] == [b.type for b in mesh.cells]
+    assert np.array_equal(step1.cells[0].data, step0.cells[0].data)
+
+
+def test_transient_geometry_step_out_of_range(tmp_path):
+    case, _ = _transient_case(tmp_path, False)
     with pytest.raises(meshioplusplus.ReadError):
-        _ensight.read(p)
+        _ensight.read(case, time_step=5)
 
 
 def test_read_metadata_and_time_step_reads_a_transient_case(tmp_path):
@@ -554,3 +595,139 @@ def test_python_twin_resolves_time_steps(tmp_path):
     assert _ensight.read(path, -1).point_data["pressure"][0] == 11.0
     with pytest.raises(meshioplusplus.ReadError):
         _ensight.read(path, 5)
+
+
+def _two_part_mesh():
+    pts = np.array(
+        [[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0], [2, 0, 0], [2, 1, 0]], float
+    )
+    cells = [
+        ("triangle", np.array([[0, 1, 2], [1, 3, 2]])),
+        ("quad", np.array([[1, 4, 5, 3]])),
+    ]
+    return meshioplusplus.Mesh(
+        pts,
+        cells,
+        point_data={"p": np.arange(6.0)},
+        cell_data={
+            "ensight:part": [np.array([1, 1]), np.array([2])],
+            "s": [np.array([1.0, 2.0]), np.array([3.0])],
+        },
+    )
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_parts_that_were_read_are_written(tmp_path, binary):
+    mesh = _two_part_mesh()
+    path = tmp_path / "parts.case"
+    meshioplusplus.write(path, mesh, file_format="ensight", binary=binary)
+    back = meshioplusplus.read(path)
+    # EnSight parts own their points: the shared ones are duplicated.
+    assert len(back.points) == 8
+    assert [b.type for b in back.cells] == ["triangle", "quad"]
+    assert [a.tolist() for a in back.cell_data["ensight:part"]] == [[1, 1], [2]]
+    assert back.point_data["p"].tolist() == [0, 1, 2, 3, 1, 3, 4, 5]
+    assert [a.tolist() for a in back.cell_data["s"]] == [[1.0, 2.0], [3.0]]
+
+
+def _block_geo(kind, iblanked=False):
+    lines = [
+        "EnSight Gold Geometry File",
+        "structured",
+        "node id off",
+        "element id off",
+        "part",
+        "         1",
+        "lattice",
+        "block"
+        + (" " + kind if kind != "curvilinear" else "")
+        + (" iblanked" if iblanked else ""),
+        "         3         2         2",
+    ]
+    if kind == "uniform":
+        lines += ["0.0", "0.0", "0.0", "1.0", "2.0", "3.0"]
+    elif kind == "rectilinear":
+        lines += ["0.0", "1.0", "3.0", "0.0", "2.0", "0.0", "3.0"]
+    else:
+        pts = [
+            (i, 2.0 * j, 3.0 * k) for k in range(2) for j in range(2) for i in range(3)
+        ]
+        for c in range(3):
+            lines += [str(float(p[c])) for p in pts]
+    if iblanked:
+        lines += ["1", "1", "0"] + ["1"] * 9
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("kind", ["curvilinear", "uniform", "rectilinear"])
+def test_block_parts_expand_to_hexahedra(tmp_path, kind):
+    path = tmp_path / "block.geo"
+    path.write_text(_block_geo(kind))
+    for read in (_ensight.read, meshioplusplus.ensight.read):
+        mesh = read(path)
+        assert len(mesh.points) == 12
+        assert [b.type for b in mesh.cells] == ["hexahedron"]
+        assert mesh.cells[0].data.shape == (2, 8)
+        assert mesh.points[:, 0].max() == (3.0 if kind == "rectilinear" else 2.0)
+        assert mesh.cells[0].data[0].tolist() == [0, 1, 4, 3, 6, 7, 10, 9]
+
+
+def test_iblanked_block_keeps_its_mask(tmp_path):
+    path = tmp_path / "block.geo"
+    path.write_text(_block_geo("uniform", iblanked=True))
+    for read in (_ensight.read, meshioplusplus.ensight.read):
+        mask = read(path).point_data["ensight:iblank"]
+        assert mask.dtype == np.uint8
+        assert mask.tolist()[:3] == [1, 1, 0]
+
+
+def _series_mesh(scale):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        point_data={"T": scale * np.arange(4.0)},
+        cell_data={"p": [scale * np.array([1.0, 2.0])]},
+    )
+
+
+@pytest.mark.parametrize("binary", [False, True])
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_series_writer_writes_a_transient_case(tmp_path, binary, engine):
+    case = tmp_path / "run.case"
+    cls = (
+        meshioplusplus.ensight.SeriesWriter
+        if engine == "core"
+        else _ensight.SeriesWriter
+    )
+    with cls(str(case), binary=binary) as writer:
+        for t in (0.0, 0.5, 2.0):
+            writer.write(t, _series_mesh(1.0 + t))
+    text = case.read_text()
+    assert "time values:" in text and "T.****." in text
+    assert sorted(p.name for p in tmp_path.glob("T.*")) == [
+        "T.0000.scl",
+        "T.0001.scl",
+        "T.0002.scl",
+    ]
+    assert not list(tmp_path.glob("*series_tmp*"))
+    for k, t in enumerate((0.0, 0.5, 2.0)):
+        mesh = meshioplusplus.ensight.read(str(case), time_step=k)
+        np.testing.assert_allclose(
+            mesh.point_data["T"], (1.0 + t) * np.arange(4.0), rtol=1e-6
+        )
+        np.testing.assert_allclose(
+            mesh.cell_data["p"][0], (1.0 + t) * np.array([1.0, 2.0]), rtol=1e-6
+        )
+    meta = meshioplusplus.read_metadata(str(case), file_format="ensight")
+    assert meta["time_values"] == [0.0, 0.5, 2.0]
+
+
+def test_series_writer_refuses_a_different_mesh(tmp_path):
+    with meshioplusplus.ensight.SeriesWriter(str(tmp_path / "s.case")) as writer:
+        writer.write(0.0, _series_mesh(1.0))
+        other = meshioplusplus.Mesh(
+            _series_mesh(1.0).points[:3], [("triangle", np.array([[0, 1, 2]]))]
+        )
+        with pytest.raises(meshioplusplus.WriteError):
+            writer.write(1.0, other)

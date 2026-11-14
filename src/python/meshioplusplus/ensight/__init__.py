@@ -2,6 +2,8 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
+from ._ensight import SeriesWriter as _PySeriesWriter
 from ._ensight import read as _py_read
 from ._ensight import write as _py_write
 
@@ -39,6 +41,29 @@ def write(filename, mesh, binary=True, fortran=False):
     return _py_write(filename, mesh, binary=binary, fortran=fortran)
 
 
+class SeriesWriter(CoreSeriesWriter):
+    """Write a time series as one EnSight Gold case: the geometry once, one numbered
+    variable file per step (``name.0000.scl``, ...) and a ``TIME`` section in the
+    ``.case`` file, which is written when the writer closes. Every step must have the
+    first step's points, cell blocks and variables.
+
+    >>> with meshioplusplus.ensight.SeriesWriter("run.case") as w:
+    ...     for t, mesh in steps:
+    ...         w.write(t, mesh)
+    """
+
+    def __init__(self, filename, binary=True, fortran=False):
+        self._core = self._py = None
+        if not is_buffer(filename, "w"):
+            try:
+                self._core = _core.EnsightSeriesWriter(str(filename), binary, fortran)
+                return
+            except Exception as exc:
+                if not core_declined(exc, "ensight", "write", filename):
+                    raise
+        self._py = _PySeriesWriter(filename, binary, fortran)
+
+
 register_format("ensight", [".case", ".geo"], read, {"ensight": write})
 
-__all__ = ["read", "write"]
+__all__ = ["read", "write", "SeriesWriter"]

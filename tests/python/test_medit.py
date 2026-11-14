@@ -487,3 +487,53 @@ def test_the_core_ascii_writer_says_what_it_drops(tmp_path, capfd):
     )
     _core.medit_write_ascii(str(tmp_path / "q.mesh"), mesh)
     assert "doesn't know quad8 cells" in capfd.readouterr().err
+
+
+_NORMALS = """MeshVersionFormatted 2
+Dimension 3
+
+Vertices
+3
+0 0 0 1
+1 0 0 1
+0 1 0 1
+
+Triangles
+1
+1 2 3 1
+
+Normals
+2
+0 0 1
+0 0 -1
+
+NormalAtVertices
+3
+1 1
+2 1
+3 2
+
+End
+"""
+
+
+def test_normals_round_trip(tmp_path):
+    path = tmp_path / "n.mesh"
+    path.write_text(_NORMALS)
+    mesh = meshioplusplus.read(path)
+    expected = np.array([[0, 0, 1], [0, 0, 1], [0, 0, -1]], dtype=float)
+    assert np.array_equal(mesh.point_data["medit:normal"], expected)
+    out = tmp_path / "o.mesh"
+    meshioplusplus.write(out, mesh)
+    back = meshioplusplus.read(out)
+    assert np.array_equal(back.point_data["medit:normal"], expected)
+
+
+def test_normals_core_and_python_agree(tmp_path):
+    path = tmp_path / "n.mesh"
+    path.write_text(_NORMALS)
+    core = meshioplusplus.read(path)
+    py = _medit_py_read(path)
+    assert np.array_equal(
+        core.point_data["medit:normal"], py.point_data["medit:normal"]
+    )

@@ -70,8 +70,10 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
+#include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -79,6 +81,7 @@
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -328,6 +331,36 @@ MESHIOPLUSPLUS_API MeshMetadata read_med_metadata(const std::string& rPath,
  */
 MESHIOPLUSPLUS_API void write_med(const std::string& rPath, const Mesh& rMesh, const MedInfo& rInfo,
                                   const std::string& rMedVersion = "4.1.0");
+
+/**
+ * @brief A time series in one MED file: the mesh with the first step, then one more step group
+ *        (`NDT` 2, 3, ... with the step's `PDT` as its time) in every field's `CHA` group.
+ *
+ * Every step must have the first step's points, cell blocks and fields. The Python twin,
+ * `meshioplusplus.med.SeriesWriter`, writes the same layout.
+ */
+class MESHIOPLUSPLUS_API MedSeriesWriter {
+public:
+    explicit MedSeriesWriter(const std::string& rPath);
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(MedSeriesWriter);
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step's points, cells or fields differ from the first step's, on
+     *         a write failure, or on a moved-from or finalized writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 

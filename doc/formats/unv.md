@@ -136,6 +136,10 @@ Dataset **58b** is the binary variant: 11 ASCII header records, then the raw val
 
 Code_Aster's UNV writer ends integer records with a `%` comment: the dataset line (`55   %VALEURS AUX NOEUDS`) and every node label of a 55/57 record (`1     % NOEUD N1`). An integer record stops at the first token starting with `%` (since v16.6.0; both engines refused these files before).
 
+### Writing a series
+
+`meshioplusplus.unv.SeriesWriter` (C++: `UnvSeriesWriter`, and `write_sequence` / `sequence_to_timeseries`) writes the mesh with the first step and then only each later step's results datasets (2414, or the legacy 55 and 56 with `code_aster=True`) into the same file. A step's value is its time (the datasets' time field, as `meshio:time` is on a single write) and its number its position (`unv:step`); the analysis type is the mesh's `unv:analysis`, else 4 (transient, whose datasets carry the time), so `read(..., time_step=k)` and `read_metadata(...)["time_values"]` give the series back. Every step must have the first step's points and cell blocks; the datasets of a later step label the first step's nodes and elements. Both engines write the same bytes.
+
 ## Compatibility with files written by meshio++ ≤ 15.5
 
 Older meshio++ versions wrote three things against the SDRL records, and read them back consistently:

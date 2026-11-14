@@ -56,7 +56,7 @@ meshioplusplus.gltf.write(
 - **Transforms**: node TRS or `matrix`, applied down the hierarchy into world space (glTF's Y-up). The root node `meshio++` as this writer emits it (up-axis rotation, uniform scale, recentring translation) is undone, so a file written from Z-up data reads back Z-up, within `float32` precision. A node reached twice is an error.
 - **Structure**: a node name becomes a cell region (`unassigned` and `mesh`, the writer's names for "no region", give none); the `_NAME` attributes become `point_data` under the accessor's `name` (or the attribute name without its underscore); `COLOR_0` becomes `gltf:color`; the `NORMAL` of a `POINTS` primitive becomes `normals` (the normals of triangles are derived, so they are not kept). A field present on only some primitives is `NaN` elsewhere.
 - **`weld=True`** merges vertices with identical world positions across the file, undoing the per-fan split of the writer's normals; the first vertex's attributes win. Positions are compared by value, so `-0.0` and `+0.0` are one position and a position holding a NaN merges with none (the C++ core matches the Python twin's `points + 0.0` here since roadmap 5.7.3; before, the two zeros met only when their hashes happened to collide).
-- **Refused**: Draco (`KHR_draco_mesh_compression`) and meshopt (`EXT_meshopt_compression`) by name. **Skipped with one warning**: morph targets, skins, animations and textures (materials are ignored silently); `TEXCOORD_0` is read as `uv`. Malformed input — a bad index, an accessor past its buffer view, a truncated GLB, invalid JSON — is a `ReadError`.
+- **Refused**: Draco (`KHR_draco_mesh_compression`) and meshopt (`EXT_meshopt_compression`) by name. **Skipped with one warning**: morph targets, skins, animations and images beyond the first (materials are ignored silently); `TEXCOORD_0` is read as `uv`, and the first image's bytes, undecoded, as `field_data["texture:png"]` (`texture:jpeg` for a JPEG) from a buffer view or a `uri`. Malformed input — a bad index, an accessor past its buffer view, a truncated GLB, invalid JSON — is a `ReadError`.
 - Volume cells came out of the writer as their skin, so the round trip is `→ tri` in the [conformance](../conformance.md#gltf) matrix.
 
 ## What is exported
@@ -79,6 +79,10 @@ A group whose triangles have no area gets the normal `(0, 0, 1)`. A `POINTS` pri
 ## Fields
 
 glTF has no scalar-field concept. Every `point_data` array of **one to four components** is exported **raw** as an underscore-prefixed custom attribute — `temperature` becomes `_TEMPERATURE`, a 3-component `velocity` becomes a `VEC3` `_VELOCITY` — cast to `float32`, with the original name in the accessor's `name`. Names are upper-cased (ASCII), every other character becomes `_`, and two names that collapse onto one get a numeric suffix (`_T`, `_T_2`). There is no 32-bit integer vertex attribute type, so integer arrays are cast to float. An array with more than four components, and an array with a non-finite value on an exported point (glTF cannot hold one), is skipped with a warning and a provenance note. `normals` is never exported as a field. `uv` (two values per point, finite on the exported points) is written as `TEXCOORD_0` on the triangles instead, with `v` flipped to `1 - v` (glTF's texture origin is the image's top left, `uv`'s the bottom left), and the reader turns `TEXCOORD_0` back into `uv`; see [parameterize](../parameterize.md). With `weld=True` a seam's copies are merged and keep one of their `uv`.
+
+## Texture
+
+A mesh carrying `field_data["texture:png"]` (read from a textured glTF or OBJ, made by [`bake_texture`](../bake_texture.md), or given as `write(..., texture=)`: a `.png` path, PNG bytes or an `(h, w, 3|4)` uint8 image) is written with that PNG embedded as a buffer view, one image, one texture and the material's `baseColorTexture` (base colour factor 1), whenever the triangles carry `TEXCOORD_0`; both engines write the same bytes.
 
 ## Colour
 
@@ -120,4 +124,4 @@ The output passes the Khronos [glTF-Validator](https://github.com/KhronosGroup/g
 
 ## Not supported
 
-Draco or meshopt compression (the reader refuses them by name); textures (UVs are written, from `uv`); transient results as morph targets (a plausible follow-up); `EXT_structural_metadata`, the principled carrier of typed fields, if a consumer asks; point and side regions.
+Draco or meshopt compression (the reader refuses them by name); textures other than one base-colour PNG; transient results as morph targets (a plausible follow-up); `EXT_structural_metadata`, the principled carrier of typed fields, if a consumer asks; point and side regions.

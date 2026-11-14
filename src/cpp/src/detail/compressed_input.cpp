@@ -45,6 +45,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "subprocess.hpp"
+#include "zip_archive.hpp"
 #include "meshioplusplus/exceptions.hpp"
 
 namespace meshioplusplus {
@@ -177,90 +178,16 @@ std::string cmpin_unzstd(std::string_view In) {
 
 // --- zip: the one member of a single-file archive ---------------------------
 
-std::uint32_t cmpin_u16(std::string_view In, std::size_t At) {
-    if (At + 2 > In.size())
-        throw ReadError("meshio++: zip: truncated archive");
-    return static_cast<std::uint32_t>(static_cast<unsigned char>(In[At])) |
-           static_cast<std::uint32_t>(static_cast<unsigned char>(In[At + 1])) << 8;
-}
-
-std::uint32_t cmpin_u32(std::string_view In, std::size_t At) {
-    return cmpin_u16(In, At) | cmpin_u16(In, At + 2) << 16;
-}
-
-struct ZipEntry {
-    std::string mName;
-    std::uint32_t mMethod = 0;
-    std::uint32_t mCompressedSize = 0;
-    std::uint32_t mLocalOffset = 0;
-};
-
-// The archive's one file entry (directory entries are skipped).
-ZipEntry cmpin_zip_entry(std::string_view In) {
-    // The end-of-central-directory record: within the last 64 KiB + 22 bytes.
-    if (In.size() < 22)
-        throw ReadError("meshio++: zip: not a zip archive");
-    std::size_t eocd = std::string_view::npos;
-    const std::size_t lowest = In.size() > 65557 ? In.size() - 65557 : 0;
-    for (std::size_t at = In.size() - 22 + 1; at-- > lowest;) {
-        if (cmpin_u32(In, at) == 0x06054b50u) {
-            eocd = at;
-            break;
-        }
-    }
-    if (eocd == std::string_view::npos)
-        throw ReadError("meshio++: zip: no end-of-central-directory record");
-    const std::uint32_t count = cmpin_u16(In, eocd + 10);
-    std::size_t at = cmpin_u32(In, eocd + 16);
-    if (count == 0xFFFFu || at == 0xFFFFFFFFu)
-        throw ReadError("meshio++: zip: Zip64 archives are not read");
-    std::vector<ZipEntry> files;
-    for (std::uint32_t k = 0; k < count; ++k) {
-        if (cmpin_u32(In, at) != 0x02014b50u)
-            throw ReadError("meshio++: zip: corrupt central directory");
-        ZipEntry e;
-        e.mMethod = cmpin_u16(In, at + 10);
-        e.mCompressedSize = cmpin_u32(In, at + 20);
-        const std::uint32_t name_len = cmpin_u16(In, at + 28);
-        const std::uint32_t extra_len = cmpin_u16(In, at + 30);
-        const std::uint32_t comment_len = cmpin_u16(In, at + 32);
-        e.mLocalOffset = cmpin_u32(In, at + 42);
-        if (at + 46 + name_len > In.size())
-            throw ReadError("meshio++: zip: truncated central directory");
-        e.mName.assign(In.substr(at + 46, name_len));
-        at += 46 + name_len + extra_len + comment_len;
-        if (!e.mName.empty() && e.mName.back() == '/')
-            continue;  // a directory
-        files.push_back(std::move(e));
-    }
+// The archive's one file member, through the shared ZIP reader (detail/zip_archive.hpp).
+std::string cmpin_unzip(std::string_view In) {
+    const ZipReader zip(In);
+    const auto& files = zip.Members();
     if (files.size() != 1)
         throw ReadError("meshio++: zip: the archive holds " + std::to_string(files.size()) +
                         " files; only a single-file archive is read as a mesh");
-    if (files[0].mCompressedSize == 0xFFFFFFFFu || files[0].mLocalOffset == 0xFFFFFFFFu)
-        throw ReadError("meshio++: zip: Zip64 archives are not read");
-    return files[0];
-}
-
-std::string cmpin_unzip(std::string_view In) {
-    const ZipEntry e = cmpin_zip_entry(In);
-    const std::size_t local = e.mLocalOffset;
-    if (cmpin_u32(In, local) != 0x04034b50u)
-        throw ReadError("meshio++: zip: corrupt local header");
-    if (cmpin_u16(In, local + 6) & 1u)
-        throw ReadError("meshio++: zip: encrypted members are not read");
-    const std::size_t data = local + 30 + cmpin_u16(In, local + 26) + cmpin_u16(In, local + 28);
-    if (data + e.mCompressedSize > In.size())
-        throw ReadError("meshio++: zip: truncated member data");
-    const std::string_view body = In.substr(data, e.mCompressedSize);
-    if (e.mMethod == 0)
-        return std::string(body);
-    if (e.mMethod == 8) {
-        if (!zlib_available())
-            cmpin_missing(Compression::Zip);
-        return zlib_inflate(body, -15, nullptr, "zip");
-    }
-    throw ReadError("meshio++: zip: compression method " + std::to_string(e.mMethod) +
-                    " is not read (only stored and deflated members)");
+    if (files[0].mMethod == 8 && !zlib_available())
+        cmpin_missing(Compression::Zip);
+    return zip.Read(files[0]);
 }
 
 std::string cmpin_slurp(const std::string& rPath) {
@@ -375,7 +302,11 @@ std::string decompress_bytes(Compression Kind, std::string_view In) {
 }
 
 std::string zip_member_name(std::string_view Archive) {
-    return cmpin_zip_entry(Archive).mName;
+    const ZipReader zip(Archive);
+    if (zip.Members().size() != 1)
+        throw ReadError("meshio++: zip: the archive holds " + std::to_string(zip.Members().size()) +
+                        " files; only a single-file archive is read as a mesh");
+    return zip.Members().front().mName;
 }
 
 std::string decompressed_name(const std::string& rPath, Compression Kind) {

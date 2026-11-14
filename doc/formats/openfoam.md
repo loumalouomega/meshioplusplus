@@ -30,7 +30,12 @@ meshioplusplus.openfoam.write("out/case.foam", mesh, binary=True)  # v15.5.0 -- 
 
 `read(filename)` takes no keyword arguments; the `polyMesh` directory is located from whichever of the three input forms above is given (`_resolve_polymesh`): a `.foam` suffix looks for `<parent>/constant/polyMesh`; a directory literally named `polyMesh` is used as-is; any other directory is checked for `constant/polyMesh` then `polyMesh` as subdirectories. A `FileNotFoundError` is raised if none match.
 
-## File structure
+
+## Lagrangian clouds
+
+`read(case, cloud="<name>")` (C++ `read_openfoam_cloud`) reads one cloud of `<case>/<time>/lagrangian/<name>/` instead of the mesh: the particles as `vertex` cells at the Cartesian `coordinates`, and every ASCII per-particle list file beside it (`d`, `U`, …) as `point_data`; `time_step` selects among the time directories that hold the cloud. A particle is not a node of the case's mesh, so the cloud is its own mesh. A cloud written with only barycentric `positions` is refused (placing a particle needs the mesh's tetrahedra), binary fields are skipped with a warning, and there is no writer. Core only.
+
+# File structure
 
 Each `polyMesh` file (`points`, `faces`, `owner`, `neighbour`, `boundary`) is an OpenFOAM "FoamFile": a header block declaring `format` (`ascii`/`binary`) and (for binary) an `arch` string encoding `label=32|64`/`scalar=32|64`, followed by a count and a parenthesized list.
 
@@ -80,6 +85,7 @@ for r in mesh.regions:
     print(r.name, r.kind)  # e.g. "porousZone" "cell", "inlet" "side"
 ```
 
+- `polyMesh/sets/<name>` (topoSet's `cellSet`, `faceSet` and `pointSet`, a `labelList` each) → a `cell`, `side` or `point` region named `set:<name>`, read like the zone of that kind (a face set to `(cell, local facet)` pairs through the face's owner). The writer writes the regions with that prefix back into `polyMesh/sets/` and every other region as a zone. A decomposed case's sets are not read, and a decomposed write drops them. Core only, like the zones.
 - `cellZones` → one `Region` of kind `"cell"` per zone, entries the zone's cells as global (block-major) indices.
 - `pointZones` → one `Region` of kind `"point"` per zone, entries the zone's point indices, unchanged (points are never reordered by this reader/writer).
 - `faceZones` → one `Region` of kind `"side"` per zone; a face id becomes `(global cell, local facet)` via its **owner** cell (the same cell OpenFOAM's own `owner` array names) — `flipMap` is never read or written, since a `Side` entry carries no orientation bit to hold it in. A zone member coinciding with a skipped (degenerate) cell is dropped, logged as a count.
@@ -185,7 +191,7 @@ meshioplusplus.openfoam.write("out/case.foam", mesh, compression="gzip")
 - `compression="gzip"` (Python) or `OpenFoamWriteOptions::mCompress` (C++) writes every case file it produces gzipped: the `polyMesh` files, the zone files, the `*ProcAddressing` lists of a decomposed case and the field files of each time directory; `regionProperties` stays plain. The bytes are those of Python's `gzip.compress(data, mtime=0)`. It combines with `binary`.
 - Writing either form removes the other form of each file it writes, and the stale-file cleanup removes both, so a case never holds a plain `points` that would shadow a newer `points.gz`.
 - Reading or writing a compressed case needs zlib (`MESHIOPLUSPLUS_WITH_ZLIB`, on by default); without it the read raises naming the flag, and so does a compressed write. The Python fallback reader inflates with the standard library.
-- **Python and C++ only**, like the label and scalar widths: the registry's generic write, both CLIs, the C API and its bindings write plain files.
+- Through the registry's `registry_write_ex` the gzip switch is the **`zlib` codec** (`WriteOptions::mCodec`, `mio_write_opts.codec`, and so every binding built on them): `zlib` writes gzipped case files, `none` or no codec writes plain ones, and `lz4`/`zstd`/`lzf` are refused by name. The label and scalar widths stay Python and C++ only, and the native CLI's `compress` has no OpenFOAM case form.
 
 ## Quirks & limitations
 

@@ -254,3 +254,35 @@ def grid(
         if not core_op_declined(exc, "grid"):
             raise
         return _grid_py(dims, origin, spacing)
+
+
+def lattice_cells(ni, nj, nk):
+    """``(cell_type, 0-based connectivity)`` of the cells of an ``ni x nj x nk``
+    lattice of points numbered with ``i`` fastest: hexahedra, quads or lines
+    by how many of the dimensions are above one."""
+    idx = np.arange(ni * nj * nk).reshape(nk, nj, ni)
+    dims = [d for d in (ni, nj, nk) if d > 1]
+    if len(dims) == 3:
+        c = np.stack(
+            [
+                idx[:-1, :-1, :-1],
+                idx[:-1, :-1, 1:],
+                idx[:-1, 1:, 1:],
+                idx[:-1, 1:, :-1],
+                idx[1:, :-1, :-1],
+                idx[1:, :-1, 1:],
+                idx[1:, 1:, 1:],
+                idx[1:, 1:, :-1],
+            ],
+            axis=-1,
+        )
+        return "hexahedron", c.reshape(-1, 8)
+    plane = idx.reshape([d for d in (nk, nj, ni) if d > 1] or [1])
+    if len(dims) == 2:
+        c = np.stack(
+            [plane[:-1, :-1], plane[:-1, 1:], plane[1:, 1:], plane[1:, :-1]], axis=-1
+        )
+        return "quad", c.reshape(-1, 4)
+    if len(dims) == 1:
+        return "line", np.stack([plane[:-1], plane[1:]], axis=-1)
+    return "vertex", plane.reshape(-1, 1)

@@ -2233,3 +2233,78 @@ class TestCompressedCase:
             meshioplusplus.openfoam.write(
                 tmp_path / "case.foam", TestWrite._hex_grid(1), compression="xz"
             )
+
+
+@pytest.mark.parametrize("binary", [False, True])
+def test_topo_sets_round_trip_as_set_regions(tmp_path, binary):
+    mesh = _grid(2)
+    ncells = len(mesh.cells[0].data)
+    mesh.regions.append(meshioplusplus.Region("set:inner", "cell", np.array([1, 3, 4])))
+    mesh.regions.append(meshioplusplus.Region("set:rim", "point", np.array([0, 5, 7])))
+    mesh.regions.append(
+        meshioplusplus.Region(
+            "set:baffle", "side", np.array([(c, 0) for c in range(ncells)], np.int64)
+        )
+    )
+    mesh.regions.append(meshioplusplus.Region("zone", "cell", np.array([0, 2])))
+    case = tmp_path / "case.foam"
+    meshioplusplus.openfoam.write(case, mesh, binary=binary)
+    sets = tmp_path / "constant" / "polyMesh" / "sets"
+    assert sorted(p.name for p in sets.iterdir()) == ["baffle", "inner", "rim"]
+    assert "class       cellSet;" in (sets / "inner").read_text(errors="ignore") or (
+        "cellSet" in (sets / "inner").read_text(errors="ignore")
+    )
+    back = meshioplusplus.openfoam.read(case)
+    got = _region_entries(back)
+    assert got[("set:inner", "cell")] == [1, 3, 4]
+    assert got[("set:rim", "point")] == [0, 5, 7]
+    assert len(got[("set:baffle", "side")]) == ncells
+    assert got[("zone", "cell")] == [0, 2]
+    # a zone is still a zone
+    assert (tmp_path / "constant" / "polyMesh" / "cellZones").is_file()
+
+
+_FOAM_HEADER = """FoamFile
+{{
+    version     2.0;
+    format      ascii;
+    class       {cls};
+    object      {obj};
+}}
+"""
+
+
+def test_a_lagrangian_cloud_is_read_as_vertex_cells(tmp_path):
+    for time, shift in (("0.1", 0.0), ("0.2", 1.0)):
+        cloud = tmp_path / time / "lagrangian" / "kinematicCloud"
+        cloud.mkdir(parents=True)
+        (cloud / "coordinates").write_text(
+            _FOAM_HEADER.format(cls="vectorField", obj="coordinates")
+            + f"3\n(\n({shift} 0 0)\n({shift + 1} 0 0)\n({shift + 2} 0 0)\n)\n"
+        )
+        (cloud / "d").write_text(
+            _FOAM_HEADER.format(cls="scalarField", obj="d")
+            + "3\n(\n1e-3\n2e-3\n3e-3\n)\n"
+        )
+        (cloud / "U").write_text(
+            _FOAM_HEADER.format(cls="vectorField", obj="U")
+            + "3\n(\n(0 0 1)\n(0 1 0)\n(1 0 0)\n)\n"
+        )
+        (cloud / "positions").write_text("not read")
+    case = tmp_path / "case.foam"
+    case.write_text("")
+    last = meshioplusplus.openfoam.read(case, cloud="kinematicCloud", time_step=-1)
+    assert [b.type for b in last.cells] == ["vertex"]
+    assert last.points[0].tolist() == [1.0, 0.0, 0.0]
+    assert last.point_data["d"].tolist() == [1e-3, 2e-3, 3e-3]
+    assert last.point_data["U"].shape == (3, 3)
+    first = meshioplusplus.openfoam.read(case, cloud="kinematicCloud")
+    assert first.points[0].tolist() == [0.0, 0.0, 0.0]
+
+
+def test_a_cloud_with_only_barycentric_positions_is_refused(tmp_path):
+    cloud = tmp_path / "0" / "lagrangian" / "c"
+    cloud.mkdir(parents=True)
+    (cloud / "positions").write_text("barycentric")
+    with pytest.raises(meshioplusplus.ReadError, match="barycentric"):
+        meshioplusplus.openfoam.read(tmp_path / "case.foam", cloud="c")

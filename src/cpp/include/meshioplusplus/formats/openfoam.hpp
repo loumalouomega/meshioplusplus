@@ -222,6 +222,22 @@ MESHIOPLUSPLUS_API Mesh read_openfoam(const std::string& rPath, const ReadOption
                                       OpenFoamInfo& rInfo);
 
 /**
+ * @brief Read one Lagrangian cloud of a case: the particles as `vertex` cells at their positions,
+ *        with the cloud's per-particle fields as `point_data`.
+ *
+ * `<case>/<time>/lagrangian/<cloud>/coordinates` (Cartesian positions) and every ASCII list file of
+ * the same length beside it (`d`, `U`, ...). `ReadOptions::mTimeStep` selects among the time
+ * directories that hold the cloud. A cloud written with only barycentric `positions` is refused:
+ * placing a particle needs the mesh's tetrahedra. A particle is not a node of the case's mesh, so
+ * this is a separate mesh, not part of `read_openfoam`.
+ *
+ * @throws ReadError when no time directory holds the cloud, it has no `coordinates`, or the step is
+ *         out of range
+ */
+MESHIOPLUSPLUS_API Mesh read_openfoam_cloud(const std::string& rPath, const std::string& rCloud,
+                                            const ReadOptions& rOptions = ReadOptions{});
+
+/**
  * @brief Cheaply summarize an OpenFOAM case's time directories.
  *
  * `mTimeValues` is a real, cheap (directory-listing only) native path: the

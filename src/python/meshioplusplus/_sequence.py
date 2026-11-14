@@ -127,6 +127,12 @@ _SERIES_WRITERS = (
     "lsdyna_binout",
     "abaqus_fil",
     "exodus",
+    "unv",
+    "gmsh",
+    "ensight",
+    "cgns",
+    "tecplot",
+    "med",
 )
 
 # The formats whose step COUNT can be discovered, so a bare `convert in.X
@@ -879,6 +885,62 @@ def write_sequence(path, steps, *, file_format=None, **write_kwargs):
         from .femap import SeriesWriter
 
         # Pushed: the mesh with the first step, then one output set per step.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "med":
+        from .med import SeriesWriter
+
+        # Pushed: the mesh with the first step, then one step group per field.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "tecplot":
+        from .tecplot import SeriesWriter
+
+        # Pushed: each step's zones, appended with their solution time.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "cgns":
+        from .cgns import SeriesWriter
+
+        # Pushed: the mesh with the first step, then one FlowSolution_t per step; the
+        # iterative data is written when the writer closes.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "ensight":
+        from .ensight import SeriesWriter
+
+        # Pushed: the geometry with the first step, then one variable file per step;
+        # the case file with its TIME section is written when the writer closes.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "gmsh":
+        from .gmsh import SeriesWriter
+
+        # Pushed: the mesh with the first step, then each step's data sections.
+        with SeriesWriter(path, **write_kwargs) as writer:
+            for time, mesh in steps:
+                writer.write(time, mesh)
+        return [str(path)]
+
+    if fmt == "unv":
+        from .unv import SeriesWriter
+
+        # Pushed: the mesh with the first step, then each step's results datasets.
         with SeriesWriter(path, **write_kwargs) as writer:
             for time, mesh in steps:
                 writer.write(time, mesh)

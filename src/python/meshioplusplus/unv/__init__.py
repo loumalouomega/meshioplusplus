@@ -2,6 +2,8 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
+from ._unv import SeriesWriter as _PySeriesWriter
 from ._unv import read as _py_read
 from ._unv import time_values
 from ._unv import write as _py_write
@@ -50,6 +52,31 @@ def write(filename, mesh, code_aster=False, node_dataset=2411):
     return _py_write(filename, mesh, code_aster=code_aster, node_dataset=node_dataset)
 
 
+class SeriesWriter(CoreSeriesWriter):
+    """Write a time series into one UNV file: the mesh with the first step, then each
+    later step's results datasets (2414, or the legacy 55/56 with ``code_aster``).
+    Each step's value is its time and its number its position; every step must have
+    the first step's points and cells.
+
+    >>> with meshioplusplus.unv.SeriesWriter("run.unv") as w:
+    ...     for t, mesh in steps:
+    ...         w.write(t, mesh)
+    """
+
+    def __init__(self, filename, code_aster=False, node_dataset=2411):
+        self._core = self._py = None
+        if not is_buffer(filename, "w"):
+            try:
+                self._core = _core.UnvSeriesWriter(
+                    str(filename), code_aster, node_dataset
+                )
+                return
+            except Exception as exc:
+                if not core_declined(exc, "unv", "write", filename):
+                    raise
+        self._py = _PySeriesWriter(filename, code_aster, node_dataset)
+
+
 register_format("unv", [".unv", ".uff"], read, {"unv": write})
 
-__all__ = ["read", "write", "time_values"]
+__all__ = ["read", "write", "time_values", "SeriesWriter"]

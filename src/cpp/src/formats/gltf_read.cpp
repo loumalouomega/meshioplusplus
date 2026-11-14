@@ -466,6 +466,42 @@ GltfrAccessor gltfr_read_accessor(const GltfrFile& rFile, const GltfrBuffers& rB
 
 // ---- transforms ---------------------------------------------------------- //
 
+// The first image's bytes as `field_data["texture:png"]` (or `texture:jpeg`), from a
+// buffer view or a `uri`, undecoded, so a round trip writes it back.
+void gltfr_add_texture(const GltfrFile& rFile, const GltfrBuffers& rBuffers, Mesh& rMesh) {
+    const auto& images = gltfr_list(rFile.mRoot, "images");
+    if (images.empty())
+        return;
+    const JsonValue& image = gltfr_object(&images[0], "images[0]");
+    std::string mime;
+    if (const JsonValue* m = gltfr_get(image, "mimeType"); m && m->IsString())
+        mime = m->mString;
+    std::string bytes;
+    if (const JsonValue* view = gltfr_get(image, "bufferView")) {
+        const std::uint64_t index = gltfr_uint(*view, "image.bufferView");
+        const auto& views = gltfr_list(rFile.mRoot, "bufferViews");
+        if (index >= views.size())
+            gltfr_fail("an image names a bufferView that does not exist");
+        const std::uint64_t length =
+            gltfr_uint_or(gltfr_object(&views[index], "bufferView"), "byteLength", 0, "bufferView");
+        std::uint64_t stride = 1;
+        const unsigned char* p =
+            gltfr_span(rFile, rBuffers, index, 0, 1, length, stride, /*UseViewStride=*/false);
+        bytes.assign(reinterpret_cast<const char*>(p), static_cast<std::size_t>(length));
+    } else if (const JsonValue* uri = gltfr_get(image, "uri"); uri && uri->IsString()) {
+        bytes = gltfr_uri_bytes(rFile, uri->mString);
+    } else {
+        return;
+    }
+    const bool jpeg = mime == "image/jpeg" ||
+                      (bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF &&
+                       static_cast<unsigned char>(bytes[1]) == 0xD8);
+    NDArray out(DType::UInt8, {bytes.size()});
+    if (!bytes.empty())
+        std::memcpy(out.Data(), bytes.data(), bytes.size());
+    rMesh.AddFieldData(jpeg ? "texture:jpeg" : "texture:png", std::move(out));
+}
+
 GltfrMat4 gltfr_identity() {
     GltfrMat4 m{};
     m[0] = m[5] = m[10] = m[15] = 1.0;
@@ -832,8 +868,8 @@ Mesh read_gltf(const std::string& rPath, const GltfReadOptions& rOptions,
     for (const char* key : {"animations", "skins"})
         if (!gltfr_list(file.mRoot, key).empty())
             skipped.emplace_back(key);
-    if (!gltfr_list(file.mRoot, "textures").empty() || !gltfr_list(file.mRoot, "images").empty())
-        skipped.emplace_back("textures");
+    if (gltfr_list(file.mRoot, "images").size() > 1)
+        skipped.emplace_back("images beyond the first");
     if (!skipped.empty()) {
         std::string joined;
         for (std::size_t i = 0; i < skipped.size(); ++i)
@@ -949,6 +985,8 @@ Mesh read_gltf(const std::string& rPath, const GltfReadOptions& rOptions,
         std::copy(ids.begin(), ids.end(), arr.As<std::int64_t>());
         mesh.AddRegion(Region(name, RegionKind::Cell, std::move(arr)));
     }
+    if (state.mWantData)
+        gltfr_add_texture(file, buffers, mesh);
     return mesh;
 }
 

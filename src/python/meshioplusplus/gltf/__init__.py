@@ -28,6 +28,7 @@ def write(
     scale: float = 1.0,
     by_region: bool = True,
     container: str = "auto",
+    texture=None,
 ):
     """Write a glTF 2.0 file (C++ core for real file paths, Python fallback).
 
@@ -56,7 +57,14 @@ def write(
     otherwise); the rotation, ``scale`` (source unit to metres) and the
     bounding-box centre that ``recenter`` subtracts all live on the root node,
     not in the coordinates. ``by_region=False`` writes one node.
+
+    ``texture`` (a ``.png`` path, PNG bytes or an ``(h, w, 3|4)`` uint8 image) is
+    embedded as the material's ``baseColorTexture`` over ``uv``'s ``TEXCOORD_0``;
+    a mesh read from a textured file carries it as ``field_data["texture:png"]``,
+    which is written back the same way.
     """
+    if texture is not None:
+        mesh = _with_texture(mesh, texture)
     kwargs = dict(
         up_axis=up_axis,
         normal_weight=normal_weight,
@@ -109,6 +117,22 @@ def write(
     return _py_write(filename, mesh, container=container, **kwargs)
 
 
+def _with_texture(mesh, texture):
+    """A shallow copy of ``mesh`` carrying ``texture`` as ``field_data["texture:png"]``."""
+    import copy
+
+    import numpy as np
+
+    from .._png import texture_bytes
+
+    out = copy.copy(mesh)
+    out.field_data = dict(mesh.field_data)
+    out.field_data["texture:png"] = np.frombuffer(
+        texture_bytes(texture), np.uint8
+    ).copy()
+    return out
+
+
 def read(filename, points_only=False, arrays=None, weld=False):
     """Read a glTF 2.0 file (``.glb``, or ``.gltf`` with external or ``data:`` buffers).
 
@@ -122,8 +146,10 @@ def read(filename, points_only=False, arrays=None, weld=False):
     attributes become ``point_data``, ``COLOR_0`` becomes ``gltf:color``,
     ``TEXCOORD_0`` becomes ``uv`` (``v`` flipped back to a bottom-left origin).
     ``weld=True`` merges vertices with identical positions (the writer splits
-    one per smooth fan). Draco and meshopt compression are refused;
-    morph targets, skins, animations and textures are skipped with a warning.
+    one per smooth fan). The first image's bytes become
+    ``field_data["texture:png"]`` (``texture:jpeg`` for a JPEG), undecoded. Draco
+    and meshopt compression are refused; morph targets, skins, animations and
+    further images are skipped with a warning.
     """
     if not is_buffer(filename, "r"):
         try:

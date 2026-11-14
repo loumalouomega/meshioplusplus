@@ -50,6 +50,7 @@ from .. import (
     annulus,
     attach_quality,
     auto_align,
+    bake_texture,
     ball,
     boundary_layer,
     box,
@@ -95,6 +96,7 @@ from .. import (
     decimate,
     decimate_volume,
     delaunay_2d,
+    detect,
     deviation,
     deviation_regions,
     diff,
@@ -743,6 +745,20 @@ def tool_sniff(input_path):
         from_extension = []
     return _json_safe(
         {"format": sniffed or None, "from_extension": list(from_extension)}
+    )
+
+
+def tool_detect(input_path):
+    """Rank every format a file could be: ``certain`` (a content signature matched),
+    ``likely`` (the extension names it and its metadata reads), ``guess`` (the
+    extension alone)."""
+    found = detect(_resolve(input_path, must_exist=True))
+    return _json_safe(
+        {
+            "candidates": [
+                {"format": f, "confidence": c, "reason": r} for f, c, r in found
+            ]
+        }
     )
 
 
@@ -5022,6 +5038,50 @@ def tool_parameterize(
     )
 
 
+def tool_bake_texture(
+    input_path,
+    output_path,
+    array,
+    input_format=None,
+    output_format=None,
+    width=512,
+    height=512,
+    cmap="viridis",
+    vmin=None,
+    vmax=None,
+    component=None,
+    image_path=None,
+):
+    """Bake a point or cell array into a texture through the mesh's uv: the mesh is
+    written with it (embedded in glTF, a .mtl and .png beside an OBJ), and the PNG
+    to image_path when given."""
+    mesh = _load(input_path, input_format)
+    out, _image, report = bake_texture(
+        mesh,
+        array,
+        size=(int(width), int(height)),
+        cmap=cmap,
+        vmin=vmin,
+        vmax=vmax,
+        component=component,
+        return_report=True,
+    )
+    image_written = None
+    if image_path:
+        image_written = str(_resolve(image_path, for_write=True))
+        with open(image_written, "wb") as f:
+            f.write(np.asarray(out.field_data["texture:png"], dtype=np.uint8).tobytes())
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        vmin=float(report["vmin"]),
+        vmax=float(report["vmax"]),
+        covered_pixels=int(report["covered_pixels"]),
+        image_path=image_written,
+        warnings=list(report["warnings"]),
+    )
+
+
 def tool_sobolev_deform(
     input_path,
     output_path,
@@ -7741,6 +7801,7 @@ TOOL_REGISTRY = OrderedDict(
             },
         ),
         ("sniff", {"fn": tool_sniff, "wraps": ("sniff_format",), "gated": None}),
+        ("detect", {"fn": tool_detect, "wraps": ("detect",), "gated": None}),
         ("info", {"fn": tool_info, "wraps": ("read_metadata",), "gated": None}),
         ("stats", {"fn": tool_stats, "wraps": ("compute_stats",), "gated": None}),
         (
@@ -8021,6 +8082,10 @@ TOOL_REGISTRY = OrderedDict(
         (
             "exaggerate",
             {"fn": tool_exaggerate, "wraps": ("exaggerate",), "gated": None},
+        ),
+        (
+            "bake_texture",
+            {"fn": tool_bake_texture, "wraps": ("bake_texture",), "gated": None},
         ),
         (
             "colorize",

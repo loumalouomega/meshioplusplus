@@ -385,6 +385,10 @@ def _linear(byte: int) -> float:
     return float(_LINEAR[byte])
 
 
+#: The field-data key of an embedded texture (PNG bytes), read and written.
+TEXTURE_KEY = "texture:png"
+
+
 def _render(
     mesh,
     container_binary,
@@ -775,6 +779,23 @@ def _render(
             "gltf: nothing to export (no surface, line or vertex cells); writing an empty scene."
         )
 
+    # ---- an embedded texture (field_data["texture:png"]) when TEXCOORD_0 is written ----
+    has_uv = any(
+        sem == "TEXCOORD_0"
+        for _nm, pos in out_nodes
+        for po in pos
+        for sem, _i in po["attrs"]
+    )
+    png = mesh.field_data.get(TEXTURE_KEY)
+    textured = has_uv and png is not None and np.asarray(png).size > 0
+    texture_offset = texture_length = 0
+    if textured:
+        png_bytes = np.asarray(png, dtype=np.uint8).tobytes()
+        texture_offset = bin_size
+        texture_length = len(png_bytes)
+        bin_parts.append(png_bytes)
+        bin_size += len(png_bytes)
+
     # ---- the root transform ----
     up = up_axis
     if up == "auto":
@@ -827,15 +848,13 @@ def _render(
                 prims.append(prim)
             meshes.append({"name": nm, "primitives": prims})
         doc["meshes"] = meshes
-        base_c = 1.0 if color_active else 0.8
-        material = {
-            "name": "meshio++",
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [base_c, base_c, base_c, 1.0],
-                "metallicFactor": 0.0,
-                "roughnessFactor": 0.5,
-            },
-        }
+        base_c = 1.0 if color_active or textured else 0.8
+        pbr = {"baseColorFactor": [base_c, base_c, base_c, 1.0]}
+        if textured:
+            pbr["baseColorTexture"] = {"index": 0}
+        pbr["metallicFactor"] = 0.0
+        pbr["roughnessFactor"] = 0.5
+        material = {"name": "meshio++", "pbrMetallicRoughness": pbr}
         if has_unlit:
             material["extensions"] = {"KHR_materials_unlit": {}}
         material["doubleSided"] = True
@@ -864,10 +883,22 @@ def _render(
             }
             for a in accessors
         ]
+        if textured:
+            doc["bufferViews"].append(
+                {
+                    "buffer": 0,
+                    "byteOffset": texture_offset,
+                    "byteLength": texture_length,
+                }
+            )
         buf = {"byteLength": bin_size}
         if not container_binary:
             buf["uri"] = bin_uri
         doc["buffers"] = [buf]
+        if textured:
+            doc["textures"] = [{"sampler": 0, "source": 0}]
+            doc["images"] = [{"bufferView": len(accessors), "mimeType": "image/png"}]
+            doc["samplers"] = [{}]
     return _dumps(doc).encode("utf-8"), b"".join(bin_parts)
 
 

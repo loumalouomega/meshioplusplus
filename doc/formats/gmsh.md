@@ -91,6 +91,16 @@ A transient Gmsh file carries several `$NodeData`/`$ElementData` sections under 
 
 `read_gmsh_metadata` (4.1 only, native — 2.2 has no header-only metadata path at all and falls back to a full read regardless of time) reports the same union in `time_values`; a name pushed once per step is deduplicated in the summary, matching the single-array-per-name a real read always returns.
 
+## Writing a series
+
+`meshioplusplus.gmsh.SeriesWriter` (C++: `GmshSeriesWriter`, and `write_sequence` / `sequence_to_timeseries`) writes the mesh with the first step and then only each later step's `$NodeData` and `$ElementData` sections (2.2 or 4.1, ASCII or binary) into the same file. A step's time is the real tag of its sections and its position their first integer tag, which is what `read(..., time_step=k)` and `read_metadata(...)["time_values"]` select by. Every step must have the first step's points and cell blocks. A plain `write` still writes time 0 and step 0.
+
+## Element-node data and kept sections
+
+`$ElementNodeData` (a value per element per node, what Gmsh's own post-processing and GetDP write for discontinuous fields) is read, in 2.2, 4.0 and 4.1, ASCII and binary, by both engines, into `cell_data["gmsh:element_node:<name>"]`: per block, an array `(cells, nodes × components)` holding each element's values in the file's own node order (a block's rows must have one length). The component count is `field_data["gmsh:element_node_components:<name>"]`, which the writers need to put the section back. As for `$ElementData`, a step is selected with `time_step` and the first section of a name wins otherwise.
+
+`$GhostElements`, `$InterpolationScheme`, `$PartitionedEntities` and `$Parametrizations` are kept verbatim, in ASCII files, as `field_data["gmsh:section:<Name>"]` (the text body, as `uint8`) and written back after the elements, so a Gmsh-partitioned file or one with interpolation schemes survives a round trip unread. `$GhostElements` is also read as `cell_data["partition:ghost"]` (1 for a listed ghost element, 0 for an owned one) in 4.0/4.1 files, matched through the file's element tags, in both engines; the layout is the Gmsh manual's (`elementTag partitionTag numGhostPartitions ghostPartitionTag...`), checked against a hand-written file, not a Gmsh-written one. The other sections are not interpreted, and the parametric coordinates after a node in a 4.1 `$Nodes` record are still discarded. Binary files drop them as before.
+
 ## Quirks & limitations
 
 - Section keywords may be indented (FEconv's samples indent every line); leading and trailing whitespace around `$Nodes`, `$Elements` and the other markers is ignored. Before v16.6.0 both engines refused such a file.

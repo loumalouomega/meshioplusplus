@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from . import (
         abaqus,
         abaqus_fil,
+        adcirc,
         ansys,
         ansys_rst,
         ansysInp,
@@ -42,13 +43,16 @@ if TYPE_CHECKING:
         flux,
         frd,
         freefem,
+        freesurfer,
         gid,
+        gifti,
         gltf,
         gmsh,
         h5m,
         hmf,
         iges,
         ip,
+        las,
         libmesh,
         lsdyna,
         lsdyna_binout,
@@ -74,14 +78,19 @@ if TYPE_CHECKING:
         patran,
         pcd,
         permas,
+        plot3d,
         ply,
         pmsh,
         pvd,
+        pvti,
         pvtp,
+        pvtr,
+        pvts,
         pvtu,
         radioss,
         radioss_anim,
         radioss_th,
+        selafin,
         step,
         stl,
         su2,
@@ -89,9 +98,11 @@ if TYPE_CHECKING:
         szplt,
         tecplot,
         tetgen,
+        threemf,
         tikz,
         triangle,
         ugrid,
+        ugrid_nc,
         unv,
         usd,
         vti,
@@ -113,6 +124,7 @@ if TYPE_CHECKING:
     from ._adapt_volume import adapt_volume
     from ._adjacency import adjacency, write_graph
     from ._agglomerate import agglomerate
+    from ._bake_texture import bake_texture
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
     from ._check_conformity import check_conformity
@@ -120,6 +132,7 @@ if TYPE_CHECKING:
     from ._clean import clean
     from ._clip import clip
     from ._colorize import colorize
+    from ._conduit import from_conduit, has_conduit, to_conduit
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
     from ._coordinates import convert_coordinates
@@ -322,7 +335,7 @@ if TYPE_CHECKING:
     from ._skin import extract_skin
     from ._slice import sections, slice
     from ._smooth import smooth
-    from ._sniff import sniff_format
+    from ._sniff import detect, sniff_format
     from ._sobolev_deform import sobolev_deform
     from ._split import split
     from ._stats import compute_stats
@@ -499,6 +512,9 @@ _LAZY_ATTRS = {
     "find_interface": "_interfaces",
     "region_adjacency": "_interfaces",
     "split_interface": "_interfaces",
+    "from_conduit": "_conduit",
+    "has_conduit": "_conduit",
+    "to_conduit": "_conduit",
     "from_arrow": "_interop",
     "from_pyvista": "_interop",
     "from_trimesh": "_interop",
@@ -595,6 +611,8 @@ _LAZY_ATTRS = {
     "write_step_elements": "_step_elements",
     "smooth": "_smooth",
     "sniff_format": "_sniff",
+    "detect": "_sniff",
+    "bake_texture": "_bake_texture",
     "sobolev_deform": "_sobolev_deform",
     "split": "_split",
     "compute_stats": "_stats",
@@ -633,6 +651,7 @@ _LAZY_ATTRS = {
 __all__ = [
     "abaqus",
     "abaqus_fil",
+    "adcirc",
     "ansys",
     "ansys_rst",
     "ansysInp",
@@ -653,10 +672,13 @@ __all__ = [
     "flux",
     "frd",
     "freefem",
+    "freesurfer",
     "gid",
+    "gifti",
     "gltf",
     "gmsh",
     "h5m",
+    "las",
     "hmf",
     "iges",
     "ip",
@@ -686,13 +708,18 @@ __all__ = [
     "pcd",
     "permas",
     "ply",
+    "plot3d",
     "pmsh",
     "pvd",
     "pvtp",
+    "pvti",
+    "pvtr",
+    "pvts",
     "pvtu",
     "radioss",
     "radioss_anim",
     "radioss_th",
+    "selafin",
     "step",
     "stl",
     "su2",
@@ -700,9 +727,11 @@ __all__ = [
     "szplt",
     "tecplot",
     "tetgen",
+    "threemf",
     "tikz",
     "triangle",
     "ugrid",
+    "ugrid_nc",
     "unv",
     "usd",
     "vti",
@@ -757,6 +786,8 @@ __all__ = [
     "exaggerate",
     "colorize",
     "sniff_format",
+    "detect",
+    "bake_texture",
     "reorder",
     "compute_bandwidth",
     "diff",
@@ -947,6 +978,9 @@ __all__ = [
     "has_polars",
     "has_open3d",
     "has_dolfinx",
+    "to_conduit",
+    "from_conduit",
+    "has_conduit",
     "edge_index",
     "feature_matrix",
     "FeatureMatrix",

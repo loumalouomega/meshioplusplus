@@ -65,9 +65,17 @@
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dolfin.hpp"
+#include "meshioplusplus/formats/adcirc.hpp"
+#include "meshioplusplus/formats/gifti.hpp"
+#include "meshioplusplus/formats/threemf.hpp"
+#include "meshioplusplus/formats/las.hpp"
+#include "meshioplusplus/formats/freesurfer.hpp"
+#include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
+#include "meshioplusplus/formats/plot3d.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/formats/frd.hpp"
+#include "meshioplusplus/formats/ugrid_nc.hpp"
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
@@ -363,7 +371,7 @@ const std::vector<RegistryRow>& registry_rows() {
                        const ReadOptions& opts) { return meshioplusplus::read_frd(path, opts); },
          .mMetadata = meshioplusplus::read_frd_metadata},
         {.mName = "ansys",
-         .mRead = meshioplusplus::read_ansys,
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_ansys(rPath); },
          .mWrite = [](const std::string& p,
                       const Mesh& mm) { meshioplusplus::write_ansys(p, mm, /*binary=*/true); }},
         {.mName = "avsucd",
@@ -544,6 +552,39 @@ const std::vector<RegistryRow>& registry_rows() {
         // DXF R2000 drawings (roadmap 7.6.4): LINE/ARC/CIRCLE/LWPOLYLINE/SPLINE in,
         // a line mesh or a fit_curves sketch out.
         {.mName = "dxf", .mRead = meshioplusplus::read_dxf, .mWrite = meshioplusplus::write_dxf},
+        {.mName = "adcirc",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_adcirc(rPath); },
+         .mWrite = meshioplusplus::write_adcirc,
+         .mReadEx =
+             [](const std::string& rPath, const ReadOptions& rOpts) {
+                 return meshioplusplus::read_adcirc(rPath, rOpts);
+             },
+         .mMetadata = meshioplusplus::read_adcirc_metadata},
+        {.mName = "gifti",
+         .mRead = meshioplusplus::read_gifti,
+         .mWrite = meshioplusplus::write_gifti},
+        {.mName = "freesurfer",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_freesurfer(rPath); },
+         .mWrite = meshioplusplus::write_freesurfer},
+        {.mName = "3mf", .mRead = meshioplusplus::read_3mf, .mWrite = meshioplusplus::write_3mf},
+        {.mName = "las",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_las(rPath); },
+         .mWrite = meshioplusplus::write_las,
+         .mReadEx =
+             [](const std::string& rPath, const ReadOptions& rOpts) {
+                 return meshioplusplus::read_las(rPath, rOpts);
+             }},
+        {.mName = "selafin",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_selafin(rPath); },
+         .mWrite = meshioplusplus::write_selafin,
+         .mReadEx =
+             [](const std::string& rPath, const ReadOptions& rOpts) {
+                 return meshioplusplus::read_selafin(rPath, rOpts);
+             },
+         .mMetadata = meshioplusplus::read_selafin_metadata},
+        {.mName = "plot3d",
+         .mRead = [](const std::string& rPath) { return meshioplusplus::read_plot3d(rPath); },
+         .mWrite = meshioplusplus::write_plot3d},
         {.mName = "svg",
          .mRead = [](const std::string& path) { return meshioplusplus::read_svg(path); },
          .mWrite = [](const std::string& p, const Mesh& mm) { meshioplusplus::write_svg(p, mm); },
@@ -839,6 +880,14 @@ const std::vector<RegistryRow>& registry_rows() {
          .mReadEx = [](const std::string& path,
                        const ReadOptions& opts) { return meshioplusplus::read_exodus(path, opts); },
          .mMetadata = meshioplusplus::read_exodus_metadata},
+        {.mName = "ugrid_nc",
+         .mRead = [](const std::string& path) { return meshioplusplus::read_ugrid_nc(path); },
+         .mWrite = meshioplusplus::write_ugrid_nc,
+         .mReadEx =
+             [](const std::string& path, const ReadOptions& opts) {
+                 return meshioplusplus::read_ugrid_nc(path, opts);
+             },
+         .mMetadata = meshioplusplus::read_ugrid_nc_metadata},
 #endif
 #ifdef MESHIOPLUSPLUS_HAS_ADIOS2
         {.mName = "vtx",
@@ -971,6 +1020,24 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".glb", "gltf"},
         {".gltf", "gltf"},
         {".dxf", "dxf"},
+        {".14", "adcirc"},
+        {".cas", "ansys"},
+        {".gii", "gifti"},
+        {".3mf", "3mf"},
+        {".las", "las"},
+        {".pial", "freesurfer"},
+        {".white", "freesurfer"},
+        {".inflated", "freesurfer"},
+        {".orig", "freesurfer"},
+        {".smoothwm", "freesurfer"},
+        {".sphere", "freesurfer"},
+        {".slf", "selafin"},
+        {".srf", "selafin"},
+        {".grd", "adcirc"},
+        {".p3d", "plot3d"},
+        {".p3dfmt", "plot3d"},
+        {".x", "plot3d"},
+        {".g", "plot3d"},
         {".svg", "svg"},
         {".tikz", "tikz"},
         // .node/.ele stay with tetgen for backward compatibility (3D pairs
@@ -1021,6 +1088,7 @@ const std::map<std::string, std::string>& registry_extension_defaults() {
         {".e", "exodus"},
         {".exo", "exodus"},
         {".ex2", "exodus"},
+        {".nc", "ugrid_nc"},
     };
     return m;
 }
@@ -1240,7 +1308,7 @@ const char* registry_compiled_out(const std::string& rFormat) {
         return "HDF5";
 #endif
 #ifndef MESHIOPLUSPLUS_HAS_NETCDF
-    if (rFormat == "exodus")
+    if (rFormat == "exodus" || rFormat == "ugrid_nc")
         return "netCDF";
 #endif
 #ifndef MESHIOPLUSPLUS_HAS_ADIOS2
@@ -1254,8 +1322,8 @@ const char* registry_compiled_out(const std::string& rFormat) {
     // Deliberately NOT an arm for cgns/cgnslib: the format is fully readable
     // and writable without it (the hand-rolled ADF-over-HDF5 path), so
     // reporting it "compiled out" would be wrong. The cgnslib-only
-    // capabilities -- ADF containers and NGON_n/NFACE_n -- report themselves
-    // by name from read_cgns_mll instead.
+    // capabilities -- ADF containers and the CGNS 3.x NGON_n/NFACE_n layout --
+    // report themselves by name from read_cgns_mll instead.
     return nullptr;
 }
 

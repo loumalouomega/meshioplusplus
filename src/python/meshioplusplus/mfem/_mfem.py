@@ -25,7 +25,7 @@ import pathlib
 
 import numpy as np
 
-from .. import _lagrange, _provenance
+from .. import _ghosts, _lagrange, _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._facets import facet_nodes
@@ -1974,7 +1974,7 @@ def _read_parts(parts, nvertices, order, labels, filename):
     if attr_blocks:
         mesh.cell_data["mfem:attribute"] = attr_blocks
     if labels and part_blocks:
-        mesh.cell_data["partition:part"] = part_blocks
+        mesh.cell_data[_ghosts.PARTITION_PART] = part_blocks
     for g, data in zip(point_gfs, values[1:]):
         name = parts[0]["gfs"][g][0]
         mesh.point_data[name] = data[:, 0].copy() if data.shape[1] == 1 else data

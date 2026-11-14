@@ -140,6 +140,7 @@
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/operations/detect.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
@@ -5265,6 +5266,13 @@ int64_t mio_sniff_format(const char* path, char* buf, int64_t buflen) {
     return capi_guarded_count([&]() -> int64_t {
         capi_require(path, "meshio++: path is NULL");
         return copy_string(meshioplusplus::sniff_format(path), buf, buflen);
+    });
+}
+
+int64_t mio_detect(const char* path, char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(path, "meshio++: path is NULL");
+        return copy_string(meshioplusplus::detect_format_text(path), buf, buflen);
     });
 }
 

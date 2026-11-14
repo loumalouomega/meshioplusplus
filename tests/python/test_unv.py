@@ -572,3 +572,51 @@ def test_touching_ten_digit_labels_are_cut_in_their_columns(tmp_path):
         tips = [r for r in out.regions if r.name == "tips"]
         assert len(tips) == 1
         np.testing.assert_array_equal(tips[0].entries, [0, 3])
+
+
+def _series_mesh(scale):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        point_data={"T": scale * np.arange(4.0)},
+        cell_data={"p": [scale * np.array([1.0, 2.0])]},
+    )
+
+
+@pytest.mark.parametrize("code_aster", [False, True])
+def test_series_writer_writes_one_file_with_every_step(tmp_path, code_aster):
+    path = tmp_path / "series.unv"
+    with meshioplusplus.unv.SeriesWriter(str(path), code_aster=code_aster) as writer:
+        for t in (0.0, 0.5, 1.0):
+            writer.write(t, _series_mesh(1.0 + t))
+    meta = meshioplusplus.read_metadata(str(path), file_format="unv")
+    assert meta["time_values"] == [0.0, 0.5, 1.0]
+    for k, t in enumerate((0.0, 0.5, 1.0)):
+        mesh = meshioplusplus.unv.read(str(path), time_step=k)
+        assert mesh.field_data["meshio:time"].tolist() == [t]
+        np.testing.assert_allclose(
+            mesh.point_data["T"], (1.0 + t) * np.arange(4.0), rtol=1e-5
+        )
+
+
+def test_series_writer_engines_write_the_same_bytes(tmp_path):
+    core_path, py_path = tmp_path / "core.unv", tmp_path / "py.unv"
+    writer = _core.UnvSeriesWriter(str(core_path), False, 2411)
+    for t in (0.0, 1.0):
+        writer.write(t, _series_mesh(1.0 + t))
+    writer.finalize()
+    with _unv.SeriesWriter(str(py_path)) as writer:
+        for t in (0.0, 1.0):
+            writer.write(t, _series_mesh(1.0 + t))
+    assert core_path.read_bytes() == py_path.read_bytes()
+
+
+def test_series_writer_refuses_a_different_mesh(tmp_path):
+    with meshioplusplus.unv.SeriesWriter(str(tmp_path / "s.unv")) as writer:
+        writer.write(0.0, _series_mesh(1.0))
+        other = meshioplusplus.Mesh(
+            _series_mesh(1.0).points[:3], [("triangle", np.array([[0, 1, 2]]))]
+        )
+        with pytest.raises(meshioplusplus.WriteError):
+            writer.write(1.0, other)

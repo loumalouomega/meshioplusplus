@@ -56,6 +56,10 @@ On the way back, faces are grouped by vertex count into `triangle`, `quad` and o
 
 A volume mesh's `cell_data` is gathered onto its skin through the parent-cell map, so a solid arrives coloured by its per-cell material.
 
+## Regions
+
+A cell region of a **surface** mesh is written as a face `UsdGeomSubset` (family `meshioplusplus`, the region's own name in the prim's custom data `meshioplusplus:region` because prim names are identifiers), and every face `GeomSubset` of a mesh prim is read back as a cell region. A volume mesh's regions are not written: its faces are the skin, and the parent-cell map would have to carry them.
+
 ## Quirks & limitations
 
 * **Block identity is not preserved.** A USD prim holds one face list, so a mesh with three blocks (triangle, quad, triangle) comes back as two, grouped by vertex count.

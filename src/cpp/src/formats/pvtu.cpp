@@ -461,10 +461,10 @@ void pvtu_write_mesh(pvtu_kind Kind, const std::string& rPath, const Mesh& rMesh
         labelled.AddCellData(kPvtuPieceKey, std::move(labels));
         std::vector<Mesh> parts = pvtu_carve(labelled, kPvtuPieceKey);
         for (Mesh& part : parts)
-            part = detail::clone_mesh(part, [](DataLocation Where, const std::string& rName,
-                                                std::string&) {
-                return !(Where == DataLocation::Cell && rName == kPvtuPieceKey);
-            });
+            part = detail::clone_mesh(
+                part, [](DataLocation Where, const std::string& rName, std::string&) {
+                    return !(Where == DataLocation::Cell && rName == kPvtuPieceKey);
+                });
         std::vector<const Mesh*> ptrs;
         for (const Mesh& m : parts)
             ptrs.push_back(&m);
