@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Performance:** a paired physics-ML walk (`target_offset >= 1`) reads each step once (roadmap 5.11.3, [PhysicsNeMo](doc/physicsnemo.md)): `iter_samples`, the Gen-2 reader and the PyG dataset keep the last pair's two meshes, so an n-step entry costs n reads instead of 2(n − offset), and at most two meshes stay alive as before.
 - **Fix:** the `kahip` extra is held below 3.27 (`pip install meshioplusplus[kahip]`): the 3.27 wheel on PyPI crashes with an illegal instruction when imported on the CI runners, where 3.25 works (roadmap 3.22).
 - **Added:** the Catalyst 2 and Ascent route (roadmap 10.2, [route](doc/routes/catalyst.md)): `contrib/catalyst/blueprint_series.py` writes the Mesh Blueprint an in situ pipeline receives as a `.vtkhdf` series or a file per step, through `from_conduit`.
 - **Added:** `to_conduit` / `from_conduit` / `has_conduit`, the Conduit Mesh Blueprint in memory (roadmap 10.1, [interop](doc/interop.md#conduit-mesh-blueprint)): a mesh as one Blueprint domain (`explicit` coords; one shape, `mixed`, `polygonal` or `polyhedral` topologies; vertex and element fields; `state/time`) and back, grids expanded on read, on a `conduit.Node` or a nested dict.
