@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Instruction baseline re-recorded** (`benchmark/instructions_S.csv`, tier S): `read_obj` +6.6% and `write_obj` +2.9% for the `usemtl`/`mtllib`/`.mtl` material tracking, `read_openfoam` +2.2% for sets and clouds, `read_stl` +1.3% and `write_stl` +1.3% for solid regions and the attribute word (the reader's second scan is skipped for single-solid files), and `read_ragged_ensight` -7.3% / `read_gmsh22_ascii` -1.4% from earlier changes. Recorded with the toolchain named in the file header.
 - **Added:** legacy Fluent cases (`.cas`, read as a `.msh` with zone types as `fluent:zone_type:<name>`) and their `.dat` data files (sections 300, 2300 and 3300 as cell data by cell and boundary-face id; `data=` or the sibling `.dat`), both engines (roadmap 2.4.1.1, 2.4.1.2).
 
 
