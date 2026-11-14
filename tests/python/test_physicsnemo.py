@@ -404,10 +404,14 @@ def test_iter_samples_target_offset_pairs_and_shrinks(tmp_path):
         np.testing.assert_allclose(sample.arrays["y"][:, 0], 1.0)
 
 
-@pytest.mark.parametrize("offset", [1, 2])
-def test_iter_samples_pairing_reads_each_step_once(tmp_path, monkeypatch, offset):
-    # Roadmap 5.11.3: consecutive pairs share a step, so a paired walk over an
-    # n-step series reads n meshes, not 2 * (n - offset).
+@pytest.mark.parametrize("offset, reads_per_entry", [(1, 5), (2, 2 * 3)])
+def test_iter_samples_pairing_reads_each_step_once(
+    tmp_path, monkeypatch, offset, reads_per_entry
+):
+    # Roadmap 5.11.3: consecutive pairs share a step at offset 1, so a paired
+    # walk over an n-step series reads n meshes, not 2 * (n - 1). A larger
+    # offset would need more than two meshes alive to share, so it reads as
+    # before.
     from meshioplusplus import _sequence
 
     manifest = _series_manifest(tmp_path, steps=5, entries=2)
@@ -429,7 +433,7 @@ def test_iter_samples_pairing_reads_each_step_once(tmp_path, monkeypatch, offset
         )
     )
     assert len(paired) == 2 * (5 - offset)
-    assert len(reads) == 2 * 5
+    assert len(reads) == 2 * reads_per_entry
     for i, (_, _, sample) in enumerate(paired):
         k = i % (5 - offset)
         np.testing.assert_array_equal(sample.arrays["x"][:, 0], np.arange(4.0) + k)
@@ -448,11 +452,19 @@ def test_pair_cache_holds_at_most_the_pair_it_serves():
         assert cache.get(series, k, needed) == series[k]
         assert cache.get(series, k + 2, needed) == series[k + 2]
         assert len(cache._steps) <= 2
-    # (0,2) (1,3) (2,4) (3,5): steps 2 and 3 come back from the cache.
-    assert cache.reads == 6
+    # (0,2) (1,3) (2,4) (3,5): a step comes back only offset pairs later,
+    # after it was dropped, so offset 2 shares nothing.
+    assert cache.reads == 8
+    # Offset 1: (0,1) (1,2) (2,3) (3,4) reads each step once.
+    cache = _PairCache()
+    for k in range(4):
+        needed = (k, k + 1)
+        assert cache.get(series, k, needed) == series[k]
+        assert cache.get(series, k + 1, needed) == series[k + 1]
+    assert cache.reads == 5
     # Out-of-order access stays correct, only with more reads.
-    assert cache.get(series, 0, (0, 2)) == series[0]
-    assert cache.reads == 7
+    assert cache.get(series, 0, (0, 1)) == series[0]
+    assert cache.reads == 6
     # Another series never sees this one's meshes.
     other = [(float(k), f"other{k}") for k in range(6)]
     assert cache.get(other, 0, (0, 2)) == other[0]

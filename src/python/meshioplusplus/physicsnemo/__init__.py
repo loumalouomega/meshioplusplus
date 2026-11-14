@@ -427,12 +427,14 @@ def _flat_items(manifest, split, read_kwargs, offset=0):
 class _PairCache:
     """The steps of the last paired sample, so the next one reads one step.
 
-    A paired walk (``target_offset >= 1``) asks for ``(k, k + offset)`` and
-    then ``(k + 1, k + 1 + offset)``: with ``offset == 1`` the second pair's
-    input is the first pair's target. The cache keeps the meshes of the last
-    pair, keyed by ``(series, step)``, and drops every entry the coming pair
-    does not need *before* reading, so at most two meshes are alive -- the
-    pairing amendment to the streaming invariant holds. A cached mesh is
+    A paired walk asks for ``(k, k + offset)`` and then
+    ``(k + 1, k + 1 + offset)``: with ``offset == 1`` the second pair's input
+    is the first pair's target. The cache keeps the meshes of the last pair,
+    keyed by ``(series, step)``, and drops every entry the coming pair does
+    not need *before* reading, so at most two meshes are alive -- the pairing
+    amendment to the streaming invariant holds. A larger offset gains nothing:
+    the step two pairs share is ``offset`` pairs apart, and keeping it would
+    mean holding ``offset + 1`` meshes. A cached mesh is
     shared, never mutated: augmentation and tessellation build new meshes.
     """
 
@@ -471,8 +473,9 @@ def _read_sample(
     sample (``target_offset >= 1``) costs two reads -- **at most two meshes
     alive**, the pairing amendment to the streaming invariant. A
     ``pair_cache`` (:class:`_PairCache`, which the callers pass when pairing)
-    keeps the last pair's meshes, so a walk over consecutive steps reads each
-    step once while still holding at most two.
+    keeps the last pair's meshes, so a walk over consecutive steps with
+    ``target_offset == 1`` reads each step once while still holding at most
+    two.
 
     An ``augmentation`` is drawn ONCE per sample and replayed on the target:
     augmenting the pair independently would teach the model that a part
