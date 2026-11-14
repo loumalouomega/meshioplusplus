@@ -500,10 +500,15 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
         ++given;
     }
     if (pipe_find(rStep, "Scale")) {
-        std::vector<double> v = pipe_dvec(rStep, "Scale");
-        // A bare number is the uniform-scale spelling.
-        if (v.empty())
+        // A bare number is the uniform-scale spelling; `pipe_dvec` refuses a
+        // scalar, so read it as a number before it is asked for an array.
+        const PipelineValue* scale_value = pipe_find(rStep, "Scale");
+        std::vector<double> v;
+        if (std::holds_alternative<double>(*scale_value) ||
+            std::holds_alternative<std::int64_t>(*scale_value))
             v.assign(1, pipe_number(rStep, "Scale", 1.0));
+        else
+            v = pipe_dvec(rStep, "Scale");
         if (v.size() == 1)
             xf = transform_scale(v[0], v[0], v[0]);
         else if (v.size() == 3)

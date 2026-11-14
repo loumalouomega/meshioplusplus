@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Fix:** the native pipeline engine accepts a bare number for `Transform`'s `Scale` (`"Scale": 2`, the uniform-scale spelling the Python engine and the C++ comment already documented); it threw "must be an array of numbers" before.
 - **Benchmarks:** `meshioplusplus_bench_ops` rows for the four result-file readers (`read_d3plot`, `read_op2`, `read_rst`, `read_xplt`, the last of four states written through each series writer) and for `transform`, `mirror`, `flip_normals` and `pipeline_transform_chain` (roadmap 5.1.2, [benchmarks](doc/benchmarks.md#result-file-reader-and-transform-rows)). `benchmark/instructions_S.csv` gains their eight rows; every existing row is unchanged and within 1% of its count.
 - **Decided:** no in-place `transform` (formerly roadmap 5.14): at tier L the copies are at most 2.5% of a three-transform chain that ends in a `vtu` write, which takes 88% of it; the data-only operations are under 1% each ([benchmarks](doc/benchmarks.md#what-an-in-place-transform-could-save)).
 - **Performance:** a paired physics-ML walk with `target_offset=1` reads each step once (roadmap 5.11.3, [PhysicsNeMo](doc/physicsnemo.md)): `iter_samples`, the Gen-2 reader and the PyG dataset keep the last pair's two meshes, so an n-step entry costs n reads instead of 2(n − 1), and at most two meshes stay alive as before.
