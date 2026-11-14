@@ -2573,6 +2573,10 @@ _NOT_TOOLS = {
     "has_polars",
     "has_open3d",
     "has_dolfinx",
+    # A Conduit Mesh Blueprint node is an in-memory handoff to Catalyst/Ascent.
+    "to_conduit",
+    "from_conduit",
+    "has_conduit",
     "edge_index",  # in-memory (2, E) array; no path-based form
     "adjacency",  # in-memory CSR arrays; the graph tool writes them (write_graph)
     # Its input is polygons as in-memory (n, 2) arrays, not a file; the

@@ -1022,14 +1022,9 @@ Now actionable: 2.4.3 (UGRID NetCDF, ADCIRC, Selafin) and 2.4.6.1 (LAS, whose VL
 
 *Admission: a data description a simulation or a coupling library hands over in memory, which meshio++ can convert to and from without reading a file. Added in November 2026 from a proposed revision of this file; every item here was checked against the tree for a prior implementation (none found) and is marked **verify first** for the library's own current API. MPI inside the library stays a [non-goal](#non-goals-and-decisions-taken): these adapters take the data a rank holds, as [`partition`](./partition.md)'s ghost layers already do.*
 
-### 10.1 A Conduit Mesh Blueprint adapter {#conduit-blueprint}
+### 10.1 A Conduit Mesh Blueprint adapter: remaining {#conduit-blueprint}
 
-Conduit's Mesh Blueprint† is the description Catalyst 2 and Ascent receive and ParaView's Catalyst implementation reads a subset of; a simulation that already holds a `conduit::Node` could reach every meshio++ writer through it. **M, design pass first**
-
-- **State today.** No file or document names Conduit, Blueprint, Catalyst or Ascent. The in-memory interop layer is Python ([interop](./interop.md)); the core's uniform API is `mesh_api.hpp`.
-- **Decisions to take first.** (1) Where it lives: an optional, dynamically linked provider (the registry of `providers.hpp`, as OpenCASCADE and Netgen are), so the base wheel gains no dependency, or a Python-only `to_conduit`/`from_conduit` over `conduit`'s own Python module (days, and the first step). (2) Which topologies map: `unstructured` with `shape` `point`/`line`/`tri`/`quad`/`tet`/`hex`/`wedge`/`pyramid`/`polygonal`/`polyhedral`, `uniform`, `rectilinear` and `structured` expanded as 8.6 describes. (3) Fields: `vertex` and `element` association to point and cell data; `material_map` and `adjsets` stay unread.
-- **Steps.** 10.1.1 The Python bridge by [checklist F](#landing-checklists)'s step 4 pattern, as 4.3 does for Open3D: `to_conduit(mesh)` and `from_conduit(node)`, `_NOT_TOOLS` entries in the MCP parity guard, a gated test that calls `conduit.blueprint.mesh.verify`. 10.1.2 A native provider only if 10.1.1 shows a consumer that cannot use Python.
-- **Done when.** `conduit.blueprint.mesh.verify(node, info)` passes for a node built from every cell type of the registry's canonical mesh, and a round trip is exact. Sources: Conduit's Blueprint documentation†; no code is copied.
+10.1.1 has landed: `to_conduit`/`from_conduit` in Python ([interop](./interop.md#conduit-mesh-blueprint)), on a `conduit.Node` or a nested dict, with exact round trips for every linear shape, mixed, polygonal and polyhedral topologies and grids expanded on read. Left: the gated `conduit.blueprint.mesh.verify` test has not yet run against a real Conduit (its Python module is not on PyPI; a CI leg on conda-forge's `conduit` would run it), and 10.1.2, a native provider, only if a consumer turns out unable to use Python. **S**
 
 ### 10.2 Catalyst and Ascent as consumers {#catalyst-ascent}
 

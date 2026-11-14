@@ -197,6 +197,7 @@ if TYPE_CHECKING:
         region_adjacency,
         split_interface,
     )
+    from ._conduit import from_conduit, has_conduit, to_conduit
     from ._interop import (
         from_arrow,
         from_pyvista,
@@ -511,6 +512,9 @@ _LAZY_ATTRS = {
     "find_interface": "_interfaces",
     "region_adjacency": "_interfaces",
     "split_interface": "_interfaces",
+    "from_conduit": "_conduit",
+    "has_conduit": "_conduit",
+    "to_conduit": "_conduit",
     "from_arrow": "_interop",
     "from_pyvista": "_interop",
     "from_trimesh": "_interop",
@@ -974,6 +978,9 @@ __all__ = [
     "has_polars",
     "has_open3d",
     "has_dolfinx",
+    "to_conduit",
+    "from_conduit",
+    "has_conduit",
     "edge_index",
     "feature_matrix",
     "FeatureMatrix",
