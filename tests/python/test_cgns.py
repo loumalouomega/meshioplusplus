@@ -900,7 +900,7 @@ def _series_mesh(scale, cell=False):
 @pytest.mark.parametrize("cell", [False, True])
 @pytest.mark.parametrize("engine", ["core", "python"])
 def test_series_writer_writes_iterative_data(tmp_path, engine, cell):
-    if engine == "core" and not _HAS_HDF5:
+    if not _HAS_HDF5:  # reading a time_step back needs the core, for either writer
         pytest.skip("needs the C++ HDF5-enabled core")
     path = tmp_path / "series.cgns"
     cls = meshioplusplus.cgns.SeriesWriter if engine == "core" else _cgns.SeriesWriter

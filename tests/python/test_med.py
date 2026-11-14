@@ -2527,7 +2527,9 @@ def _series_mesh(scale):
 def test_series_writer_writes_a_step_group_per_step(tmp_path, engine):
     from meshioplusplus.med import _med
 
-    if engine == "core" and not _core.__has_hdf5__:
+    if (
+        not _core.__has_hdf5__
+    ):  # reading the steps back needs the core, for either writer
         pytest.skip("needs the C++ HDF5-enabled core")
     path = tmp_path / "series.med"
     cls = meshioplusplus.med.SeriesWriter if engine == "core" else _med.SeriesWriter
