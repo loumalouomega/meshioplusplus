@@ -763,3 +763,59 @@ def test_info_records_are_written_back(tmp_path):
 
     with netCDF4.Dataset(path) as nc:
         assert "info_records" in nc.variables
+
+
+# --- number maps as the global ids of doc/ghosts.md ---------------------------
+
+
+def _numbered_mesh():
+    points = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0], [2, 0, 0]]
+    )
+    mesh = meshioplusplus.Mesh(
+        points,
+        [("triangle", np.array([[0, 1, 2], [0, 2, 3]])), ("line", np.array([[1, 4]]))],
+        point_data={
+            "global:node_id": np.array([11, 12, 13, 14, 15], dtype=np.int64),
+            "T": np.arange(5.0),
+        },
+        cell_data={
+            "global:cell_id": [np.array([101, 102]), np.array([7])],
+            "p": [np.array([1.0, 2.0]), np.array([3.0])],
+        },
+    )
+    return mesh
+
+
+@pytest.mark.parametrize("writer", _writers())
+@pytest.mark.parametrize("reader", _readers())
+def test_number_maps_round_trip_as_global_ids(reader, writer, tmp_path):
+    netCDF4 = pytest.importorskip("netCDF4")
+    path = tmp_path / "numbered.e"
+    writer(str(path), _numbered_mesh())
+    with netCDF4.Dataset(str(path)) as nc:
+        assert list(nc.variables["node_num_map"][:]) == [11, 12, 13, 14, 15]
+        assert list(nc.variables["elem_num_map"][:]) == [101, 102, 7]
+        # the ids are the maps, not nodal or element variables as well
+        names = [
+            b"".join(r).decode().rstrip("\x00") for r in nc.variables["name_nod_var"][:]
+        ]
+        assert names == ["T"]
+    back = reader(str(path))
+    assert list(back.point_data["global:node_id"]) == [11, 12, 13, 14, 15]
+    assert [list(b) for b in back.cell_data["global:cell_id"]] == [[101, 102], [7]]
+    np.testing.assert_allclose(back.point_data["T"], np.arange(5.0))
+
+
+@pytest.mark.parametrize("writer", _writers())
+@pytest.mark.parametrize("reader", _readers())
+def test_identity_number_maps_are_not_kept(reader, writer, tmp_path):
+    pytest.importorskip("netCDF4")
+    mesh = _numbered_mesh()
+    mesh.point_data["global:node_id"] = np.arange(1, 6)
+    mesh.cell_data["global:cell_id"] = [np.array([1, 2]), np.array([3])]
+    path = tmp_path / "identity.e"
+    writer(str(path), mesh)
+    back = reader(str(path))
+    assert "global:node_id" not in back.point_data
+    assert "global:cell_id" not in back.cell_data

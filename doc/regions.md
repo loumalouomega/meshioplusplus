@@ -186,6 +186,8 @@ Abaqus numbers element faces `S1`..`S6`, and that numbering is **not** meshio++'
 
 `merge` namespaces colliding names by source index (`0:wall`, `1:wall`), the same rule it already applies to `field_data` keys.
 
+A partition's pieces are labelled by data arrays rather than regions (`partition:part`, `partition:ghost`, the original and global ids); their names and how formats and operations carry them are in [ghosts, owners and global ids](./ghosts.md).
+
 `detail/region_remap.hpp` is the single owner of the carry. It needs to be told which *shape* an operation's cell map is in, because they genuinely differ:
 
 - **`Direct`** — `map[c]` is *the* output cell, or `-1`. (crop, split, clean, partition, reorder.)

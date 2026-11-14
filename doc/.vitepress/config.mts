@@ -72,6 +72,7 @@ export default defineConfig({
           { text: "Cell types", link: "/cell_types" },
           { text: "Node ordering", link: "/node_ordering" },
           { text: "Named regions", link: "/regions" },
+          { text: "Ghosts, owners and global ids", link: "/ghosts" },
           { text: "Polyhedra and ragged cells", link: "/polyhedra" },
           { text: "Shared geometry and FEM kernels", link: "/geometry_kernels" },
           { text: "Common utilities", link: "/common_utilities" },

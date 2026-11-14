@@ -149150,6 +149150,22 @@ std::size_t exo_step_offset(std::size_t Step, std::size_t Available, const std::
     return Step;
 }
 
+/// A number map (`node_num_map`/`elem_num_map`) as an Int64 array, or empty when the file has
+/// none, when its length is not `Count` or when it is the identity `1..Count` -- what a file
+/// without the map means anyway, so such a file reads as it always did.
+NDArray exo_number_map(const std::vector<std::int64_t>& rMap, std::size_t Count) {
+    if (rMap.size() != Count || Count == 0)
+        return {};
+    bool identity = true;
+    for (std::size_t i = 0; i < Count && identity; ++i)
+        identity = rMap[i] == static_cast<std::int64_t>(i + 1);
+    if (identity)
+        return {};
+    NDArray out(DType::Int64, {Count});
+    std::copy(rMap.begin(), rMap.end(), out.As<std::int64_t>());
+    return out;
+}
+
 std::vector<double> exo_time_values(int ncid) {
     int varid;
     if (nc_inq_varid(ncid, "time_whole", &varid) != NC_NOERR)
@@ -149557,9 +149573,10 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
     // indices, which only exist once the blocks are ordered and added.
     std::vector<std::string> eb_names, ns_names, ss_names;
     std::vector<std::int64_t> eb_ids, ns_ids, ss_ids;
-    std::map<int, std::vector<std::int64_t>> node_sets;   // set k -> node ids (1-based)
-    std::map<int, std::vector<std::int64_t>> side_elems;  // set k -> element ids (1-based)
-    std::map<int, std::vector<std::int64_t>> side_sides;  // set k -> Exodus side numbers
+    std::vector<std::int64_t> node_num_map, elem_num_map;  // global ids, 1-based
+    std::map<int, std::vector<std::int64_t>> node_sets;    // set k -> node ids (1-based)
+    std::map<int, std::vector<std::int64_t>> side_elems;   // set k -> element ids (1-based)
+    std::map<int, std::vector<std::int64_t>> side_sides;   // set k -> Exodus side numbers
 
     // Per-element attributes, keyed by the same block number `connect{k}` uses.
     // Kept raw here and turned into cell_data once the blocks are ordered, since
@@ -149591,6 +149608,10 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
             ns_names = read_names(ncid, varid);
         } else if (key == "ss_names") {
             ss_names = read_names(ncid, varid);
+        } else if (key == "node_num_map") {
+            node_num_map = read_ints(ncid, varid);
+        } else if (key == "elem_num_map") {
+            elem_num_map = read_ints(ncid, varid);
         } else if (key == "eb_prop1") {
             eb_ids = read_ints(ncid, varid);
         } else if (key == "ns_prop1") {
@@ -149943,6 +149964,34 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
         }
     }
 
+    // The number maps as the global ids of doc/ghosts.md: `global:node_id` per point and
+    // `global:cell_id` per cell, block-major as `elem_num_map` is. An identity map is not kept.
+    if (rOptions.WantsAnyData()) {
+        if (rOptions.WantsArray(detail::kGlobalNodeId)) {
+            NDArray ids = exo_number_map(node_num_map, mesh.NumPoints());
+            if (ids.Size() > 0)
+                mesh.AddPointData(detail::kGlobalNodeId, std::move(ids));
+        }
+        std::size_t total_cells = 0;
+        for (const auto cb : mesh.CellRange())
+            total_cells += cb.NumCells();
+        if (rOptions.WantsArray(detail::kGlobalCellId)) {
+            NDArray ids = exo_number_map(elem_num_map, total_cells);
+            if (ids.Size() > 0) {
+                std::vector<NDArray> per_block;
+                std::size_t at = 0;
+                for (const auto cb : mesh.CellRange()) {
+                    NDArray b(DType::Int64, {cb.NumCells()});
+                    std::copy(ids.As<std::int64_t>() + at,
+                              ids.As<std::int64_t>() + at + cb.NumCells(), b.As<std::int64_t>());
+                    at += cb.NumCells();
+                    per_block.push_back(std::move(b));
+                }
+                mesh.AddCellData(detail::kGlobalCellId, std::move(per_block));
+            }
+        }
+    }
+
     // The time of the step actually returned, so the writer's
     // `field_data["exodus:time"]` closes into a round trip rather than being
     // write-only. `read_metadata` still owns the *whole* list of steps -- this
@@ -150132,6 +150181,55 @@ void exo_put_sets(int Ncid, int StringDim, const std::vector<ExoWriteSet>& rSets
 
 namespace {
 
+/// `node_num_map` (from `global:node_id`) and `elem_num_map` (from `global:cell_id`, block-major
+/// as the file numbers elements), each only when the mesh carries the array with one integer per
+/// point or cell; the reader's twin is `exo_number_map`.
+bool exo_integer(DType Dt) {
+    return Dt != DType::Float32 && Dt != DType::Float64;
+}
+
+void exo_write_number_map(int Ncid, const Mesh& rMesh, int NodeDim, int ElemDim) {
+    const auto put = [&](const char* pVar, int Dim, const std::vector<std::int64_t>& rIds) {
+        bool fits = true;
+        for (const std::int64_t v : rIds)
+            fits = fits && v >= std::numeric_limits<std::int32_t>::min() &&
+                   v <= std::numeric_limits<std::int32_t>::max();
+        int var;
+        check(nc_def_var(Ncid, pVar, fits ? NC_INT : NC_INT64, 1, &Dim, &var), pVar, true);
+        if (rIds.empty())
+            return;
+        if (fits) {
+            std::vector<int> narrow(rIds.begin(), rIds.end());
+            check(nc_put_var_int(Ncid, var, narrow.data()), pVar, true);
+        } else {
+            std::vector<long long> wide(rIds.begin(), rIds.end());
+            check(nc_put_var_longlong(Ncid, var, wide.data()), pVar, true);
+        }
+    };
+    if (rMesh.HasPointData(detail::kGlobalNodeId)) {
+        const NDArray& a = rMesh.PointData(detail::kGlobalNodeId);
+        if (a.Size() == rMesh.NumPoints() && exo_integer(a.Dtype())) {
+            std::vector<std::int64_t> ids(a.Size());
+            for (std::size_t i = 0; i < ids.size(); ++i)
+                ids[i] = detail::read_int(a, i);
+            put("node_num_map", NodeDim, ids);
+        }
+    }
+    if (rMesh.HasCellData(detail::kGlobalCellId) &&
+        rMesh.CellDataNumBlocks(detail::kGlobalCellId) == rMesh.NumCellBlocks()) {
+        std::vector<std::int64_t> ids;
+        bool ok = true;
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks() && ok; ++b) {
+            const NDArray& a = rMesh.CellData(detail::kGlobalCellId, b);
+            ok = a.Size() == rMesh.Cells(b).NumCells() && exo_integer(a.Dtype());
+            for (std::size_t i = 0; ok && i < a.Size(); ++i)
+                ids.push_back(detail::read_int(a, i));
+        }
+        if (ok)
+            put("elem_num_map", ElemDim, ids);
+    }
+}
+
 void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, bool DoubleTime) {
     // Validate memberships and ids before creating or truncating the destination.
     const auto node_sets = exo_write_sets(rMesh, RegionKind::Point);
@@ -150240,6 +150338,9 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
         if (t.Size() > 0)
             check(nc_put_var(ncid, var, t.Data()), "coord", true);
     }
+
+    // node_num_map / elem_num_map from the global ids of doc/ghosts.md.
+    exo_write_number_map(ncid, rMesh, d_nodes, d_elem);
 
     // eb_prop1
     {
@@ -150527,7 +150628,7 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
         const std::string prefix(kExodusAttributePrefix);
         std::vector<std::string> var_names;
         for (const auto& name : rMesh.CellDataNames())
-            if (EmitStep && name.rfind(prefix, 0) != 0)
+            if (EmitStep && name.rfind(prefix, 0) != 0 && name != detail::kGlobalCellId)
                 var_names.push_back(name);
 
         if (!var_names.empty()) {
@@ -150606,10 +150707,14 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
         }
     }
 
-    // point data
-    if (EmitStep && rMesh.NumPointData() > 0) {
+    // point data (`global:node_id` went out as `node_num_map` instead)
+    std::vector<std::string> nodal_names;
+    for (const auto& name : rMesh.PointDataNames())
+        if (name != detail::kGlobalNodeId)
+            nodal_names.push_back(name);
+    if (EmitStep && !nodal_names.empty()) {
         int d_nnv;
-        check(nc_def_dim(ncid, "num_nod_var", rMesh.NumPointData(), &d_nnv), "num_nod_var", true);
+        check(nc_def_dim(ncid, "num_nod_var", nodal_names.size(), &d_nnv), "num_nod_var", true);
         int name_var;
         {
             int dims[2] = {d_nnv, d_str};
@@ -150619,7 +150724,7 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
         std::size_t k = 0;
         // Sorted key order: assigns the on-disk variable index (slot k) and
         // name deterministically, independent of the map's storage order.
-        for (const auto& name : rMesh.PointDataNames()) {
+        for (const auto& name : nodal_names) {
             std::size_t start[2] = {k, 0};
             std::size_t count[2] = {1, std::min<std::size_t>(name.size(), 33)};
             if (count[1] > 0)
@@ -150793,12 +150898,14 @@ std::vector<ExoSeriesField> exo_series_fields(const Mesh& rMesh) {
         fields.push_back({name, variable, data.Dtype(), data.Shape(), block, point});
     };
     for (const auto& name : rMesh.PointDataNames()) {
+        if (name == detail::kGlobalNodeId)
+            continue;
         add(name, "vals_nod_var" + std::to_string(++j), rMesh.PointData(name), rMesh.NumPoints(), 0,
             true);
     }
     j = 0;
     for (const auto& name : rMesh.CellDataNames()) {
-        if (name.rfind(kExodusAttributePrefix, 0) == 0)
+        if (name.rfind(kExodusAttributePrefix, 0) == 0 || name == detail::kGlobalCellId)
             continue;
         ++j;
         if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks())

@@ -77,6 +77,7 @@ The write-side reverse map picks one canonical Exodus name per meshio++ type (e.
 - `cell_data["exodus:attr:<NAME>"]` — per-element attributes (see [Element attributes](#element-attributes)).
 - `regions` — element blocks, node sets and side sets (see [Named regions](#named-regions)). `point_sets` is a compat view over the `Point` regions.
 - `mesh.info` — free-text strings from `info_records`/`qa_records`.
+- `point_data["global:node_id"]` and `cell_data["global:cell_id"]` — the file's `node_num_map` and `elem_num_map` (block-major), read when present and not the identity, and written back as the maps rather than as variables. See [ghosts, owners and global ids](../ghosts.md).
 
 ## Element attributes
 

@@ -10,7 +10,7 @@ import re
 
 import numpy as np
 
-from .. import _node_order, _provenance
+from .. import _ghosts, _node_order, _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
@@ -204,6 +204,7 @@ def read(filename, time_step=0):  # noqa: C901
 
         points = np.zeros((len(nc.dimensions["num_nodes"]), 3))
         point_data_names = []
+        number_maps = {}  # node_num_map / elem_num_map, the global ids
         cell_data_names = []
         global_names = []
         set_var_names = {}  # 'nset' / 'sset' -> variable names
@@ -323,6 +324,9 @@ def read(filename, time_step=0):  # noqa: C901
                 cells.append(
                     (meshio_type, _node_order.to_meshio("exodus", meshio_type, conn))
                 )
+            elif key in ("node_num_map", "elem_num_map"):
+                value.set_auto_mask(False)
+                number_maps[key] = np.asarray(value[:], dtype=np.int64).ravel()
             elif key == "coord":
                 points = nc.variables["coord"][:].T
             elif key == "coordx":
@@ -428,6 +432,20 @@ def read(filename, time_step=0):  # noqa: C901
             )
         )
 
+    # The number maps as the global ids of doc/ghosts.md: `global:node_id` per point,
+    # `global:cell_id` per cell (block-major, as `elem_num_map` is). An identity map is
+    # not kept. Twin of the C++ reader's block.
+    node_ids = _number_map(number_maps.get("node_num_map"), len(points))
+    if node_ids is not None:
+        point_data[_ghosts.GLOBAL_NODE_ID] = node_ids
+    cell_ids = _number_map(
+        number_maps.get("elem_num_map"), sum(len(c[1]) for c in cells)
+    )
+    if cell_ids is not None:
+        cell_data[_ghosts.GLOBAL_CELL_ID] = np.split(
+            cell_ids, np.cumsum([len(c[1]) for c in cells])[:-1]
+        )
+
     field_data = {}
     # The time of the step actually returned, so the writer's
     # `field_data["exodus:time"]` closes into a round trip rather than being
@@ -485,6 +503,52 @@ def read(filename, time_step=0):  # noqa: C901
     # returned mesh itself only ever holds the one requested step.
     mesh.time_values = [float(v) for v in time_values]
     return mesh
+
+
+def _number_map(values, count):
+    """A number map as an int64 array, or None when absent, of the wrong length or
+    the identity ``1..count`` (what a file without the map means anyway). Twin of
+    ``exo_number_map``."""
+    if values is None or count == 0 or len(values) != count:
+        return None
+    if np.array_equal(values, np.arange(1, count + 1)):
+        return None
+    return values.astype(np.int64)
+
+
+def _write_number_maps(rootgrp, mesh):
+    """``node_num_map`` from ``global:node_id`` and ``elem_num_map`` from
+    ``global:cell_id`` (block-major), each only when the mesh carries one integer per
+    point or cell. Twin of ``exo_write_number_map``."""
+
+    def put(name, dim, ids):
+        fits = ids.size == 0 or (
+            ids.min() >= np.iinfo(np.int32).min and ids.max() <= np.iinfo(np.int32).max
+        )
+        var = rootgrp.createVariable(name, "i4" if fits else "i8", (dim,))
+        if ids.size:
+            var[:] = ids
+
+    def integer(a):
+        return np.issubdtype(a.dtype, np.integer)
+
+    ids = mesh.point_data.get(_ghosts.GLOBAL_NODE_ID)
+    if ids is not None:
+        ids = np.asarray(ids)
+        if ids.size == len(mesh.points) and integer(ids):
+            put("node_num_map", "num_nodes", ids.ravel().astype(np.int64))
+    blocks = mesh.cell_data.get(_ghosts.GLOBAL_CELL_ID)
+    if blocks is not None and len(blocks) == len(mesh.cells):
+        arrays = [np.asarray(b) for b in blocks]
+        if all(
+            a.size == len(c.data) and integer(a) for a, c in zip(arrays, mesh.cells)
+        ):
+            flat = (
+                np.concatenate([a.ravel() for a in arrays])
+                if arrays
+                else np.zeros(0, np.int64)
+            )
+            put("elem_num_map", "num_elem", flat.astype(np.int64))
 
 
 def _resolve_ragged_blocks(cells, block_keys, counts, faces, face_counts, face_nodes):
@@ -792,7 +856,11 @@ def _write_element_variables(rootgrp, mesh):
     a k>1 array here is a meshio++ extension of the same kind the nodal path is.
     Twin of the C++ writer's identical block.
     """
-    var_names = sorted(n for n in mesh.cell_data if not n.startswith(ATTRIBUTE_PREFIX))
+    var_names = sorted(
+        n
+        for n in mesh.cell_data
+        if not n.startswith(ATTRIBUTE_PREFIX) and n != _ghosts.GLOBAL_CELL_ID
+    )
     if not var_names:
         return
 
@@ -1022,6 +1090,7 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
             ("num_dim", "num_nodes"),
         )
         data[:] = mesh.points.T
+        _write_number_maps(rootgrp, mesh)
 
         # cells
         # ParaView needs eb_prop1 -- some ID. The values don't seem to matter as
@@ -1067,7 +1136,10 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
         # point data
         # The variable `name_nod_var` holds the names and indices of the node variables, the
         # variables `vals_nod_var{1,2,...}` hold the actual data.
-        num_nod_var = len(mesh.point_data)
+        nodal = {
+            k: v for k, v in mesh.point_data.items() if k != _ghosts.GLOBAL_NODE_ID
+        }
+        num_nod_var = len(nodal)
         if num_nod_var > 0:
             rootgrp.createDimension("num_nod_var", num_nod_var)
             # set names
@@ -1075,13 +1147,13 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
                 "name_nod_var", "S1", ("num_nod_var", "len_string")
             )
             point_data_names.set_auto_mask(False)
-            for k, name in enumerate(mesh.point_data.keys()):
+            for k, name in enumerate(nodal.keys()):
                 for i, letter in enumerate(name):
                     point_data_names[k, i] = letter.encode()
 
             # Set data. ParaView might have some problems here, see
             # <https://gitlab.kitware.com/paraview/paraview/-/issues/18403>.
-            for k, (name, data) in enumerate(mesh.point_data.items()):
+            for k, (name, data) in enumerate(nodal.items()):
                 for i, s in enumerate(data.shape):
                     rootgrp.createDimension(f"dim_nod_var{k}{i}", s)
                 dims = ["time_step"] + [
@@ -1294,7 +1366,8 @@ class TimeSeriesWriter:
                 "Exodus: series cell blocks/counts do not match the fixed grid"
             )
         fields = []
-        for j, name in enumerate(sorted(mesh.point_data), 1):
+        nodal = sorted(n for n in mesh.point_data if n != _ghosts.GLOBAL_NODE_ID)
+        for j, name in enumerate(nodal, 1):
             fields.append(
                 (
                     name,
@@ -1303,7 +1376,11 @@ class TimeSeriesWriter:
                     len(mesh.points),
                 )
             )
-        names = sorted(n for n in mesh.cell_data if not n.startswith(ATTRIBUTE_PREFIX))
+        names = sorted(
+            n
+            for n in mesh.cell_data
+            if not n.startswith(ATTRIBUTE_PREFIX) and n != _ghosts.GLOBAL_CELL_ID
+        )
         for j, name in enumerate(names, 1):
             if len(mesh.cell_data[name]) != len(mesh.cells):
                 raise WriteError(

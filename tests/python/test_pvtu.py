@@ -961,3 +961,28 @@ def test_the_python_vtu_reader_reads_a_cell_free_piece(compression, tmp_path):
     _vtu.write(tmp_path / "e.vtu", mesh, compression=compression)
     back = _vtu.read(tmp_path / "e.vtu")
     assert len(back.points) == 2 and _num_cells(back) == 0
+
+
+def test_ghosted_pieces_rebuild_the_serial_mesh_from_their_ids(engine, tmp_path):
+    """Roadmap 10.4's "done when": partition, write, read with the halo dropped, then
+    order by the original ids (doc/ghosts.md) -- the serial mesh, exactly."""
+    if not hasattr(_core, "partition"):
+        pytest.skip("ghost layers need the C++ core")
+    mesh = _grid(6)
+    pieces = meshioplusplus.partition(mesh, 3, ghost_layers=1, record_ids=True)
+    engine.write_pieces(tmp_path / "ids.pvtu", pieces)
+    back = engine.read(tmp_path / "ids.pvtu", ghosts="drop")
+
+    point_ids = np.asarray(back.point_data["partition:original_point_id"])
+    cell_ids = np.concatenate(back.cell_data["partition:original_cell_id"])
+    # every serial point and cell is there, a point once per piece that uses it
+    assert sorted(set(point_ids.tolist())) == list(range(len(mesh.points)))
+    assert sorted(cell_ids.tolist()) == list(range(_num_cells(mesh)))
+
+    points = np.empty_like(np.asarray(mesh.points))
+    points[point_ids] = np.asarray(back.points)
+    np.testing.assert_array_equal(points, mesh.points)
+    conn = np.concatenate([np.asarray(cb.data) for cb in back.cells])
+    serial = np.empty_like(conn)
+    serial[cell_ids] = point_ids[conn]
+    np.testing.assert_array_equal(serial, np.asarray(mesh.cells[0].data))

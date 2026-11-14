@@ -1044,12 +1044,9 @@ After 10.1. A Catalyst 2 pipeline script or an Ascent action receives a Blueprin
 
 - **Steps.** Read the page; if only DOLFINx's VTX schema is covered, add Fides as a second schema in the same format (`schema=` read and write option) with the same `ADIOS2` build gate; test against ParaView's `ADIOS2VTXReader` and `vtkmFides`† as `tools/gen_vtx_reference.py` already drives the first.
 
-### 10.4 Ghost, owner and global-id conventions {#ghost-conventions}
+### 10.4 Ghost, owner and global-id conventions: remaining {#ghost-conventions}
 
-*Design pass.* `partition` writes halo layers and `pvtu` reads and writes them, Elmer and MFEM carry global ids, and the Nemesis item (2.3.8.2) will carry two more maps. Name the arrays once: `partition:ghost`, `partition:owner`, `global:node_id`, `global:cell_id`, and the rule for which operations preserve them. **M**
-
-- **Steps.** A page `doc/ghosts.md` (a decision record; link it from [partition](./partition.md) and [regions](./regions.md)); the readers and writers that already hold the data moved onto the names in the same change, with digests unchanged (`tools/bench_ops.sh --hash`); 2.3.8.1's helper takes them as its inputs.
-- **Done when.** A partition written by `partition`, read by `read_pvtu` and merged by 2.3.8.1 returns the serial mesh sorted by `global:cell_id`.
+The names are fixed in [ghosts, owners and global ids](./ghosts.md) (`detail/ghost_names.hpp`, `_ghosts.py`), the formats that hold the data use them, and Exodus reads and writes its number maps as `global:node_id`/`global:cell_id`. A ghosted partition written as `.pvtu`, read with `ghosts="drop"` and ordered by `partition:original_*` gives the serial mesh back exactly. Left: `partition:owner` has no producer yet (the Nemesis reader of 2.3.8.2 and a `partition` option would be the first), and the reassembly is a test, not an operation: 2.3.8.1's `merge_by_global_id` takes these names as its inputs. **S**
 
 ## 11. A modern C++ API surface {#modern-cpp-api}
 
