@@ -640,7 +640,7 @@ int main(int argc, char** argv) {
             translate.mParams["Translate"] = std::vector<double>{0.5, -1.0, 2.0};
             mio::PipelineStep scale;
             scale.mOp = "Transform";
-            scale.mParams["Scale"] = 2.0;
+            scale.mParams["Scale"] = std::vector<double>{2.0, 2.0, 2.0};
             mio::PipelineStep rotate;
             rotate.mOp = "Transform";
             rotate.mParams["RotateAxis"] = std::vector<double>{1.0, 2.0, 3.0};
