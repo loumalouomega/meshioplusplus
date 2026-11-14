@@ -574,6 +574,10 @@ Noticed on 14 November 2026 while watching PR #234; both are `master` push runs 
 - The run before it (the v20.1.0 merge, `ebfdcc67`, 11 November) failed 35 jobs, every one in an install step (apt, R, Playwright, GL runtimes): a package-mirror outage, nothing to fix beyond retries.
 - **Done when.** Two consecutive `master` runs finish with both jobs green, or the hang is explained and capped by a timeout.
 
+### 3.22 The `kahip` 3.27 wheel crashes on import {#kahip-327}
+
+From 14 November 2026 the `kahip` PyPI wheel resolves to 3.27, and `import kahip` dies with `Illegal instruction` (SIGILL, inside the wheel's extension module, before any meshio++ code) on the GitHub-hosted runners; master's last green run (13 November) installed 3.25. The extra (`pyproject.toml`, `kahip<3.27`) and the CI step that installs it are held below 3.27. Check what 3.27 was built for (a `-march=native` build would fail for users on older CPUs too), report it upstream, and lift the bound once a release imports on the runners. **S**
+
 ---
 
 ## 4. Ecosystem reach {#ecosystem-reach}

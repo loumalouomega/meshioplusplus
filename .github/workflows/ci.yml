@@ -688,7 +688,8 @@ jobs:
         run: |
           pip uninstall -y meshioplusplus
           pip install .
-          pip install kahip
+          # <3.27: that wheel crashes at import (SIGILL) on the hosted runners; roadmap 3.22.
+          pip install "kahip<3.27"
           python -c "from meshioplusplus import _core; assert not _core.__has_kahip__"
           python -m pytest tests/python/test_partition.py -v
 

@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Fix:** the `kahip` extra is held below 3.27 (`pip install meshioplusplus[kahip]`): the 3.27 wheel on PyPI crashes with an illegal instruction when imported on the CI runners, where 3.25 works (roadmap 3.22).
 - **Added:** the Catalyst 2 and Ascent route (roadmap 10.2, [route](doc/routes/catalyst.md)): `contrib/catalyst/blueprint_series.py` writes the Mesh Blueprint an in situ pipeline receives as a `.vtkhdf` series or a file per step, through `from_conduit`.
 - **Added:** `to_conduit` / `from_conduit` / `has_conduit`, the Conduit Mesh Blueprint in memory (roadmap 10.1, [interop](doc/interop.md#conduit-mesh-blueprint)): a mesh as one Blueprint domain (`explicit` coords; one shape, `mixed`, `polygonal` or `polyhedral` topologies; vertex and element fields; `state/time`) and back, grids expanded on read, on a `conduit.Node` or a nested dict.
 - **Added:** one convention for ghost, owner and global-id arrays (roadmap 10.4, [ghosts](doc/ghosts.md)): `partition:ghost`, `partition:part`, `partition:owner`, `partition:original_*`, `global:node_id`/`global:cell_id` and the VTK-native names are named once in `detail/ghost_names.hpp` and `_ghosts.py`, and Exodus reads `node_num_map`/`elem_num_map` as `global:node_id`/`global:cell_id` and writes them back as the maps, in both engines.
