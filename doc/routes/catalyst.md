@@ -30,4 +30,4 @@ for time, mesh in meshioplusplus.read_sequence("run.vtkhdf"):
 
 ## Checked against
 
-The script is tested against Conduit nodes stood in by nested dicts in `tests/python/test_contrib_routes.py` (a VTKHDF series of three steps read back by `read_sequence`, the refused grid change, a channel named and fanned out, an Ascent cycle). The run inside ParaView Catalyst and inside Ascent is listed in the [roadmap](../roadmap.md#awaiting-a-licensed-run). The references are the [Catalyst 2 protocol](https://docs.paraview.org/en/latest/Catalyst/blueprints.html) and [Ascent's Python extract](https://ascent.readthedocs.io/en/latest/Actions/Extracts.html).
+The script is tested against Conduit nodes stood in by nested dicts in `tests/python/test_contrib_routes.py` (a VTKHDF series of three steps read back by `read_sequence`, the refused grid change, a channel named and fanned out, an Ascent cycle). The run inside ParaView Catalyst and inside Ascent is listed in the [roadmap](../roadmap.md#awaiting-a-licensed-run). The references are ParaView's Catalyst 2 documentation (the Catalyst protocol and its Blueprint channels) and Ascent's documentation of Python extracts.
