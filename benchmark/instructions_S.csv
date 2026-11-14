@@ -14,8 +14,8 @@ pipeline_transform_chain,10368,105440936
 refine,10368,35902165
 elevate,10368,18164332
 merge,10368,10416966
-clean,10368,54673118
-clean_weld,10368,113284624
+clean,10368,29831747
+clean_weld,10368,63602047
 compute_sdf,10368,1236022938
 decimate,10368,42859356
 partition,10368,19883325
@@ -50,7 +50,7 @@ read_ugrid,10368,13384050
 read_openfoam,10368,155705439
 read_elmer,10368,30635243
 read_d3plot,10368,17311476
-read_op2,10368,45418976
+read_op2,10368,46165644
 read_rst,10368,74148841
 read_xplt,10368,16767966
 read_vtu_ascii,10368,24691376
@@ -61,7 +61,7 @@ read_medit,10368,24414138
 write_gmsh,10368,43824912
 write_off,10368,5552471
 write_stl,10368,18489880
-optimize_volume,10368,14857452122
+optimize_volume,10368,14612025227
 agglomerate,10368,137626440
 region_adjacency,10368,45813788
 find_interface,10368,46810636
@@ -72,7 +72,7 @@ undo_green,10368,15050453
 hessian,10368,122201872
 compute_normals,10368,3271731
 compute_curvature,10368,3390720
-decimate_volume,10368,8855631729
+decimate_volume,10368,6832888709
 conservative_interpolate,10368,3136312765
 find_intersections,10368,7171514
 tet_to_poly,10368,254822206
@@ -102,7 +102,7 @@ remesh,10368,31565356
 remesh_volume,10368,79783463
 octree,10368,286472398
 octree_mesh_castellated,10368,753494823
-octree_mesh_tet,10368,6663537819
+octree_mesh_tet,10368,6450216461
 adapt_volume,10368,23466354268
 octree_mesh_hex,10368,828567933
 octree_mesh_hex_graded,10368,756324870
@@ -122,7 +122,7 @@ mesh_cad_surface_quads_greedy,10368,192677009
 mesh_cad_surface_quad9,10368,234630505
 project_to_cad,10368,142729277
 boundary_layer,10368,19409351277
-tetrahedralize_octree,10368,4771293654
+tetrahedralize_octree,10368,4632251773
 sample_distance,10368,31759702
 distance_to_surface,10368,32150699
 distance_to_surface_graded,10368,34905365

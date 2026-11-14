@@ -1067,6 +1067,30 @@ Roadmap 5.1.2 and 5.14. `meshioplusplus_bench_ops` gains rows for the four resul
 
 Roadmap 5.14 asked what share of a transform chain the copies are. The answer bounds it from above without stubbing anything: at tier L the chain's `vtu` write alone is 694 ms of its 789 ms (88%), and the three `transform` calls together are at most 20 ms (2.5%) even if every instruction in them were a copy, which it is not (each also transforms the points and rotates the vectors). A whole clone of the mesh is 2.2 ms (0.3%). The data-only operations are the same question with the points untouched, and the answer is the same: `data_rename` 3.7 ms, `data_drop` 3.5 ms and `data_calc` (`norm(velocity)`) 7.3 ms at tier L, each under 1% of the write that follows them in any pipeline that ends in a file. Tier M gives the same proportions (write 149 of 164 ms; `transform` 1.1 ms). The second, in-place entry point was therefore not added; the decision is recorded in the [roadmap's non-goals](./roadmap.md#non-goals-and-decisions-taken).
 
+### Cell volumes without rebuilding the rings, and what bounds `decimate_volume`'s star
+
+Roadmap 5.1.4. `valgrind --tool=callgrind --toggle-collect='meshioplusplus::decimate_volume*'` over the `decimate_volume` row at tier S put 34% of its instructions under `dv_tet_volume`, 1.26 million calls that reached `detail::cell_volume_from_corners` and, through it, the polyhedron `poly_measure`. That function rebuilt the cell's rings (three vectors) on every call although they depend on the cell type alone, and the three allocations were most of its cost. Each thread now keeps the rings of the last type it measured, and `poly_measure` receives the same input as before, so every volume is bit-identical (the digests of the whole tier S sweep are unchanged on SEQ and OpenMP at one and four threads). The shared kernel serves other operations too:
+
+| Row (tier S, SEQ) | Instructions | Time |
+| --- | ---: | ---: |
+| `decimate_volume` | 8.86 G to 6.83 G (−23%) | 0.61 s to 0.46 s |
+| `clean` | 54.7 M to 29.8 M (−45%) | 3.2 ms to 1.9 ms |
+| `clean_weld` | 113 M to 63.6 M (−44%) | 7.1 ms to 4.3 ms |
+| `octree_mesh_tet` | 6.66 G to 6.45 G (−3.2%) | |
+| `tetrahedralize_octree` | 4.77 G to 4.63 G (−2.9%) | |
+| `optimize_volume` | 14.86 G to 14.61 G (−1.7%) | |
+
+Two things were tried for the superlinear growth and not kept. A sorted merge in place of the pairwise comparison of the duplicate-tet guard changed no output and no time (the guard is not where the time goes, and the guards reject in this order: the inversion guard takes 90% of the rejected attempts, 100,716 of 110,140 at 14 cells a side). Bounding the star changes which collapses happen, so it was measured as an experiment on Kuhn cubes of 8, 12 and 14 cells a side at half the tets, with the quality of `compute_quality` on the result:
+
+| Rule (14 cells a side, 16,464 tets) | Time | Least dihedral | Largest aspect ratio | Inverted |
+| --- | ---: | ---: | ---: | ---: |
+| today | 2.7 s | 0.06° | 4.1e4 | 0 |
+| valence cap 48 (a collapse refused when the survivor would have more tets) | 0.10 s | 0.10° | 7.4e5 | 0 (one at 12 a side) |
+| valence cap 72 | 0.17 s | 0.00° | 1.5e9 | 1 |
+| score × (1 + 0.5 × tets around both ends / 24) | 9.2 s | 0.33° | 7.1e3 | 0 |
+
+The cap is 25 times faster and ends in degenerate and, in two of the six configurations, inverted tetrahedra: the collapses it forbids are the ones that were absorbing the slivers. The penalty gives better quality and is 3.5 times slower, and a factor of 2 changed nothing against 0.5. Neither is a better default, so the rule stands as it was; a cap would be an option, a layout change to `DecimateVolumeOptions` ([roadmap](./roadmap.md#performance)). The unchanged rule's time at 16 cells a side (24,576 tets) is 38 s, with 234,410 rejected collapses; 30 cells a side was not run. The meshes are Kuhn cubes: the roadmap's graded Netgen mesh needs Netgen, which was not installed.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
