@@ -90,7 +90,8 @@ std::string slf_trim(std::string_view Text) {
 
 NDArray slf_bytes(const std::string& rText) {
     NDArray out(DType::UInt8, {rText.size()});
-    std::memcpy(out.Data(), rText.data(), rText.size());
+    if (!rText.empty())
+        std::memcpy(out.Data(), rText.data(), rText.size());
     return out;
 }
 

@@ -187,8 +187,14 @@ struct P3dShape {
     std::vector<std::array<std::int64_t, 3>> mDims;
     std::size_t mHeader = 0;  ///< units before the first block
 
+    /// The block's point count; garbage dimensions (each up to 2^31) saturate at 2^40, far
+    /// above any file, instead of overflowing the signed product.
     std::size_t Points(std::size_t B) const {
-        return static_cast<std::size_t>(mDims[B][0] * mDims[B][1] * mDims[B][2]);
+        constexpr std::int64_t kCap = 1LL << 40;
+        std::int64_t n = 1;
+        for (const std::int64_t d : mDims[B])
+            n = d > kCap / n ? kCap : n * d;
+        return static_cast<std::size_t>(n);
     }
     std::string Describe() const {
         return std::string(mMulti ? "multi-block" : "single-block") + ", " + std::to_string(mDim) +
