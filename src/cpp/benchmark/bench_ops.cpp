@@ -75,10 +75,14 @@
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/registry.hpp"
 #include "meshioplusplus/write_options.hpp"
+#include "meshioplusplus/formats/ansys_rst.hpp"
 #include "meshioplusplus/formats/gltf.hpp"
 #include "meshioplusplus/formats/gmsh.hpp"
+#include "meshioplusplus/formats/lsdyna_d3plot.hpp"
+#include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/stl.hpp"
 #include "meshioplusplus/formats/wkt.hpp"
+#include "meshioplusplus/formats/xplt.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/agglomerate.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -95,7 +99,9 @@
 #include "meshioplusplus/operations/interpolate.hpp"
 #include "meshioplusplus/operations/isosurface.hpp"
 #include "meshioplusplus/operations/merge.hpp"
+#include "meshioplusplus/operations/mirror.hpp"
 #include "meshioplusplus/operations/feature_edges.hpp"
+#include "meshioplusplus/operations/flip_normals.hpp"
 #include "meshioplusplus/operations/crop.hpp"
 #include "meshioplusplus/operations/extrude.hpp"
 #include "meshioplusplus/operations/find_intersections.hpp"
@@ -133,6 +139,7 @@
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/operations/voxelize.hpp"
@@ -582,6 +589,72 @@ int main(int argc, char** argv) {
             mio::PipelineReport report;
             of(pD, mio::run_pipeline_steps(jittered, {smooth_step, surface_step}, report));
         });
+        // The volume with a vector point field and a vector cell field, so the
+        // transform rows rotate data as well as points (roadmap 5.14).
+        const BenchLazyMesh with_vectors([&] {
+            Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
+            const std::size_t np = m.NumPoints();
+            NDArray v = NDArray::Uninit(DType::Float64, {np, 3});
+            const double* p = m.Points().As<double>();
+            for (std::size_t i = 0; i < np; ++i) {
+                v.As<double>()[3 * i] = p[3 * i + 1];
+                v.As<double>()[3 * i + 1] = -p[3 * i];
+                v.As<double>()[3 * i + 2] = p[3 * i + 2];
+            }
+            m.AddPointData("velocity", std::move(v));
+            const std::size_t nc = m.Cells(0).NumCells();
+            NDArray f = NDArray::Uninit(DType::Float64, {nc, 3});
+            for (std::size_t c = 0; c < 3 * nc; ++c)
+                f.As<double>()[c] = static_cast<double>(c % 7) - 3.0;
+            m.AddCellData("flux", {std::move(f)});
+            return m;
+        });
+        // A rotation about a skew axis, then a translation: every matrix entry
+        // is non-trivial.
+        const mio::AffineTransform skew_xform =
+            mio::transform_compose(mio::transform_translation(0.5, -1.0, 2.0),
+                                   mio::transform_rotation(1.0, 2.0, 3.0, 0.7));
+        row("transform",
+            [&](MeshDigest* pD) { of(pD, mio::transform(with_vectors, skew_xform, true)); });
+        row("mirror", [&](MeshDigest* pD) {
+            mio::MirrorOptions o;
+            o.mOrigin = {0.5, 0.0, 0.0};
+            o.mReflectVectorData = true;
+            auto r = mio::mirror(with_vectors, o);
+            of(pD, r.mMesh);
+            if (pD)
+                pD->U64(static_cast<std::uint64_t>(r.mNumFlippedCells));
+        });
+        row("flip_normals", [&](MeshDigest* pD) {
+            auto r = mio::flip_normals(surface);
+            of(pD, r.mMesh);
+            if (pD)
+                pD->U64(static_cast<std::uint64_t>(r.mNumFlipped));
+        });
+        // Three transforms then a write: what an in-place transform could save
+        // is the share of the chain the copies take (roadmap 5.14). The digest
+        // covers the mesh the chain hands the writer.
+        row("pipeline_transform_chain", [&](MeshDigest* pD) {
+            mio::PipelineStep translate;
+            translate.mOp = "Transform";
+            translate.mParams["Translate"] = std::vector<double>{0.5, -1.0, 2.0};
+            mio::PipelineStep scale;
+            scale.mOp = "Transform";
+            scale.mParams["Scale"] = 2.0;
+            mio::PipelineStep rotate;
+            rotate.mOp = "Transform";
+            rotate.mParams["RotateAxis"] = std::vector<double>{1.0, 2.0, 3.0};
+            rotate.mParams["RotateDegrees"] = 40.0;
+            mio::PipelineReport report;
+            const Mesh out =
+                mio::run_pipeline_steps(with_vectors, {translate, scale, rotate}, report);
+            const std::filesystem::path dir =
+                std::filesystem::temp_directory_path() / "meshioplusplus_bench_transform_chain";
+            std::filesystem::create_directories(dir);
+            mio::registry_write_ex((dir / "mesh.vtu").string(), out, "vtu", mio::WriteOptions{});
+            std::filesystem::remove_all(dir);
+            of(pD, out);
+        });
         row("refine", [&](MeshDigest* pD) {
             auto r = mio::refine(volume);
             of(pD, r.mMesh);
@@ -893,6 +966,48 @@ int main(int argc, char** argv) {
             return m;
         }();
         read_row("read_elmer", "elmer", ".elmer", elmer_mesh);
+        // The result-file readers, over a file of four states written through
+        // each format's series writer: the readers' cost is in the state
+        // records, so each row reads the last state (roadmap 5.1.2). The vector
+        // point field carries the name each writer keeps.
+        const auto series_row = [&](const char* pOp, const char* pFormat, const char* pExt,
+                                    const char* pField, auto make_writer) {
+            if (!wanted(pOp))
+                return;
+            const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                              (std::string("meshioplusplus_bench_") + pOp);
+            std::filesystem::create_directories(dir);
+            const std::string path = (dir / (std::string("mesh") + pExt)).string();
+            try {
+                auto writer = make_writer(path);
+                const std::size_t np = volume.NumPoints();
+                const double* p = volume.Points().As<double>();
+                for (int step = 0; step < 4; ++step) {
+                    Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
+                    NDArray u = NDArray::Uninit(DType::Float64, {np, 3});
+                    const double scale = 0.01 * static_cast<double>(step + 1);
+                    for (std::size_t i = 0; i < 3 * np; ++i)
+                        u.As<double>()[i] = scale * p[i];
+                    m.AddPointData(pField, std::move(u));
+                    writer.Write(static_cast<double>(step + 1), m);
+                }
+                writer.Finalize();
+                mio::ReadOptions o;
+                o.mTimeStep = -1;
+                row(pOp, [&](MeshDigest* pD) { of(pD, mio::registry_read(path, pFormat, o)); });
+            } catch (const std::exception& rExc) {
+                std::fprintf(stderr, "skip %s: %s\n", pOp, rExc.what());
+            }
+            std::filesystem::remove_all(dir);
+        };
+        series_row("read_d3plot", "lsdyna_d3plot", ".d3plot", "displacement",
+                   [](const std::string& rPath) { return mio::LsdynaD3plotSeriesWriter(rPath); });
+        series_row("read_op2", "nastran_op2", ".op2", "DISPLACEMENT",
+                   [](const std::string& rPath) { return mio::NastranOp2SeriesWriter(rPath); });
+        series_row("read_rst", "ansys_rst", ".rst", "U",
+                   [](const std::string& rPath) { return mio::AnsysRstSeriesWriter(rPath); });
+        series_row("read_xplt", "xplt", ".xplt", "displacement",
+                   [](const std::string& rPath) { return mio::XpltSeriesWriter(rPath); });
         // The ASCII readers chunked number parsing reaches (roadmap 5.7.2):
         // VTU and legacy VTK ASCII, Gmsh 4.1 and 2.2 ASCII, and Medit, each over
         // the tetrahedral cube with its point field. The writers' ASCII rows
