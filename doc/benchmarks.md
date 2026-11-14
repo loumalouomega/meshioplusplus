@@ -1152,6 +1152,22 @@ Roadmap 5.1.2. `benchmark/bench_ml.py` times the Python layers a training loop c
 
 Nothing here is slow for the size: the lattice sampler grows with the lattice and the proximity graph with the radius, both parallel in the core, and the converters move whole arrays. The ParaView payload is a view of the mesh's arrays (0.75 ms at 162,000 cells), so a conversion there is dominated by VTK's own object construction, which this layer does not include. The WASM ingestion of a JavaScript mesh (roadmap 5.9) is the one integration without a number: it needs the Emscripten build.
 
+### Profile-guided optimisation
+
+Roadmap 5.12. `-DMESHIOPLUSPLUS_PGO=GENERATE` then `USE` (GCC and Clang, one build directory; see [installation](./installation.md)) was measured against the plain build and link-time optimisation on four SEQ Release builds of `meshioplusplus_bench_ops` (GCC 13.3, the release CLI's backend): plain, LTO, PGO, and PGO with LTO. The profile came from one training run of the harness itself, `meshioplusplus_bench_ops --tier S --tier M` (12.5 minutes instrumented, 347 profile files). The gate held: all 145 rows of tier S have the same digest in all four builds, on one thread.
+
+Instruction counts, tier S, one thread, against the plain build (`bench_instructions.py`):
+
+| Build | Median row | Whole sweep | Rows more than 1% slower | Rows more than 5% faster | Worst rows |
+| --- | ---: | ---: | ---: | ---: | --- |
+| LTO | +1.0% | +2.5% | 72 | 14 | `read_vtk_binary` +50%, `read_vtk_ascii` +40%, `read_vtu_ascii` +37% |
+| PGO | −3.6% | −4.3% | 36 | 55 | `voxelize` +49%, `read_stl_binary` +49%, `read_gltf_weld` +40%, `fit_primitives` +28% |
+| PGO with LTO | −5.0% | −7.2% | 36 | 72 | `voxelize` +49%, `fit_primitives` +44%, `read_stl_binary` +39%, `read_gltf_weld` +38% |
+
+The counts fall for most rows (the surface and region extractions by 20 to 35%), and the rows that rise are the ones the profile weighs least, whose cold code is laid out for size. The time does not follow: over the 18 rows that take 30 ms or more in the plain build (7.5 s of the sweep), best of five, one thread, the median ratio of time is 1.007 for LTO, 1.008 for PGO and 1.013 for PGO with LTO, and the total 1.027, 1.007 and 0.996: `decimate_volume` 471 ms plain, 439 LTO, 507 PGO, 396 with both; `optimize_volume` 1497, 1498, 1538, 1527 ms; `adapt_volume` 2446, 2454, 2432, 2445 ms. The shorter rows are inside the noise.
+
+The roadmap's bar for putting a two-stage build in the release workflows was no row more than 2% slower and a median at least 5% faster. PGO fails the first part on 36 rows (by instruction count) and shows no gain in time on the rows where time is spent, so the release builds do not use it; the option stays, off by default, for a workload that resembles the training run.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
