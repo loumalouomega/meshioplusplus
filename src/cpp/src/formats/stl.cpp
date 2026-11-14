@@ -162,6 +162,19 @@ struct StlSolid {
 // solid leaves the mesh as it was. `Full` is the whole file, `NumFacets` the
 // facets the parse found, so a solid's range ends at the next one's start.
 void stl_add_solid_regions(Mesh& rMesh, std::string_view Full, std::size_t NumFacets) {
+    // Almost every file holds one solid: count the lines that start with `solid` with a plain
+    // substring search (one pass at memchr speed) and leave before the per-line scan below.
+    std::size_t solid_lines = 0;
+    for (std::size_t at = Full.find("solid"); at != std::string_view::npos && solid_lines < 2;
+         at = Full.find("solid", at + 5)) {
+        std::size_t b = at;
+        while (b > 0 && (Full[b - 1] == ' ' || Full[b - 1] == '\t' || Full[b - 1] == '\r'))
+            --b;
+        if (b == 0 || Full[b - 1] == '\n')
+            ++solid_lines;
+    }
+    if (solid_lines < 2)
+        return;
     std::vector<StlSolid> solids;
     std::size_t data_lines = 0;
     std::size_t pos = 0;
