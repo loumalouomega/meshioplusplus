@@ -37,6 +37,7 @@
 #include "chunked_parse.hpp"
 #include "parallel_workers.hpp"
 #include "row_writer.hpp"
+#include "text_cursor.hpp"
 #include "vtu_decode.hpp"
 #include "typed_view.hpp"
 #include "dtype_table.hpp"
@@ -191,7 +192,7 @@ namespace {
 /// where it once cut the array short.
 [[noreturn]] void vtkxml_throw_malformed(const char* pText, const char* pAt, const char* pLast) {
     const char* e = pAt;
-    while (e < pLast && !std::isspace(static_cast<unsigned char>(*e)))
+    while (e < pLast && !text_is_blank(*e))
         ++e;
     constexpr std::size_t kShown = 32;
     const std::size_t len = static_cast<std::size_t>(e - pAt);
@@ -255,7 +256,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
         std::size_t tokens = 0;
         bool in_token = false;
         for (const char* q = p; q < last; ++q) {
-            const bool space = std::isspace(static_cast<unsigned char>(*q)) != 0;
+            const bool space = text_is_blank(*q);
             tokens += !space && !in_token ? 1 : 0;
             in_token = !space;
         }
@@ -265,7 +266,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             iv.reserve(tokens);
     }
     while (*p) {
-        while (*p && std::isspace(static_cast<unsigned char>(*p)))
+        while (*p && text_is_blank(*p))
             ++p;
         if (!*p)
             break;
@@ -312,9 +313,9 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
 std::string vtu_strip(const char* pS) {
     std::string t = pS ? pS : "";
     std::size_t b = 0, e = t.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(t[b])))
+    while (b < e && text_is_blank(t[b]))
         ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(t[e - 1])))
+    while (e > b && text_is_blank(t[e - 1]))
         --e;
     return t.substr(b, e - b);
 }

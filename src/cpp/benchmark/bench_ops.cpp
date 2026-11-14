@@ -1026,6 +1026,17 @@ int main(int argc, char** argv) {
         };
         file_row("read_vtu_ascii", ".vtu", ascii_write("vtu"), registry_reader("vtu"));
         file_row("read_vtk_ascii", ".vtk", ascii_write("vtk"), registry_reader("vtk"));
+        // The binary encodings: base64 payloads in a VTU and a big-endian legacy
+        // VTK, the byte-level paths roadmap 5.15 weighs for vector kernels.
+        const auto binary_write = [&](const char* pFormat) {
+            return [&, pFormat](const std::string& rPath) {
+                mio::WriteOptions o;
+                o.mEncoding = mio::WriteEncoding::Binary;
+                mio::registry_write_ex(rPath, with_field, pFormat, o);
+            };
+        };
+        file_row("read_vtu_base64", ".vtu", binary_write("vtu"), registry_reader("vtu"));
+        file_row("read_vtk_binary", ".vtk", binary_write("vtk"), registry_reader("vtk"));
         file_row("read_gmsh_ascii", ".msh", ascii_write("gmsh"), registry_reader("gmsh"));
         file_row(
             "read_gmsh22_ascii", ".msh",
@@ -1056,6 +1067,7 @@ int main(int argc, char** argv) {
             std::filesystem::remove_all(dir);
         };
         write_row("write_gmsh", "gmsh", ".msh", with_field, mio::WriteEncoding::Ascii);
+        write_row("write_vtu_base64", "vtu", ".vtu", with_field, mio::WriteEncoding::Binary);
         write_row("write_off", "off", ".off", surface, mio::WriteEncoding::Default);
         write_row("write_stl", "stl", ".stl", surface, mio::WriteEncoding::Ascii);
         row("optimize_volume", [&](MeshDigest* pD) {
