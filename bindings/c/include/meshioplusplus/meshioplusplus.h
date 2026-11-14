@@ -1059,6 +1059,16 @@ MIO_API mio_status mio_check_quality(const mio_mesh* mesh, const char* spec, int
 MIO_API int64_t mio_sniff_format(const char* path, char* buf, int64_t buflen);
 
 /**
+ * A ranked format detection report (roadmap 2.4.9): every format `path` could be,
+ * one `format<TAB>confidence<TAB>reason` line each, ranked `certain` (a content
+ * signature matched), `likely` (the extension names it and its metadata reads),
+ * `guess` (the extension alone names it). Same buffer protocol as
+ * `mio_sniff_format`.
+ * @return the untruncated length of the report (0 when nothing matches), or -1.
+ */
+MIO_API int64_t mio_detect(const char* path, char* buf, int64_t buflen);
+
+/**
  * Merge two or more meshes into one (concatenate, with optional welding of
  * coincident nodes). Cell blocks are merged by type; connectivity is offset so
  * indices stay valid; point_data/cell_data are combined per `data_policy`.

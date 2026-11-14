@@ -239,6 +239,28 @@ If an expanded name collides with an existing column (a scalar `v_1` next to a v
 
 Deliberate, not an omission: the "from" direction of a table target returns plain arrays, not a `Mesh` (a table never carried the geometry), and a frame is one `{c: df[c].to_numpy() for c in df.columns}` away from the dict `from_arrow` already returns.
 
+## Conduit Mesh Blueprint
+
+`to_conduit(mesh, node=None)` fills a `conduit.Node` with the mesh as one Mesh Blueprint domain, and `from_conduit(node, domain=None, topology=None)` reads one back. That node is what Catalyst 2 and Ascent hand an in situ pipeline, so a simulation holding one reaches every meshio++ writer, and a mesh any reader returns can be handed to them. Both also take a plain nested `dict` of the same paths, which is how they are tested and how a node can be built without Conduit. Conduit's Python module is not on PyPI (the `conduit` package there is another project): it comes with Conduit, Ascent and ParaView builds and with conda-forge's `conduit`, so there is no extra; `has_conduit()` says whether it imports, and `to_conduit()` without a `node` raises a named `ImportError` when it does not.
+
+```python
+node = mio.to_conduit(mesh)          # a conduit.Node
+back = mio.from_conduit(node)        # a Mesh
+paths = mio.to_conduit(mesh, {})     # the same, as nested dicts
+```
+
+| meshio++ | Blueprint |
+|---|---|
+| points | `coordsets/coords`, `explicit`, `values/x`, `y`, `z` |
+| one fixed-size cell type | `topologies/mesh`, `unstructured`, `elements/shape` (`point`, `line`, `tri`, `quad`, `tet`, `hex`, `wedge`, `pyramid`) and `connectivity` |
+| several fixed-size types | `elements/shape: mixed`, `shape_map` (VTK's type numbers), `shapes`, `sizes`, `offsets` |
+| only polygons | `polygonal`, with `sizes` and `offsets` |
+| only polyhedra | `polyhedral`: cells list face ids in `elements`, faces are `polygonal` `subelements` |
+| `point_data` / `cell_data` | `fields/<name>` with `association` `vertex` / `element`; a vector as one child per component (`x`, `y`, `z`, or `c0`, `c1`, ... beyond three) |
+| `field_data["meshio:time"]` | `state/time` |
+
+Reading also expands `uniform` and `rectilinear` coordsets and `uniform`, `rectilinear` and `structured` topologies to lines, quads or hexahedra (the points numbered `i` fastest, as the Blueprint numbers them); a multi-domain node reads its first domain with a warning unless `domain=` picks one. Not carried, with a warning on write: higher-order cells, polygons or polyhedra beside other cells (one Blueprint topology holds one kind), regions and other field data; `matsets` and `adjsets` are not read. The node order of the linear shapes is VTK's, which is meshio++'s; this was taken from Conduit's Blueprint documentation and is checked by `conduit.blueprint.mesh.verify` in a test that runs where Conduit is installed (`tests/python/test_conduit.py`), not in the default CI legs.
+
 ## Phase 2: Open3D and DOLFINx
 
 `has_open3d()` and `has_dolfinx()` return `False`, and `to_open3d` / `to_dolfinx` raise `NotImplementedError` naming the phase. Both slot into the same pure-payload seam; the constraints are recorded here so the design does not have to be rediscovered.

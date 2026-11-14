@@ -148,6 +148,10 @@ ERROR: MeshioError (read error): meshio++: cannot open file '/nope.vtu'
 
 Using a borrow outside its window raises `BorrowError` instead.
 
+## Format detection
+
+`sniff_format(path)` returns the format a content signature names, or `""`; `detect(path)` returns every candidate as `(format, confidence, reason)` named tuples, best first: `certain` (a signature matched), `likely` (the extension names it and its metadata reads) or `guess` (the extension alone). See the [CLI's `detect`](./cli.md#meshioplusplus-detect).
+
 ## Named regions
 
 ```julia

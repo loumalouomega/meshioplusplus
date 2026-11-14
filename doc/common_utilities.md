@@ -37,6 +37,7 @@ Under `src/cpp/include/meshioplusplus/detail/`. Installed, so an inline body or 
 | `ragged_csr.hpp` | The CSR form of ragged (polygon, polyhedron) blocks, its conversions and checks. |
 | `subset.hpp` | `build_cell_subset`, a submesh from kept cells (points pruned, data gathered, regions remapped), and `subset_gather_rows`. |
 | `region_remap.hpp` | Carrying regions through an operation: `Direct`, `FirstChild` and `Global` maps, side facets by containment ([regions](./regions.md)). |
+| `ghost_names.hpp` | The ghost, owner and global-id array names (`partition:ghost`, `partition:owner`, `partition:part`, `global:node_id`, `global:cell_id`, `vtkGhostType`, ...) every format and operation uses; `_ghosts.py` is its Python twin, kept in step by `tests/python/test_ghost_names.py` ([ghosts](./ghosts.md)). |
 | `mesh_carve.hpp` | A mesh split into named cell-index parts, for the multi-part writers. |
 | `provenance.hpp`, `length_unit.hpp` | The provenance record every writer renders; the length-unit field-data key and its accessors. |
 
@@ -65,6 +66,8 @@ Under `src/cpp/include/meshioplusplus/detail/`. Installed, so an inline body or 
 | Header | Contents |
 | --- | --- |
 | `vtk_xml.hpp`, `vtu_binary.hpp`, `xdmf_common.hpp`, `hdf5_util.hpp` | VTK XML `<DataArray>` helpers and codecs; XDMF type names and raw cell data; HDF5 helpers. |
+| `src/cpp/src/detail/zip_archive.hpp` (core-private) | A ZIP container: `ZipReader` (list members, read one by name, stored or deflated; Zip64 and encryption refused by name) and `ZipWriter` (stored or level-9 deflated members dated 1980-01-01, so the bytes depend on the contents alone). The single-member `.zip` input path and 3MF use it; the Python twin of the writer is `meshioplusplus._zip`. |
+| `src/cpp/src/detail/netcdf_util.hpp` (core-private, `detail::nc`) | netCDF helpers shared by the netCDF-backed formats (Exodus, UGRID NetCDF): `check` (with the format's own message prefix), `nc_type_of`/`dtype_of`, `read_var` (a variable or hyperslab as an `NDArray`), `var_dims`, `read_names`, `read_att_text` (NUL and blank padding trimmed), `read_ints`. |
 | `nastran_model.hpp`, `ansys_model.hpp`, `abaqus_types.hpp`, `colormap.hpp`, `face_color.hpp` | The models the Nastran, Ansys and Abaqus readers share; the drawing writers' colormaps and per-face colours. |
 | `link_check.hpp`, `abi_version_check.hpp`, `mesh_backend_check.hpp` | The two link-time sentinels and the paste, stringize and `gnu::used` reference they share. |
 
@@ -77,6 +80,7 @@ Core-private: no installed header names them, so they change freely. The general
 | Header | Contents |
 | --- | --- |
 | `math_utils.hpp`, `geometry_utils.hpp`, `bounding_box_utils.hpp` | The Kratos-style utility classes `MathUtils`, `GeometryUtils` (with `PointInPolygon2D`, the even-odd test of a parameter-space trim), `BoundingBoxUtils` ([kernels](./geometry_kernels.md)). |
+| `lattice_cells.hpp` | `detail::lattice_cells`, the cells of a structured lattice (hexahedra, quads or lines, `i` fastest); the twin of the Python `_grid.lattice_cells`, used by the EnSight block parts and the CGNS structured zones. |
 | `fem_kernels.hpp`, `cell_centroids.hpp`, `predicates.hpp`, `expansion.hpp` | Tet volume, scaled-Jacobian corner factors and corner tables; per-cell centroids; exact predicates and expansion arithmetic. |
 | `size_field_utils.hpp` | `SizeFieldUtils`: metric edge length of a geometrically graded isotropic size field, the metric midpoint of an edge, size interpolation and the Dijkstra gradation `h(v) <= h(u) + (hgrad - 1) |uv|` (`adapt_volume`). |
 | `tet_flips.hpp` | `optimize_volume`'s worst-cell moves over a flat xyz buffer and a vector of tetrahedra, moved verbatim so `adapt_volume` runs them too: the 2-3 and 3-2 flips, edge removal and multi-face removal, the guarded ODT relocation and the worst-cell smoothing, each touching only faces and edges interior to the vector it is given. |
@@ -129,6 +133,7 @@ Under `src/python/meshioplusplus/`.
 | `_shims.py` | `plain_shims` and `vtk_xml_shims`, the read and write shims of the format packages that only try one `_core` entry point. |
 | `_common.py`, `_vtk_common.py`, `vtk/_legacy_common.py`, `vti/_vti.py` | Cell-type tables, warnings and XML helpers; the VTK cell conversions (with `FIXED_LAGRANGE`, the fixed-order high types written as VTK Lagrange cells); the legacy VTK sections and writer pieces; the lattice reader and writer. |
 | `_lagrange.py` (C++ twin `formats/lagrange_common.hpp`) | Arbitrary-order Lagrange cells: VTK's node lattice (`vtk_lattice`), Gmsh's (`gmsh_lattice`) and the permutation between them (`gmsh_to_vtk_order`), lattice weights and nodal interpolation. |
+| `_grid.py` (C++ twin `detail/lattice_cells.hpp`) | The lattice of structured data: `lattice_cells` gives the hexahedra (quads, lines) of an `ni x nj x nk` lattice of points with `i` fastest; the EnSight blocks, CGNS structured zones and VTKHDF `ImageData` readers share it. |
 | `_set_remap.py`, `_side_carry.py`, `_regions.py` | The shim-only `point_sets`/`cell_sets` carried through an operation; side regions by containment (the twin of `region_remap.cpp`); region helpers. |
 | `_data_common.py` | The data operations' shared vocabulary. |
 | `_ragged.py`, `_files.py`, `_compressed.py` | Ragged blocks that carry their CSR (`CsrRows`, `csr_of`), a polyhedron block's CSR whatever its storage (`polyhedron_csr`) and the gather of segments laid end to end (`ragged_gather`); buffer and path handling; compressed input. |

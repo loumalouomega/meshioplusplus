@@ -193,6 +193,25 @@ function sniff_format(path::AbstractString)
     end
 end
 
+"""
+    detect(path) -> Vector{NamedTuple{(:format, :confidence, :reason)}}
+
+Every format `path` could be, ranked: `certain` (a content signature matched),
+`likely` (the extension names it and its metadata reads), `guess` (the extension
+alone). Empty when nothing matches.
+"""
+function detect(path::AbstractString)
+    text = _getstring() do buf, len
+        ccall(_sym(:mio_detect), Int64, (Cstring, Ptr{UInt8}, Int64), path, buf, len)
+    end
+    out = NamedTuple{(:format, :confidence, :reason),Tuple{String,String,String}}[]
+    for line in split(text, '\n'; keepempty=false)
+        f = split(line, '\t'; limit=3)
+        length(f) == 3 && push!(out, (format=String(f[1]), confidence=String(f[2]), reason=String(f[3])))
+    end
+    return out
+end
+
 # --- cell-type metadata ------------------------------------------------------
 
 """

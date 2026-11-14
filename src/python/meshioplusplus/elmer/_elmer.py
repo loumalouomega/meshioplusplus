@@ -15,7 +15,7 @@ import struct
 
 import numpy as np
 
-from .. import _provenance
+from .. import _ghosts, _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._facets import FacetIndex, facet_nodes
@@ -491,7 +491,7 @@ def _build(src, where):
             part_blocks.append(parts)
     mesh = Mesh(points, cells)
     if src.has_parts:
-        mesh.cell_data["partition:part"] = part_blocks
+        mesh.cell_data[_ghosts.PARTITION_PART] = part_blocks
 
     body_names = {n for i, n in src.body_names.items() if i in body_cells}
     clash = {
@@ -704,8 +704,8 @@ def write(filename, mesh, halo=False):
             "regions-dropped",
             f"{point_regions} point region(s) have no Elmer equivalent",
         )
-    partitioned = "partition:part" in mesh.cell_data
-    other_cell_data = [k for k in mesh.cell_data if k != "partition:part"]
+    partitioned = _ghosts.PARTITION_PART in mesh.cell_data
+    other_cell_data = [k for k in mesh.cell_data if k != _ghosts.PARTITION_PART]
     if mesh.point_data or other_cell_data or mesh.field_data:
         warn(
             "Elmer mesh writer: an Elmer mesh holds no data arrays; point, cell and "
@@ -908,7 +908,7 @@ def _write_partitioning(
     each part holding one of its parents, the other parent set to 0. With
     ``halo``, ElmerGrid's ``-halo`` layer too: halo copies as ``id/owner``, their
     nodes in the part's node list and shared with it."""
-    labels = mesh.cell_data["partition:part"]
+    labels = mesh.cell_data[_ghosts.PARTITION_PART]
     part_of = [-1] * (n_bulk + 1)
     n_parts = 0
     for g, _, _, _ in bulk_rows:

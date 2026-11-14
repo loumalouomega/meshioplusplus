@@ -9,6 +9,7 @@ Scripts that run inside a vendor's own runtime and write a file meshio++ reads n
 | `ansys_dpf/` | Ansys results via DPF | Python with `ansys-dpf-core` | `.vtkhdf` |
 | `femap/` | Femap `.modfem` | Femap's COM API (Windows) | neutral `.neu` |
 | `tecplot/` | Tecplot `.szplt` | PyTecplot or a Tecplot macro | `.plt` |
+| `catalyst/` | Catalyst 2 / Ascent in situ (a Conduit Mesh Blueprint) | the pipeline's Python, with `meshioplusplus` | `.vtkhdf`, or a file per step |
 | `common/` | `mio_vtu_series.py`, the numpy-only series writer the `.pvd` scripts use: copy it next to them | | |
 
 These files are not installed with the Python package. They are tested in `tests/python/test_contrib_routes.py` against stand-ins of each vendor API.

@@ -16,9 +16,11 @@ Each format name links to a detailed reference page (structure, options, data ma
 
 | Format name | Extensions | Read | Write | Extra dependencies | Round trip |
 |---|---|---|---|---|---|
+| [`3mf`](./formats/3mf.md) | `.3mf` | ✓ (core spec: objects, components, build, base materials) | ✓ | — | [1/8 cells · no data · regions C](./conformance.md#3mf) |
 | [`abaqus`](./formats/abaqus.md) | `.inp` | ✓ | ✓ | — | [6/8 cells · no data · regions CPS](./conformance.md#abaqus) |
 | [`abaqus_fil`](./formats/abaqus_fil.md) | `.fil` (ASCII and binary results) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#abaqus-fil) |
-| [`ansys`](./formats/ansys.md) | `.msh` | ✓ | ✓ | — | [4/8 cells · no data · regions C](./conformance.md#ansys) |
+| [`adcirc`](./formats/adcirc.md) | `.14`, `.grd` | ✓ (`fort.14` grid; `fort.63`/`fort.64` results as steps) | ✓ (grid) | — | [1/8 cells · no data](./conformance.md#adcirc) |
+| [`ansys`](./formats/ansys.md) | `.msh`, `.cas` | ✓ (a `.cas` with its `.dat` data) | ✓ | — | [4/8 cells · no data · regions C](./conformance.md#ansys) |
 | [`ansysInp`](./formats/ansysinp.md) | `.cdb`, `.inp` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansysinp) |
 | [`ansys_rst`](./formats/ansys_rst.md) | `.rst`, `.rth` | ✓ | ✓ | — | [8/8 cells · no data · regions CP](./conformance.md#ansys-rst) |
 | [`ansys_rst_cyclic`](./formats/ansys_rst.md#cyclic-symmetry) | — (by name: the full rotor of a static cyclic `.rst`) | ✓ | — | — | [read-only](./conformance.md#ansys-rst-cyclic) |
@@ -39,7 +41,9 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`flux`](./formats/flux.md) | `.pf3` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#flux) |
 | [`frd`](./formats/frd.md) | `.frd` | ✓ | ✓ | — | [6/8 cells · data P](./conformance.md#frd) |
 | [`freefem`](./formats/freefem.md) | `.msh` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#freefem) |
+| [`freesurfer`](./formats/freesurfer.md) | `.pial`, `.white`, `.inflated`, `.orig`, `.smoothwm`, `.sphere` | ✓ (with curv and annot) | ✓ | — | [1/8 cells · no data](./conformance.md#freesurfer) |
 | [`gid`](./formats/gid.md) | `.post.msh` / `.post.res`, `.post.bin`, `.post.h5` | ✓ | ✓ | *writing* needs zlib (vendored gidpost); *reading* needs nothing for ascii, zlib for binary, HDF5 for hdf5 | [8/8 cells · data PC](./conformance.md#gid) |
+| [`gifti`](./formats/gifti.md) | `.gii` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#gifti) |
 | [`gltf`](./formats/gltf.md) | `.glb`, `.gltf` | ✓ | ✓ | — | [3/8 cells · data P · regions C](./conformance.md#gltf) |
 | [`gmsh` / `gmsh22`](./formats/gmsh.md) | `.msh` | ✓ | ✓ | — | [8/8 cells · data PCF · regions C](./conformance.md#gmsh) |
 | [`h5m`](./formats/h5m.md) | `.h5m` | ✓ | ✓ | `h5py` | [3/8 cells · data P](./conformance.md#h5m) |
@@ -66,21 +70,27 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`nastran_op2`](./formats/nastran_op2.md) | `.op2` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#nastran-op2) |
 | [`netgen`](./formats/netgen.md) | `.vol`, `.vol.gz` | ✓ | ✓ | — | [8/8 cells · data F](./conformance.md#netgen) |
 | [`neuroglancer`](./formats/neuroglancer.md) | (no extension) | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#neuroglancer) |
-| [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#obj) |
+| [`obj`](./formats/obj.md) | `.obj` | ✓ | ✓ | — | [2/8 cells · no data · regions C](./conformance.md#obj) |
 | [`off`](./formats/off.md) | `.off` | ✓ | ✓ | — | [2/8 cells · no data](./conformance.md#off) |
 | [`openfoam`](./formats/openfoam.md) | `.foam` | ✓ | ✓ | — | [4/8 cells · data PC · regions CPS](./conformance.md#openfoam) |
 | [`patran`](./formats/patran.md) | `.pat`, `.out` | ✓ | ✓ | — | [7/8 cells · no data · regions CP](./conformance.md#patran) |
+| [`las`](./formats/las.md) | `.las` | ✓ (1.2 to 1.4, point formats 0 to 10) | ✓ (1.4, formats 6 to 8) | — | [1/8 cells · no data](./conformance.md#las) |
 | [`pcd`](./formats/pcd.md) | `.pcd` | ✓ | ✓ | — | [1/8 cells · data P](./conformance.md#pcd) |
 | [`permas`](./formats/permas.md) | `.post`, `.post.gz`, `.dato`, `.dato.gz` | ✓ | ✓ | — | [8/8 cells · no data](./conformance.md#permas) |
+| [`plot3d`](./formats/plot3d.md) | `.p3d`, `.p3dfmt`, `.x`, `.g` | ✓ (ASCII, Fortran unformatted or raw; the variant inferred) | ✓ (unformatted, double) | — | [fails](./conformance.md#plot3d) |
 | [`ply`](./formats/ply.md) | `.ply` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#ply) |
 | [`pmsh`](./formats/pmsh.md) | `.pmsh` | ✓ | ✓ | — | [1/8 cells · data PCF](./conformance.md#pmsh) |
 | [`pvd`](./formats/pvd.md) | `.pvd` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvd) |
 | [`pvtp`](./formats/pvtp.md) | `.pvtp` | ✓ | ✓ | — | [4/8 cells · data PCF · regions CP](./conformance.md#pvtp) |
+| [`pvti`](./formats/pvti.md) | `.pvti` | ✓ | — | — | [read-only](./conformance.md#pvti) |
+| [`pvtr`](./formats/pvtr.md) | `.pvtr` | ✓ | — | — | [read-only](./conformance.md#pvtr) |
+| [`pvts`](./formats/pvts.md) | `.pvts` | ✓ | — | — | [read-only](./conformance.md#pvts) |
 | [`pvtu`](./formats/pvtu.md) | `.pvtu` | ✓ | ✓ | — | [8/8 cells · data PCF · regions CPS](./conformance.md#pvtu) |
 | [`radioss`](./formats/radioss.md) | `.rad` (starter deck) | ✓ | ✓ | — | [7/8 cells · no data · regions CPS](./conformance.md#radioss) |
 | [`radioss_anim`](./formats/radioss_anim.md) | `<run>A001`… (animation files, by name or content) | ✓ | ✓ | — | [8/8 cells · data PC · regions C](./conformance.md#radioss-anim) |
 | [`radioss_th`](./formats/radioss_th.md) | `<run>T01`… (time-history files, by name or content) | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#radioss-th) |
 | [`step`](./formats/step.md) | `.step`, `.stp` | ✓ (OpenCASCADE) | ✓ | reading: OpenCASCADE | [0/8 cells · no data](./conformance.md#step) |
+| [`selafin`](./formats/selafin.md) | `.slf`, `.srf` | ✓ (TELEMAC 2-D/3-D, steps) | ✓ (2-D, one step) | — | [fails](./conformance.md#selafin) |
 | [`stl`](./formats/stl.md) | `.stl` | ✓ | ✓ | — | [0/8 cells · no data](./conformance.md#stl) |
 | [`su2`](./formats/su2.md) | `.su2` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#su2) |
 | [`svg`](./formats/svg.md) | `.svg` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#svg) |
@@ -90,6 +100,7 @@ Each format name links to a detailed reference page (structure, options, data ma
 | [`tikz`](./formats/tikz.md) | `.tikz` | ✓ (2-D drawing) | ✓ | — | [3/8 cells · no data](./conformance.md#tikz) |
 | [`triangle`](./formats/triangle.md) | `.node` / `.ele` / `.poly` | ✓ | ✓ | — | [1/8 cells · no data](./conformance.md#triangle) |
 | [`ugrid`](./formats/ugrid.md) | `.ugrid` | ✓ | ✓ | — | [6/8 cells · no data](./conformance.md#ugrid) |
+| [`ugrid_nc`](./formats/ugrid_nc.md) | `.nc` | ✓ (UGRID 1-D/2-D topologies, data by location, time steps) | ✓ | netCDF (core), `netCDF4` (Python) | [3/8 cells · data PC](./conformance.md#ugrid-nc) |
 | [`unv`](./formats/unv.md) | `.unv`, `.uff` | ✓ | ✓ | — | [7/8 cells · data PC · regions CP](./conformance.md#unv) |
 | [`usd`](./formats/usd.md) | `.usd`, `.usda`, `.usdc` | ✓ | ✓ | `usd-core` | [0/8 cells · no data](./conformance.md#usd) |
 | [`vti`](./formats/vti.md) | `.vti` | ✓ | ✓ | — | [fails](./conformance.md#vti) |

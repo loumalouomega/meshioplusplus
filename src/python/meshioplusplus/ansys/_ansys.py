@@ -18,6 +18,7 @@ Fluent itself cannot read; such a file reads as before, cells only.
 (the ``ansys:zone`` values, else one per block), named from the regions.
 """
 
+import os
 import re
 from collections import defaultdict
 
@@ -85,16 +86,16 @@ class _Reader:
         elif self.p < len(self.d) and self.d[self.p] == 0x29:
             self.p += 1
 
-    def header(self):
-        """The ``(a b c ...)`` group after a section index, as hex integers,
-        and whether a body follows."""
+    def header(self, base=16):
+        """The ``(a b c ...)`` group after a section index, as integers (hex by
+        default; a ``.dat`` header is decimal), and whether a body follows."""
         self.skip_ws()
         if self.p >= len(self.d) or self.d[self.p] != 0x28:
             raise ReadError("Fluent: expected a section header")
         q = self.d.find(b")", self.p)
         if q < 0:
             raise ReadError("Fluent: unterminated section header")
-        values = [int(t, 16) for t in self.d[self.p + 1 : q].split()]
+        values = [int(t, base) for t in self.d[self.p + 1 : q].split()]
         self.p = q + 1
         # A body opens with '(' after nothing but blanks; anything else (a
         # closing bracket, `End of Binary Section`) makes a declaration.
@@ -196,7 +197,111 @@ def _refuse_early(head):
         raise ReadError(f"Fluent: expected a section at byte {p}")
 
 
-def read(filename):  # noqa: C901
+def read(filename, data=None, sibling_data=True):  # noqa: C901
+    """Read a Fluent mesh or case; ``data`` names a ``.dat`` file (the ``.dat`` beside a
+    ``.cas`` by default) whose sections become cell data. See ``read_ansys``."""
+    mesh = _read_mesh(filename)
+    dat = data
+    if dat is None and sibling_data and isinstance(filename, (str, os.PathLike)):
+        name = os.fspath(filename)
+        if name.endswith(".cas") and os.path.isfile(name[:-4] + ".dat"):
+            dat = name[:-4] + ".dat"
+    if dat is not None and getattr(mesh, "_fluent_ids", None) is not None:
+        _attach_data(mesh, os.fspath(dat))
+    if hasattr(mesh, "_fluent_ids"):
+        del mesh._fluent_ids
+    return mesh
+
+
+_DATA_NAMES = {
+    1: "pressure",
+    2: "x_velocity",
+    3: "y_velocity",
+    4: "z_velocity",
+    5: "temperature",
+}
+
+
+def _read_dat(path):
+    """The ``300``/``2300``/``3300`` sections of a ``.dat`` (decimal headers):
+    ``[(sub, zone, size, first, last, values)]``. The twin of ``fluent_read_dat``."""
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError:
+        raise ReadError(f"Fluent: could not open data file {path}") from None
+    rd = _Reader(data)
+    out = []
+    while True:
+        rd.skip_ws()
+        if rd.p >= len(data):
+            break
+        m = _SECTION.match(data, rd.p)
+        if m is None:
+            raise ReadError(
+                f"Fluent: expected a section in the data file at byte {rd.p}"
+            )
+        index = m.group(1).decode()
+        rd.p = m.end()
+        if index in ("300", "2300", "3300"):
+            head, has_body = rd.header(base=10)
+            if len(head) < 7:
+                raise ReadError("Fluent: a data section header needs seven integers")
+            sub, zone, size, first, last = head[0], head[1], head[2], head[5], head[6]
+            count = max(last - first + 1, 0)
+            if size < 1 or count * size > len(data):
+                raise ReadError(
+                    "Fluent: a data section declares more values than the file holds"
+                )
+            n = count * size
+            if not has_body:
+                continue
+            if index == "300":
+                values = np.array([float(t) for t in rd.ascii_body()], dtype=float)
+            else:
+                values = rd.binary(n, "<f4" if index == "2300" else "<f8").astype(float)
+            if values.size != n:
+                raise ReadError(
+                    f"Fluent: a data section holds {values.size} values, not {n}"
+                )
+            out.append((sub, zone, size, first, last, values))
+        elif len(index) > 2 and index[:2] in ("20", "30"):
+            q = data.find(b"End of Binary Section", rd.p)
+            q = data.find(b")", q) if q >= 0 else -1
+            rd.p = len(data) if q < 0 else q + 1
+        else:
+            rd.skip_balanced(1)
+    return out
+
+
+def _attach_data(mesh, path):
+    """``.dat`` values as cell data, by Fluent cell id on the cell zones and face id on
+    the face zones' boundary faces (NaN elsewhere)."""
+    block_ids, block_volume, cell_zones = mesh._fluent_ids
+    fields = {}
+    for sub, zone, size, first, last, values in _read_dat(path):
+        name = _DATA_NAMES.get(sub, f"fluent:{sub}")
+        f = fields.setdefault(name, {"width": size, "cell": {}, "face": {}})
+        f["width"] = size
+        table = f["cell"] if zone in cell_zones else f["face"]
+        rows = values.reshape(-1, size)
+        for k in range(last - first + 1):
+            table[first + k] = rows[k]
+    for name in sorted(fields):
+        f = fields[name]
+        blocks = []
+        for ids, volume in zip(block_ids, block_volume):
+            a = np.full((len(ids), f["width"]), np.nan)
+            lookup = f["cell"] if volume else f["face"]
+            for r, i in enumerate(ids):
+                if i in lookup:
+                    a[r] = lookup[i]
+            blocks.append(a[:, 0] if f["width"] == 1 else a)
+        if blocks:
+            mesh.cell_data[name] = blocks
+
+
+def _read_mesh(filename):  # noqa: C901
     with open_file(filename, "rb") as f:
         head = f.read(256)
         if isinstance(head, str):
@@ -218,6 +323,7 @@ def read(filename):  # noqa: C901
     cell_zones = []  # (zone, first, last, zone_type, element_type)
     legacy = []  # (meshio type, connectivity) of cell sections with bodies
     names = {}  # zone id -> name
+    zone_types = {}  # zone name -> type
 
     while True:
         rd.skip_ws()
@@ -240,6 +346,7 @@ def read(filename):  # noqa: C901
             z = _ZONE_NAME.match(data, start)
             if z is not None:
                 names[int(z.group(1))] = z.group(3).decode()
+                zone_types[z.group(3).decode()] = z.group(2).decode()
             rd.skip_balanced(1)
         elif core in ("10", "12", "13") and prefix in ("", "20", "30"):
             head, has_body = rd.header()
@@ -271,8 +378,8 @@ def read(filename):  # noqa: C901
                 else:
                     values = _binary_mixed_faces(rd, count, _int_dtype(prefix))
                 nodes, c0, c1 = _face_rows(values, count, face_type)
-                for f, a, b in zip(nodes, c0, c1):
-                    faces.append((zone, bc_type, f, int(a), int(b)))
+                for k, (f, a, b) in enumerate(zip(nodes, c0, c1)):
+                    faces.append((zone, bc_type, f, int(a), int(b), first + k))
             else:
                 zone_type = head[3]
                 element_type = head[4] if len(head) > 4 else 0
@@ -318,7 +425,12 @@ def read(filename):  # noqa: C901
         return Mesh(points, [(k, c - base) for k, c in legacy])
 
     dim = dim or nd
-    return _from_faces(points, base, dim, faces, cell_zones, names)
+    mesh = _from_faces(points, base, dim, faces, cell_zones, names)
+    for name in sorted(zone_types):
+        mesh.field_data[f"fluent:zone_type:{name}"] = np.frombuffer(
+            zone_types[name].encode(), dtype=np.uint8
+        ).copy()
+    return mesh
 
 
 def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
@@ -328,7 +440,7 @@ def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
             zone_of[c] = zone
     if not cell_zones:
         # No cell zone declared: every referenced cell is in zone 0.
-        for _, _, _, a, b in faces:
+        for _, _, _, a, b, _ in faces:
             for c in (a, b):
                 if c:
                     zone_of.setdefault(c, 0)
@@ -340,7 +452,7 @@ def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
     )
     # Outward faces (3-D) or directed edges (2-D) per cell, in file order.
     per_cell = defaultdict(list)
-    for _, _, nodes, c0, c1 in faces:
+    for _, _, nodes, c0, c1, _ in faces:
         f = [n - base for n in nodes]
         if c1 in zone_of:
             per_cell[c1].append(f)
@@ -348,6 +460,7 @@ def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
             per_cell[c0].append(f[::-1])
 
     volume = {}  # (zone, type) -> list of connectivities, first-seen order
+    volume_ids = {}  # (zone, type) -> the Fluent cell id of each
     skipped = 0
     for cid in sorted(zone_of):
         cf = per_cell.get(cid)
@@ -361,6 +474,7 @@ def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
                 continue
             t = {3: "triangle", 4: "quad"}.get(len(ring), f"polygon{len(ring)}")
             volume.setdefault((zone_of[cid], t), []).append(ring)
+            volume_ids.setdefault((zone_of[cid], t), []).append(cid)
             continue
         t, conn = reconstruct_cell(cf, P)
         if conn is None:
@@ -370,11 +484,13 @@ def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
             t = f"polyhedron{len(set().union(*conn))}"
             conn = [np.array(f, dtype=int) for f in conn]
         volume.setdefault((zone_of[cid], t), []).append(conn)
+        volume_ids.setdefault((zone_of[cid], t), []).append(cid)
     if skipped:
         warn(f"Fluent: {skipped} cell(s) with no usable faces skipped")
 
     surface = {}
-    for zone, bc_type, nodes, c0, c1 in faces:
+    surface_ids = {}
+    for zone, bc_type, nodes, c0, c1, face_id in faces:
         if bc_type == _INTERIOR and c0 in zone_of and c1 in zone_of:
             continue
         f = [n - base for n in nodes]
@@ -383,11 +499,18 @@ def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
             f = f[::-1]
         t = {2: "line", 3: "triangle", 4: "quad"}.get(len(f), f"polygon{len(f)}")
         surface.setdefault((zone, t), []).append(f)
+        surface_ids.setdefault((zone, t), []).append(face_id)
 
     cells, zone_data, regions = [], [], defaultdict(list)
+    block_ids, block_volume = [], []
     offset = 0
-    for group, cdim in ((volume, dim), (surface, dim - 1)):
+    for group, ids_of, cdim in (
+        (volume, volume_ids, dim),
+        (surface, surface_ids, dim - 1),
+    ):
         for (zone, t), conn in group.items():
+            block_ids.append(ids_of[(zone, t)])
+            block_volume.append(group is volume)
             if t.startswith("polyhedron"):
                 data = np.empty(len(conn), dtype=object)
                 for i, c in enumerate(conn):
@@ -404,6 +527,7 @@ def _from_faces(points, base, dim, faces, cell_zones, names):  # noqa: C901
         Region(names.get(zone, f"zone_{zone}"), "cell", np.concatenate(ids), cdim, zone)
         for (zone, cdim), ids in regions.items()
     ]
+    mesh._fluent_ids = (block_ids, block_volume, {z[0] for z in cell_zones})
     return mesh
 
 

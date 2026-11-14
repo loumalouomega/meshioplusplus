@@ -97,6 +97,27 @@ mio_format_writable <- function(format) .Call(R_mio_format_writable, as.characte
 #' @export
 mio_sniff_format <- function(path) .Call(R_mio_sniff_format, as.character(path))
 
+#' A ranked format detection report
+#'
+#' @param path Path to an existing file or directory.
+#' @return A data frame with columns `format`, `confidence` (`"certain"`: a
+#'   content signature matched; `"likely"`: the extension names it and its
+#'   metadata reads; `"guess"`: the extension alone) and `reason`, best first;
+#'   no rows when nothing matches.
+#' @export
+mio_detect <- function(path) {
+  text <- .Call(R_mio_detect, as.character(path))
+  lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
+  lines <- lines[nzchar(lines)]
+  fields <- strsplit(lines, "\t", fixed = TRUE)
+  data.frame(
+    format = vapply(fields, `[`, "", 1),
+    confidence = vapply(fields, `[`, "", 2),
+    reason = vapply(fields, `[`, "", 3),
+    stringsAsFactors = FALSE
+  )
+}
+
 #' Cell-type metadata
 #'
 #' @param name A meshio cell-type name, e.g. `"triangle"`, `"tetra10"`.

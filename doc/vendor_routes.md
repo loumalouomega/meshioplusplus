@@ -9,6 +9,7 @@ Some result and model files have no public specification and are readable only b
 | Ansys results via DPF | Python with `ansys-dpf-core` and a DPF Server | `.vtkhdf` | `contrib/ansys_dpf/rst_to_vtkhdf.py` | [Ansys via PyDPF](./routes/ansys_dpf.md) |
 | Femap `.modfem` | Femap's COM API (Windows, `pywin32`) | neutral `.neu` | `contrib/femap/export_neutral.py` | [Femap `.modfem`](./routes/femap_modfem.md) |
 | Tecplot `.szplt` | TecIO (a native build), PyTecplot or a Tecplot macro | read directly, or `.plt` | `contrib/tecplot/` | [Tecplot `.szplt`](./routes/tecplot_szplt.md) |
+| Catalyst 2 / Ascent in situ (a Conduit Mesh Blueprint) | the pipeline's Python | `.vtkhdf`, or a file per step | `contrib/catalyst/blueprint_series.py` | [Catalyst 2 and Ascent](./routes/catalyst.md) |
 
 ## The `contrib/` convention
 

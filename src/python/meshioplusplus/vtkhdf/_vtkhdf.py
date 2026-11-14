@@ -782,6 +782,69 @@ def _read_composite(g, kind, time_step, piece, points_only, arrays, lenient):
     return out
 
 
+def _read_image_data(g, time_step, points_only, arrays):
+    """A static ``ImageData`` file: ``WholeExtent``, ``Origin``, ``Spacing`` and
+    ``Direction`` attributes with ``PointData``/``CellData`` groups, expanded the way
+    a ``.vti`` is: the lattice's points (x fastest, placed by ``Origin + Direction *
+    (Spacing * index)``) and its hexahedra (quads or lines when a dimension has one
+    point). The Python engine only: the core refuses the type by name."""
+    from .._grid import lattice_cells
+
+    if "Steps" in g:
+        raise ReadError("meshio++: vtkhdf: a transient ImageData file is not supported")
+    if time_step not in (0, -1):
+        raise ReadError(
+            f"meshio++: vtkhdf: time step {time_step} is out of range; the file has 1 step"
+        )
+    for need in ("WholeExtent", "Origin", "Spacing"):
+        if need not in g.attrs:
+            raise ReadError(f"meshio++: vtkhdf: ImageData has no {need} attribute")
+    ext = np.asarray(g.attrs["WholeExtent"], dtype=np.int64).reshape(-1)
+    if ext.size != 6:
+        raise ReadError("meshio++: vtkhdf: WholeExtent needs six integers")
+    origin = np.asarray(g.attrs["Origin"], dtype=np.float64).reshape(-1)
+    spacing = np.asarray(g.attrs["Spacing"], dtype=np.float64).reshape(-1)
+    if origin.size != 3 or spacing.size != 3:
+        raise ReadError("meshio++: vtkhdf: Origin and Spacing need three numbers")
+    direction = np.eye(3)
+    if "Direction" in g.attrs:
+        direction = np.asarray(g.attrs["Direction"], dtype=np.float64).reshape(3, 3)
+    ni, nj, nk = (int(ext[2 * a + 1] - ext[2 * a] + 1) for a in range(3))
+    if min(ni, nj, nk) < 1:
+        raise ReadError("meshio++: vtkhdf: WholeExtent holds no points")
+    gz, gy, gx = np.meshgrid(
+        ext[4] + np.arange(nk),
+        ext[2] + np.arange(nj),
+        ext[0] + np.arange(ni),
+        indexing="ij",
+    )
+    index = np.stack([gx.reshape(-1), gy.reshape(-1), gz.reshape(-1)], axis=1)
+    points = origin + (index * spacing) @ direction.T
+    cell_type, conn = lattice_cells(ni, nj, nk)
+    num_points, num_cells = ni * nj * nk, len(conn)
+
+    def groups(name, rows):
+        out = {}
+        if name not in g:
+            return out
+        for key in _wanted(list(g[name]), arrays, points_only):
+            data = np.asarray(g[name][key][()])
+            flat = data.reshape(rows, -1) if data.size != rows else data.reshape(rows)
+            if data.size % rows:
+                raise ReadError(
+                    f"meshio++: vtkhdf: {name}/{key} does not hold {rows} values"
+                )
+            out[key] = flat
+        return out
+
+    return Mesh(
+        points,
+        [(cell_type, conn)] if num_cells else [],
+        point_data=groups("PointData", num_points),
+        cell_data={k: [v] for k, v in groups("CellData", num_cells).items()},
+    )
+
+
 def read(
     filename,
     points_only=False,
@@ -825,6 +888,8 @@ def read(
             return _read_composite(
                 g, kind, time_step, piece, points_only, arrays, lenient
             )
+        if kind == "ImageData":
+            return _read_image_data(g, time_step, points_only, arrays)
         if kind not in _LEAF_TYPES:
             raise ReadError(
                 f"meshio++: vtkhdf: Type '{kind}' is not supported; this build reads "

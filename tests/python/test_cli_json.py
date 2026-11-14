@@ -365,6 +365,7 @@ def files(tmp_path_factory):
 
 
 CASES = [
+    ("detect", lambda f: ["detect", f["grid"], "--json"]),
     ("info", lambda f: ["info", f["grid"], "--json"]),
     ("info_fast", lambda f: ["info", f["grid"], "--fast", "--json"]),
     ("info_regions", lambda f: ["info", f["tagged"], "--json"]),

@@ -224,3 +224,58 @@ def test_engines_agree_on_the_fixtures():
             else:
                 np.testing.assert_array_equal(x.data, y.data)
         assert _regions(a) == _regions(b)
+
+
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_a_case_and_its_data(tmp_path, engine, monkeypatch):
+    """A .cas is read as a .msh is; its .dat's ASCII (300) and binary (3300) data
+    sections become cell data by cell id and boundary-face id (roadmap 2.4.1)."""
+    import struct
+
+    from meshioplusplus import _fallback
+    from meshioplusplus.ansys import _ansys
+
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [1, 1, 1]], dtype=float),
+        [("tetra", np.array([[0, 1, 2, 3], [1, 2, 3, 4]]))],
+    )
+    cas = tmp_path / "run.cas"
+    meshioplusplus.ansys.write(cas, mesh)
+    probe = _ansys._read_mesh(str(cas))
+    block_ids, block_volume, cell_zones = probe._fluent_ids
+    cell_zone = sorted(cell_zones)[0]
+    surface = [i for i, v in enumerate(block_volume) if not v][0]
+    face_zone = int(np.asarray(probe.cell_data["ansys:zone"][surface])[0])
+    faces = sorted(block_ids[surface])
+    (tmp_path / "run.dat").write_bytes(
+        b'(0 "data")\n'
+        + f"(300 (1 {cell_zone} 1 0 0 1 2)\n(\n101.5\n202.5\n))\n".encode()
+        + f"(3300 (2 {cell_zone} 3 0 0 1 2)\n(".encode()
+        + struct.pack("<6d", 1, 2, 3, 4, 5, 6)
+        + b")\nEnd of Binary Section 3300)\n"
+        + f"(300 (1 {face_zone} 1 0 0 {faces[0]} {faces[0]})\n(\n7.0\n))\n".encode()
+    )
+    if engine == "core":
+        monkeypatch.setattr(_fallback, "_strict", True)
+        out = meshioplusplus.ansys.read(cas)
+    else:
+        out = _ansys.read(str(cas))
+    volume = [i for i, b in enumerate(out.cells) if b.type == "tetra"][0]
+    assert np.allclose(out.cell_data["pressure"][volume], [101.5, 202.5])
+    assert np.allclose(out.cell_data["x_velocity"][volume], [[1, 2, 3], [4, 5, 6]])
+    face_values = np.concatenate(
+        [
+            np.asarray(out.cell_data["pressure"][i])
+            for i, b in enumerate(out.cells)
+            if b.type != "tetra"
+        ]
+    )
+    assert np.count_nonzero(face_values == 7.0) == 1
+    assert np.isnan(face_values).sum() == len(face_values) - 1
+    assert any(k.startswith("fluent:zone_type:") for k in out.field_data)
+    plain = (
+        meshioplusplus.ansys.read(cas, sibling_data=False)
+        if engine == "core"
+        else _ansys.read(str(cas), sibling_data=False)
+    )
+    assert "pressure" not in plain.cell_data

@@ -53,8 +53,8 @@ Faces are grouped by vertex count: 1→`vertex`, 2→`line`, 3→`triangle`, 4�
 ## Quirks & limitations
 
 - **Ragged face-list parsing in binary mode**: since each face row's length is only known by reading its own leading count, the reader first walks the whole buffer computing per-row byte offsets, then groups **consecutive constant-length runs** into separate cell blocks — this differs from most other formats, where all same-typed cells end up in one block regardless of their position in the file; here, position matters.
-- **List-typed *vertex* properties, and a second list property on the faces, are Python-only** — the C++ reader rejects them and the shim falls back. Scalar face properties beyond the index list are read by both engines.
-- 64-bit integer cell data is **silently downcast to int32** on write (PLY has no 64-bit integer property type), with a warning; the writer also requires all cell blocks share one dtype.
+- **List-typed *vertex* properties are refused by name** (`ReadError`) in both engines: point data has one row per point, and a per-vertex list is ragged. (An earlier version of this page said the Python twin read them; it did not.) A second list property on the faces is Python-only — the C++ reader rejects it and the shim falls back. Scalar face properties beyond the index list are read by both engines.
+- 64-bit integer connectivity is **cast to int32** on write (PLY has no 64-bit integer property type), with a warning, and a point index above 2³¹ − 1 is refused (`WriteError`) rather than wrapped; the writer also requires all cell blocks share one dtype.
 - Multi-dimensional point-data is not writable (skipped per-key with a warning in Python; silently filtered in C++).
 - Only `vertex`/`line`/`triangle`/`quad`/`polygon` are writable cell types. 3D volume cells write their extracted boundary skin by default (`skin=True`); with `skin=False` (or for other unsupported types) they are skipped — the Python reference writer warns per skipped block, while the default C++ path skips silently.
 - `obj_info` header lines (a Meshlab convention) are skipped without being parsed.

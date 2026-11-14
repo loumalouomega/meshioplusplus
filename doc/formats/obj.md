@@ -41,15 +41,16 @@ Faces are grouped by vertex count into `triangle` (3), `quad` (4), or `polygon` 
 
 ## Data mapping
 
-- `point_data["obj:vn"]` — vertex normals, present only if any `vn` lines were seen.
+- `point_data["obj:vn"]` — vertex normals, present only if any `vn` lines were seen. When every corner names a `vn` (`f v//vn`, `f v/vt/vn`), each point gets the normal its corners name, and a point whose corners name different normals (a hard edge) is split like a `vt` seam, with `obj:parent_point` naming the original; the split is over the distinct `(vt, vn)` pairs. Both engines read it.
 - `point_data["obj:vt"]` — texture coordinates, present only if any `vt` lines were seen; when `uv` is read (below), only if there is one `vt` row per point.
 - `point_data["uv"]` — texture coordinates by face corner: when every corner names a `vt` (`f v/vt`, `f v/vt/vn`), each point gets the `u, v` its corners name. A point whose corners name different `vt` rows (a UV seam) is split: the first copy keeps its index, the others are appended in the order met, and `point_data["obj:parent_point"]` names the point each copies (the convention of [parameterize](../parameterize.md)). Both engines read it.
 - Written: with `uv` point data (one pair per point), one `vt u v` per point and every face corner as `v/vt`, in place of the raw `obj:vt` rows; without it, faces are plain `f v` as before.
+- Materials: `usemtl` groups are read as cell regions (one per material name), and the `mtllib` libraries beside the file give each material's `Kd` as `field_data["obj:material:<name>:Kd"]` and the first `map_Kd` image's bytes as `field_data["texture:png"]` (`texture:jpeg` for a JPEG). Written: each face's first cell region is its `usemtl` (faces in none get one more material, `material0`, when there are materials or a texture), with `mtllib <stem>.mtl` naming a `.mtl` beside the file (`Kd` from the field data, else white) and, with a texture, `map_Kd <stem>.png` and the PNG itself. Both engines.
 - `cell_data["obj:group_ids"]` — one int array per cell block, the `g`-index that produced that block (`-1` if before the first `g`).
 
 ## Quirks & limitations
 
-- The `/vn` per-face index references are discarded — only the vertex and texture indices are read. A face with no texture index on some corner leaves `uv` unset for the whole file. Raw `obj:vt`/`obj:vn` rows that are not one per point are kept as the file has them, which the Python `Mesh` refuses (point data must have one row per point), except `obj:vt` once `uv` holds the coordinates.
+- A face with no texture index on some corner leaves `uv` unset for the whole file, and one with no normal index on some corner leaves the raw `obj:vn` rows as the file has them. Raw `obj:vt`/`obj:vn` rows that are not one per point are kept as the file has them, which the Python `Mesh` refuses (point data must have one row per point), except `obj:vt` once `uv` holds the coordinates.
 - A new `g` line always starts a fresh cell block, **even if** the vertex count is unchanged from the previous group — group boundaries and vertex- count changes both independently trigger a new block.
 
 ## Notes

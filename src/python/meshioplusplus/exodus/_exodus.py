@@ -10,7 +10,7 @@ import re
 
 import numpy as np
 
-from .. import _node_order, _provenance
+from .. import _ghosts, _node_order, _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh, topological_dimension
@@ -204,7 +204,12 @@ def read(filename, time_step=0):  # noqa: C901
 
         points = np.zeros((len(nc.dimensions["num_nodes"]), 3))
         point_data_names = []
+        number_maps = {}  # node_num_map / elem_num_map, the global ids
         cell_data_names = []
+        global_names = []
+        set_var_names = {}  # 'nset' / 'sset' -> variable names
+        set_var_values = {}  # (kind, variable, set) -> values, 1-based indices
+        global_values = np.zeros(0)
         pd = {}
         cd = {}
         cells = []
@@ -224,6 +229,12 @@ def read(filename, time_step=0):  # noqa: C901
         attribs = {}
         attrib_names = {}
         block_keys = []
+        # NSIDED / NFACED: node or face counts per element, face ids per element,
+        # and the face blocks' node counts and node ids.
+        ragged_counts = {}
+        ragged_faces = {}
+        face_counts = {}
+        face_nodes = {}
 
         # Resolve the requested step up front, so an out-of-range request fails
         # before any heavy array is sliced rather than midway through.
@@ -270,6 +281,37 @@ def read(filename, time_step=0):  # noqa: C901
                 attribs[_block_suffix(key, "attrib")] = (
                     arr.reshape(-1, 1) if arr.ndim == 1 else arr
                 )
+            elif key[:8] == "ebepecnt":
+                # elements' node counts (NSIDED) or face counts (NFACED)
+                value.set_auto_mask(False)
+                ragged_counts[_block_suffix(key, "ebepecnt") or 1] = np.asarray(
+                    value[:], dtype=np.int64
+                )
+            elif key[:7] == "facconn":
+                # NFACED element block: the face ids of every element
+                value.set_auto_mask(False)
+                k = _block_suffix(key, "facconn") or 1
+                ragged_faces[k] = np.asarray(value[:], dtype=np.int64).ravel() - 1
+                block_keys.append(k)
+                cells.append(("polyhedron", ("nfaced", k)))
+            elif key[:8] == "fbepecnt":
+                value.set_auto_mask(False)
+                face_counts[_block_suffix(key, "fbepecnt") or 1] = np.asarray(
+                    value[:], dtype=np.int64
+                )
+            elif key[:6] == "fbconn":
+                # face block: the node ids of every face
+                value.set_auto_mask(False)
+                face_nodes[_block_suffix(key, "fbconn") or 1] = (
+                    np.asarray(value[:], dtype=np.int64).ravel() - 1
+                )
+            elif key[:7] == "connect" and _elem_type(value) == "NSIDED":
+                value.set_auto_mask(False)
+                k = int(key[7:] or 1)
+                block_keys.append(k)
+                cells.append(
+                    ("polygon", ("nsided", k, np.asarray(value[:]).ravel() - 1))
+                )
             elif key[:7] == "connect":
                 elem_type = _elem_type(value)
                 if elem_type not in exodus_to_meshio_type:
@@ -282,6 +324,9 @@ def read(filename, time_step=0):  # noqa: C901
                 cells.append(
                     (meshio_type, _node_order.to_meshio("exodus", meshio_type, conn))
                 )
+            elif key in ("node_num_map", "elem_num_map"):
+                value.set_auto_mask(False)
+                number_maps[key] = np.asarray(value[:], dtype=np.int64).ravel()
             elif key == "coord":
                 points = nc.variables["coord"][:].T
             elif key == "coordx":
@@ -290,6 +335,25 @@ def read(filename, time_step=0):  # noqa: C901
                 points[:, 1] = value[:]
             elif key == "coordz":
                 points[:, 2] = value[:]
+            elif key in ("name_nset_var", "name_sset_var"):
+                value.set_auto_mask(False)
+                set_var_names[key[5:9]] = [
+                    b"".join(c).decode("UTF-8").rstrip("\x00") for c in value[:]
+                ]
+            elif re.fullmatch(r"vals_[ns]set_var\d+[ns]s\d+", key):
+                m = re.fullmatch(r"vals_([ns])set_var(\d+)[ns]s(\d+)", key)
+                value.set_auto_mask(False)
+                set_var_values[(m.group(1), int(m.group(2)), int(m.group(3)))] = (
+                    np.asarray(_slice_step(value, key))
+                )
+            elif key == "name_glo_var":
+                value.set_auto_mask(False)
+                global_names = [
+                    b"".join(c).decode("UTF-8").rstrip("\x00") for c in value[:]
+                ]
+            elif key == "vals_glo_var":
+                value.set_auto_mask(False)
+                global_values = np.asarray(_slice_step(value, key), dtype=np.float64)
             elif key == "name_nod_var":
                 value.set_auto_mask(False)
                 point_data_names = [b"".join(c).decode("UTF-8") for c in value[:]]
@@ -332,6 +396,10 @@ def read(filename, time_step=0):  # noqa: C901
             elif key.startswith("side_ss"):  # side set: Exodus side numbers
                 side_sides[int(key[7:] or 1)] = np.asarray(value[:])
 
+        cells, block_keys = _resolve_ragged_blocks(
+            cells, block_keys, ragged_counts, ragged_faces, face_counts, face_nodes
+        )
+
         # merge element block data; can't handle blocks yet
         for k, value in cd.items():
             cd[k] = np.concatenate(list(value.values()))
@@ -364,6 +432,20 @@ def read(filename, time_step=0):  # noqa: C901
             )
         )
 
+    # The number maps as the global ids of doc/ghosts.md: `global:node_id` per point,
+    # `global:cell_id` per cell (block-major, as `elem_num_map` is). An identity map is
+    # not kept. Twin of the C++ reader's block.
+    node_ids = _number_map(number_maps.get("node_num_map"), len(points))
+    if node_ids is not None:
+        point_data[_ghosts.GLOBAL_NODE_ID] = node_ids
+    cell_ids = _number_map(
+        number_maps.get("elem_num_map"), sum(len(c[1]) for c in cells)
+    )
+    if cell_ids is not None:
+        cell_data[_ghosts.GLOBAL_CELL_ID] = np.split(
+            cell_ids, np.cumsum([len(c[1]) for c in cells])[:-1]
+        )
+
     field_data = {}
     # The time of the step actually returned, so the writer's
     # `field_data["exodus:time"]` closes into a round trip rather than being
@@ -372,6 +454,22 @@ def read(filename, time_step=0):  # noqa: C901
     # block at the end of the C++ reader.
     if step < len(time_values):
         field_data["exodus:time"] = np.array([float(time_values[step])])
+    # Set variables: a value per node (or side) of a set, in the set's own order,
+    # under the set's name as the regions use it.
+    for (kind, var, set_no), values in sorted(set_var_values.items()):
+        label = "nset" if kind == "n" else "sset"
+        names = set_var_names.get(label, [])
+        set_names, set_ids, prefix = (
+            (ns_names, ns_ids, "Nodeset")
+            if kind == "n"
+            else (ss_names, ss_ids, "Sideset")
+        )
+        if var - 1 < len(names) and set_no >= 1:
+            set_name = _group_name(set_names, set_ids, set_no - 1, prefix)
+            field_data[f"exodus:{label}:{set_name}:{names[var - 1]}"] = values
+    # Global variables (MOOSE's postprocessor values): one scalar each.
+    for name, value in zip(global_names, global_values.ravel()):
+        field_data[f"exodus:global:{name}"] = np.array([float(value)])
 
     mesh = Mesh(
         points,
@@ -405,6 +503,113 @@ def read(filename, time_step=0):  # noqa: C901
     # returned mesh itself only ever holds the one requested step.
     mesh.time_values = [float(v) for v in time_values]
     return mesh
+
+
+def _number_map(values, count):
+    """A number map as an int64 array, or None when absent, of the wrong length or
+    the identity ``1..count`` (what a file without the map means anyway). Twin of
+    ``exo_number_map``."""
+    if values is None or count == 0 or len(values) != count:
+        return None
+    if np.array_equal(values, np.arange(1, count + 1)):
+        return None
+    return values.astype(np.int64)
+
+
+def _write_number_maps(rootgrp, mesh):
+    """``node_num_map`` from ``global:node_id`` and ``elem_num_map`` from
+    ``global:cell_id`` (block-major), each only when the mesh carries one integer per
+    point or cell. Twin of ``exo_write_number_map``."""
+
+    def put(name, dim, ids):
+        fits = ids.size == 0 or (
+            ids.min() >= np.iinfo(np.int32).min and ids.max() <= np.iinfo(np.int32).max
+        )
+        var = rootgrp.createVariable(name, "i4" if fits else "i8", (dim,))
+        if ids.size:
+            var[:] = ids
+
+    def integer(a):
+        return np.issubdtype(a.dtype, np.integer)
+
+    ids = mesh.point_data.get(_ghosts.GLOBAL_NODE_ID)
+    if ids is not None:
+        ids = np.asarray(ids)
+        if ids.size == len(mesh.points) and integer(ids):
+            put("node_num_map", "num_nodes", ids.ravel().astype(np.int64))
+    blocks = mesh.cell_data.get(_ghosts.GLOBAL_CELL_ID)
+    if blocks is not None and len(blocks) == len(mesh.cells):
+        arrays = [np.asarray(b) for b in blocks]
+        if all(
+            a.size == len(c.data) and integer(a) for a, c in zip(arrays, mesh.cells)
+        ):
+            flat = (
+                np.concatenate([a.ravel() for a in arrays])
+                if arrays
+                else np.zeros(0, np.int64)
+            )
+            put("elem_num_map", "num_elem", flat.astype(np.int64))
+
+
+def _resolve_ragged_blocks(cells, block_keys, counts, faces, face_counts, face_nodes):
+    """Turn the ``NSIDED`` / ``NFACED`` placeholders of ``read`` into polygon
+    and polyhedron blocks.
+
+    ``NSIDED``: ``connect{k}`` holds every element's nodes back to back and
+    ``ebepecnt{k}`` how many each has. ``NFACED``: ``facconn{k}`` holds every
+    element's face ids and ``ebepecnt{k}`` how many each has; the faces are the
+    rows of the face blocks (``fbconn{j}``, ``fbepecnt{j}``) numbered through
+    them in block order. Polyhedra are grouped by node count into
+    ``polyhedron<N>`` blocks, in first-seen order.
+    """
+    if not any(isinstance(d, tuple) for _, d in cells):
+        return cells, block_keys
+    face_rows = []
+    for j in sorted(face_nodes):
+        sizes = face_counts.get(j)
+        if sizes is None:
+            raise ReadError(f"Exodus: face block {j} has no fbepecnt{j}")
+        offsets = np.concatenate([[0], np.cumsum(sizes)])
+        if offsets[-1] != len(face_nodes[j]):
+            raise ReadError(f"Exodus: fbepecnt{j} does not add up to fbconn{j}")
+        face_rows += [
+            face_nodes[j][offsets[i] : offsets[i + 1]] for i in range(len(sizes))
+        ]
+    out_cells = []
+    out_keys = []
+    for (cell_type, data), key in zip(cells, block_keys):
+        if not isinstance(data, tuple):
+            out_cells.append((cell_type, data))
+            out_keys.append(key)
+            continue
+        per_element = counts.get(key)
+        if per_element is None:
+            raise ReadError(f"Exodus: ragged block {key} has no ebepecnt{key}")
+        offsets = np.concatenate([[0], np.cumsum(per_element)])
+        if data[0] == "nsided":
+            flat = data[2]
+            if offsets[-1] != len(flat):
+                raise ReadError(
+                    f"Exodus: ebepecnt{key} does not add up to connect{key}"
+                )
+            rows = [flat[offsets[i] : offsets[i + 1]] for i in range(len(per_element))]
+            out_cells.append(("polygon", rows))
+            out_keys.append(key)
+            continue
+        ids = faces[key]
+        if offsets[-1] != len(ids):
+            raise ReadError(f"Exodus: ebepecnt{key} does not add up to facconn{key}")
+        if len(ids) and (ids.min() < 0 or ids.max() >= len(face_rows)):
+            raise ReadError(f"Exodus: facconn{key} names a face the file does not have")
+        groups = {}
+        for i in range(len(per_element)):
+            cell = [face_rows[f] for f in ids[offsets[i] : offsets[i + 1]]]
+            n = np.unique(np.concatenate(cell)).size if cell else 0
+            groups.setdefault(n, []).append(cell)
+        for n, group in groups.items():
+            out_cells.append((f"polyhedron{n}", group))
+            out_keys.append(key)
+    return out_cells, out_keys
 
 
 def _attributes_to_cell_data(block_sizes, block_keys, attribs, attrib_names):
@@ -651,7 +856,11 @@ def _write_element_variables(rootgrp, mesh):
     a k>1 array here is a meshio++ extension of the same kind the nodal path is.
     Twin of the C++ writer's identical block.
     """
-    var_names = sorted(n for n in mesh.cell_data if not n.startswith(ATTRIBUTE_PREFIX))
+    var_names = sorted(
+        n
+        for n in mesh.cell_data
+        if not n.startswith(ATTRIBUTE_PREFIX) and n != _ghosts.GLOBAL_CELL_ID
+    )
     if not var_names:
         return
 
@@ -833,7 +1042,7 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
         rootgrp.floating_point_word_size = 8
 
         # set dimensions
-        total_num_elems = sum(c.data.shape[0] for c in mesh.cells)
+        total_num_elems = sum(len(c.data) for c in mesh.cells)
         rootgrp.createDimension("num_nodes", len(mesh.points))
         rootgrp.createDimension("num_dim", mesh.points.shape[1])
         rootgrp.createDimension("num_elem", total_num_elems)
@@ -881,6 +1090,7 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
             ("num_dim", "num_nodes"),
         )
         data[:] = mesh.points.T
+        _write_number_maps(rootgrp, mesh)
 
         # cells
         # ParaView needs eb_prop1 -- some ID. The values don't seem to matter as
@@ -902,8 +1112,12 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
             for k, name in enumerate(block_names):
                 for i, ch in enumerate(name[:33]):
                     names_var[k, i] = ch.encode()
+        face_blocks = []  # (element block number, per-face node arrays), NFACED
         for k, cell_block in enumerate(mesh.cells):
             dim1 = f"num_el_in_blk{k + 1}"
+            if cell_block.type.startswith(("polygon", "polyhedron")):
+                _write_ragged_block(rootgrp, k + 1, cell_block, face_blocks)
+                continue
             dim2 = f"num_nod_per_el{k + 1}"
             rootgrp.createDimension(dim1, cell_block.data.shape[0])
             rootgrp.createDimension(dim2, cell_block.data.shape[1])
@@ -914,6 +1128,7 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
             data[:] = (
                 _node_order.from_meshio("exodus", cell_block.type, cell_block.data) + 1
             )
+        _write_face_blocks(rootgrp, face_blocks)
 
         _write_attributes(rootgrp, mesh)
         _write_element_variables(rootgrp, mesh)
@@ -921,7 +1136,10 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
         # point data
         # The variable `name_nod_var` holds the names and indices of the node variables, the
         # variables `vals_nod_var{1,2,...}` hold the actual data.
-        num_nod_var = len(mesh.point_data)
+        nodal = {
+            k: v for k, v in mesh.point_data.items() if k != _ghosts.GLOBAL_NODE_ID
+        }
+        num_nod_var = len(nodal)
         if num_nod_var > 0:
             rootgrp.createDimension("num_nod_var", num_nod_var)
             # set names
@@ -929,13 +1147,13 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
                 "name_nod_var", "S1", ("num_nod_var", "len_string")
             )
             point_data_names.set_auto_mask(False)
-            for k, name in enumerate(mesh.point_data.keys()):
+            for k, name in enumerate(nodal.keys()):
                 for i, letter in enumerate(name):
                     point_data_names[k, i] = letter.encode()
 
             # Set data. ParaView might have some problems here, see
             # <https://gitlab.kitware.com/paraview/paraview/-/issues/18403>.
-            for k, (name, data) in enumerate(mesh.point_data.items()):
+            for k, (name, data) in enumerate(nodal.items()):
                 for i, s in enumerate(data.shape):
                     rootgrp.createDimension(f"dim_nod_var{k}{i}", s)
                 dims = ["time_step"] + [
@@ -949,8 +1167,143 @@ def _write_file(filename, mesh, emit_step=True, double_time=False):
                 )
                 node_data[0] = data
 
+        _write_info_records(rootgrp, mesh)
+        if emit_step:
+            _write_globals(rootgrp, mesh)
+
         _write_sets(rootgrp, node_sets)
         _write_sets(rootgrp, side_sets, side=True)
+        if emit_step:
+            _write_set_variables(rootgrp, mesh, node_sets, side_sets)
+
+
+def _write_ragged_block(rootgrp, number, cell_block, face_blocks):
+    """A ``polygon`` block as ``NSIDED`` (``connect`` holding every element's
+    nodes, ``ebepecnt`` the count of each), a ``polyhedron`` block as ``NFACED``
+    (``facconn`` holding every element's face ids, ``ebepecnt`` the count of
+    each; the faces go to a face block of their own, one row per face, so a face
+    two cells share is written twice)."""
+    n = len(cell_block.data)
+    dim_el = f"num_el_in_blk{number}"
+    rootgrp.createDimension(dim_el, n)
+    if cell_block.type.startswith("polygon"):
+        rows = [np.asarray(r, dtype=np.int64) for r in cell_block.data]
+        dim_nod = f"num_nod_per_el{number}"
+        rootgrp.createDimension(dim_nod, sum(len(r) for r in rows))
+        conn = rootgrp.createVariable(f"connect{number}", "i4", (dim_nod,))
+        conn.elem_type = "NSIDED"
+        conn[:] = (np.concatenate(rows) if rows else np.empty(0, dtype=np.int64)) + 1
+        counts = rootgrp.createVariable(f"ebepecnt{number}", "i4", (dim_el,))
+        counts[:] = [len(r) for r in rows]
+        return
+    faces = [[np.asarray(f, dtype=np.int64) for f in cell] for cell in cell_block.data]
+    dim_fac = f"num_fac_per_el{number}"
+    total = sum(len(c) for c in faces)
+    rootgrp.createDimension(dim_fac, total)
+    first = sum(len(rows) for _, rows in face_blocks)
+    conn = rootgrp.createVariable(f"facconn{number}", "i4", (dim_fac,))
+    conn.elem_type = "NFACED"
+    conn[:] = np.arange(first, first + total) + 1
+    counts = rootgrp.createVariable(f"ebepecnt{number}", "i4", (dim_el,))
+    counts[:] = [len(c) for c in faces]
+    face_blocks.append((number, [f for cell in faces for f in cell]))
+
+
+def _write_face_blocks(rootgrp, face_blocks):
+    """The face blocks the ``NFACED`` element blocks refer to."""
+    if not face_blocks:
+        return
+    rootgrp.createDimension("num_fa_blk", len(face_blocks))
+    rootgrp.createDimension("num_face", sum(len(rows) for _, rows in face_blocks))
+    for j, (_, rows) in enumerate(face_blocks, 1):
+        dim_fa = f"num_fa_in_blk{j}"
+        dim_nod = f"num_nod_per_fa{j}"
+        rootgrp.createDimension(dim_fa, len(rows))
+        rootgrp.createDimension(dim_nod, sum(len(r) for r in rows))
+        conn = rootgrp.createVariable(f"fbconn{j}", "i4", (dim_nod,))
+        conn.elem_type = "NSIDED"
+        conn[:] = (np.concatenate(rows) if rows else np.empty(0, dtype=np.int64)) + 1
+        counts = rootgrp.createVariable(f"fbepecnt{j}", "i4", (dim_fa,))
+        counts[:] = [len(r) for r in rows]
+
+
+def _write_info_records(rootgrp, mesh):
+    """``mesh.info`` as ``info_records`` (80 characters each, as Exodus has them), so
+    ``ncdump -h`` and Exodus' own tools show the producing code's notes."""
+    records = [str(r) for r in getattr(mesh, "info", None) or []]
+    if not records:
+        return
+    rootgrp.createDimension("num_info", len(records))
+    var = rootgrp.createVariable("info_records", "S1", ("num_info", "len_line"))
+    var.set_auto_mask(False)
+    for k, record in enumerate(records):
+        encoded = record.encode("utf-8")[:80]
+        var[k, : len(encoded)] = np.frombuffer(encoded, dtype="S1")
+
+
+def _write_set_variables(rootgrp, mesh, node_sets, side_sets):
+    """``field_data["exodus:nset:<set>:<name>"]`` (and ``sset``) as set variables."""
+    for label, letter, sets in (("nset", "n", node_sets), ("sset", "s", side_sets)):
+        prefix = f"exodus:{label}:"
+        index = {s[0]: k for k, s in enumerate(sets, 1)}
+        entries = []  # (set number, variable name, values)
+        for key, value in sorted(mesh.field_data.items()):
+            if not key.startswith(prefix):
+                continue
+            set_name, _, var = key[len(prefix) :].rpartition(":")
+            values = np.asarray(value, dtype=np.float64).ravel()
+            k = index.get(set_name)
+            if k is None or not var or len(values) != len(sets[k - 1][2]):
+                warn(
+                    f"Exodus: field_data '{key}' does not match a set of that name "
+                    "and size; dropped"
+                )
+                continue
+            entries.append((k, var, values))
+        if not entries:
+            continue
+        var_names = sorted({var for _, var, _ in entries})
+        dim = f"num_{label}_var"
+        rootgrp.createDimension(dim, len(var_names))
+        names = rootgrp.createVariable(f"name_{label}_var", "S1", (dim, "len_string"))
+        names.set_auto_mask(False)
+        for v, name in enumerate(var_names):
+            for i, ch in enumerate(name[:33]):
+                names[v, i] = ch.encode()
+        for k, var, values in entries:
+            v = var_names.index(var) + 1
+            entry_dim = f"num_side_ss{k}" if letter == "s" else f"num_nod_ns{k}"
+            out = rootgrp.createVariable(
+                f"vals_{label}_var{v}{letter}s{k}",
+                "f8",
+                ("time_step", entry_dim),
+                fill_value=False,
+            )
+            out[0] = values
+
+
+def _write_globals(rootgrp, mesh):
+    """``field_data["exodus:global:<name>"]`` scalars as global variables."""
+    prefix = "exodus:global:"
+    globals_ = [
+        (name[len(prefix) :], float(np.asarray(value).ravel()[0]))
+        for name, value in sorted(mesh.field_data.items())
+        if name.startswith(prefix)
+        and len(name) > len(prefix)
+        and np.asarray(value).size == 1
+    ]
+    if not globals_:
+        return
+    rootgrp.createDimension("num_glo_var", len(globals_))
+    names = rootgrp.createVariable("name_glo_var", "S1", ("num_glo_var", "len_string"))
+    names.set_auto_mask(False)
+    for k, (name, _) in enumerate(globals_):
+        for i, letter in enumerate(name[:33]):
+            names[k, i] = letter.encode()
+    values = rootgrp.createVariable(
+        "vals_glo_var", "f8", ("time_step", "num_glo_var"), fill_value=False
+    )
+    values[0] = [v for _, v in globals_]
 
 
 def write(filename, mesh):
@@ -1013,7 +1366,8 @@ class TimeSeriesWriter:
                 "Exodus: series cell blocks/counts do not match the fixed grid"
             )
         fields = []
-        for j, name in enumerate(sorted(mesh.point_data), 1):
+        nodal = sorted(n for n in mesh.point_data if n != _ghosts.GLOBAL_NODE_ID)
+        for j, name in enumerate(nodal, 1):
             fields.append(
                 (
                     name,
@@ -1022,7 +1376,11 @@ class TimeSeriesWriter:
                     len(mesh.points),
                 )
             )
-        names = sorted(n for n in mesh.cell_data if not n.startswith(ATTRIBUTE_PREFIX))
+        names = sorted(
+            n
+            for n in mesh.cell_data
+            if not n.startswith(ATTRIBUTE_PREFIX) and n != _ghosts.GLOBAL_CELL_ID
+        )
         for j, name in enumerate(names, 1):
             if len(mesh.cell_data[name]) != len(mesh.cells):
                 raise WriteError(

@@ -48,6 +48,15 @@ static mxArray *O_mio_sniff_format(const mxArray **a) {
     return mio_o_getstring(sniff_getter, &ctx, "sniff_format");
 }
 
+static int64_t detect_getter(void *ctx, char *buf, int64_t buflen) {
+    return mio_detect(((sniff_ctx *)ctx)->path, buf, buflen);
+}
+
+static mxArray *O_mio_detect(const mxArray **a) {
+    sniff_ctx ctx = {mio_o_string(a[0], "path")};
+    return mio_o_getstring(detect_getter, &ctx, "detect");
+}
+
 static mxArray *O_mio_cell_type_num_nodes(const mxArray **a) {
     mio_cell_type t = mio_cell_type_from_name(mio_o_string(a[0], "name"));
     return mio_o_scalar((double)mio_cell_type_num_nodes(t));
@@ -985,6 +994,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_format_readable, 1),
     MIO_O_ENTRY(mio_format_writable, 1),
     MIO_O_ENTRY(mio_sniff_format, 1),
+    MIO_O_ENTRY(mio_detect, 1),
     MIO_O_ENTRY(mio_cell_type_num_nodes, 1),
     MIO_O_ENTRY(mio_cell_type_dimension, 1),
     MIO_O_ENTRY(mio_reader_supports_options, 1),

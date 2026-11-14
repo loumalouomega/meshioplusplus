@@ -45,10 +45,13 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -113,5 +116,38 @@ MESHIOPLUSPLUS_API Mesh read_tecplot(const std::string& rPath, const ReadOptions
  */
 MESHIOPLUSPLUS_API MeshMetadata read_tecplot_metadata(const std::string& rPath,
                                                       const ReadOptions& rOptions);
+
+/**
+ * @brief A time series in one Tecplot ASCII file: every step's zones, each with `STRANDID = 1` and
+ *        its step's `SOLUTIONTIME`, which `read_tecplot` groups into steps.
+ *
+ * A step is written as a file of its own and its zones appended, so each step repeats the
+ * coordinates (a zone of a later step shares only with its own step's first zone). Every step
+ * must have the same variables. ASCII only: a `.plt` path is refused. The Python twin,
+ * `meshioplusplus.tecplot.SeriesWriter`, writes the same text.
+ */
+class MESHIOPLUSPLUS_API TecplotSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened or names a binary `.plt` file.
+    explicit TecplotSeriesWriter(const std::string& rPath);
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(TecplotSeriesWriter);
+
+    /**
+     * @brief Write one step.
+     * @throws WriteError when the step's variables differ from the first step's, on a write
+     *         failure, or on a moved-from or finalized writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

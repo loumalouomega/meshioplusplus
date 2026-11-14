@@ -23,6 +23,7 @@ from xml.sax.saxutils import quoteattr
 
 import numpy as np
 
+from .. import _ghosts
 from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
@@ -31,9 +32,9 @@ from .._vtk_common import meshio_to_vtk_order, meshio_to_vtk_type
 __all__ = ["write", "SeriesWriter"]
 
 TIME_KEY = "meshio:time"
-PARTITION_KEY = "partition:part"
-GHOST_TYPE = "vtkGhostType"
-ORIGINAL_IDS = "vtkOriginalPointIds"
+PARTITION_KEY = _ghosts.PARTITION_PART
+GHOST_TYPE = _ghosts.VTK_GHOST_TYPE
+ORIGINAL_IDS = _ghosts.VTK_ORIGINAL_POINT_IDS
 SHARED_ATTRIBUTE = "meshio.shared_points"
 # (VTK type, node count) -> VTK_LAGRANGE_* type, the inverse of the reader's
 # lowering: DOLFINx writes Lagrange cells of every degree.

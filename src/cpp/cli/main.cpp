@@ -110,6 +110,8 @@
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/operations/bake_texture.hpp"
+#include "meshioplusplus/operations/detect.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/clean.hpp"
@@ -1080,6 +1082,37 @@ void print_metadata_summary(const meshioplusplus::MeshMetadata& rMeta) {
     // not happen.
     if (rMeta.mFellBackToFullRead)
         std::cout << "  (no header-only path for this format; the file was read in full)\n";
+}
+
+/// `detect INFILE [--json]`: the ranked format report (roadmap 2.4.9); exit 1 when
+/// nothing matches. The twin of the Python CLI's `detect`.
+int cmd_detect(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({{{"json", {}, false}}}));
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("detect requires exactly INFILE");
+    const auto found = meshioplusplus::detect_format(p.positionals[0]);
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("path", p.positionals[0]);
+        json.Key("candidates");
+        json.BeginArray();
+        for (const auto& c : found) {
+            json.BeginObject();
+            json.Field("format", c.mFormat);
+            json.Field("confidence", c.mConfidence);
+            json.Field("reason", c.mReason);
+            json.EndObject();
+        }
+        json.EndArray();
+        json.EndObject();
+    } else if (found.empty()) {
+        std::cout << "no format matches " << p.positionals[0] << "\n";
+    } else {
+        for (const auto& c : found)
+            std::cout << c.mFormat << "  " << c.mConfidence << "  (" << c.mReason << ")\n";
+    }
+    return found.empty() ? 1 : 0;
 }
 
 int cmd_info(const std::vector<std::string>& rArgs) {
@@ -4818,6 +4851,69 @@ int cmd_geodesic(const std::vector<std::string>& rArgs) {
 
 // parameterize: a UV atlas of a triangle surface. See operations/parameterize.hpp
 // and doc/parameterize.md.
+// bake-texture: a point or cell array baked into a texture through uv. See
+// operations/bake_texture.hpp and doc/bake_texture.md.
+int cmd_bake_texture(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"array", {}, true},
+                                          {"width", {}, true},
+                                          {"height", {}, true},
+                                          {"cmap", {}, true},
+                                          {"vmin", {}, true},
+                                          {"vmax", {}, true},
+                                          {"component", {}, true},
+                                          {"image", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("bake-texture requires INFILE OUTFILE");
+    if (!has_opt(p, "array"))
+        throw std::runtime_error("bake-texture requires --array NAME");
+    meshioplusplus::BakeTextureOptions o;
+    o.mArray = opt_value(p, "array");
+    cli_opt_int64(p, "width", o.mWidth);
+    cli_opt_int64(p, "height", o.mHeight);
+    if (has_opt(p, "cmap"))
+        o.mCmap = opt_value(p, "cmap");
+    if (has_opt(p, "vmin")) {
+        double v = 0.0;
+        cli_opt_double(p, "vmin", v);
+        o.mVMin = v;
+    }
+    if (has_opt(p, "vmax")) {
+        double v = 0.0;
+        cli_opt_double(p, "vmax", v);
+        o.mVMax = v;
+    }
+    cli_opt_int64(p, "component", o.mComponent);
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const meshioplusplus::BakeTextureResult r = meshioplusplus::bake_texture(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_opt(p, "image")) {
+        const meshioplusplus::NDArray& png = r.mMesh.FieldData("texture:png");
+        auto os = meshioplusplus::detail::make_classic_ofstream(opt_value(p, "image"),
+                                                                std::ios::binary);
+        if (!os)
+            throw std::runtime_error("cannot write " + opt_value(p, "image"));
+        os.write(reinterpret_cast<const char*>(png.Data()),
+                 static_cast<std::streamsize>(png.Size()));
+    }
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("vmin", r.mVMin);
+        json.Field("vmax", r.mVMax);
+        json.Field("covered_pixels", r.mCoveredPixels);
+        json.EndObject();
+        return 0;
+    }
+    char lo[64], hi[64];
+    meshioplusplus::detail::snprintf_c(lo, sizeof(lo), "%.6g", r.mVMin);
+    meshioplusplus::detail::snprintf_c(hi, sizeof(hi), "%.6g", r.mVMax);
+    std::cout << r.mCoveredPixels << " pixel(s) covered, range [" << lo << ", " << hi << "]\n";
+    return 0;
+}
+
 int cmd_parameterize(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"padding", {}, true},
@@ -10416,6 +10512,9 @@ const CliVerb kCliVerbs[] = {
     {"geodesic", nullptr,
      "  geodesic                Surface distance from source points (heat method)\n",
      &cmd_geodesic},
+    {"bake-texture", nullptr,
+     "  bake-texture            Bake a point or cell array into a texture through uv\n",
+     &cmd_bake_texture},
     {"parameterize", nullptr,
      "  parameterize            A UV atlas of a triangle surface (texture coordinates)\n",
      &cmd_parameterize},
@@ -10433,6 +10532,9 @@ const CliVerb kCliVerbs[] = {
      "  sobolev-deform          Filter a displacement field and apply it\n", &cmd_sobolev_deform},
     {"extract-surface", "surface",
      "  extract-surface (surface)  Extract the boundary surface/edges\n", &cmd_extract_surface},
+    {"detect", nullptr,
+     "  detect                  Rank the formats a file could be (certain / likely / guess)\n",
+     &cmd_detect},
     {"reorder", nullptr,
      "  reorder                 Renumber nodes/elements (RCM / Morton / Hilbert)\n", &cmd_reorder},
     {"diff", nullptr, "  diff                    Compare two meshes (nonzero exit if different)\n",

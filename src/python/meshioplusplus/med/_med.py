@@ -1221,3 +1221,94 @@ def _write_families(fm_group, tags, group_names=None):
                 )
             buf[i, : len(name_bytes)] = np.frombuffer(name_bytes, dtype="i1")
         dataset[...] = buf
+
+
+def _series_step_name(ndt, nor):
+    return f"{ndt:020d}{nor:020d}"
+
+
+def _set_step_attrs(step, ndt, nor, pdt):
+    for attr in ("NDT", "NOR", "PDT"):
+        if attr in step.attrs:
+            del step.attrs[attr]
+    step.attrs.create("NDT", ndt)
+    step.attrs.create("NOR", nor)
+    step.attrs.create("PDT", pdt)
+
+
+class SeriesWriter:
+    """The Python twin of ``MedSeriesWriter``: the mesh with the first step, then one
+    more step group (``NDT`` 2, 3, ... with the step's ``PDT`` as its time) in every
+    field's ``CHA`` group. Use as a context manager."""
+
+    def __init__(self, filename, med_version="4.1.0"):
+        self._path = str(filename)
+        self._version = med_version
+        self._steps = 0
+        self._shape = None
+        self._fields = None
+        self._closed = False
+
+    def write(self, time, mesh):
+        import os
+
+        import h5py
+
+        if self._closed:
+            raise WriteError("MED series: the writer is finalized")
+        shape = (len(mesh.points), [len(c.data) for c in mesh.cells])
+        if self._steps and shape != self._shape:
+            raise WriteError(
+                f"MED series: step {self._steps}'s points or cells differ from the "
+                "first step's; a file holds one mesh -- write one file per step with "
+                "'{step}'"
+            )
+        if self._steps == 0:
+            write(self._path, mesh, self._version)
+            self._shape = shape
+            with h5py.File(self._path, "r+") as f:
+                self._fields = list(f["CHA"]) if "CHA" in f else []
+                for name in self._fields:
+                    _set_step_attrs(
+                        f["CHA"][name][_series_step_name(1, -1)], 1, -1, time
+                    )
+        else:
+            scratch = self._path + ".step.tmp"
+            write(scratch, mesh, self._version)
+            try:
+                with h5py.File(scratch, "r") as src, h5py.File(self._path, "r+") as dst:
+                    fields = list(src["CHA"]) if "CHA" in src else []
+                    if fields != self._fields:
+                        raise WriteError(
+                            f"MED series: step {self._steps}'s fields differ from the "
+                            "first step's"
+                        )
+                    ndt = self._steps + 1
+                    for name in fields:
+                        new_name = _series_step_name(ndt, -1)
+                        src.copy(
+                            src["CHA"][name][_series_step_name(1, -1)],
+                            dst["CHA"][name],
+                            name=new_name,
+                        )
+                        _set_step_attrs(dst["CHA"][name][new_name], ndt, -1, time)
+            finally:
+                os.remove(scratch)
+        self._steps += 1
+
+    def close(self):
+        if self._closed:
+            return
+        if self._steps == 0:
+            raise WriteError("MED series: no step was written")
+        self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if exc[0] is None:
+            self.close()
+        else:
+            self._closed = True
+        return False

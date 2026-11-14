@@ -43,7 +43,10 @@ Global attrs: `title`, `version=5.1f`, `api_version=5.1f`, `floating_point_word_
 - `eb_names(num_el_blk, len_string)` — element-block names, read into `Cell` regions and, since v9.9.0, written back from them (see [Named regions](#named-regions)).
 - `ns_names`/`ns_prop1`/`node_ns{k}` — node sets, 1-based; read/written from `Point` regions.
 - `ss_names`/`ss_prop1`/`elem_ss{k}`/`side_ss{k}` — side sets; read/written from `Side` regions.
-- `info_records`/`qa_records` — free-text info strings, read into `mesh.info`.
+- `info_records`/`qa_records` — free-text info strings, read into `mesh.info`; the Python writer writes `mesh.info` back as `info_records` (80 characters each, no `qa_records`), and a mesh that carries `info` is written by it for that reason.
+- `name_glo_var`/`vals_glo_var(time_step, num_glo_var)` — global variables (MOOSE's postprocessor values), read at the selected step into `field_data["exodus:global:<name>"]` (one `float64`) and written back from those entries, by both engines. The series writer does not write them.
+- `name_nset_var`/`vals_nset_var{v}ns{s}` and `name_sset_var`/`vals_sset_var{v}ss{s}` — set variables, a value per node (or side) of a set in the set's own order, read into `field_data["exodus:nset:<set>:<name>"]` (`exodus:sset:` for side sets) under the name the set's region has, and written back.
+- `connect{k}` with `elem_type = NSIDED` plus `ebepecnt{k}` — polygon blocks (nodes of every element back to back, and how many each has); `facconn{k}` with `ebepecnt{k}` and the face blocks `fbconn{j}`/`fbepecnt{j}` — `NFACED` polyhedra, grouped by node count into `polyhedron<N>` blocks.  Both engines read and write them (before, an `NFACED` block was dropped without a word). The writer writes one face block per polyhedron block, one row per face, so a face two cells share is written twice. Attributes, element variables and block names of such a block are not carried.
 
 ## Cell types
 
@@ -74,6 +77,7 @@ The write-side reverse map picks one canonical Exodus name per meshio++ type (e.
 - `cell_data["exodus:attr:<NAME>"]` — per-element attributes (see [Element attributes](#element-attributes)).
 - `regions` — element blocks, node sets and side sets (see [Named regions](#named-regions)). `point_sets` is a compat view over the `Point` regions.
 - `mesh.info` — free-text strings from `info_records`/`qa_records`.
+- `point_data["global:node_id"]` and `cell_data["global:cell_id"]` — the file's `node_num_map` and `elem_num_map` (block-major), read when present and not the identity, and written back as the maps rather than as variables. See [ghosts, owners and global ids](../ghosts.md).
 
 ## Element attributes
 

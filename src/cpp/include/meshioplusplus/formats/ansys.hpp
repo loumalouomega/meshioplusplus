@@ -94,4 +94,24 @@ MESHIOPLUSPLUS_API void write_ansys(const std::string& rPath, const Mesh& rMesh,
  */
 MESHIOPLUSPLUS_API Mesh read_ansys(const std::string& rPath);
 
+/** @brief What to read beside a Fluent case (roadmap 2.4.1). */
+struct AnsysReadOptions {
+    /// A Fluent `.dat` data file; empty reads the `.dat` beside a `.cas` when there is one.
+    std::string mData;
+    /// Look for the sibling `.dat` of a `.cas` when `mData` is empty.
+    bool mSiblingData = true;
+};
+
+/**
+ * @brief Read a Fluent mesh or case, and the solution data of a `.dat` file.
+ *
+ * A `.cas` file is read as a `.msh` is (its solver sections skipped). The `.dat`
+ * sections `300` (ASCII), `2300` (float32) and `3300` (float64) become cell data:
+ * a cell zone's values on its cells, a face zone's on its boundary faces, NaN
+ * elsewhere; the variable is named from its sub-section id (`1` pressure, `2`/`3`/`4`
+ * the x/y/z velocity, `5` temperature, others `fluent:<id>`), a multi-value
+ * section's values as components.
+ */
+MESHIOPLUSPLUS_API Mesh read_ansys(const std::string& rPath, const AnsysReadOptions& rOptions);
+
 }  // namespace meshioplusplus

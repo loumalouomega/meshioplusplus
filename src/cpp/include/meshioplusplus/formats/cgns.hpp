@@ -61,10 +61,13 @@
 #ifdef MESHIOPLUSPLUS_HAS_HDF5
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -140,6 +143,17 @@ MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath);
  *         naming the step count
  */
 MESHIOPLUSPLUS_API Mesh read_cgns(const std::string& rPath, const ReadOptions& rOptions);
+
+/**
+ * @brief `read_cgns` of one base of a multi-base file, by name or by position (`"0"` is the first).
+ *
+ * Reads through the raw HDF5 path (the files a cgnslib-only build can read -- ADF containers --
+ * have no such choice here). Reading every base into one mesh stays out: bases may differ in
+ * dimension.
+ * @throws ReadError when the file has no such base.
+ */
+MESHIOPLUSPLUS_API Mesh read_cgns_base(const std::string& rPath, const std::string& rBase,
+                                       const ReadOptions& rOptions = ReadOptions{});
 
 /**
  * @brief Summarize a CGNS file's shape and available time steps without
@@ -225,6 +239,39 @@ MESHIOPLUSPLUS_API Mesh read_cgns_mll(const std::string& rPath, const ReadOption
  */
 MESHIOPLUSPLUS_API MeshMetadata read_cgns_mll_metadata(const std::string& rPath,
                                                        const ReadOptions& rOptions);
+
+/**
+ * @brief A time series in one CGNS file: the mesh with the first step, then one `FlowSolution_t`
+ *        per later step, with a `BaseIterativeData_t` (`TimeValues`) and a `ZoneIterativeData_t`
+ *        (`FlowSolutionPointers`) that `read_cgns` resolves `ReadOptions::mTimeStep` through.
+ *
+ * A step is one `FlowSolution_t`, so it carries point data or cell data, not both. Every step
+ * must have the first step's points and cell blocks. The Python twin,
+ * `meshioplusplus.cgns.SeriesWriter`, writes the same layout.
+ */
+class MESHIOPLUSPLUS_API CgnsSeriesWriter {
+public:
+    explicit CgnsSeriesWriter(const std::string& rPath, int GzipLevel = 4);
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(CgnsSeriesWriter);
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step carries both point and cell data or neither, when its
+     *         points or cells differ from the first step's, on a write failure, or on a
+     *         moved-from or finalized writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the iterative data. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus
 

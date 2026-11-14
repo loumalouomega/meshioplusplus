@@ -43,6 +43,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/cell_centroids.hpp"
+#include "../detail/ghost_names.hpp"
 #include "../detail/sfc_quantize.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
@@ -483,7 +484,7 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
                 std::int64_t* dst = a.As<std::int64_t>();
                 for (std::size_t i = 0; i < depth[p][blk].size(); ++i)
                     dst[i] = depth[p][blk][i];
-                piece.mMesh.AppendCellData("partition:ghost", std::move(a));
+                piece.mMesh.AppendCellData(detail::kPartitionGhost, std::move(a));
             }
         }
         res.mPieces.push_back(std::move(piece));

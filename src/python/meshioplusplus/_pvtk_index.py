@@ -21,19 +21,19 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from . import _provenance
+from . import _ghosts, _provenance
 from ._clean import clean
 from ._exceptions import ReadError, WriteError
 from ._merge import _merge_py, _merge_sets
 from ._mesh import Mesh
 from ._regions import Region
 
-PARTITION_PART = "partition:part"
-PARTITION_GHOST = "partition:ghost"
+PARTITION_PART = _ghosts.PARTITION_PART
+PARTITION_GHOST = _ghosts.PARTITION_GHOST
 
 # VTK's ghost vocabulary (vtkDataSetAttributes). Cells: DUPLICATECELL = 1,
 # REFINEDCELL = 8, HIDDENCELL = 32. Points: DUPLICATEPOINT = 1, HIDDENPOINT = 32.
-GHOST_NAME = "vtkGhostType"
+GHOST_NAME = _ghosts.VTK_GHOST_TYPE
 DUPLICATECELL = 1
 REFINEDCELL = 8
 HIDDENCELL = 32

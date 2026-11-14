@@ -56,10 +56,13 @@
  */
 
 // System includes
+#include <cstddef>
+#include <memory>
 #include <string>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -170,5 +173,40 @@ MESHIOPLUSPLUS_API Mesh read_ensight(const std::string& rPath, const ReadOptions
  */
 MESHIOPLUSPLUS_API MeshMetadata read_ensight_metadata(const std::string& rPath,
                                                       const ReadOptions& rOptions);
+
+/**
+ * @brief A time series as one EnSight Gold case: the geometry once, one numbered variable file
+ *        per step (`name.0000.scl`, ...) and a `TIME` section in the `.case` file.
+ *
+ * Each step is written as `write_ensight` writes a single mesh, and its variable files are
+ * numbered and kept; the geometry (and the `constant per case` entries) are the first step's.
+ * Every step must have the first step's points, cell blocks and variables. The case file is
+ * written by `Finalize`, which the series is not readable without. At most 10000 steps. The
+ * Python twin, `meshioplusplus.ensight.SeriesWriter`, writes the same files.
+ */
+class MESHIOPLUSPLUS_API EnsightSeriesWriter {
+public:
+    /// @p rPath is the `.case` (or `.geo`) path. @throws WriteError on another extension.
+    explicit EnsightSeriesWriter(const std::string& rPath, bool Binary = true,
+                                 bool Fortran = false);
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(EnsightSeriesWriter);
+
+    /**
+     * @brief Write one step (the first also writes the geometry).
+     * @throws WriteError when the step's points, cells or variables differ from the first
+     *         step's, on a write failure, or on a moved-from or finalized writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Write the `.case` file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

@@ -399,6 +399,15 @@ def _describe(mesh, back) -> dict:
 # ----------------------------------------------------------------------------
 
 SPEC: dict[str, dict] = {
+    "3mf": {
+        "cells": {"triangle": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": ["cell"],
+        "note": "3MF's core specification holds triangle objects, a unit and base-material colours (`3mf:color`); a cell region is an object.",
+    },
     "abaqus": {
         "cells": {
             "line": "exact",
@@ -413,6 +422,15 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": ["cell", "point", "side"],
+    },
+    "adcirc": {
+        "cells": {"triangle": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A fort.14 grid holds triangles, a depth per node and named boundary strings (`open_boundary_*`, `land_boundary_*`); results are separate fort.63/64 files, which meshio++ reads but does not write.",
     },
     "ansys": {
         "cells": {
@@ -676,6 +694,15 @@ SPEC: dict[str, dict] = {
         "field_data": False,
         "regions": [],
     },
+    "freesurfer": {
+        "cells": {"triangle": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A FreeSurfer surface holds vertices and triangles; overlays live in their own curv and annot files, which meshio++ reads but does not write.",
+    },
     "gid": {
         "cells": {
             "vertex": "exact",
@@ -730,6 +757,15 @@ SPEC: dict[str, dict] = {
         "note": "A surface export: volume and 2-D cells come back as their triangulated "
         "skin, positions are `float32`, and `weld=True` merges the vertices split per "
         "smooth fan.",
+    },
+    "gifti": {
+        "cells": {"triangle": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "float32", "p_i32": "int32", "p_vec": "float32"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A GIFTI surface is one triangle set with per-vertex arrays in float32 or int32; a point region is written only as a LabelTable entry (a non-negative tag).",
     },
     "gmsh": {
         "cells": {
@@ -1108,7 +1144,8 @@ SPEC: dict[str, dict] = {
         "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
-        "regions": [],
+        "regions": ["cell"],
+        "note": "A cell region is a `usemtl` material (the faces in none get one more, `material0`).",
     },
     "off": {
         "cells": {"triangle": "exact", "quad": "exact"},
@@ -1148,6 +1185,24 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "missing", "c_i32": "missing"},
         "field_data": False,
         "regions": ["cell", "point"],
+    },
+    "las": {
+        "cells": {
+            "vertex": "exact",
+            "line": "as vertex",
+            "triangle": "as vertex",
+            "quad": "as vertex",
+            "tetra": "as vertex",
+            "hexahedron": "as vertex",
+            "wedge": "as vertex",
+            "pyramid": "as vertex",
+        },
+        "points": "exact",
+        "point_data": {"p_f64": "missing", "p_i32": "missing", "p_vec": "missing"},
+        "cell_data": {"c_f64": "missing", "c_i32": "missing"},
+        "field_data": False,
+        "regions": [],
+        "note": "A LAS file is a point cloud with a fixed set of per-point fields (intensity, returns, classification, GPS time, colour); every node is kept as a vertex, and other arrays have no field to go in.",
     },
     "pcd": {
         "cells": {
@@ -1237,6 +1292,10 @@ SPEC: dict[str, dict] = {
         "cell_data": {"c_f64": "float64", "c_i32": "int32"},
         "field_data": True,
         "regions": ["cell", "point", "side"],
+    },
+    "plot3d": {
+        "error": "no cell type round-trips",
+        "note": "PLOT3D holds lattice blocks (`plot3d:dims`); the canonical mesh is not one, so the writer refuses it by name.",
     },
     "pvtp": {
         "cells": {
@@ -1514,6 +1573,11 @@ SPEC: dict[str, dict] = {
         "as their skin, and data is not kept. Checked only in a build with "
         "OpenCASCADE (the meshioplusplus-occt wheel carries it).",
     },
+    "selafin": {
+        "cells": {"triangle": "?", "quad": "?"},
+        "error": "WriteError",
+        "note": "A Selafin mesh has one element shape (NDP): the writer takes one triangle or quad block, so the canonical triangle-and-quad mesh is refused by name.",
+    },
     "stl": {
         "cells": {
             "triangle": "lost",
@@ -1622,6 +1686,15 @@ SPEC: dict[str, dict] = {
         "input": "2d",
         "note": "Triangle reads and writes 2-D triangulations only, so this row is observed "
         "on the planar part of the canonical mesh.",
+    },
+    "ugrid_nc": {
+        "cells": {"line": "exact", "triangle": "exact", "quad": "exact"},
+        "points": "exact",
+        "point_data": {"p_f64": "float64", "p_i32": "int32", "p_vec": "float64"},
+        "cell_data": {"c_f64": "float64", "c_i32": "int32"},
+        "field_data": False,
+        "regions": [],
+        "note": "UGRID holds 1-D and 2-D topologies: the volume cells are refused, so the observation uses the linear 1-D and 2-D cells.",
     },
     "ugrid": {
         "cells": {
@@ -1888,6 +1961,18 @@ SPEC: dict[str, dict] = {
 _GAP = "Tracked gap, roadmap §{item}: no writer yet. {why}"
 _RESULT = "{tool}'s result file; the writer is the physics-ML loop's missing half."
 READ_ONLY = {
+    "pvti": (
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): a parallel index of structured pieces; "
+        "meshio++ writes the whole lattice as one `.vti` and places the pieces of an existing index by their `Extent` on read."
+    ),
+    "pvtr": (
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): a parallel index of structured pieces; "
+        "meshio++ writes the whole lattice as one `.vtr` and places the pieces of an existing index by their `Extent` on read."
+    ),
+    "pvts": (
+        "Exempt, not a gap (roadmap non-goals: every format reads and writes): a parallel index of structured pieces; "
+        "meshio++ writes the whole lattice as one `.vts` and places the pieces of an existing index by their `Extent` on read."
+    ),
     "iges": (
         "Exempt, not a gap: a CAD exchange format read through "
         "OpenCASCADE (roadmap non-goals: every format reads and writes); STEP is the CAD format meshio++ writes."

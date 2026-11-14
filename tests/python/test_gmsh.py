@@ -1312,3 +1312,201 @@ def test_python_writer_derives_physical_groups_from_regions(tmp_path, version):
     assert {k: list(v) for k, v in a.field_data.items()} == {
         k: list(v) for k, v in b.field_data.items()
     }
+
+
+def _series_mesh(scale):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        point_data={"T": scale * np.arange(4.0)},
+        cell_data={"p": [scale * np.array([1.0, 2.0])]},
+    )
+
+
+@pytest.mark.parametrize("fmt_version", ["2.2", "4.1"])
+@pytest.mark.parametrize("binary", [False, True])
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_series_writer_one_file_every_step(tmp_path, fmt_version, binary, engine):
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    path = tmp_path / "series.msh"
+    cls = (
+        meshioplusplus.gmsh.SeriesWriter if engine == "core" else gmsh_main.SeriesWriter
+    )
+    with cls(str(path), fmt_version=fmt_version, binary=binary) as writer:
+        for t in (0.0, 0.25, 1.0):
+            writer.write(t, _series_mesh(1.0 + t))
+    if fmt_version == "4.1":
+        # 2.2 has no header-only metadata path, so its steps are only selectable
+        meta = meshioplusplus.read_metadata(str(path), file_format="gmsh")
+        assert meta["time_values"] == [0.0, 0.25, 1.0]
+    for k, t in enumerate((0.0, 0.25, 1.0)):
+        mesh = meshioplusplus.gmsh.read(str(path), time_step=k)
+        np.testing.assert_allclose(mesh.point_data["T"], (1.0 + t) * np.arange(4.0))
+        np.testing.assert_allclose(
+            mesh.cell_data["p"][0], (1.0 + t) * np.array([1.0, 2.0])
+        )
+
+
+def test_series_writer_refuses_a_different_mesh(tmp_path):
+    with meshioplusplus.gmsh.SeriesWriter(str(tmp_path / "s.msh")) as writer:
+        writer.write(0.0, _series_mesh(1.0))
+        other = meshioplusplus.Mesh(
+            _series_mesh(1.0).points[:3], [("triangle", np.array([[0, 1, 2]]))]
+        )
+        with pytest.raises(meshioplusplus.WriteError):
+            writer.write(1.0, other)
+
+
+def _element_node_mesh():
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    return meshioplusplus.Mesh(
+        pts,
+        [
+            ("triangle", np.array([[0, 1, 2], [1, 3, 2]])),
+            ("line", np.array([[0, 1]])),
+        ],
+        cell_data={
+            "gmsh:element_node:flux": [
+                np.arange(12.0).reshape(2, 6),
+                np.arange(4.0).reshape(1, 4),
+            ]
+        },
+        field_data={"gmsh:element_node_components:flux": np.array([2])},
+    )
+
+
+@pytest.mark.parametrize("fmt_version", ["2.2", "4.1"])
+@pytest.mark.parametrize("binary", [False, True])
+@pytest.mark.parametrize("engine", ["core", "python"])
+def test_element_node_data_round_trips(tmp_path, fmt_version, binary, engine):
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    path = tmp_path / "en.msh"
+    mesh = _element_node_mesh()
+    if engine == "core":
+        meshioplusplus.gmsh.write(
+            str(path), mesh, fmt_version=fmt_version, binary=binary
+        )
+        back = meshioplusplus.gmsh.read(str(path))
+    else:
+        gmsh_main.write(str(path), mesh, fmt_version=fmt_version, binary=binary)
+        back = gmsh_main.read(str(path))
+    blocks = back.cell_data["gmsh:element_node:flux"]
+    np.testing.assert_array_equal(blocks[0], np.arange(12.0).reshape(2, 6))
+    np.testing.assert_array_equal(blocks[1], np.arange(4.0).reshape(1, 4))
+    assert back.field_data["gmsh:element_node_components:flux"].tolist() == [2]
+    # no ElementData section was made of it
+    assert b"$ElementData" not in path.read_bytes()
+
+
+def test_element_node_data_is_read_by_both_engines(tmp_path):
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    path = tmp_path / "en.msh"
+    gmsh_main.write(str(path), _element_node_mesh(), fmt_version="4.1", binary=False)
+    core = meshioplusplus.gmsh.read(str(path))
+    twin = gmsh_main.read(str(path))
+    for a, b in zip(
+        core.cell_data["gmsh:element_node:flux"],
+        twin.cell_data["gmsh:element_node:flux"],
+    ):
+        np.testing.assert_array_equal(a, b)
+
+
+_KEPT = """$MeshFormat
+4.1 0 8
+$EndMeshFormat
+$Nodes
+1 3 1 3
+2 1 0 3
+1
+2
+3
+0 0 0
+0 0 1
+0 0 0
+$EndNodes
+$Elements
+1 1 1 1
+2 1 15 1
+1 1
+$EndElements
+$GhostElements
+1
+1 1 2 2 3
+$EndGhostElements
+$InterpolationScheme
+"scheme"
+1
+2 1 2
+1
+1 1
+$EndInterpolationScheme
+"""
+
+
+def test_ghost_and_interpolation_sections_survive_a_round_trip(tmp_path):
+    from meshioplusplus.gmsh import main as gmsh_main
+
+    src = tmp_path / "kept.msh"
+    src.write_text(
+        _KEPT.replace(
+            "$Nodes\n1 3 1 3\n2 1 0 3\n1\n2\n3\n0 0 0\n0 0 1\n0 0 0\n",
+            "$Nodes\n1 1 1 1\n0 1 0 1\n1\n0 0 0\n",
+        )
+    )
+    for read, write in (
+        (meshioplusplus.gmsh.read, meshioplusplus.gmsh.write),
+        (gmsh_main.read, gmsh_main.write),
+    ):
+        mesh = read(str(src))
+        assert "gmsh:section:GhostElements" in mesh.field_data
+        out = tmp_path / "out.msh"
+        write(str(out), mesh, fmt_version="4.1", binary=False)
+        text = out.read_text()
+        assert "$GhostElements\n1\n1 1 2 2 3\n$EndGhostElements" in text
+        assert '$InterpolationScheme\n"scheme"' in text
+
+
+_GHOST_MSH = """$MeshFormat
+4.1 0 8
+$EndMeshFormat
+$Nodes
+1 4 1 4
+2 1 0 4
+1
+2
+3
+4
+0 0 0
+1 0 0
+1 1 0
+0 1 0
+$EndNodes
+$Elements
+1 3 10 12
+2 1 2 3
+10 1 2 3
+11 2 3 4
+12 1 3 4
+$EndElements
+$GhostElements
+2
+11 1 1 2
+12 1 2 2 3
+$EndGhostElements
+"""
+
+
+def test_ghost_elements_become_partition_ghost(tmp_path, monkeypatch):
+    path = tmp_path / "g.msh"
+    path.write_text(_GHOST_MSH)
+    for strict in ("1", None):
+        from meshioplusplus import _fallback
+
+        monkeypatch.setattr(_fallback, "_strict", bool(strict))
+        mesh = meshioplusplus.read(path, "gmsh")
+        assert [list(b) for b in mesh.cell_data["partition:ghost"]] == [[0, 1, 1]]
+        assert "gmsh:section:GhostElements" in mesh.field_data

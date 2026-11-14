@@ -267,3 +267,20 @@ def test_a_multi_step_stage_refuses_a_single_step_target(tmp_path):
     }
     with pytest.raises(Exception, match=r"\{step\}|time.step|multi"):
         run_pipeline(doc)
+
+
+def test_cell_regions_round_trip_as_geom_subsets(tmp_path):
+    pytest.importorskip("pxr")
+    from meshioplusplus._regions import Region
+
+    mesh = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [2, 0, 0]], dtype=float),
+        [("triangle", np.array([[0, 1, 2], [0, 2, 3], [1, 4, 2]]))],
+        regions=[Region("left side", "cell", [0, 1]), Region("right", "cell", [2])],
+    )
+    path = tmp_path / "r.usda"
+    meshioplusplus.write(path, mesh)
+    assert "GeomSubset" in path.read_text()
+    back = meshioplusplus.read(path)
+    got = {r.name: list(r.entries) for r in back.regions if r.kind == "cell"}
+    assert got == {"left side": [0, 1], "right": [2]}

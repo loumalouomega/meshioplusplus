@@ -880,3 +880,35 @@ def test_color_by_rgb_takes_the_baked_channels_in_both_engines(tmp_path, cell):
     assert "COLOR_0" in read_glb(a)[0]["meshes"][0]["primitives"][0]["attributes"]
     with pytest.raises(ValueError, match="red, green and blue"):
         _gltf.write(str(b), mesh, color_by="rgb")
+
+
+def test_a_texture_is_embedded_and_read_back(tmp_path):
+    from meshioplusplus import _png
+    from meshioplusplus.gltf import _gltf_read
+
+    mesh = mio.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=float),
+        [("triangle", np.array([[0, 1, 2]]))],
+        point_data={"uv": np.array([[0, 0], [1, 0], [0, 1]], dtype=float)},
+    )
+    image = np.zeros((2, 2, 4), dtype=np.uint8)
+    image[..., 0] = 255
+    image[..., 3] = 255
+    a, b = tmp_path / "a.glb", tmp_path / "b.glb"
+    mio.gltf.write(a, mesh, texture=image)
+    _gltf.write(b, mesh_with := mio.gltf._with_texture(mesh, image))
+    assert a.read_bytes() == b.read_bytes()
+    raw = a.read_bytes()
+    doc = json.loads(raw[20 : 20 + struct.unpack("<I", raw[12:16])[0]])
+    assert doc["images"][0]["mimeType"] == "image/png"
+    assert doc["materials"][0]["pbrMetallicRoughness"]["baseColorTexture"] == {
+        "index": 0
+    }
+    for read in (mio.gltf.read, _gltf_read.read):
+        back = read(a)
+        assert bytes(back.field_data["texture:png"]) == _png.encode(image)
+    # A mesh read from a textured file writes the texture back without the option.
+    again = tmp_path / "c.glb"
+    mio.write(again, mio.read(a))
+    assert b'"images"' in again.read_bytes()
+    assert mesh_with is not mesh

@@ -148,6 +148,7 @@ module meshioplusplus
     public :: mio_sequence_pipeline_run_file, mio_sequence_pipeline_run_json
     public :: mio_format_readable, mio_format_writable, mio_load_plugins
     public :: mio_sniff_format
+    public :: mio_detect
     public :: mio_read_metadata, mio_metadata, mio_cell_block_info
     public :: mio_merge
     public :: mio_provenance_begin, mio_provenance_end
@@ -6046,6 +6047,15 @@ module meshioplusplus
             integer(c_int64_t) :: n
         end function
 
+        function c_mio_detect(path, buf, buflen) &
+                bind(c, name="mio_detect") result(n)
+            import :: c_char, c_int64_t
+            character(kind=c_char), dimension(*), intent(in) :: path
+            character(kind=c_char), dimension(*), intent(inout) :: buf
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
         function c_mio_mesh_set_points(h, dtype, num_points, dim, xyz) &
                 bind(c, name="mio_mesh_set_points") result(s)
             import :: c_ptr, c_int, c_int64_t
@@ -8236,6 +8246,18 @@ contains
         fmt = ''
         n = c_mio_sniff_format(c_str(path), buf, int(STRBUF_LEN, c_int64_t))
         if (n > 0) fmt = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
+    end function
+
+    !> A ranked format detection report: one `format<TAB>confidence<TAB>reason` line
+    !> per candidate, best first ('' when nothing matches).
+    function mio_detect(path) result(report)
+        character(*), intent(in) :: path
+        character(:), allocatable :: report
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        integer(c_int64_t) :: n
+        report = ''
+        n = c_mio_detect(c_str(path), buf, int(STRBUF_LEN, c_int64_t))
+        if (n > 0) report = from_c_buf(buf, min(int(n), STRBUF_LEN - 1))
     end function
 
     ! ------------------------------------------------------------------

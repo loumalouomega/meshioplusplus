@@ -26,6 +26,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 // Project includes
@@ -75,7 +76,8 @@ std::vector<std::int64_t> dedup(const unsigned char* pRows, std::size_t nrows, s
 }
 
 Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
-                std::vector<unsigned char>* pNormalBytes) {
+                std::vector<unsigned char>* pNormalBytes,
+                const std::vector<std::uint16_t>* pAttributes = nullptr) {
     std::size_t isz = dtype_size(dt);
     std::size_t nverts = rVertBytes.size() / (3 * isz);
 
@@ -105,6 +107,13 @@ Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
         NDArray nrm(DType::Float64, {ntri, 3});
         std::memcpy(nrm.Data(), pNormalBytes->data(), pNormalBytes->size());
         mesh.AppendCellData("facet_normals", std::move(nrm));
+    }
+    // The attribute word of a binary facet, kept only when some facet sets it.
+    if (pAttributes && std::any_of(pAttributes->begin(), pAttributes->end(),
+                                   [](std::uint16_t A) { return A != 0; })) {
+        NDArray attr(DType::UInt16, {ntri});
+        std::memcpy(attr.Data(), pAttributes->data(), ntri * sizeof(std::uint16_t));
+        mesh.AppendCellData("stl:attribute", std::move(attr));
     }
     return mesh;
 }
@@ -143,10 +152,71 @@ void stl_ascii_rows(const std::vector<std::string_view>& rLines, std::vector<dou
     }
 }
 
+struct StlSolid {
+    std::string mName;
+    std::size_t mFirst = 0;  // the first facet it holds
+};
+
+// Several `solid` records of an ASCII file become cell regions named after
+// them (`solid_<k>` when unnamed, `_<k>` appended to a repeated name); one
+// solid leaves the mesh as it was. `Full` is the whole file, `NumFacets` the
+// facets the parse found, so a solid's range ends at the next one's start.
+void stl_add_solid_regions(Mesh& rMesh, std::string_view Full, std::size_t NumFacets) {
+    // Almost every file holds one solid: count the lines that start with `solid` with a plain
+    // substring search (one pass at memchr speed) and leave before the per-line scan below.
+    std::size_t solid_lines = 0;
+    for (std::size_t at = Full.find("solid"); at != std::string_view::npos && solid_lines < 2;
+         at = Full.find("solid", at + 5)) {
+        std::size_t b = at;
+        while (b > 0 && (Full[b - 1] == ' ' || Full[b - 1] == '\t' || Full[b - 1] == '\r'))
+            --b;
+        if (b == 0 || Full[b - 1] == '\n')
+            ++solid_lines;
+    }
+    if (solid_lines < 2)
+        return;
+    std::vector<StlSolid> solids;
+    std::size_t data_lines = 0;
+    std::size_t pos = 0;
+    while (pos < Full.size()) {
+        std::size_t eol = Full.find('\n', pos);
+        if (eol == std::string_view::npos)
+            eol = Full.size();
+        const std::string_view line = stl_lstrip(Full.substr(pos, eol - pos));
+        pos = eol + 1;
+        if (line.empty())
+            continue;
+        if (stl_starts_with(line, "solid")) {
+            std::string_view name = line.substr(5);
+            while (!name.empty() && detail::text_is_blank(name.back()))
+                name.remove_suffix(1);
+            name = stl_lstrip(name);
+            solids.push_back({std::string(name), data_lines / 4});
+        } else if (!stl_is_comment_line(line)) {
+            ++data_lines;
+        }
+    }
+    if (solids.size() < 2)
+        return;
+    std::vector<std::string> used;
+    for (std::size_t k = 0; k < solids.size(); ++k) {
+        const std::size_t last = k + 1 < solids.size() ? solids[k + 1].mFirst : NumFacets;
+        std::string name = solids[k].mName.empty() ? "solid_" + std::to_string(k) : solids[k].mName;
+        while (std::find(used.begin(), used.end(), name) != used.end())
+            name += "_" + std::to_string(k);
+        used.push_back(name);
+        const std::size_t count = last > solids[k].mFirst ? last - solids[k].mFirst : 0;
+        NDArray entries = NDArray::Uninit(DType::Int64, {count});
+        for (std::size_t q = 0; q < count; ++q)
+            entries.As<std::int64_t>()[q] = static_cast<std::int64_t>(solids[k].mFirst + q);
+        rMesh.AddRegion(Region(name, RegionKind::Cell, std::move(entries)));
+    }
+}
+
 // `Text` is the ASCII body: the whole file, or the file after its header line.
 // The views end where the file ends, so the numbers are parsed with the
 // bounded prefix parse, never over a view that lacks a terminator.
-Mesh read_ascii(std::string_view Text) {
+Mesh read_ascii(std::string_view Text, std::string_view Full) {
     // Collect the last 3 numbers of every non-comment line; rows 0,4,8,... are
     // facet normals, the rest are vertices. A large file is read in chunks of
     // whole lines in parallel (roadmap 5.7.2), each chunk by the serial rule
@@ -184,7 +254,10 @@ Mesh read_ascii(std::string_view Text) {
         std::memcpy(normals.data() + f * kRow, facet, kRow);
         std::memcpy(verts.data() + f * 3 * kRow, facet + 3, 3 * kRow);
     });
-    return build_mesh(verts, DType::Float64, &normals);
+    Mesh mesh = build_mesh(verts, DType::Float64, &normals);
+    if (mesh.NumCellBlocks() > 0)
+        stl_add_solid_regions(mesh, Full, nfacets);
+    return mesh;
 }
 
 // `pTriangles` points at the first of `num_tri` 50-byte records, whose
@@ -192,13 +265,15 @@ Mesh read_ascii(std::string_view Text) {
 Mesh read_binary(const char* pTriangles, std::uint32_t num_tri) {
     std::vector<unsigned char> verts;
     verts.reserve(static_cast<std::size_t>(num_tri) * 9 * sizeof(float));
+    std::vector<std::uint16_t> attributes(num_tri);
     for (std::uint32_t i = 0; i < num_tri; ++i) {
         // bytes [12, 48) are the 9 float32 vertex coords (host is little-endian).
         const char* tri = pTriangles + static_cast<std::size_t>(i) * 50;
         verts.insert(verts.end(), reinterpret_cast<const unsigned char*>(tri + 12),
                      reinterpret_cast<const unsigned char*>(tri + 48));
+        std::memcpy(&attributes[i], tri + 48, 2);
     }
-    return build_mesh(verts, DType::Float32, nullptr);
+    return build_mesh(verts, DType::Float32, nullptr, &attributes);
 }
 
 }  // namespace
@@ -209,7 +284,7 @@ Mesh read_stl(const std::string& rPath) {
     const std::string_view text = source.View();
 
     if (text.size() < 80)
-        return read_ascii(text);
+        return read_ascii(text, text);
 
     // A file of 80..83 bytes has no complete triangle count: it is ASCII.
     if (text.size() >= 84) {
@@ -221,13 +296,17 @@ Mesh read_stl(const std::string& rPath) {
 
     // Fall back to ascii: skip the first line.
     const std::size_t eol = text.find('\n');
-    return read_ascii(eol == std::string_view::npos ? std::string_view() : text.substr(eol + 1));
+    return read_ascii(eol == std::string_view::npos ? std::string_view() : text.substr(eol + 1),
+                      text);
 }
 
 namespace {
 
 void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTris,
-                      std::vector<std::array<double, 3>>& rNormals) {
+                      std::vector<std::array<double, 3>>& rNormals,
+                      std::vector<std::uint16_t>& rAttributes,
+                      std::vector<std::int64_t>& rGlobal) {
+    const bool have_attr = rMesh.HasCellData("stl:attribute");
     const bool have_normals = rMesh.HasCellData("facet_normals");
     const std::size_t normal_blocks = have_normals ? rMesh.CellDataNumBlocks("facet_normals") : 0;
     const NDArray& points = rMesh.Points();
@@ -235,13 +314,20 @@ void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTr
     const detail::DoubleView point_values(points);
 
     std::size_t block = 0;
+    std::int64_t global_base = 0;
     for (const auto cb : rMesh.CellRange()) {
         if (cb.Type() != "triangle") {
+            global_base += static_cast<std::int64_t>(cb.NumCells());
             ++block;
             continue;
         }
         std::size_t nc = cb.NumCells();
+        const std::int64_t cell_base = global_base;
+        global_base += static_cast<std::int64_t>(nc);
         const detail::Int64View conn(cb.Conn());
+        std::optional<detail::DoubleView> attr;
+        if (have_attr && block < rMesh.CellDataNumBlocks("stl:attribute"))
+            attr.emplace(rMesh.CellData("stl:attribute", block));
         std::optional<detail::DoubleView> nrm;
         if (have_normals && block < normal_blocks)
             nrm.emplace(rMesh.CellData("facet_normals", block));
@@ -257,6 +343,8 @@ void gather_triangles(const Mesh& rMesh, std::vector<std::array<double, 9>>& rTr
                 tri[k * 3 + 2] = v[k][2];
             }
             rTris.push_back(tri);
+            rGlobal.push_back(cell_base + static_cast<std::int64_t>(r));
+            rAttributes.push_back(attr ? static_cast<std::uint16_t>((*attr)[r]) : 0);
 
             std::array<double, 3> n{};
             if (nrm) {
@@ -341,7 +429,9 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
 
     std::vector<std::array<double, 9>> tris;
     std::vector<std::array<double, 3>> normals;
-    gather_triangles(rMesh, tris, normals);
+    std::vector<std::uint16_t> attributes;
+    std::vector<std::int64_t> global_ids;
+    gather_triangles(rMesh, tris, normals, attributes, global_ids);
 
     auto os = detail::make_classic_ofstream(rPath, std::ios::binary);
     if (!os)
@@ -362,7 +452,7 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
             for (int c = 0; c < 9; ++c)
                 buf[3 + c] = static_cast<float>(tris[i][c]);
             os.write(reinterpret_cast<const char*>(buf), 48);
-            std::uint16_t attr = 0;
+            std::uint16_t attr = attributes[i];
             os.write(reinterpret_cast<const char*>(&attr), 2);
         }
     } else {
@@ -377,19 +467,58 @@ void write_stl(const std::string& rPath, const Mesh& rMesh, bool binary, bool sk
             }
             rBuf.push_back('\n');
         };
-        os << "solid\n";
-        detail::write_row_chunks(os, tris.size(),
-                                 [&](std::size_t First, std::size_t Last, std::string& rBuf) {
-                                     for (std::size_t i = First; i < Last; ++i) {
-                                         wr3(rBuf, "facet normal", normals[i].data());
-                                         rBuf += " outer loop\n";
-                                         wr3(rBuf, "  vertex", &tris[i][0]);
-                                         wr3(rBuf, "  vertex", &tris[i][3]);
-                                         wr3(rBuf, "  vertex", &tris[i][6]);
-                                         rBuf += " endloop\nendfacet\n";
-                                     }
-                                 });
-        os << "endsolid\n";
+        // One solid of the facets `pOrder` lists (every facet when null).
+        const auto write_solid = [&](const std::string& rName,
+                                     const std::vector<std::size_t>* pOrder) {
+            os << (rName.empty() ? "solid\n" : "solid " + rName + "\n");
+            detail::write_row_chunks(
+                os, pOrder ? pOrder->size() : tris.size(),
+                [&](std::size_t First, std::size_t Last, std::string& rBuf) {
+                    for (std::size_t q = First; q < Last; ++q) {
+                        const std::size_t i = pOrder ? (*pOrder)[q] : q;
+                        wr3(rBuf, "facet normal", normals[i].data());
+                        rBuf += " outer loop\n";
+                        wr3(rBuf, "  vertex", &tris[i][0]);
+                        wr3(rBuf, "  vertex", &tris[i][3]);
+                        wr3(rBuf, "  vertex", &tris[i][6]);
+                        rBuf += " endloop\nendfacet\n";
+                    }
+                });
+            os << (rName.empty() ? "endsolid\n" : "endsolid " + rName + "\n");
+        };
+        // Two or more cell regions: one solid each, the facets no region holds last.
+        std::vector<std::size_t> region_ids;
+        for (std::size_t r = 0; r < rMesh.NumRegions(); ++r)
+            if (rMesh.Region(r).mKind == RegionKind::Cell)
+                region_ids.push_back(r);
+        if (region_ids.size() < 2) {
+            write_solid("", nullptr);
+        } else {
+            std::unordered_map<std::int64_t, std::size_t> position;
+            for (std::size_t i = 0; i < global_ids.size(); ++i)
+                position.emplace(global_ids[i], i);
+            std::vector<char> held(tris.size(), 0);
+            for (const std::size_t r : region_ids) {
+                const auto& region = rMesh.Region(r);
+                const detail::Int64View entries(region.mEntries);
+                std::vector<std::size_t> order;
+                for (std::size_t q = 0; q < region.NumEntries(); ++q) {
+                    const auto it = position.find(entries[q]);
+                    if (it != position.end()) {
+                        order.push_back(it->second);
+                        held[it->second] = 1;
+                    }
+                }
+                std::sort(order.begin(), order.end());
+                write_solid(region.mName, &order);
+            }
+            std::vector<std::size_t> rest;
+            for (std::size_t i = 0; i < tris.size(); ++i)
+                if (!held[i])
+                    rest.push_back(i);
+            if (!rest.empty())
+                write_solid("", &rest);
+        }
     }
 }
 

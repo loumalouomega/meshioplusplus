@@ -2,6 +2,8 @@ from .. import _core
 from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
+from .._series_writer import CoreSeriesWriter
+from ._med import SeriesWriter as _PySeriesWriter
 from ._med import read as _py_read
 from ._med import write as _py_write
 from ._medmulti import _resolve_mesh_names
@@ -191,6 +193,29 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
     return _py_write(filename, mesh, med_version=med_version, **kwargs)
 
 
+class SeriesWriter(CoreSeriesWriter):
+    """Write a time series into one MED file: the mesh with the first step, then one more
+    step group (``NDT`` 2, 3, ... with the step's ``PDT`` as its time) in every field's
+    ``CHA`` group, which ``read(..., time_step=k)`` selects by. Every step must have the
+    first step's points, cell blocks and fields.
+
+    >>> with meshioplusplus.med.SeriesWriter("run.med") as w:
+    ...     for t, mesh in steps:
+    ...         w.write(t, mesh)
+    """
+
+    def __init__(self, filename, med_version="4.1.0"):
+        self._core = self._py = None
+        if _HAS_HDF5 and not is_buffer(filename, "w") and med_version == "4.1.0":
+            try:
+                self._core = _core.MedSeriesWriter(str(filename))
+                return
+            except Exception as exc:
+                if not core_declined(exc, "med", "write", filename):
+                    raise
+        self._py = _PySeriesWriter(filename, med_version)
+
+
 register_format("med", [".med"], read, {"med": write})
 
-__all__ = ["read", "write", "read_med_multi", "write_med_multi"]
+__all__ = ["SeriesWriter", "read", "write", "read_med_multi", "write_med_multi"]

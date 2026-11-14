@@ -33,7 +33,9 @@ def read(filename, time_step=0):
 
 def write(filename, mesh):
     """Write an Exodus II file (C++ core when built with netCDF, Python fallback)."""
-    if _HAS_NETCDF and not is_buffer(filename, "w"):
+    # `mesh.info` (the file's QA and information records) has no slot in the core's
+    # mesh, so a mesh that carries it is written by the twin, which keeps it.
+    if _HAS_NETCDF and not is_buffer(filename, "w") and not getattr(mesh, "info", None):
         try:
             _core.exodus_write(str(filename), mesh)
             return

@@ -866,6 +866,21 @@ TEST(CApi, SniffFormat) {
     std::remove(vtu.c_str());
 }
 
+TEST(CApi, Detect) {
+    const std::string vtu = mt::temp_path("_capi_detect.vtu");
+    mio_mesh* m = build_tet_mesh();
+    ASSERT_EQ(mio_write(vtu.c_str(), m, nullptr), MIO_OK);
+    mio_mesh_free(m);
+
+    const std::int64_t need = mio_detect(vtu.c_str(), nullptr, 0);
+    ASSERT_GT(need, 0);
+    std::string buf(static_cast<std::size_t>(need) + 1, '\0');
+    EXPECT_EQ(mio_detect(vtu.c_str(), buf.data(), need + 1), need);
+    EXPECT_EQ(buf.rfind("vtu\tcertain\tcontent signature\n", 0), 0u);
+    EXPECT_EQ(mio_detect(nullptr, nullptr, 0), -1);
+    std::remove(vtu.c_str());
+}
+
 TEST(CApi, ZeroCopyPointerStability) {
     mio_mesh* m = build_tet_mesh();
     const void* pts1 = nullptr;

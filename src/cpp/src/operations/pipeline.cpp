@@ -146,6 +146,7 @@
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/adapt_volume.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/ghost_names.hpp"
 
 #include "pipeline_table.hpp"
 
@@ -1425,7 +1426,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         // pieces: a pipeline chains one mesh, and colour-by-part is what the
         // browser viewer's partition chip always meant.
         auto labels = partition_labels(mesh, opts);
-        mesh.AddCellData("partition:part", std::move(labels));
+        mesh.AddCellData(detail::kPartitionPart, std::move(labels));
         pipe_push_step(rReport, rStep, {{"Nparts", pipe_number(rStep, "Nparts", 2)}});
         return mesh;
     }
@@ -3367,7 +3368,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAdapt.mHmax = pipe_number(rStep, "AdaptHmax", 0.0);
         opts.mAdapt.mHgrad = pipe_number(rStep, "AdaptHgrad", 1.3);
         opts.mAdapt.mHausd = pipe_number(rStep, "AdaptHausd", 0.0);
-        opts.mAdapt.mMaxIterations = static_cast<int>(pipe_number(rStep, "AdaptMaxIterations", 10.0));
+        opts.mAdapt.mMaxIterations =
+            static_cast<int>(pipe_number(rStep, "AdaptMaxIterations", 10.0));
         opts.mAdapt.mPreserveBoundary = pipe_flag(rStep, "AdaptPreserveBoundary", false);
         opts.mAdapt.mBoundarySizing = adapt_volume_boundary_sizing_from_name(
             pipe_text(rStep, "AdaptBoundarySizing", "input"));

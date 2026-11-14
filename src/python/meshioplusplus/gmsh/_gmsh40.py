@@ -13,7 +13,12 @@ from .._common import num_nodes_per_cell, raw_from_cell_data
 from .._exceptions import ReadError
 from .._mesh import CellBlock, Mesh
 from .common import (
+    ELEMENT_TAGS,
+    KEPT_SECTIONS,
+    _capture_section,
+    _element_node_cell_data,
     _fast_forward_to_end_block,
+    _ghost_cell_data,
     _gmsh_to_meshio_order,
     _gmsh_to_meshio_type,
     _meshio_to_gmsh_order,
@@ -21,9 +26,13 @@ from .common import (
     _periodic_count,
     _periodic_end,
     _read_data,
+    _read_element_node_data,
     _read_physical_names,
     _remap_periodic,
+    _split_element_node,
     _write_data,
+    _write_element_node_data,
+    _write_kept_sections,
     _write_physical_names,
     checked_cell_data,
 )
@@ -39,6 +48,7 @@ def read_buffer(f, is_ascii: bool, data_size) -> Mesh:
     points = []
     field_data = {}
     cell_data_raw = {}
+    element_node = {}
     cell_tags = {}
     point_data = {}
     physical_tags = None
@@ -71,6 +81,10 @@ def read_buffer(f, is_ascii: bool, data_size) -> Mesh:
             _read_data(f, "NodeData", point_data, data_size, is_ascii)
         elif environ == "ElementData":
             _read_data(f, "ElementData", cell_data_raw, data_size, is_ascii)
+        elif environ == "ElementNodeData":
+            _read_element_node_data(f, element_node, is_ascii)
+        elif is_ascii and environ in KEPT_SECTIONS:
+            _capture_section(f, environ, field_data)
         else:
             # From
             # <http://gmsh.info//doc/texinfo/gmsh.html#MSH-file-format-_0028version-4_0029>:
@@ -83,7 +97,12 @@ def read_buffer(f, is_ascii: bool, data_size) -> Mesh:
             _fast_forward_to_end_block(f, environ)
 
     cell_data = checked_cell_data(cells, cell_data_raw)
+    en_cell_data, en_field_data = _element_node_cell_data(cells, element_node)
+    cell_data.update(en_cell_data)
+    field_data.update(en_field_data)
+    element_tags = cell_tags.pop(ELEMENT_TAGS, None)
     cell_data.update(cell_tags)
+    cell_data.update(_ghost_cell_data(field_data, element_tags))
 
     periodic = _remap_periodic(periodic, point_tags)
     return Mesh(
@@ -194,6 +213,7 @@ def _read_elements(f, point_tags, physical_tags, is_ascii):
     itags[point_tags] = np.arange(len(point_tags))
 
     # Note that the first column in the data array is the element tag; discard it.
+    element_tags = [d[:, 0] for _, _, _, d in data]
     data = [
         (physical_tag, geom_tag, tpe, itags[d[:, 1:]])
         for physical_tag, geom_tag, tpe, d in data
@@ -213,6 +233,7 @@ def _read_elements(f, point_tags, physical_tags, is_ascii):
             cell_data["gmsh:geometrical"] = []
         cell_data["gmsh:geometrical"].append(np.full(len(values), geom_tag, int))
 
+    cell_data[ELEMENT_TAGS] = element_tags
     return cells, cell_data
 
 
@@ -268,11 +289,17 @@ def write(filename, mesh: Mesh, float_fmt: str = ".16e", binary: bool = True) ->
         _write_elements(fh, mesh.cells, binary)
         if mesh.gmsh_periodic is not None:
             _write_periodic(fh, mesh.gmsh_periodic, float_fmt, binary)
+        _write_kept_sections(fh, mesh.field_data, binary)
         for name, dat in mesh.point_data.items():
             _write_data(fh, "NodeData", name, dat, binary)
-        cell_data_raw = raw_from_cell_data(mesh.cell_data)
+        plain_cell_data, element_node = _split_element_node(
+            mesh.cell_data, mesh.field_data
+        )
+        cell_data_raw = raw_from_cell_data(plain_cell_data)
         for name, dat in cell_data_raw.items():
             _write_data(fh, "ElementData", name, dat, binary)
+        for name, (blocks, comp) in element_node.items():
+            _write_element_node_data(fh, name, blocks, comp, binary)
 
 
 def _write_nodes(fh, points: np.ndarray, float_fmt: str, binary: bool) -> None:

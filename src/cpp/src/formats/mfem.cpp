@@ -51,6 +51,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/ghost_names.hpp"
 
 namespace meshioplusplus {
 
@@ -3087,7 +3088,7 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
     if (!attr_blocks.empty())
         mesh.AddCellData("mfem:attribute", std::move(attr_blocks));
     if (Labels && !part_blocks.empty())
-        mesh.AddCellData("partition:part", std::move(part_blocks));
+        mesh.AddCellData(detail::kPartitionPart, std::move(part_blocks));
 
     for (std::size_t k = 1; k < nfields; ++k) {
         const std::size_t nc = fields[0][k].mComponents;

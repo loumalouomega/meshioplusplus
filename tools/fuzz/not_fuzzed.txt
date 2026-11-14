@@ -12,6 +12,7 @@ med
 nastran_h5
 vtkhdf
 exodus
+ugrid_nc
 # Bundle and optional-runtime readers below run through the production-path
 # harness (fuzz_bundle.hpp): XDMF XML/heavy-data bundles and ADIOS2 `.bp`
 # directories reconstruct companions from one bundle input, and the CGNS MLL

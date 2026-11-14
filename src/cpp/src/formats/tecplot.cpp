@@ -56,6 +56,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/ghost_names.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // External includes
@@ -65,6 +66,10 @@
 namespace meshioplusplus {
 
 namespace {
+
+/// The solution time the zones of an ASCII write carry (with `STRANDID = 1`), set around a write by
+/// the series writer; null for a plain write, which writes a static file.
+thread_local const double* tecplot_series_time = nullptr;
 
 std::string tecplot_upper(std::string s) {
     for (auto& c : s)
@@ -2857,6 +2862,11 @@ void write_tecplot(const std::string& rPath, const Mesh& rMesh) {
             os << "FACES = " << faces.mFaces.size() << ", TOTALNUMFACENODES = " << total_face_nodes
                << ",\nNUMCONNECTEDBOUNDARYFACES = 0, TOTALNUMBOUNDARYCONNECTIONS = 0,\n";
         os << "DATAPACKING = BLOCK, ZONETYPE = " << ztype;
+        if (tecplot_series_time != nullptr) {
+            char time_buf[40];
+            detail::snprintf_c(time_buf, sizeof(time_buf), "%.17g", *tecplot_series_time);
+            os << ",\nSTRANDID = 1, SOLUTIONTIME = " << time_buf;
+        }
         if (bi > 0)
             os << ",\nVARSHARELIST = ([1-" << num_shared << "] = 1)";
         if (!present.empty()) {
@@ -2997,9 +3007,10 @@ void szw_write_values(void* pHandle, std::int32_t Zone, std::int32_t Var, std::i
 
 /// The parts of a block's cells (`partition:part`, an integer value per cell), or empty.
 std::vector<std::int64_t> szw_parts(const Mesh& rMesh, std::size_t Block) {
-    if (!rMesh.HasCellData("partition:part") || Block >= rMesh.CellDataNumBlocks("partition:part"))
+    if (!rMesh.HasCellData(detail::kPartitionPart) ||
+        Block >= rMesh.CellDataNumBlocks(detail::kPartitionPart))
         return {};
-    const NDArray& a = rMesh.CellData("partition:part", Block);
+    const NDArray& a = rMesh.CellData(detail::kPartitionPart, Block);
     if (detail::is_float_dtype(a.Dtype()) || a.Shape().size() != 1 ||
         a.Size() != rMesh.Cells(Block).NumCells())
         return {};
@@ -3388,5 +3399,101 @@ void SzpltSeriesWriter::Finalize() {
     mpImpl->mWriter->Close();
 }
 #endif  // MESHIOPLUSPLUS_HAS_TECIO
+
+struct TecplotSeriesWriter::Impl {
+    std::string mPath;
+    std::size_t mSteps = 0;
+    std::size_t mZones = 0;
+    std::string mVariables;  ///< the first step's `VARIABLES = ...` line
+    bool mClosed = false;
+};
+
+TecplotSeriesWriter::TecplotSeriesWriter(const std::string& rPath)
+    : mpImpl(std::make_unique<Impl>()) {
+    std::string lower = rPath;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".plt") == 0)
+        throw WriteError("Tecplot series: only the ASCII layout is written (not a .plt path)");
+    mpImpl->mPath = rPath;
+    auto f = detail::make_classic_ofstream(rPath, std::ios::binary);
+    if (!f)
+        throw WriteError("Could not open file for writing: " + rPath);
+}
+
+TecplotSeriesWriter::~TecplotSeriesWriter() = default;
+TecplotSeriesWriter::TecplotSeriesWriter(TecplotSeriesWriter&&) noexcept = default;
+TecplotSeriesWriter& TecplotSeriesWriter::operator=(TecplotSeriesWriter&&) noexcept = default;
+
+void TecplotSeriesWriter::Write(double Time, const Mesh& rMesh) {
+    if (!mpImpl)
+        throw WriteError("Tecplot series: the writer was moved from");
+    Impl& s = *mpImpl;
+    if (s.mClosed)
+        throw WriteError("Tecplot series: the writer is finalized");
+    struct Scope {
+        explicit Scope(const double* pTime) { tecplot_series_time = pTime; }
+        ~Scope() { tecplot_series_time = nullptr; }
+    } scope(&Time);
+    // Every step is written as a file of its own; its zones (each carrying the step's solution
+    // time and strand 1) are taken from it and appended to the series file.
+    const std::string scratch = s.mPath + ".step.tmp";
+    write_tecplot(scratch, rMesh);
+    std::string text;
+    {
+        auto in = detail::make_classic_ifstream(scratch, std::ios::binary);
+        text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    std::remove(scratch.c_str());
+    const std::size_t first_zone = text.find("\nZONE ");
+    if (first_zone == std::string::npos)
+        throw WriteError("Tecplot series: a step wrote no zone");
+    const std::string header = text.substr(0, first_zone + 1);
+    std::string zones = text.substr(first_zone + 1);
+    const std::size_t var_at = header.find("VARIABLES = ");
+    const std::string variables = var_at == std::string::npos
+                                      ? std::string()
+                                      : header.substr(var_at, header.find('\n', var_at) - var_at);
+    if (s.mSteps > 0 && variables != s.mVariables)
+        throw WriteError("Tecplot series: step " + std::to_string(s.mSteps) +
+                         "'s variables differ from the first step's");
+    // A later zone of the step shares its variables with the step's first zone: point that at
+    // the first zone's number in the combined file.
+    const std::string share = "VARSHARELIST = ([";
+    for (std::size_t at = zones.find(share); at != std::string::npos; at = zones.find(share, at)) {
+        const std::size_t tail = zones.find("] = 1)", at);
+        if (tail == std::string::npos)
+            break;
+        zones.replace(tail, 6, "] = " + std::to_string(s.mZones + 1) + ")");
+        at = tail;
+    }
+    std::size_t count = 0;
+    const std::string probe = "\n" + zones;
+    for (std::size_t at = probe.find("\nZONE "); at != std::string::npos;
+         at = probe.find("\nZONE ", at + 1))
+        ++count;
+    auto out = detail::make_classic_ofstream(s.mPath, std::ios::binary | std::ios::app);
+    if (!out)
+        throw WriteError("Could not open file for writing: " + s.mPath);
+    if (s.mSteps == 0)
+        out.write(header.data(), static_cast<std::streamsize>(header.size()));
+    out.write(zones.data(), static_cast<std::streamsize>(zones.size()));
+    if (s.mSteps == 0)
+        s.mVariables = variables;
+    s.mZones += count;
+    ++s.mSteps;
+}
+
+std::size_t TecplotSeriesWriter::NumSteps() const noexcept {
+    return mpImpl ? mpImpl->mSteps : 0;
+}
+
+void TecplotSeriesWriter::Finalize() {
+    if (!mpImpl || mpImpl->mClosed)
+        return;
+    if (mpImpl->mSteps == 0)
+        throw WriteError("Tecplot series: no step was written");
+    mpImpl->mClosed = true;
+}
 
 }  // namespace meshioplusplus

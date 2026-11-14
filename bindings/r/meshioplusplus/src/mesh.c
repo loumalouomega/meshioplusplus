@@ -35,6 +35,15 @@ SEXP R_mio_sniff_format(SEXP path) {
     return mio_r_getstring(sniff_getter, &ctx, "sniff_format");
 }
 
+static int64_t detect_getter(void *ctx, char *buf, int64_t buflen) {
+    return mio_detect(((sniff_ctx *)ctx)->path, buf, buflen);
+}
+
+SEXP R_mio_detect(SEXP path) {
+    sniff_ctx ctx = {mio_r_string(path, "path")};
+    return mio_r_getstring(detect_getter, &ctx, "detect");
+}
+
 SEXP R_mio_cell_type_num_nodes(SEXP name) {
     mio_cell_type t = mio_cell_type_from_name(mio_r_string(name, "name"));
     return Rf_ScalarInteger(mio_cell_type_num_nodes(t));

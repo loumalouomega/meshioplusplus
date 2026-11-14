@@ -1043,3 +1043,47 @@ def test_polyhedra_bucket_per_piece_so_a_piece_read_matches_its_region(tmp_path)
         assert np.concatenate(alone.cell_data["p"]).tolist() == [
             tags[i] for i in region.entries
         ]
+
+
+def _image_data_file(path, extent=(0, 2, 0, 1, 0, 1)):
+    h5py = pytest.importorskip("h5py")
+    nx, ny, nz = (
+        extent[1] - extent[0] + 1,
+        extent[3] - extent[2] + 1,
+        extent[5] - extent[4] + 1,
+    )
+    with h5py.File(path, "w") as f:
+        g = f.create_group("VTKHDF")
+        g.attrs["Version"] = np.array([2, 3], dtype=np.int64)
+        g.attrs["Type"] = np.bytes_("ImageData")
+        g.attrs["WholeExtent"] = np.array(extent, dtype=np.int64)
+        g.attrs["Origin"] = np.array([1.0, 2.0, 3.0])
+        g.attrs["Spacing"] = np.array([0.5, 1.0, 2.0])
+        g.attrs["Direction"] = np.eye(3).ravel()
+        g.create_group("PointData").create_dataset(
+            "temp", data=np.arange(nx * ny * nz, dtype=np.float64).reshape(nz, ny, nx)
+        )
+        g.create_group("CellData").create_dataset(
+            "id", data=np.arange((nx - 1) * (ny - 1) * (nz - 1), dtype=np.int32)
+        )
+
+
+def test_image_data_is_read_as_a_lattice(tmp_path):
+    path = tmp_path / "image.vtkhdf"
+    _image_data_file(path)
+    mesh = meshioplusplus.read(path)
+    assert len(mesh.points) == 12
+    assert mesh.points[1].tolist() == [1.5, 2.0, 3.0]
+    assert mesh.points[11].tolist() == [2.0, 3.0, 5.0]
+    assert [b.type for b in mesh.cells] == ["hexahedron"]
+    assert mesh.cells[0].data.shape == (2, 8)
+    assert mesh.point_data["temp"].tolist() == list(map(float, range(12)))
+    assert mesh.cell_data["id"][0].tolist() == [0, 1]
+
+
+def test_flat_image_data_is_quads(tmp_path):
+    path = tmp_path / "flat.vtkhdf"
+    _image_data_file(path, extent=(0, 2, 0, 1, 0, 0))
+    mesh = meshioplusplus.read(path)
+    assert [b.type for b in mesh.cells] == ["quad"]
+    assert mesh.cells[0].data.shape == (2, 4)

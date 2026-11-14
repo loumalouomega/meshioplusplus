@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 import meshioplusplus
@@ -64,3 +65,69 @@ def test_stl_python_fallback_matches_skin(tmp_path):
     _stl.write(filepath, copy.deepcopy(helpers.hex_mesh))
     out = meshioplusplus.stl.read(filepath)
     assert len(out.get_cells_type("triangle")) == 12
+
+
+def test_binary_attribute_word_round_trip(tmp_path):
+    pts = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], float)
+    attr = np.array([0, 7], dtype=np.uint16)
+    mesh = meshioplusplus.Mesh(
+        pts,
+        [("triangle", np.array([[0, 1, 2], [1, 3, 2]]))],
+        cell_data={"stl:attribute": [attr]},
+    )
+    path = tmp_path / "a.stl"
+    meshioplusplus.write(path, mesh, file_format="stl", binary=True)
+    back = meshioplusplus.read(path)
+    assert np.array_equal(back.cell_data["stl:attribute"][0], attr)
+    # all-zero attributes are not kept
+    plain = meshioplusplus.Mesh(pts, mesh.cells)
+    meshioplusplus.write(path, plain, file_format="stl", binary=True)
+    assert "stl:attribute" not in meshioplusplus.read(path).cell_data
+
+
+_TWO_SOLIDS = """solid left
+facet normal 0 0 1
+ outer loop
+  vertex 0 0 0
+  vertex 1 0 0
+  vertex 0 1 0
+ endloop
+endfacet
+endsolid left
+solid right
+facet normal 0 0 1
+ outer loop
+  vertex 1 0 0
+  vertex 1 1 0
+  vertex 0 1 0
+ endloop
+endfacet
+facet normal 0 0 1
+ outer loop
+  vertex 1 1 0
+  vertex 2 1 0
+  vertex 1 2 0
+ endloop
+endfacet
+endsolid right
+"""
+
+
+def test_several_solids_are_cell_regions(tmp_path):
+    path = tmp_path / "two.stl"
+    path.write_text(_TWO_SOLIDS)
+    mesh = meshioplusplus.read(path)
+    by_name = {r.name: r.entries.tolist() for r in mesh.regions}
+    assert by_name == {"left": [0], "right": [1, 2]}
+    out = tmp_path / "out.stl"
+    meshioplusplus.write(out, mesh, file_format="stl")
+    text = out.read_text()
+    assert "solid left" in text and "endsolid right" in text
+    back = meshioplusplus.read(out)
+    assert {r.name: r.entries.tolist() for r in back.regions} == by_name
+
+
+def test_one_solid_adds_no_region(tmp_path):
+    path = tmp_path / "one.stl"
+    path.write_text(_TWO_SOLIDS.split("solid right")[0])
+    assert not meshioplusplus.read(path).regions

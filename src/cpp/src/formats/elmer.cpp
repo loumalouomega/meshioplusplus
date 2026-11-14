@@ -55,6 +55,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/ghost_names.hpp"
 
 namespace meshioplusplus {
 
@@ -646,7 +647,7 @@ Mesh elm_build(const ElmMesh& rIn, const fs::path& rWhere) {
         }
     }
     if (rIn.mHasParts)
-        mesh.AddCellData("partition:part", std::move(part_blocks));
+        mesh.AddCellData(detail::kPartitionPart, std::move(part_blocks));
 
     // A name used for both a body and a boundary would make two regions that
     // differ only in their tags; prefix both.
@@ -890,7 +891,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
         detail::provenance_note("regions-dropped", std::to_string(point_regions) +
                                                        " point region(s) have no Elmer equivalent");
     }
-    const bool partitioned = rMesh.HasCellData("partition:part");
+    const bool partitioned = rMesh.HasCellData(detail::kPartitionPart);
     if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() >
         (partitioned ? 1u : 0u)) {
         log::warn(
@@ -1166,7 +1167,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
         const std::size_t b = static_cast<std::size_t>(
             std::upper_bound(bases.begin(), bases.end(), r.mCell) - bases.begin() - 1);
         if (!part_labels[b])
-            part_labels[b].emplace(rMesh.CellData("partition:part", b));
+            part_labels[b].emplace(rMesh.CellData(detail::kPartitionPart, b));
         const std::int64_t label = (*part_labels[b])[static_cast<std::size_t>(r.mCell - bases[b])];
         if (label < 0)
             throw WriteError("Elmer mesh writer: partition:part has a negative part for cell " +

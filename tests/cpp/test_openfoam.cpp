@@ -39,6 +39,8 @@
 #include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/openfoam.hpp"
+#include "meshioplusplus/registry.hpp"
+#include "meshioplusplus/write_options.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../../src/cpp/src/detail/gzip_deflate.hpp"
 
@@ -1936,6 +1938,30 @@ TEST(OpenFoamCompressed, TheWriterGzipsEveryCaseFileAndReadsItBack) {
     meshioplusplus::write_openfoam((base / "case.foam").string(), m, {},
                                    meshioplusplus::OpenFoamWriteOptions{});
     EXPECT_EQ(foam_test_count(base, /*Gz=*/true), 0u);
+    std::error_code ec;
+    fs::remove_all(base, ec);
+}
+
+TEST(OpenFoamCompressed, TheRegistryWriteGzipsThroughTheZlibCodec) {
+    if (!foam_test_has_gzip())
+        GTEST_SKIP() << "this build has no zlib";
+    const meshioplusplus::Mesh m = hex_grid(2);
+    const fs::path base = temp_case_dir();
+    meshioplusplus::WriteOptions opts;
+    opts.mCodec = meshioplusplus::detail::VtkCodec::Zlib;
+    opts.mCodecSet = true;
+    std::string why;
+    EXPECT_TRUE(meshioplusplus::registry_write_supports("openfoam", opts, why)) << why;
+    meshioplusplus::registry_write_ex((base / "case.foam").string(), m, "openfoam", opts);
+    EXPECT_EQ(foam_test_count(base, /*Gz=*/false), 0u);
+    EXPECT_GE(foam_test_count(base, /*Gz=*/true), 4u);
+    EXPECT_EQ(
+        meshioplusplus::registry_read((base / "case.foam").string(), "openfoam", {}).NumPoints(),
+        27u);
+    meshioplusplus::WriteOptions lz4;
+    lz4.mCodec = meshioplusplus::detail::VtkCodec::LZ4;
+    lz4.mCodecSet = true;
+    EXPECT_FALSE(meshioplusplus::registry_write_supports("openfoam", lz4, why));
     std::error_code ec;
     fs::remove_all(base, ec);
 }

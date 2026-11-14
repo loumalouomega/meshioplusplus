@@ -37,6 +37,7 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/vtk_xml_write.hpp"
+#include "../detail/ghost_names.hpp"
 
 namespace meshioplusplus {
 

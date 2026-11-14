@@ -2901,6 +2901,13 @@ export interface MeshioPlusPlusModule {
   /** Guess a file's format from its leading bytes, or `""` if ambiguous. */
   sniffFormat(path: string): string;
 
+  /**
+   * Every format a file could be, ranked: `certain` (a content signature matched),
+   * `likely` (the extension names it and its metadata reads), `guess` (the
+   * extension alone). Empty when nothing matches.
+   */
+  detect(path: string): { format: string; confidence: string; reason: string }[];
+
   /** Renumber nodes/cells to reduce bandwidth or improve locality. */
   reorder(mesh: Mesh, method?: ReorderMethod): { mesh: Mesh; nodePermutation: Int32Array; cellPermutations: Int32Array[] };
 

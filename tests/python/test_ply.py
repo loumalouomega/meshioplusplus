@@ -174,3 +174,22 @@ def test_ply_extra_face_properties_native(binary, tmp_path):
     assert [len(c.data) for c in mesh.cells] == [2, 1, 1]
     assert [a.tolist() for a in mesh.cell_data["label"]] == [[7, 8], [9], [10]]
     assert [a.tolist() for a in mesh.cell_data["w"]] == [[0.5, 1.5], [2.5], [3.5]]
+
+
+def test_list_vertex_property_is_refused_by_name(tmp_path):
+    path = tmp_path / "l.ply"
+    path.write_text(
+        "ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\n"
+        "property float y\nproperty float z\nproperty list uchar int tex\n"
+        "element face 1\nproperty list uchar int vertex_indices\nend_header\n"
+        "0 0 0 2 1 2\n1 0 0 2 3 4\n0 1 0 2 5 6\n3 0 1 2\n"
+    )
+    with pytest.raises(meshioplusplus.ReadError, match="list"):
+        meshioplusplus.read(path)
+
+
+def test_index_above_int32_is_refused(tmp_path):
+    pts = np.zeros((3, 3))
+    cells = [("triangle", np.array([[0, 1, 2**31]], dtype=np.int64))]
+    with pytest.raises(meshioplusplus.WriteError, match="int32"):
+        meshioplusplus.ply.write(tmp_path / "o.ply", meshioplusplus.Mesh(pts, cells))

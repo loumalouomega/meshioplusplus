@@ -63,12 +63,15 @@
 
 // System includes
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -242,5 +245,38 @@ MESHIOPLUSPLUS_API Mesh read_gmsh(const std::string& rPath, GmshInfo& rInfo,
  */
 MESHIOPLUSPLUS_API MeshMetadata read_gmsh_metadata(const std::string& rPath,
                                                    const ReadOptions& rOpts = {});
+
+/**
+ * @brief A time series in one Gmsh `.msh` file (2.2 or 4.1, ASCII or binary): the mesh with the
+ *        first step, then each later step's `$NodeData` and `$ElementData` sections.
+ *
+ * A step's value is its time (the data sections' real tag) and its number its position (their
+ * first integer tag), which is how `read_gmsh` selects a step with `ReadOptions::mTimeStep`.
+ * Every step must have the first step's points and cell blocks. The Python twin,
+ * `meshioplusplus.gmsh.SeriesWriter`, writes the same sections.
+ */
+class MESHIOPLUSPLUS_API GmshSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit GmshSeriesWriter(const std::string& rPath, bool Version41 = true, bool Binary = false);
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(GmshSeriesWriter);
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step's points or cells differ from the first step's, on a
+     *         write failure, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

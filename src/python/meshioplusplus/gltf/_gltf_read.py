@@ -637,8 +637,8 @@ def read(filename, points_only=False, arrays=None, weld=False):
         state.arrays = set(arrays)
 
     skipped = [k for k in ("animations", "skins") if _list(root, k)]
-    if _list(root, "textures") or _list(root, "images"):
-        skipped.append("textures")
+    if len(_list(root, "images")) > 1:
+        skipped.append("images beyond the first")
     if skipped:
         warn("gltf: " + ", ".join(skipped) + " are skipped.")
 
@@ -722,9 +722,39 @@ def read(filename, points_only=False, arrays=None, weld=False):
                 ids.append(chunk + offsets[k])
         entries = np.concatenate(ids) if ids else np.zeros(0, dtype=np.int64)
         regions.append(Region(name, "cell", entries))
+    field_data = _texture(ctx, directory) if state.want_data else {}
     return Mesh(
         points,
         blocks,
         point_data=point_data or None,
+        field_data=field_data or None,
         regions=regions or None,
     )
+
+
+def _texture(ctx, directory):
+    """The first image's bytes as ``texture:png`` (or ``texture:jpeg``), undecoded:
+    the twin of ``gltfr_add_texture``."""
+    images = _list(ctx.root, "images")
+    if not images:
+        return {}
+    image = _object(images[0], "images[0]")
+    mime = image.get("mimeType") if isinstance(image.get("mimeType"), str) else ""
+    if "bufferView" in image:
+        index = _uint(image["bufferView"], "image.bufferView")
+        views = _list(ctx.root, "bufferViews")
+        if index >= len(views):
+            _fail("an image names a bufferView that does not exist")
+        length = _uint_or(
+            _object(views[index], "bufferView"), "byteLength", 0, "bufferView"
+        )
+        buffer, offset, _ = _span(ctx, index, 0, 1, length, False)
+        data = bytes(buffer[offset : offset + length])
+    elif isinstance(image.get("uri"), str):
+        data = _uri_bytes(image["uri"], directory)
+    else:
+        return {}
+    jpeg = mime == "image/jpeg" or data[:2] == b"\xff\xd8"
+    return {
+        "texture:jpeg" if jpeg else "texture:png": np.frombuffer(data, np.uint8).copy()
+    }

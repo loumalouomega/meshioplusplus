@@ -43,6 +43,7 @@
 #include "meshioplusplus/vtk_common.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/vtk_write_cell.hpp"
+#include "../detail/ghost_names.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -499,10 +500,10 @@ struct VtxStep {
 // vtkOriginalPointIds (the first with vtkGhostType 0, else the first seen), keep
 // the surviving points in their first-seen order, and drop both ghost arrays.
 void vtx_weld_ghosts(VtxStep& rStep, bool SortById) {
-    auto ids_it = rStep.mPointData.find("vtkOriginalPointIds");
-    auto ghost_it = rStep.mPointData.find("vtkGhostType");
+    auto ids_it = rStep.mPointData.find(detail::kVtkOriginalPointIds);
+    auto ghost_it = rStep.mPointData.find(detail::kVtkGhostType);
     if (ids_it == rStep.mPointData.end()) {
-        log::warn("VTX: no vtkOriginalPointIds, so ghost points cannot be welded");
+        log::warn("VTX: no {}, so ghost points cannot be welded", detail::kVtkOriginalPointIds);
         return;
     }
     const NDArray& rIds = ids_it->second;
@@ -531,8 +532,8 @@ void vtx_weld_ghosts(VtxStep& rStep, bool SortById) {
     for (std::int64_t& rV : rStep.mConn)
         rV = new_index[owner[vtx_int_at(rIds, static_cast<std::size_t>(rV))]];
     rStep.mPoints = vtx_take_rows(rStep.mPoints, keep);
-    rStep.mPointData.erase("vtkGhostType");
-    rStep.mPointData.erase("vtkOriginalPointIds");
+    rStep.mPointData.erase(detail::kVtkGhostType);
+    rStep.mPointData.erase(detail::kVtkOriginalPointIds);
     for (auto& rEntry : rStep.mPointData)
         rEntry.second = vtx_take_rows(rEntry.second, keep);
 }
@@ -615,7 +616,8 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
     // Data arrays of the requested step itself.
     const bool drop = rOpts.mGhosts == GhostPolicy::Drop || layout.mShared;
     for (const VtxArray& rA : rS.mArrays) {
-        const bool ghost_array = rA.mName == "vtkGhostType" || rA.mName == "vtkOriginalPointIds";
+        const bool ghost_array =
+            rA.mName == detail::kVtkGhostType || rA.mName == detail::kVtkOriginalPointIds;
         const bool wanted = !rOpts.mPointsOnly && rOpts.WantsArray(rA.mName);
         if (!wanted && !(drop && ghost_array && !rA.mCell))
             continue;
@@ -809,9 +811,9 @@ MeshMetadata read_vtx_metadata(const std::string& rPath, const ReadOptions& rOpt
 // ---------------------------------------------------------------------------
 namespace {
 
-constexpr const char* kVwPartition = "partition:part";
-constexpr const char* kVwGhostType = "vtkGhostType";
-constexpr const char* kVwOriginalIds = "vtkOriginalPointIds";
+constexpr const char* kVwPartition = detail::kPartitionPart;
+constexpr const char* kVwGhostType = detail::kVtkGhostType;
+constexpr const char* kVwOriginalIds = detail::kVtkOriginalPointIds;
 
 [[noreturn]] void vw_fail(const std::string& rMessage) {
     throw WriteError("VTX (.bp): " + rMessage);

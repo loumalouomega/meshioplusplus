@@ -295,6 +295,12 @@ _VERBS = (
         "Surface distance from source points (heat method)",
     ),
     _Verb(
+        "bake-texture",
+        "_bake_texture",
+        "bake_texture_cmd",
+        "Bake a point or cell array into a texture through uv",
+    ),
+    _Verb(
         "parameterize",
         "_parameterize",
         "parameterize_cmd",
@@ -336,6 +342,12 @@ _VERBS = (
         "extract_surface_cmd",
         "Extract the boundary surface/edges",
         aliases=("surface",),
+    ),
+    _Verb(
+        "detect",
+        "_detect",
+        "detect_cmd",
+        "Rank the formats a file could be (certain / likely / guess)",
     ),
     _Verb(
         "reorder",

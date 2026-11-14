@@ -51,13 +51,16 @@
  */
 
 // System includes
+#include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/export.hpp"
+#include "meshioplusplus/formats/time_series_common.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/read_options.hpp"
 
@@ -140,5 +143,39 @@ MESHIOPLUSPLUS_API Mesh read_unv(const std::string& rPath, UnvInfo& rInfo,
  */
 MESHIOPLUSPLUS_API MeshMetadata read_unv_metadata(const std::string& rPath,
                                                   const ReadOptions& rOpts = {});
+
+/**
+ * @brief A time series in one UNV file: the mesh with the first step, then each later step's
+ *        results datasets (2414, or the legacy 55 and 56 with @p CodeAster).
+ *
+ * A step's value is its time and its number its position (the datasets' `unv:step`); the
+ * analysis type is the mesh's `unv:analysis`, else 4 (transient). Every step must have the first step's
+ * points and cell blocks. The Python twin, `meshioplusplus.unv.SeriesWriter`, writes the same
+ * bytes.
+ */
+class MESHIOPLUSPLUS_API UnvSeriesWriter {
+public:
+    /// @throws WriteError when @p rPath cannot be opened.
+    explicit UnvSeriesWriter(const std::string& rPath, bool CodeAster = false,
+                             int NodeDataset = 2411);
+    MESHIOPLUSPLUS_SERIES_WRITER_SPECIAL_MEMBERS(UnvSeriesWriter);
+
+    /**
+     * @brief Write one step (the first also writes the mesh).
+     * @throws WriteError when the step's points or cells differ from the first step's, on a
+     *         write failure, or on a moved-from writer.
+     */
+    void Write(double Time, const Mesh& rMesh);
+
+    /// The number of steps written so far.
+    std::size_t NumSteps() const noexcept;
+
+    /// Close the file. Idempotent. @throws WriteError when no step was written.
+    void Finalize();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> mpImpl;
+};
 
 }  // namespace meshioplusplus

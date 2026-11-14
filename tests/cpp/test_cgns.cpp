@@ -566,18 +566,19 @@ TEST(Cgns, UnverifiedOrderingTypeThrows) {
     std::filesystem::remove(p, ec);
 }
 
-TEST(Cgns, StructuredZoneThrows) {
+TEST(Cgns, UnsupportedZoneTypeThrows) {
     std::string p = mt::temp_path(".cgns");
     meshioplusplus::write_cgns(p, mt::tet_mesh(), -1);
     {
         h5::SilenceErrors silence;
         h5::Hid f = h5::open_file_rw(p);
         h5::Hid zt = h5::open_group(f, "Base/Zone1/ZoneType");
-        // Overwrite " data" with "Structured" (10 bytes, same convention).
+        // Overwrite " data" with "UserDefined" (11 bytes, same convention): a structured
+        // zone is expanded to its lattice, so the zone type that still throws is another.
         H5Ldelete(zt, " data", H5P_DEFAULT);
-        meshioplusplus::NDArray sdata(meshioplusplus::DType::Int8, {10});
-        const char* s = "Structured";
-        for (int i = 0; i < 10; ++i)
+        meshioplusplus::NDArray sdata(meshioplusplus::DType::Int8, {11});
+        const char* s = "UserDefined";
+        for (int i = 0; i < 11; ++i)
             sdata.As<std::int8_t>()[i] = static_cast<std::int8_t>(s[i]);
         h5::write_dataset(zt, " data", sdata);
     }
@@ -661,8 +662,8 @@ std::string cgns_two_zone_file(const mt::Mesh& rMesh) {
 }
 
 // `rOut` is `rOne` (the single-zone read) twice: its points stacked, its blocks
-// repeated with the second copy's node ids shifted by its point count, and no
-// FlowSolution (not read across zones).
+// repeated with the second copy's node ids shifted by its point count, and its
+// FlowSolution arrays stacked.
 void cgns_expect_two_copies(const mt::Mesh& rOne, const mt::Mesh& rOut) {
     const std::size_t np = rOne.NumPoints();
     const std::size_t nb = rOne.NumCellBlocks();
@@ -688,7 +689,10 @@ void cgns_expect_two_copies(const mt::Mesh& rOne, const mt::Mesh& rOut) {
                               static_cast<std::int64_t>(copy * np));
         }
     }
-    EXPECT_EQ(rOut.NumPointData(), 0u);
+    // FlowSolution is concatenated across zones too (roadmap 2.3.1.1): one array per name.
+    EXPECT_EQ(rOut.NumPointData(), rOne.NumPointData());
+    for (const auto& name : rOne.PointDataNames())
+        EXPECT_EQ(rOut.PointData(name).Size(), 2 * rOne.PointData(name).Size()) << name;
 }
 
 }  // namespace

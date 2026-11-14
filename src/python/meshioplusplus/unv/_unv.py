@@ -18,7 +18,7 @@ import numpy as np
 
 from .. import _provenance
 from .._common import warn
-from .._exceptions import ReadError
+from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
 from .._node_order import node_order, node_order_keys
@@ -1488,3 +1488,105 @@ def _write_fields(f, mesh, elem_labels, code_aster):
             continue
         field_id += 1
         write_field(field_id, name, 2, labels, np.concatenate(rows))
+
+
+def _results_text(text):
+    """The results datasets (2414, or the legacy 55 and 56) of a UNV file's text,
+    each with its ``    -1`` delimiters: what a later step adds to the file. Twin
+    of ``unv_results_text`` in ``unv.cpp``."""
+    lines = text.split("\n")
+    out = []
+    i = 0
+    while i < len(lines):
+        if (
+            lines[i] == "    -1"
+            and i + 1 < len(lines)
+            and lines[i + 1].strip() in ("2414", "55", "56")
+        ):
+            j = i + 2
+            while j < len(lines) and lines[j] != "    -1":
+                j += 1
+            out.extend(lines[i : j + 1])
+            i = j + 1
+            continue
+        i += 1
+    return "".join(line + "\n" for line in out)
+
+
+class SeriesWriter:
+    """The Python twin of ``UnvSeriesWriter``: the mesh with the first step, then
+    each later step's results datasets. Use as a context manager, or call
+    :meth:`close`."""
+
+    def __init__(self, filename, code_aster=False, node_dataset=2411):
+        self._path = str(filename)
+        self._code_aster = code_aster
+        self._node_dataset = node_dataset
+        with open(self._path, "wb"):
+            pass
+        self._steps = 0
+        self._shape = None
+        self._closed = False
+
+    def write(self, time, mesh):
+        import os
+        import tempfile
+
+        if self._closed:
+            raise WriteError("UNV series: the writer is finalized")
+        step = self._steps + 1
+        labelled = mesh.copy()
+        labelled.field_data[TIME_KEY] = np.array([float(time)])
+        labelled.field_data["unv:step"] = np.array([step], dtype=np.int64)
+        if "unv:analysis" not in labelled.field_data:
+            # transient: its datasets carry the time (analysis 0 keys steps by number)
+            labelled.field_data["unv:analysis"] = np.array([4], dtype=np.int64)
+        shape = (len(mesh.points), [len(c.data) for c in mesh.cells])
+        if self._steps == 0:
+            write(
+                self._path,
+                labelled,
+                code_aster=self._code_aster,
+                node_dataset=self._node_dataset,
+            )
+            self._shape = shape
+        else:
+            if shape != self._shape:
+                raise WriteError(
+                    f"UNV series: step {self._steps}'s points or cells differ from the "
+                    "first step's; a file holds one mesh -- write one file per step "
+                    "with '{step}'"
+                )
+            fd, scratch = tempfile.mkstemp(suffix=".unv")
+            os.close(fd)
+            try:
+                write(
+                    scratch,
+                    labelled,
+                    code_aster=self._code_aster,
+                    node_dataset=self._node_dataset,
+                )
+                with open(scratch, "rb") as fh:
+                    text = fh.read().decode("latin-1")
+            finally:
+                os.remove(scratch)
+            with open(self._path, "ab") as fh:
+                fh.write(_results_text(text).encode("latin-1"))
+        self._steps += 1
+
+    def close(self):
+        if self._closed:
+            return
+        if self._steps == 0:
+            raise WriteError("UNV series: no step was written")
+        self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if exc[0] is None:
+            self.close()
+        else:
+            self._closed = True
+        return False

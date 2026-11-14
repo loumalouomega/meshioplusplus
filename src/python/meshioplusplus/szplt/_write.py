@@ -34,6 +34,7 @@ import ctypes
 
 import numpy as np
 
+from .. import _ghosts
 from .._common import warn
 from .._exceptions import WriteError
 from .._files import is_buffer
@@ -379,7 +380,7 @@ def _partition_plan(parts, num_nodes, local):
 def _parts(mesh, block):
     """The ``partition:part`` values of a cell block, or None."""
     data = getattr(mesh, "cell_data", {}) or {}
-    values = data.get("partition:part")
+    values = data.get(_ghosts.PARTITION_PART)
     if values is None or block >= len(values):
         return None
     a = np.asarray(values[block])

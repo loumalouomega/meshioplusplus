@@ -17,7 +17,7 @@ import zlib
 
 import numpy as np
 
-from .. import _provenance
+from .. import _ghosts, _provenance
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
@@ -247,7 +247,7 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         )
 
     def data_array_str(name, data, ncomp, ntuples=None):
-        if name == "vtkGhostType" and data.dtype != np.uint8:
+        if name == _ghosts.VTK_GHOST_TYPE and data.dtype != np.uint8:
             # VTK's reserved ghost-flag name: always UInt8 on disk (see the VTU writer).
             data = data.astype(np.uint8)
         vtu_type = numpy_to_vtu_type[data.dtype.newbyteorder("=")]

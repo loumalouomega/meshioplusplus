@@ -81,9 +81,17 @@
 #include "meshioplusplus/formats/ensight.hpp"
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
 #include "meshioplusplus/formats/exodus.hpp"
+#include "meshioplusplus/formats/ugrid_nc.hpp"
 #endif
 #include "meshioplusplus/formats/dex.hpp"
 #include "meshioplusplus/formats/dxf.hpp"
+#include "meshioplusplus/formats/plot3d.hpp"
+#include "meshioplusplus/formats/adcirc.hpp"
+#include "meshioplusplus/formats/gifti.hpp"
+#include "meshioplusplus/formats/threemf.hpp"
+#include "meshioplusplus/formats/las.hpp"
+#include "meshioplusplus/formats/freesurfer.hpp"
+#include "meshioplusplus/formats/selafin.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
 #include "meshioplusplus/formats/flux.hpp"
 #include "meshioplusplus/formats/freefem.hpp"
@@ -218,6 +226,8 @@
 #include "meshioplusplus/operations/hessian.hpp"
 #include "meshioplusplus/operations/slice.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/operations/bake_texture.hpp"
+#include "meshioplusplus/operations/detect.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -2512,6 +2522,18 @@ PYBIND11_MODULE(_core, m) {
         "sniff_format",
         [](const std::string& path) {
             return core_nogil([&] { return meshioplusplus::sniff_format(path); });
+        },
+        py::arg("path"));
+
+    // A ranked detection report: [(format, confidence, reason)] (roadmap 2.4.9).
+    m.def(
+        "detect_format",
+        [](const std::string& path) {
+            const auto found = core_nogil([&] { return meshioplusplus::detect_format(path); });
+            py::list out;
+            for (const auto& c : found)
+                out.append(py::make_tuple(c.mFormat, c.mConfidence, c.mReason));
+            return out;
         },
         py::arg("path"));
 
@@ -7497,6 +7519,37 @@ PYBIND11_MODULE(_core, m) {
         py::arg("max_stretch") = 2.0);
 
     m.def(
+        "bake_texture",
+        [](py::object pymesh, const std::string& array, std::int64_t width, std::int64_t height,
+           const std::string& cmap, std::optional<double> vmin, std::optional<double> vmax,
+           std::int64_t component) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::BakeTextureOptions options;
+            options.mArray = array;
+            options.mWidth = width;
+            options.mHeight = height;
+            options.mCmap = cmap;
+            options.mVMin = vmin;
+            options.mVMax = vmax;
+            options.mComponent = component;
+            meshioplusplus::BakeTextureResult r =
+                core_nogil([&] { return meshioplusplus::bake_texture(cpp, options); });
+            py::dict out;
+            out["image"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mImage));
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["vmin"] = r.mVMin;
+            out["vmax"] = r.mVMax;
+            out["covered_pixels"] = r.mCoveredPixels;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("width") = 512, py::arg("height") = 512,
+        py::arg("cmap") = "viridis", py::arg("vmin") = py::none(), py::arg("vmax") = py::none(),
+        py::arg("component") = -1);
+
+    m.def(
         "hessian",
         [](py::object pymesh, const std::string& array, const std::string& method,
            const std::string& location, const std::string& output, bool overwrite) {
@@ -8263,6 +8316,95 @@ PYBIND11_MODULE(_core, m) {
     core_def_read(m, "off_read", "off", &meshioplusplus::read_off);
     core_def_write(m, "dxf_write", &meshioplusplus::write_dxf);
     core_def_read(m, "dxf_read", "dxf", &meshioplusplus::read_dxf);
+    core_def_write(m, "adcirc_write", &meshioplusplus::write_adcirc);
+    m.def("adcirc_read",
+          guard_read("adcirc",
+                     [](const std::string& path, const std::vector<std::string>& results,
+                        bool siblings, long long time_step) {
+                         meshioplusplus::AdcircReadOptions o;
+                         o.mResults = results;
+                         o.mSiblings = siblings;
+                         o.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_adcirc(path, o); }));
+                     }),
+          py::arg("path"), py::arg("results") = std::vector<std::string>{},
+          py::arg("siblings") = true, py::arg("time_step") = 0);
+    m.def(
+        "adcirc_time_values",
+        [](const std::string& path) {
+            return core_nogil(
+                [&] { return meshioplusplus::read_adcirc_metadata(path, {}).mTimeValues; });
+        },
+        py::arg("path"));
+    core_def_write(m, "las_write", &meshioplusplus::write_las);
+    m.def("las_read",
+          guard_read(
+              "las",
+              [](const std::string& path, std::size_t every, py::object arrays, bool points_only) {
+                  meshioplusplus::ReadOptions o;
+                  o.mPointsOnly = points_only;
+                  if (!arrays.is_none())
+                      o.mDataArrays = arrays.cast<std::vector<std::string>>();
+                  meshioplusplus::LasReadOptions las;
+                  las.mEvery = every;
+                  return meshioplusplus_py::mesh_to_py(
+                      core_nogil([&] { return meshioplusplus::read_las(path, o, las); }));
+              }),
+          py::arg("path"), py::arg("every") = 1, py::arg("arrays") = py::none(),
+          py::arg("points_only") = false);
+    core_def_write(m, "threemf_write", &meshioplusplus::write_3mf);
+    core_def_read(m, "threemf_read", "3mf", &meshioplusplus::read_3mf);
+    core_def_write(m, "gifti_write", &meshioplusplus::write_gifti);
+    core_def_read(m, "gifti_read", "gifti", &meshioplusplus::read_gifti);
+    core_def_write(m, "freesurfer_write", &meshioplusplus::write_freesurfer);
+    m.def("freesurfer_read",
+          guard_read("freesurfer",
+                     [](const std::string& path, const std::vector<std::string>& curv,
+                        const std::string& annot) {
+                         meshioplusplus::FreesurferReadOptions o;
+                         o.mCurv = curv;
+                         o.mAnnot = annot;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_freesurfer(path, o); }));
+                     }),
+          py::arg("path"), py::arg("curv") = std::vector<std::string>{}, py::arg("annot") = "");
+    core_def_write(m, "selafin_write", &meshioplusplus::write_selafin);
+    m.def("selafin_read",
+          guard_read("selafin",
+                     [](const std::string& path, long long time_step) {
+                         meshioplusplus::ReadOptions o;
+                         o.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_selafin(path, o); }));
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
+    m.def(
+        "selafin_time_values",
+        [](const std::string& path) {
+            return core_nogil(
+                [&] { return meshioplusplus::read_selafin_metadata(path, {}).mTimeValues; });
+        },
+        py::arg("path"));
+    core_def_write(m, "plot3d_write", &meshioplusplus::write_plot3d);
+    m.def("plot3d_read",
+          guard_read(
+              "plot3d",
+              [](const std::string& path, const std::string& solution, const std::string& function,
+                 int precision, int multiblock, int iblank, int dimensions) {
+                  meshioplusplus::Plot3dReadOptions o;
+                  o.mSolution = solution;
+                  o.mFunction = function;
+                  o.mPrecision = precision;
+                  o.mMultiblock = multiblock;
+                  o.mIblank = iblank;
+                  o.mDimensions = dimensions;
+                  return meshioplusplus_py::mesh_to_py(
+                      core_nogil([&] { return meshioplusplus::read_plot3d(path, o); }));
+              }),
+          py::arg("path"), py::arg("solution") = "", py::arg("function") = "",
+          py::arg("precision") = 0, py::arg("multiblock") = -1, py::arg("iblank") = -1,
+          py::arg("dimensions") = 0);
 
     // OBJ writer / reader.
     core_def_write(m, "obj_write", &meshioplusplus::write_obj);
@@ -8936,6 +9078,37 @@ PYBIND11_MODULE(_core, m) {
     // `meshioplusplus.femap.SeriesWriter`.
     core_def_step_writer(py::class_<meshioplusplus::FemapSeriesWriter>(m, "FemapSeriesWriter")
                              .def(py::init<const std::string&>(), py::arg("path")));
+
+#ifdef MESHIOPLUSPLUS_HAS_HDF5
+    // A time series in one MED file: the core half of `meshioplusplus.med.SeriesWriter`.
+    core_def_step_writer(py::class_<meshioplusplus::MedSeriesWriter>(m, "MedSeriesWriter")
+                             .def(py::init<const std::string&>(), py::arg("path")));
+
+    // A time series in one CGNS file: the core half of `meshioplusplus.cgns.SeriesWriter`.
+    core_def_step_writer(
+        py::class_<meshioplusplus::CgnsSeriesWriter>(m, "CgnsSeriesWriter")
+            .def(py::init<const std::string&, int>(), py::arg("path"), py::arg("gzip_level") = 4));
+#endif
+
+    // A time series in one Tecplot ASCII file: the core half of
+    // `meshioplusplus.tecplot.SeriesWriter`.
+    core_def_step_writer(py::class_<meshioplusplus::TecplotSeriesWriter>(m, "TecplotSeriesWriter")
+                             .def(py::init<const std::string&>(), py::arg("path")));
+
+    // A time series as one EnSight case: the core half of `meshioplusplus.ensight.SeriesWriter`.
+    core_def_step_writer(py::class_<meshioplusplus::EnsightSeriesWriter>(m, "EnsightSeriesWriter")
+                             .def(py::init<const std::string&, bool, bool>(), py::arg("path"),
+                                  py::arg("binary") = true, py::arg("fortran") = false));
+
+    // A time series in one Gmsh file: the core half of `meshioplusplus.gmsh.SeriesWriter`.
+    core_def_step_writer(py::class_<meshioplusplus::GmshSeriesWriter>(m, "GmshSeriesWriter")
+                             .def(py::init<const std::string&, bool, bool>(), py::arg("path"),
+                                  py::arg("version41") = true, py::arg("binary") = false));
+
+    // A time series in one UNV file: the core half of `meshioplusplus.unv.SeriesWriter`.
+    core_def_step_writer(py::class_<meshioplusplus::UnvSeriesWriter>(m, "UnvSeriesWriter")
+                             .def(py::init<const std::string&, bool, int>(), py::arg("path"),
+                                  py::arg("code_aster") = false, py::arg("node_dataset") = 2411));
 
     // A time series in one CalculiX result file (v16.39.0): the core half of
     // `meshioplusplus.frd.SeriesWriter`.
@@ -9653,6 +9826,15 @@ finalizes.
                              core_nogil([&] { return meshioplusplus::read_cgns(path, opts); }));
                      }),
           py::arg("path"), py::arg("time_step") = 0);
+    m.def("cgns_read_base",
+          guard_read("cgns",
+                     [](const std::string& path, const std::string& base, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(core_nogil(
+                             [&] { return meshioplusplus::read_cgns_base(path, base, opts); }));
+                     }),
+          py::arg("path"), py::arg("base"), py::arg("time_step") = 0);
 
     // HMF writer / reader (.hmf).
     m.def("hmf_write", [](const std::string& path, py::object pymesh, int gzip_level) {
@@ -9991,7 +10173,10 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // Exodus II writer / reader (.e/.exo/.ex2).
     m.def("exodus_write", [](const std::string& path, py::object pymesh) {
         meshioplusplus_py::PyMeshRefs refs;
-        const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(pymesh, refs);
+        // NSIDED and NFACED are written natively, so jagged polygon and polyhedron blocks are
+        // accepted (copied out of their Python lists).
+        const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         core_nogil([&] { return meshioplusplus::write_exodus(path, cpp); });
     });
     m.def("exodus_read",
@@ -10009,6 +10194,28 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                          return pymesh;
                      }),
           py::arg("path"), py::arg("time_step") = 0);
+    m.def("ugrid_nc_write", [](const std::string& path, py::object pymesh) {
+        meshioplusplus_py::PyMeshRefs refs;
+        const meshioplusplus::Mesh cpp = meshioplusplus_py::py_to_mesh(
+            pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
+        core_nogil([&] { return meshioplusplus::write_ugrid_nc(path, cpp); });
+    });
+    m.def("ugrid_nc_read",
+          guard_read("ugrid_nc",
+                     [](const std::string& path, int time_step) {
+                         meshioplusplus::ReadOptions opts;
+                         opts.mTimeStep = time_step;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_ugrid_nc(path, opts); }));
+                     }),
+          py::arg("path"), py::arg("time_step") = 0);
+    m.def(
+        "ugrid_nc_time_values",
+        [](const std::string& path) {
+            return core_nogil(
+                [&] { return meshioplusplus::read_ugrid_nc_metadata(path, {}).mTimeValues; });
+        },
+        py::arg("path"));
 #endif
 
     // DOLFIN XML writer / reader (.xml).
@@ -10023,7 +10230,16 @@ data. Usable as a context manager; ``__exit__`` finalizes.
             pymesh, refs, /*lenient_field_data=*/false, /*allow_ragged=*/true);
         core_nogil([&] { return meshioplusplus::write_ansys(path, cpp, binary); });
     });
-    core_def_read(m, "ansys_read", "ansys", &meshioplusplus::read_ansys);
+    m.def("ansys_read",
+          guard_read("ansys",
+                     [](const std::string& path, const std::string& data, bool sibling_data) {
+                         meshioplusplus::AnsysReadOptions o;
+                         o.mData = data;
+                         o.mSiblingData = sibling_data;
+                         return meshioplusplus_py::mesh_to_py(
+                             core_nogil([&] { return meshioplusplus::read_ansys(path, o); }));
+                     }),
+          py::arg("path"), py::arg("data") = "", py::arg("sibling_data") = true);
 
     // Ansys MAPDL coded database (.cdb/.inp). CMBLOCK components arrive as
     // point/cell regions (the Python point_sets/cell_sets views read them).
@@ -10059,6 +10275,18 @@ data. Usable as a context manager; ``__exit__`` finalizes.
     // `region` selects one region of a multi-region case (v11.4.0, roadmap §1
     // tier B2): `<case>/constant/<region>/polyMesh`. `time_step`/`arrays`
     // (same tier) select a time directory and which of its fields to attach.
+    m.def("openfoam_read_cloud",
+          guard_read("openfoam",
+                     [](const std::string& path, const std::string& cloud, bool points_only,
+                        py::object arrays, int time_step) {
+                         const meshioplusplus::ReadOptions opts =
+                             core_read_options(points_only, arrays, time_step);
+                         return meshioplusplus_py::mesh_to_py(core_nogil([&] {
+                             return meshioplusplus::read_openfoam_cloud(path, cloud, opts);
+                         }));
+                     }),
+          py::arg("path"), py::arg("cloud"), py::arg("points_only") = false,
+          py::arg("arrays") = py::none(), py::arg("time_step") = 0);
     m.def("openfoam_read",
           guard_read("openfoam",
                      [](const std::string& path, const std::string& region, bool points_only,
