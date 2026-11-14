@@ -185,7 +185,13 @@ def read(filename, time_step=0):
         for c, name in enumerate(coords[:3]):
             var = _var(nc, name)
             var.set_auto_mask(False)
-            points[:, c] = np.asarray(var[:], dtype=np.float64).reshape(-1)
+            values = np.asarray(var[:], dtype=np.float64).reshape(-1)
+            if len(values) != nn:
+                raise ReadError(
+                    f"meshio++: ugrid_nc: '{name}' holds {len(values)} values, the "
+                    f"mesh needs {nn}"
+                )
+            points[:, c] = values
         cells, face_blocks = [], []
         faces = _att(tvar, "face_node_connectivity")
         rows = _connectivity(nc, faces, face_dim, nn) if faces else []

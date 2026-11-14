@@ -164,3 +164,46 @@ def test_xugrid_reads_what_we_write_and_the_reverse(tmp_path):
         assert len(back.points) == 5
         # xugrid also writes the faces' edges, which read back as a line block.
         assert [c.type for c in back.cells][:2] == ["triangle", "quad"]
+
+
+def test_a_coordinate_longer_than_the_node_dimension_is_refused(tmp_path, reader):
+    """fuzz finding: the variable was read whole into a buffer sized by the node
+    dimension, past its end (tests/fuzz/regressions/ugrid_nc)."""
+    path = str(tmp_path / "long.nc")
+    with netCDF4.Dataset(path, "w") as nc:
+        nc.createDimension("nNodes", 3)
+        nc.createDimension("nLong", 8)
+        topo = nc.createVariable("Mesh2", "i4")
+        topo.cf_role = "mesh_topology"
+        topo.topology_dimension = 1
+        topo.node_coordinates = "x y"
+        nc.createVariable("x", "f8", ("nNodes",))[:] = [0.0, 1.0, 2.0]
+        nc.createVariable("y", "f8", ("nLong",))[:] = np.arange(8.0)
+    with pytest.raises(mio.ReadError, match="holds 8 values"):
+        reader(path)
+
+
+def test_a_time_variable_longer_than_its_dimension_is_refused(tmp_path, monkeypatch):
+    """The core reads the variable named after the time dimension whole: a longer one
+    must be refused, not read past the step buffer."""
+    if not getattr(mio._core, "__has_netcdf__", False):
+        pytest.skip("this build has no netCDF")
+    monkeypatch.setattr(_fallback, "_strict", True)
+    path = str(tmp_path / "time.nc")
+    with netCDF4.Dataset(path, "w") as nc:
+        nc.createDimension("nNodes", 2)
+        nc.createDimension("time", 2)
+        nc.createDimension("longer", 5)
+        topo = nc.createVariable("Mesh2", "i4")
+        topo.cf_role = "mesh_topology"
+        topo.topology_dimension = 1
+        topo.node_coordinates = "x y"
+        nc.createVariable("x", "f8", ("nNodes",))[:] = [0.0, 1.0]
+        nc.createVariable("y", "f8", ("nNodes",))[:] = [0.0, 1.0]
+        nc.createVariable("time", "f8", ("longer",))[:] = np.arange(5.0)
+        h = nc.createVariable("h", "f8", ("time", "nNodes"))
+        h.mesh = "Mesh2"
+        h.location = "node"
+        h[:] = np.zeros((2, 2))
+    with pytest.raises(mio.ReadError, match="holds 5 values"):
+        mio.ugrid_nc.read(path)

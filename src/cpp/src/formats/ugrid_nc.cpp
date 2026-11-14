@@ -122,6 +122,27 @@ std::vector<int> ug_dimids(int Ncid, int Varid) {
     return ids;
 }
 
+/// The number of values a whole-variable read of @p Varid returns (the product of its dimension
+/// lengths). A buffer sized from some other dimension must be checked against it first: a
+/// corrupt file names a variable longer than the dimension it claims, and the read would run
+/// past the buffer.
+std::size_t ug_var_count(int Ncid, int Varid) {
+    std::size_t count = 1;
+    for (const int dim : ug_dimids(Ncid, Varid)) {
+        std::size_t len = 0;
+        ug_check(nc_inq_dimlen(Ncid, dim, &len), "inq_dimlen");
+        count *= len;
+    }
+    return count;
+}
+
+void ug_require_count(int Ncid, int Varid, const std::string& rName, std::size_t Want) {
+    const std::size_t have = ug_var_count(Ncid, Varid);
+    if (have != Want)
+        throw ReadError("meshio++: ugrid_nc: '" + rName + "' holds " + std::to_string(have) +
+                        " values, the mesh needs " + std::to_string(Want));
+}
+
 int ug_dimid(int Ncid, const std::string& rName) {
     int id = -1;
     return nc_inq_dimid(Ncid, rName.c_str(), &id) == NC_NOERR ? id : -1;
@@ -248,9 +269,10 @@ UgFile ug_scan(int Ncid) {
         ug_check(nc_inq_dimname(Ncid, f.mTimeDim, dname), "inq_dimname");
         f.mTimes.assign(n, 0.0);
         int tv = -1;
-        if (nc_inq_varid(Ncid, dname, &tv) == NC_NOERR && n > 0)
+        if (nc_inq_varid(Ncid, dname, &tv) == NC_NOERR && n > 0) {
+            ug_require_count(Ncid, tv, dname, n);
             ug_check(nc_get_var_double(Ncid, tv, f.mTimes.data()), "time");
-        else
+        } else
             for (std::size_t k = 0; k < n; ++k)
                 f.mTimes[k] = static_cast<double>(k);
     }
@@ -285,9 +307,11 @@ Mesh read_ugrid_nc(const std::string& rPath, const ReadOptions& rOptions) {
     NDArray pts(DType::Float64, {nn, 3});
     for (std::size_t c = 0; c < std::min<std::size_t>(coords.size(), 3); ++c) {
         std::vector<double> col(nn, 0.0);
-        if (nn > 0)
-            ug_check(nc_get_var_double(ncid, ug_varid(ncid, coords[c]), col.data()),
-                     coords[c].c_str());
+        if (nn > 0) {
+            const int var = ug_varid(ncid, coords[c]);
+            ug_require_count(ncid, var, coords[c], nn);
+            ug_check(nc_get_var_double(ncid, var, col.data()), coords[c].c_str());
+        }
         for (std::size_t i = 0; i < nn; ++i)
             pts.As<double>()[i * 3 + c] = col[i];
     }
