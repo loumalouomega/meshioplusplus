@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Performance:** `optimize_volume`'s worst-cell smoothing (and `adapt_volume`'s, which shares it) stops evaluating a line-search probe once one tet of the star is at or below the acceptance threshold (roadmap 5.5.2, [optimize_volume](doc/optimize_volume.md#scope-and-determinism)): the row's instructions fall 41% (25.0 G to 14.9 G at tier S) and `adapt_volume`'s 21%, output bit-identical. `benchmark/instructions_S.csv` is re-recorded for those two rows only.
 - **Fix:** the native pipeline engine accepts a bare number for `Transform`'s `Scale` (`"Scale": 2`, the uniform-scale spelling the Python engine and the C++ comment already documented); it threw "must be an array of numbers" before.
 - **Benchmarks:** `meshioplusplus_bench_ops` rows for the four result-file readers (`read_d3plot`, `read_op2`, `read_rst`, `read_xplt`, the last of four states written through each series writer) and for `transform`, `mirror`, `flip_normals` and `pipeline_transform_chain` (roadmap 5.1.2, [benchmarks](doc/benchmarks.md#result-file-reader-and-transform-rows)). `benchmark/instructions_S.csv` gains their eight rows; every existing row is unchanged and within 1% of its count.
 - **Decided:** no in-place `transform` (formerly roadmap 5.14): at tier L the copies are at most 2.5% of a three-transform chain that ends in a `vtu` write, which takes 88% of it; the data-only operations are under 1% each ([benchmarks](doc/benchmarks.md#what-an-in-place-transform-could-save)).

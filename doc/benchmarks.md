@@ -920,7 +920,14 @@ Roadmap 5.5.2. `valgrind --tool=callgrind --toggle-collect='meshioplusplus::opti
 | `optvol_pass_23` | 2.6% |
 | the five comparison sorts of the face and edge tables, together | 7.4% |
 
-The comparison sorts of each sweep's face and edge tables, which the roadmap named as the likely cost, come to 7.4% between them: replacing them with `group_slots` would save at most that, and was not taken. `optvol_min_dihedral` took `acos` of all six edges of every tet a probe evaluates; `acos` is decreasing, with a slope of magnitude at least 1 and an error of about an ulp, so a cosine more than `1e-12` below the largest one already evaluated cannot give the least angle, and its `acos` is now skipped. The result is the same bit for bit (the row's digest at tiers S and M on every backend). Tier S, SEQ: 4.56 s to 3.34 s. What is left is the smoothing's algorithm, every tet of a star at every probe ([roadmap](./roadmap.md#performance)).
+The comparison sorts of each sweep's face and edge tables, which the roadmap named as the likely cost, come to 7.4% between them: replacing them with `group_slots` would save at most that, and was not taken. `optvol_min_dihedral` took `acos` of all six edges of every tet a probe evaluates; `acos` is decreasing, with a slope of magnitude at least 1 and an error of about an ulp, so a cosine more than `1e-12` below the largest one already evaluated cannot give the least angle, and its `acos` is now skipped. The result is the same bit for bit (the row's digest at tiers S and M on every backend). Tier S, SEQ: 4.56 s to 3.34 s. What is left is the smoothing's algorithm, every tet of a star at every probe.
+
+That is what the next change removed. The smoothing's kernel is now `detail::tet_flip_smooth_worst` (`detail/tet_flips.cpp`, shared with `adapt_volume`), and its line search stops looking at a probe once one tet of the star is at or below the acceptance threshold, since the star's least angle only falls as tets are added and the search reads nothing but the comparison ([the argument](./optimize_volume.md#scope-and-determinism)). Digests are unchanged at tiers S and M (SEQ) and on every backend and thread count at tier S; no arithmetic moved.
+
+| Row (SEQ) | Instructions, tier S | Time, tier S | Time, tier M |
+| --- | ---: | ---: | ---: |
+| `optimize_volume` | 25.03 G to 14.86 G (−41%) | 2.39 s to 1.53 s | 39.9 s to 25.0 s |
+| `adapt_volume` | 29.56 G to 23.47 G (−21%) | 2.87 s to 2.39 s | 18.8 s to 16.2 s |
 
 ### VTK XML parsed in place
 

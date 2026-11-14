@@ -712,9 +712,25 @@ std::int64_t tet_flip_smooth_worst(std::vector<double>& rXyz, const std::vector<
                     shortest = std::min(shortest, std::sqrt(detail::vec3_dot(d, d)));
                 }
         }
-        const auto f_at = [&](const Vec3& x) {
+        // The star's least dihedral angle at x, or -1 when a tet is no longer
+        // positively oriented. A line-search probe is only compared with
+        // `fx + 1e-9`, so it passes that as `Floor`: the least angle of the
+        // star can only fall as more tets are looked at, so once one tet is at
+        // or below `Floor` the probe is rejected whatever the others hold, and
+        // the walk stops. The value then returned is not the star's least
+        // angle, only a number at or below `Floor`: a caller that passes a
+        // `Floor` reads the comparison and nothing else. The walk starts with
+        // the tet that stopped the last one (`probe` is its own order: `local`
+        // keeps its order, which the gradient's active set and the
+        // Frank-Wolfe step depend on, bit for bit).
+        std::vector<std::size_t> probe(local.size());
+        for (std::size_t i = 0; i < probe.size(); ++i)
+            probe[i] = i;
+        const auto f_at = [&](const Vec3& x,
+                              double Floor = -std::numeric_limits<double>::infinity()) {
             double m = 180.0;
-            for (const TetFlipTet& t : local) {
+            for (std::size_t k = 0; k < probe.size(); ++k) {
+                const TetFlipTet& t = local[probe[k]];
                 Vec3 p[4];
                 for (int c = 0; c < 4; ++c)
                     p[c] = t[static_cast<std::size_t>(c)] == v64
@@ -723,6 +739,10 @@ std::int64_t tet_flip_smooth_worst(std::vector<double>& rXyz, const std::vector<
                 if (detail::tet_volume6(p[0], p[1], p[2], p[3]) <= eps_vol6)
                     return -1.0;
                 m = std::min(m, tet_flip_min_dihedral(p[0], p[1], p[2], p[3]));
+                if (m <= Floor) {
+                    std::swap(probe[0], probe[k]);
+                    return m;
+                }
             }
             return m;
         };
@@ -805,7 +825,7 @@ std::int64_t tet_flip_smooth_worst(std::vector<double>& rXyz, const std::vector<
                 const double alpha = 0.2 * shortest * std::ldexp(1.0, -k);
                 const Vec3 y{x[0] + alpha * g[0] / gn, x[1] + alpha * g[1] / gn,
                              x[2] + alpha * g[2] / gn};
-                const double fy = f_at(y);
+                const double fy = f_at(y, fx + 1e-9);
                 if (fy > fx + 1e-9) {
                     x = y;
                     fx = fy;
