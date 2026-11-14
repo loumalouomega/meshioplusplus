@@ -503,8 +503,7 @@ void vtx_weld_ghosts(VtxStep& rStep, bool SortById) {
     auto ids_it = rStep.mPointData.find(detail::kVtkOriginalPointIds);
     auto ghost_it = rStep.mPointData.find(detail::kVtkGhostType);
     if (ids_it == rStep.mPointData.end()) {
-        log::warn(std::string("VTX: no ") + detail::kVtkOriginalPointIds +
-                  ", so ghost points cannot be welded");
+        log::warn("VTX: no {}, so ghost points cannot be welded", detail::kVtkOriginalPointIds);
         return;
     }
     const NDArray& rIds = ids_it->second;
