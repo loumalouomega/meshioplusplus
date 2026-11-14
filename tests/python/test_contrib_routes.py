@@ -454,3 +454,88 @@ def test_tecplot_route_calls(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "tecplot", tp)
     script.main([str(tmp_path / "a.szplt")])
     assert saved[-1][0] == str(tmp_path / "a.plt")
+
+
+# --------------------------------------------------------------------------- #
+# Catalyst 2 and Ascent (roadmap 10.2): Conduit nodes stood in by nested dicts #
+# --------------------------------------------------------------------------- #
+
+
+def _blueprint(scale, time=None, cycle=None):
+    """A two-triangle Blueprint domain whose point field is ``scale * x``."""
+    mesh = meshioplusplus.Mesh(
+        np.array([[0.0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0]]),
+        [("triangle", np.array([[0, 1, 2], [0, 2, 3]]))],
+        point_data={"u": scale * np.array([0.0, 1, 1, 0])},
+        cell_data={"p": [scale * np.array([1.0, 2.0])]},
+    )
+    node = meshioplusplus.to_conduit(mesh, {})
+    if time is not None:
+        node["state"] = {"time": time}
+        if cycle is not None:
+            node["state"]["cycle"] = cycle
+    return node
+
+
+def _catalyst_node(time, step, data):
+    return {
+        "catalyst": {
+            "state": {"time": time, "timestep": step},
+            "channels": {
+                "info": {"type": "info", "data": {}},
+                "grid": {"type": "mesh", "data": data},
+            },
+        }
+    }
+
+
+def test_catalyst_route_writes_a_vtkhdf_series(tmp_path):
+    pytest.importorskip("h5py")
+    script = _load("catalyst/blueprint_series.py", "blueprint_series_test")
+    out = tmp_path / "run.vtkhdf"
+    script.catalyst_initialize({"catalyst": {"meshioplusplus": {"output": str(out)}}})
+    for step, (time, scale) in enumerate([(0.0, 1.0), (0.5, 2.0), (2.0, 3.0)]):
+        script.catalyst_execute(_catalyst_node(time, step, _blueprint(scale)))
+    script.catalyst_finalize({})
+    steps = list(meshioplusplus.read_sequence(str(out)))
+    assert [t for t, _ in steps] == [0.0, 0.5, 2.0]
+    for (_, mesh), scale in zip(steps, [1.0, 2.0, 3.0]):
+        np.testing.assert_allclose(mesh.point_data["u"], scale * np.array([0, 1, 1, 0]))
+        np.testing.assert_allclose(mesh.cell_data["p"][0], scale * np.array([1, 2]))
+
+
+def test_catalyst_route_refuses_a_changed_grid_in_one_file(tmp_path):
+    pytest.importorskip("h5py")
+    script = _load("catalyst/blueprint_series.py", "blueprint_series_grid_test")
+    script.catalyst_initialize(
+        {"catalyst": {"meshioplusplus": {"output": str(tmp_path / "g.vtkhdf")}}}
+    )
+    script.catalyst_execute(_catalyst_node(0.0, 0, _blueprint(1.0)))
+    other = meshioplusplus.to_conduit(
+        meshioplusplus.Mesh(np.eye(3), [("triangle", np.array([[0, 1, 2]]))]), {}
+    )
+    with pytest.raises(ValueError, match=r"\{step\}"):
+        script.catalyst_execute(_catalyst_node(1.0, 1, other))
+    script.catalyst_finalize()
+
+
+def test_catalyst_route_names_its_channel_and_fans_out(tmp_path):
+    script = _load("catalyst/blueprint_series.py", "blueprint_series_fan_test")
+    pattern = str(tmp_path / "run_{step}.vtu")
+    script.catalyst_initialize(
+        {"catalyst": {"meshioplusplus": {"output": pattern, "channel": "grid"}}}
+    )
+    script.catalyst_execute(_catalyst_node(0.25, 7, _blueprint(2.0)))
+    script.catalyst_finalize()
+    mesh = meshioplusplus.read(str(tmp_path / "run_000007.vtu"))
+    assert mesh.field_data["meshio:time"].tolist() == [0.25]
+    np.testing.assert_allclose(mesh.point_data["u"], [0, 2, 2, 0])
+
+
+def test_ascent_route_writes_a_file_per_cycle(tmp_path, monkeypatch):
+    script = _load("catalyst/blueprint_series.py", "blueprint_series_ascent_test")
+    monkeypatch.setenv("MIO_CATALYST_OUTPUT", str(tmp_path / "a_{step}.vtu"))
+    script.ascent_extract({"domain_0": _blueprint(1.0, time=1.5, cycle=30)})
+    mesh = meshioplusplus.read(str(tmp_path / "a_000030.vtu"))
+    assert mesh.field_data["meshio:time"].tolist() == [1.5]
+    assert len(mesh.cells[0].data) == 2

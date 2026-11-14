@@ -100,6 +100,7 @@ export default defineConfig({
               { text: "Ansys via PyDPF", link: "/routes/ansys_dpf" },
               { text: "Femap .modfem", link: "/routes/femap_modfem" },
               { text: "Tecplot .szplt", link: "/routes/tecplot_szplt" },
+              { text: "Catalyst 2 and Ascent", link: "/routes/catalyst" },
             ],
           },
           { text: "Extending meshio++", link: "/extending" },

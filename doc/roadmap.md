@@ -128,6 +128,7 @@ The [vendor-runtime routes](./vendor_routes.md) of v16.13.0 are tested against s
 - **2.2.3 Ansys results via PyDPF.** A DPF Server (Ansys 2021 R1 or later, or the standalone DPF Server 2024 R2 or later) and `pip install ansys-dpf-core pyvista meshioplusplus[h5py]`. Run `contrib/ansys_dpf/rst_to_vtkhdf.py` on a structural `.rst` and compare against the native `.rst` reader; then on a `/FCOMP,RST,1` file, which the native reader refuses ([route](./routes/ansys_dpf.md)).
 - **2.2.4 Femap `.modfem`.** Femap 2301 or later on Windows, and `pip install pywin32`. Run `contrib/femap/export_neutral.py`, check `feFileWriteNeutral`'s argument list against that version's API help, and read the neutral file back ([route](./routes/femap_modfem.md)).
 - **2.2.5 Tecplot `.szplt`.** Tecplot 360 2023 or later, and `pip install pytecplot`. Save a data set as `.szplt` and as `.plt` from Tecplot itself and read both (the TecIO-backed reader against the native one); run `contrib/tecplot/szplt_to_plt.py` and the macro `contrib/tecplot/szplt_to_plt.mcr`; and point `MESHIOPLUSPLUS_TECIO_LIBRARY` at Tecplot's own shared `libtecio` for the ctypes reader ([route](./routes/tecplot_szplt.md)). Also open in Tecplot 360 a file meshio++ wrote with single-precision, 16-bit and byte variables and one with partitioned zones; and, with a TecIO newer than 2018.3 (which refuses to write polygon and polyhedral zones in an SZL file), write such a zone, read it back, and check the written face map against Tecplot's reading, which would turn the refusal of those zones into a reader and a writer.
+- **2.2.19 Catalyst 2 and Ascent.** ParaView 5.11 or later with Catalyst 2, and Ascent 0.9 or later, each with `meshioplusplus` in its Python. Run one of ParaView's Catalyst examples through `contrib/catalyst/blueprint_series.py` (`catalyst_execute` on its `grid` channel) into a `.vtkhdf` series and read it back with `read_sequence`; run an Ascent Python extract of the script, and the gated `conduit.blueprint.mesh.verify` test of `test_conduit.py` with that Conduit ([route](./routes/catalyst.md)).
 
 The readers:
 
@@ -167,6 +168,7 @@ Where each run lands (sources are under `src/cpp/src/formats/` with a twin under
 | 2.2.16 | `xplt.cpp` | [FEBio](./formats/xplt.md) *Notes* | `test_xplt.py` |
 | 2.2.17 | `nastran_h5.cpp` | [Nastran HDF5](./formats/nastran_h5.md) *Verification* | `test_nastran_h5.py` |
 | 2.2.18 | `vtx.cpp`; `tools/gen_vtx_reference.py` | [VTX](./formats/vtx.md) *Validation* | `test_vtx.py`, `test_vtx.cpp` |
+| 2.2.19 | `contrib/catalyst/blueprint_series.py`; `_conduit.py` | [route](./routes/catalyst.md) *Checked against* | `test_contrib_routes.py::test_catalyst_route_writes_a_vtkhdf_series`, `::test_ascent_route_writes_a_file_per_cycle`; `test_conduit.py::test_a_real_node_verifies` |
 
 ### 2.3 Depth in formats already read {#format-depth}
 
@@ -1026,12 +1028,9 @@ Now actionable: 2.4.3 (UGRID NetCDF, ADCIRC, Selafin) and 2.4.6.1 (LAS, whose VL
 
 10.1.1 has landed: `to_conduit`/`from_conduit` in Python ([interop](./interop.md#conduit-mesh-blueprint)), on a `conduit.Node` or a nested dict, with exact round trips for every linear shape, mixed, polygonal and polyhedral topologies and grids expanded on read. Left: the gated `conduit.blueprint.mesh.verify` test has not yet run against a real Conduit (its Python module is not on PyPI; a CI leg on conda-forge's `conduit` would run it), and 10.1.2, a native provider, only if a consumer turns out unable to use Python. **S**
 
-### 10.2 Catalyst and Ascent as consumers {#catalyst-ascent}
+### 10.2 Catalyst and Ascent as consumers: remaining {#catalyst-ascent}
 
-After 10.1. A Catalyst 2 pipeline script or an Ascent action receives a Blueprint node: meshio++ is a Python step in it that writes any registry format or applies a [pipeline](./pipeline.md). **S–M**
-
-- **Steps.** A `contrib/catalyst/` script in the shape of `contrib/ansys_dpf/` (a documented route, tested against a stand-in of the Conduit API as `tests/python/test_contrib_routes.py` does, and run once for real: record it under [recording a run](#awaiting-a-licensed-run)); a page in [vendor routes](./vendor_routes.md).
-- **Done when.** A ParaView Catalyst example's output channel is written as a `.vtkhdf` series and read back by [`read_sequence`](./sequences.md).
+`contrib/catalyst/blueprint_series.py` ([route](./routes/catalyst.md)) writes the Blueprint Catalyst 2's `catalyst_execute` or an Ascent Python extract receives as a `.vtkhdf` series or a file per step, tested against stand-in nodes. Left: the recorded run inside ParaView Catalyst and Ascent, item 2.2.19. **S**
 
 ### 10.3 ADIOS2 BP5 and Fides {#adios2-fides}
 
