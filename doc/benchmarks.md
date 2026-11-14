@@ -1132,6 +1132,26 @@ The other half of roadmap 5.11, fields-only reads (skip the geometry of a static
 
 and a whole step of an XDMF series converted to VTU files takes 39.8 ms, so the read is 3.5% of it and the geometry 2%. A flag that skipped the geometry would save at most that, which is why it was not built ([roadmap](./roadmap.md#non-goals-and-decisions-taken)). Exodus has no series writer here, so it was not measured.
 
+### The physics-ML layers and the converters
+
+Roadmap 5.1.2. `benchmark/bench_ml.py` times the Python layers a training loop calls on top of the C++ operations, and the payload layers of the ParaView and Blender converters, which import neither VTK nor Blender and so run without the host application. A Kuhn tetrahedral cube of 30 cells a side (29,791 points, 162,000 tetrahedra) with one smooth point field, SEQ-agnostic Python entry points, best of five in milliseconds:
+
+| Layer | Case | Time |
+| --- | --- | ---: |
+| `sample_grid` | onto a 32³ lattice | 124 ms |
+| `sample_grid` | onto a 64³ lattice | 155 ms |
+| `select_points` | `farthest`, 2,048 points | 28 ms |
+| `select_points` | `grid`, 2,048 points | 16 ms |
+| `select_points` | `random`, 2,048 points | 0.9 ms |
+| `proximity_graph` | radius 0.083 over the points | 158 ms |
+| `proximity_graph` | 8 nearest neighbours | 38 ms |
+| ParaView | mesh to the VTK payload (`_to_vtk_payload`) | 0.75 ms |
+| Blender | mesh to the `bpy` arrays (`_to_blender_payload`, which first reduces the tetrahedra to their surface) | 9.9 ms |
+| Blender | the surface's arrays back to a mesh | 0.3 ms |
+| dataset | eight manifest entries, saved and loaded | 0.24 ms |
+
+Nothing here is slow for the size: the lattice sampler grows with the lattice and the proximity graph with the radius, both parallel in the core, and the converters move whole arrays. The ParaView payload is a view of the mesh's arrays (0.75 ms at 162,000 cells), so a conversion there is dominated by VTK's own object construction, which this layer does not include. The WASM ingestion of a JavaScript mesh (roadmap 5.9) is the one integration without a number: it needs the Emscripten build.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
