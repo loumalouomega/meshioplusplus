@@ -1034,9 +1034,10 @@ Now actionable: 2.4.3 (UGRID NetCDF, ADCIRC, Selafin) and 2.4.6.1 (LAS, whose VL
 
 ### 10.3 ADIOS2 BP5 and Fides {#adios2-fides}
 
-*Verify first.* [`vtx`](./formats/vtx.md) reads DOLFINx's ADIOS2 `.bp`; whether it also reads the Fides schema that ParaView and VTK-m use, and whether a writer of either exists, is stated on that page and not checked here. **M**
+Checked (November 2026): [`vtx`](./formats/vtx.md) reads DOLFINx's VTX schema (BP4 and BP5) and writes it as BP5; a `.bp` with Fides's `Fides_Data_Model` attribute and no `vtk.xml` is a `ReadError` that names Fides. Fides is not read or written, and no reader that could check a Fides file (ParaView's `vtkFidesReader`, VTK-m's Fides) is in the VTK wheel or installable in the development sandbox, so it is held until one is. **M**
 
-- **Steps.** Read the page; if only DOLFINx's VTX schema is covered, add Fides as a second schema in the same format (`schema=` read and write option) with the same `ADIOS2` build gate; test against ParaView's `ADIOS2VTXReader` and `vtkmFides`† as `tools/gen_vtx_reference.py` already drives the first.
+- **Steps.** Add Fides as a second schema of the same format (a `schema=` read and write option, the `unstructured_single`, `unstructured`, `uniform` and `rectilinear` data models) under the same `ADIOS2` build gate, in both engines; check each file both ways against ParaView's Fides reader, as `tools/gen_vtx_reference.py` drives `ADIOS2VTXReader` for the first schema, and record it beside item 2.2.18.
+- **Done when.** A Fides file ParaView wrote reads as the mesh ParaView shows, and a file meshio++ writes with `schema="fides"` opens in ParaView with the same points, cells and fields.
 
 ### 10.4 Ghost, owner and global-id conventions: remaining {#ghost-conventions}
 
