@@ -2,4 +2,12 @@
 #
 # Only leaks inside third-party libraries belong here, one `leak:<symbol or
 # library>` line each, with the reason. A leak in meshio++'s own code is a bug
-# to fix, never a line in this file. None is needed today.
+# to fix, never a line in this file.
+
+# netCDF-4's `nc_open` leaks what it had allocated (the object-header buffer of
+# `H5Gopen2` and the variable hash map) when it fails halfway through a corrupt
+# file, as the committed fuzz input tests/fuzz/regressions/ugrid_nc makes it do.
+# The leak is inside libnetcdf/libhdf5 with no meshio++ frame, and only stacks
+# through `NC_open` are matched (the instrumented fuzz campaign's twin is
+# tools/fuzz/lsan_libraries.supp).
+leak:NC_open

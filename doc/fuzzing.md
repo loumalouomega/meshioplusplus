@@ -20,7 +20,7 @@ CC=clang CXX=clang++ build/configure.sh --sanitize address,undefined --tests --c
 ctest --test-dir build/cpp-release-san --output-on-failure
 ```
 
-`--sanitize` maps to the CMake option `MESHIOPLUSPLUS_SANITIZE` (a `;`-list, for example `address;undefined`), which instruments the core, the C API objects, the GoogleTest binary and the fuzz replay driver. It works with GCC or Clang, and refuses the Python extension: a sanitized `_core` needs the sanitizer runtime preloaded into the interpreter. UBSan is fatal (`-fno-sanitize-recover=undefined`), so a report fails its test. The `cpp-sanitize` CI job runs the whole suite this way with leak checking on; `tools/sanitizers/lsan.supp` is where a third-party leak would be suppressed, and it names none today. Run `ctest` serially: several tests write fixed temporary names, and a parallel run collides on them.
+`--sanitize` maps to the CMake option `MESHIOPLUSPLUS_SANITIZE` (a `;`-list, for example `address;undefined`), which instruments the core, the C API objects, the GoogleTest binary and the fuzz replay driver. It works with GCC or Clang, and refuses the Python extension: a sanitized `_core` needs the sanitizer runtime preloaded into the interpreter. UBSan is fatal (`-fno-sanitize-recover=undefined`), so a report fails its test. The `cpp-sanitize` CI job runs the whole suite this way with leak checking on; `tools/sanitizers/lsan.supp` is where a third-party leak is suppressed, and it names one: a failed netCDF-4 `nc_open` (stacks through `NC_open`), which the committed `ugrid_nc` fuzz input triggers. Run `ctest` serially: several tests write fixed temporary names, and a parallel run collides on them.
 
 ## The fuzz target
 
