@@ -1123,6 +1123,15 @@ Roadmap 5.11.1. `"Prefetch": true` reads step `i + 1` on a second thread while s
 
 With fewer threads than cores the second thread has a core of its own and the read hides behind the processing; with a thread per core it competes with the operations' parallel loops for them. So the option is off by default and aimed at the serial build the release CLI is. At two threads, with `ExtractSurface`, a prefetching run is already faster than the serial run at four threads. The files are bit-identical to the serial run's (a test in `test_sequence.py` compares them, for both engines, and the failure case: a step that cannot be read).
 
+The other half of roadmap 5.11, fields-only reads (skip the geometry of a static series after its first step), was measured on a build with HDF5: twelve steps of 162,000 tetrahedra, one step read in full against the same step read with `points_only` (which reads the points and cells and no data):
+
+| Format | Full step read | Geometry only | Geometry share |
+| --- | ---: | ---: | ---: |
+| XDMF | 1.4 ms | 0.9 ms | 66% |
+| VTKHDF | 4.6 ms | 4.1 ms | 88% |
+
+and a whole step of an XDMF series converted to VTU files takes 39.8 ms, so the read is 3.5% of it and the geometry 2%. A flag that skipped the geometry would save at most that, which is why it was not built ([roadmap](./roadmap.md#non-goals-and-decisions-taken)). Exodus has no series writer here, so it was not measured.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
