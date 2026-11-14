@@ -132,6 +132,7 @@ if TYPE_CHECKING:
     from ._clean import clean
     from ._clip import clip
     from ._colorize import colorize
+    from ._conduit import from_conduit, has_conduit, to_conduit
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
     from ._coordinates import convert_coordinates
@@ -197,7 +198,6 @@ if TYPE_CHECKING:
         region_adjacency,
         split_interface,
     )
-    from ._conduit import from_conduit, has_conduit, to_conduit
     from ._interop import (
         from_arrow,
         from_pyvista,
