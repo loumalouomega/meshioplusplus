@@ -54,6 +54,7 @@
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/operations/merge.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/ghost_names.hpp"
 
 namespace meshioplusplus {
 namespace pidx {
@@ -61,9 +62,9 @@ namespace pidx {
 namespace fs = std::filesystem;
 
 /// VTK's ghost vocabulary (`vtkDataSetAttributes`) and the name `partition`
-/// tags its halo layers with.
-inline constexpr const char* kGhostName = "vtkGhostType";
-inline constexpr const char* kPartitionGhost = "partition:ghost";
+/// tags its halo layers with; the names live in `detail/ghost_names.hpp`.
+inline constexpr const char* kGhostName = detail::kVtkGhostType;
+inline constexpr const char* kPartitionGhost = detail::kPartitionGhost;
 
 /// The value of an XML attribute, escaped for a double-quoted context.
 inline std::string escape_attr(const std::string& rValue) {

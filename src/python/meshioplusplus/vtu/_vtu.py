@@ -13,7 +13,7 @@ import zlib
 
 import numpy as np
 
-from .. import _provenance
+from .. import _ghosts, _provenance
 from .._common import raw_from_cell_data, warn
 from .._exceptions import CorruptionError, ReadError, WriteError
 from .._mesh import CellBlock, Mesh
@@ -1035,7 +1035,7 @@ def write(
     appended_bytes = []  # the raw <AppendedData> payload, in array order
 
     def numpy_to_xml_array(parent, name, data, field=False):
-        if name == "vtkGhostType" and data.dtype != np.uint8:
+        if name == _ghosts.VTK_GHOST_TYPE and data.dtype != np.uint8:
             # VTK's reserved ghost-flag name: a reader only recognises it as the
             # ghost array when it is an unsigned char array (ParaView ignores an
             # Int64 one), so it is always UInt8 on disk, as the C++ writer does.

@@ -56,6 +56,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/ghost_names.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // External includes
@@ -3006,9 +3007,10 @@ void szw_write_values(void* pHandle, std::int32_t Zone, std::int32_t Var, std::i
 
 /// The parts of a block's cells (`partition:part`, an integer value per cell), or empty.
 std::vector<std::int64_t> szw_parts(const Mesh& rMesh, std::size_t Block) {
-    if (!rMesh.HasCellData("partition:part") || Block >= rMesh.CellDataNumBlocks("partition:part"))
+    if (!rMesh.HasCellData(detail::kPartitionPart) ||
+        Block >= rMesh.CellDataNumBlocks(detail::kPartitionPart))
         return {};
-    const NDArray& a = rMesh.CellData("partition:part", Block);
+    const NDArray& a = rMesh.CellData(detail::kPartitionPart, Block);
     if (detail::is_float_dtype(a.Dtype()) || a.Shape().size() != 1 ||
         a.Size() != rMesh.Cells(Block).NumCells())
         return {};

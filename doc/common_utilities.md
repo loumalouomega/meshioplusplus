@@ -37,6 +37,7 @@ Under `src/cpp/include/meshioplusplus/detail/`. Installed, so an inline body or 
 | `ragged_csr.hpp` | The CSR form of ragged (polygon, polyhedron) blocks, its conversions and checks. |
 | `subset.hpp` | `build_cell_subset`, a submesh from kept cells (points pruned, data gathered, regions remapped), and `subset_gather_rows`. |
 | `region_remap.hpp` | Carrying regions through an operation: `Direct`, `FirstChild` and `Global` maps, side facets by containment ([regions](./regions.md)). |
+| `ghost_names.hpp` | The ghost, owner and global-id array names (`partition:ghost`, `partition:owner`, `partition:part`, `global:node_id`, `global:cell_id`, `vtkGhostType`, ...) every format and operation uses; `_ghosts.py` is its Python twin, kept in step by `tests/python/test_ghost_names.py` ([ghosts](./ghosts.md)). |
 | `mesh_carve.hpp` | A mesh split into named cell-index parts, for the multi-part writers. |
 | `provenance.hpp`, `length_unit.hpp` | The provenance record every writer renders; the length-unit field-data key and its accessors. |
 

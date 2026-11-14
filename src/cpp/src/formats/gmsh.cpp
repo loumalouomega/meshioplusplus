@@ -65,6 +65,7 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/ghost_names.hpp"
 
 namespace meshioplusplus {
 
@@ -431,7 +432,8 @@ void gmsh_keep_section(std::unordered_map<std::string, NDArray>& rFieldData,
 template <typename Blocks>
 void gmsh_add_ghost_cells(Mesh& rMesh, const Blocks& rBlocks, const ReadOptions& rOpts) {
     const std::string key = std::string(kGmshSectionPrefix) + "GhostElements";
-    if (!rMesh.HasFieldData(key) || !rOpts.WantsAnyData() || !rOpts.WantsArray("partition:ghost"))
+    if (!rMesh.HasFieldData(key) || !rOpts.WantsAnyData() ||
+        !rOpts.WantsArray(detail::kPartitionGhost))
         return;
     const NDArray& section = rMesh.FieldData(key);
     const std::string body(reinterpret_cast<const char*>(section.Data()), section.Size());
@@ -458,7 +460,7 @@ void gmsh_add_ghost_cells(Mesh& rMesh, const Blocks& rBlocks, const ReadOptions&
             flags.As<std::int64_t>()[r] = ghosts.count(b.mTags[r]) ? 1 : 0;
         per_block.push_back(std::move(flags));
     }
-    rMesh.AddCellData("partition:ghost", std::move(per_block));
+    rMesh.AddCellData(detail::kPartitionGhost, std::move(per_block));
 }
 
 // --- physical groups <-> named regions ---------------------------------------

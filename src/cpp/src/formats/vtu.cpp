@@ -42,6 +42,7 @@
 #include "../detail/vtu_decode.hpp"
 #include "../detail/vtk_hex_order.hpp"
 #include "../detail/vtk_write_cell.hpp"
+#include "../detail/ghost_names.hpp"
 
 namespace meshioplusplus {
 

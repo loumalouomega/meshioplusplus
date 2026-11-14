@@ -53047,6 +53047,57 @@ struct GeometryUtils {
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/geometry_utils.hpp =====
+// ===== begin src/cpp/src/detail/ghost_names.hpp =====
+/**
+ * @file ghost_names.hpp
+ * @brief The cell/point/field data names for ghost cells, owning parts and
+ * global ids, shared by the format readers and writers and the core operations.
+ * See doc/ghosts.md for the convention.
+ *
+ * A **format-private** header (the `formats/gid_common.hpp` precedent): no
+ * installed header may name it.
+ */
+
+namespace meshioplusplus {
+namespace detail {
+
+/// cell_data, Int64: 0 = owned by its piece, L >= 1 = ghost at BFS layer depth L.
+inline constexpr const char* kPartitionGhost = "partition:ghost";
+
+/// cell_data / point_data, Int64: owning part (0-based) of a ghost cell
+/// (DUPLICATEPOINT owner for points).
+inline constexpr const char* kPartitionOwner = "partition:owner";
+
+/// cell_data, Int64: the piece a cell belongs to (pvtu/pvtp/pvd/vtx read; merge output).
+inline constexpr const char* kPartitionPart = "partition:part";
+
+/// point_data / cell_data, Int64: 0-based input indices (partition, split).
+inline constexpr const char* kPartitionOriginalPointId = "partition:original_point_id";
+inline constexpr const char* kPartitionOriginalCellId = "partition:original_cell_id";
+
+/// point_data / cell_data, Int64: vendor/global ids (radioss, dpf, refine, cgns,
+/// exodus maps when non-identity).
+inline constexpr const char* kGlobalNodeId = "global:node_id";
+inline constexpr const char* kGlobalCellId = "global:cell_id";
+
+/// point_data / cell_data, UInt8: VTK-native bitfield (DUPLICATECELL = 1 cells,
+/// DUPLICATEPOINT = 1 points); kept verbatim by vtu/vtp/vtx/pvtu.
+inline constexpr const char* kVtkGhostType = "vtkGhostType";
+
+/// VTK-native global ids carried by vtu/vtp/vtx/pvtu.
+inline constexpr const char* kVtkOriginalPointIds = "vtkOriginalPointIds";
+inline constexpr const char* kVtkOriginalCellIds = "vtkOriginalCellIds";
+
+/// cell_data, Int64: Gmsh-native 1/0 flag from `$GhostElements`.
+inline constexpr const char* kGmshGhost = "gmsh:ghost";
+
+/// VTK bit values of `vtkGhostType`.
+inline constexpr unsigned char kVtkDuplicateCell = 1;
+inline constexpr unsigned char kVtkDuplicatePoint = 1;
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/ghost_names.hpp =====
 // ===== begin src/cpp/src/detail/gzip_deflate.hpp =====
 /**
  * @file detail/gzip_deflate.hpp
@@ -63473,9 +63524,9 @@ namespace pidx {
 namespace fs = std::filesystem;
 
 /// VTK's ghost vocabulary (`vtkDataSetAttributes`) and the name `partition`
-/// tags its halo layers with.
-inline constexpr const char* kGhostName = "vtkGhostType";
-inline constexpr const char* kPartitionGhost = "partition:ghost";
+/// tags its halo layers with; the names live in `detail/ghost_names.hpp`.
+inline constexpr const char* kGhostName = detail::kVtkGhostType;
+inline constexpr const char* kPartitionGhost = detail::kPartitionGhost;
 
 /// The value of an XML attribute, escaped for a double-quoted context.
 inline std::string escape_attr(const std::string& rValue) {
@@ -146074,7 +146125,7 @@ Mesh elm_build(const ElmMesh& rIn, const fs::path& rWhere) {
         }
     }
     if (rIn.mHasParts)
-        mesh.AddCellData("partition:part", std::move(part_blocks));
+        mesh.AddCellData(detail::kPartitionPart, std::move(part_blocks));
 
     // A name used for both a body and a boundary would make two regions that
     // differ only in their tags; prefix both.
@@ -146318,7 +146369,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
         detail::provenance_note("regions-dropped", std::to_string(point_regions) +
                                                        " point region(s) have no Elmer equivalent");
     }
-    const bool partitioned = rMesh.HasCellData("partition:part");
+    const bool partitioned = rMesh.HasCellData(detail::kPartitionPart);
     if (rMesh.NumPointData() + rMesh.NumCellData() + rMesh.NumFieldData() >
         (partitioned ? 1u : 0u)) {
         log::warn(
@@ -146594,7 +146645,7 @@ void write_elmer(const std::string& rPath, const Mesh& rMesh, bool Halo) {
         const std::size_t b = static_cast<std::size_t>(
             std::upper_bound(bases.begin(), bases.end(), r.mCell) - bases.begin() - 1);
         if (!part_labels[b])
-            part_labels[b].emplace(rMesh.CellData("partition:part", b));
+            part_labels[b].emplace(rMesh.CellData(detail::kPartitionPart, b));
         const std::int64_t label = (*part_labels[b])[static_cast<std::size_t>(r.mCell - bases[b])];
         if (label < 0)
             throw WriteError("Elmer mesh writer: partition:part has a negative part for cell " +
@@ -162485,7 +162536,8 @@ void gmsh_keep_section(std::unordered_map<std::string, NDArray>& rFieldData,
 template <typename Blocks>
 void gmsh_add_ghost_cells(Mesh& rMesh, const Blocks& rBlocks, const ReadOptions& rOpts) {
     const std::string key = std::string(kGmshSectionPrefix) + "GhostElements";
-    if (!rMesh.HasFieldData(key) || !rOpts.WantsAnyData() || !rOpts.WantsArray("partition:ghost"))
+    if (!rMesh.HasFieldData(key) || !rOpts.WantsAnyData() ||
+        !rOpts.WantsArray(detail::kPartitionGhost))
         return;
     const NDArray& section = rMesh.FieldData(key);
     const std::string body(reinterpret_cast<const char*>(section.Data()), section.Size());
@@ -162512,7 +162564,7 @@ void gmsh_add_ghost_cells(Mesh& rMesh, const Blocks& rBlocks, const ReadOptions&
             flags.As<std::int64_t>()[r] = ghosts.count(b.mTags[r]) ? 1 : 0;
         per_block.push_back(std::move(flags));
     }
-    rMesh.AddCellData("partition:ghost", std::move(per_block));
+    rMesh.AddCellData(detail::kPartitionGhost, std::move(per_block));
 }
 
 // --- physical groups <-> named regions ---------------------------------------
@@ -186237,7 +186289,7 @@ Mesh mf_read_parts(const std::vector<MfPart>& rParts, std::size_t NumVertices, i
     if (!attr_blocks.empty())
         mesh.AddCellData("mfem:attribute", std::move(attr_blocks));
     if (Labels && !part_blocks.empty())
-        mesh.AddCellData("partition:part", std::move(part_blocks));
+        mesh.AddCellData(detail::kPartitionPart, std::move(part_blocks));
 
     for (std::size_t k = 1; k < nfields; ++k) {
         const std::size_t nc = fields[0][k].mComponents;
@@ -204827,8 +204879,8 @@ void write_openfoam_region(const std::string& rPath, const Mesh& rMesh, const Op
 
 void write_openfoam_decomposed(const std::string& rPath, const Mesh& rMesh,
                                const OpenFoamInfo& rInfo, const OpenFoamWriteOptions& rOptions) {
-    if (!rMesh.HasCellData("partition:part") ||
-        rMesh.CellDataNumBlocks("partition:part") != rMesh.NumCellBlocks())
+    if (!rMesh.HasCellData(detail::kPartitionPart) ||
+        rMesh.CellDataNumBlocks(detail::kPartitionPart) != rMesh.NumCellBlocks())
         throw WriteError(
             "OpenFOAM: a decomposed case needs cell_data[\"partition:part\"] on every cell "
             "block (meshioplusplus.partition_labels)");
@@ -204837,7 +204889,7 @@ void write_openfoam_decomposed(const std::string& rPath, const Mesh& rMesh,
     std::vector<std::int64_t> parts(faces.NumCells());
     for (std::size_t c = 0; c < parts.size(); ++c) {
         const auto [block, row] = detail::global_to_block_row(bases, faces.mCellToGlobal[c]);
-        parts[c] = detail::read_int(rMesh.CellData("partition:part", block), row);
+        parts[c] = detail::read_int(rMesh.CellData(detail::kPartitionPart, block), row);
     }
     FoamTarget target;
     target.mParts = &parts;
@@ -209374,10 +209426,10 @@ void pvtu_write_mesh(pvtu_kind Kind, const std::string& rPath, const Mesh& rMesh
         labelled.AddCellData(kPvtuPieceKey, std::move(labels));
         std::vector<Mesh> parts = pvtu_carve(labelled, kPvtuPieceKey);
         for (Mesh& part : parts)
-            part = detail::clone_mesh(part, [](DataLocation Where, const std::string& rName,
-                                                std::string&) {
-                return !(Where == DataLocation::Cell && rName == kPvtuPieceKey);
-            });
+            part = detail::clone_mesh(
+                part, [](DataLocation Where, const std::string& rName, std::string&) {
+                    return !(Where == DataLocation::Cell && rName == kPvtuPieceKey);
+                });
         std::vector<const Mesh*> ptrs;
         for (const Mesh& m : parts)
             ptrs.push_back(&m);
@@ -219772,9 +219824,10 @@ void szw_write_values(void* pHandle, std::int32_t Zone, std::int32_t Var, std::i
 
 /// The parts of a block's cells (`partition:part`, an integer value per cell), or empty.
 std::vector<std::int64_t> szw_parts(const Mesh& rMesh, std::size_t Block) {
-    if (!rMesh.HasCellData("partition:part") || Block >= rMesh.CellDataNumBlocks("partition:part"))
+    if (!rMesh.HasCellData(detail::kPartitionPart) ||
+        Block >= rMesh.CellDataNumBlocks(detail::kPartitionPart))
         return {};
-    const NDArray& a = rMesh.CellData("partition:part", Block);
+    const NDArray& a = rMesh.CellData(detail::kPartitionPart, Block);
     if (detail::is_float_dtype(a.Dtype()) || a.Shape().size() != 1 ||
         a.Size() != rMesh.Cells(Block).NumCells())
         return {};
@@ -231619,10 +231672,11 @@ struct VtxStep {
 // vtkOriginalPointIds (the first with vtkGhostType 0, else the first seen), keep
 // the surviving points in their first-seen order, and drop both ghost arrays.
 void vtx_weld_ghosts(VtxStep& rStep, bool SortById) {
-    auto ids_it = rStep.mPointData.find("vtkOriginalPointIds");
-    auto ghost_it = rStep.mPointData.find("vtkGhostType");
+    auto ids_it = rStep.mPointData.find(detail::kVtkOriginalPointIds);
+    auto ghost_it = rStep.mPointData.find(detail::kVtkGhostType);
     if (ids_it == rStep.mPointData.end()) {
-        log::warn("VTX: no vtkOriginalPointIds, so ghost points cannot be welded");
+        log::warn(std::string("VTX: no ") + detail::kVtkOriginalPointIds +
+                  ", so ghost points cannot be welded");
         return;
     }
     const NDArray& rIds = ids_it->second;
@@ -231651,8 +231705,8 @@ void vtx_weld_ghosts(VtxStep& rStep, bool SortById) {
     for (std::int64_t& rV : rStep.mConn)
         rV = new_index[owner[vtx_int_at(rIds, static_cast<std::size_t>(rV))]];
     rStep.mPoints = vtx_take_rows(rStep.mPoints, keep);
-    rStep.mPointData.erase("vtkGhostType");
-    rStep.mPointData.erase("vtkOriginalPointIds");
+    rStep.mPointData.erase(detail::kVtkGhostType);
+    rStep.mPointData.erase(detail::kVtkOriginalPointIds);
     for (auto& rEntry : rStep.mPointData)
         rEntry.second = vtx_take_rows(rEntry.second, keep);
 }
@@ -231735,7 +231789,8 @@ VtxStep vtx_read_step(const std::string& rPath, const ReadOptions& rOpts) {
     // Data arrays of the requested step itself.
     const bool drop = rOpts.mGhosts == GhostPolicy::Drop || layout.mShared;
     for (const VtxArray& rA : rS.mArrays) {
-        const bool ghost_array = rA.mName == "vtkGhostType" || rA.mName == "vtkOriginalPointIds";
+        const bool ghost_array =
+            rA.mName == detail::kVtkGhostType || rA.mName == detail::kVtkOriginalPointIds;
         const bool wanted = !rOpts.mPointsOnly && rOpts.WantsArray(rA.mName);
         if (!wanted && !(drop && ghost_array && !rA.mCell))
             continue;
@@ -231929,9 +231984,9 @@ MeshMetadata read_vtx_metadata(const std::string& rPath, const ReadOptions& rOpt
 // ---------------------------------------------------------------------------
 namespace {
 
-constexpr const char* kVwPartition = "partition:part";
-constexpr const char* kVwGhostType = "vtkGhostType";
-constexpr const char* kVwOriginalIds = "vtkOriginalPointIds";
+constexpr const char* kVwPartition = detail::kPartitionPart;
+constexpr const char* kVwGhostType = detail::kVtkGhostType;
+constexpr const char* kVwOriginalIds = detail::kVtkOriginalPointIds;
 
 [[noreturn]] void vw_fail(const std::string& rMessage) {
     throw WriteError("VTX (.bp): " + rMessage);
@@ -280938,7 +280993,7 @@ PartitionResult partition(const Mesh& rMesh, const PartitionOptions& rOptions) {
                 std::int64_t* dst = a.As<std::int64_t>();
                 for (std::size_t i = 0; i < depth[p][blk].size(); ++i)
                     dst[i] = depth[p][blk][i];
-                piece.mMesh.AppendCellData("partition:ghost", std::move(a));
+                piece.mMesh.AppendCellData(detail::kPartitionGhost, std::move(a));
             }
         }
         res.mPieces.push_back(std::move(piece));
@@ -282433,7 +282488,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         // pieces: a pipeline chains one mesh, and colour-by-part is what the
         // browser viewer's partition chip always meant.
         auto labels = partition_labels(mesh, opts);
-        mesh.AddCellData("partition:part", std::move(labels));
+        mesh.AddCellData(detail::kPartitionPart, std::move(labels));
         pipe_push_step(rReport, rStep, {{"Nparts", pipe_number(rStep, "Nparts", 2)}});
         return mesh;
     }
@@ -284375,7 +284430,8 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mAdapt.mHmax = pipe_number(rStep, "AdaptHmax", 0.0);
         opts.mAdapt.mHgrad = pipe_number(rStep, "AdaptHgrad", 1.3);
         opts.mAdapt.mHausd = pipe_number(rStep, "AdaptHausd", 0.0);
-        opts.mAdapt.mMaxIterations = static_cast<int>(pipe_number(rStep, "AdaptMaxIterations", 10.0));
+        opts.mAdapt.mMaxIterations =
+            static_cast<int>(pipe_number(rStep, "AdaptMaxIterations", 10.0));
         opts.mAdapt.mPreserveBoundary = pipe_flag(rStep, "AdaptPreserveBoundary", false);
         opts.mAdapt.mBoundarySizing = adapt_volume_boundary_sizing_from_name(
             pipe_text(rStep, "AdaptBoundarySizing", "input"));

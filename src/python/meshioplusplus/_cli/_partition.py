@@ -1,5 +1,6 @@
 import os
 
+from .. import _ghosts
 from .._helpers import _reader_names, _writer_names, read, write
 from .._partition import partition, partition_labels
 
@@ -123,7 +124,7 @@ def partition_cmd(args):
             seed=args.seed,
             weights=args.weights,
         )
-        mesh.cell_data["partition:part"] = labels
+        mesh.cell_data[_ghosts.PARTITION_PART] = labels
         write(args.outpattern, mesh, file_format=args.output_format)
         return 0
 

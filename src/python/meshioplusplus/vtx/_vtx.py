@@ -14,12 +14,13 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
+from .. import _ghosts
 from .._exceptions import ReadError
 from .._mesh import Mesh
 from .._vtk_common import vtk_cells_from_data
 
 TIME_KEY = "meshio:time"
-_GHOST_ARRAYS = ("vtkGhostType", "vtkOriginalPointIds")
+_GHOST_ARRAYS = (_ghosts.VTK_GHOST_TYPE, _ghosts.VTK_ORIGINAL_POINT_IDS)
 # set by this package's writer on a file whose blocks each hold the points they use
 # (several cell types, or the parts of a partition): the ghost copies are one mesh
 _SHARED_ATTRIBUTE = "meshio.shared_points"
@@ -232,11 +233,11 @@ def _concat_matching(blocks, counts, name):
 
 
 def _weld_ghosts(points, conn, point_data, sort_by_id=False):
-    ids = point_data.get("vtkOriginalPointIds")
+    ids = point_data.get(_ghosts.VTK_ORIGINAL_POINT_IDS)
     if ids is None:
         _log.warning("VTX: no vtkOriginalPointIds, so ghost points cannot be welded")
         return points, conn, point_data
-    ghost = point_data.get("vtkGhostType")
+    ghost = point_data.get(_ghosts.VTK_GHOST_TYPE)
     n = len(ids)
     is_ghost = (
         np.zeros(n, dtype=bool) if ghost is None else np.asarray(ghost).ravel() != 0

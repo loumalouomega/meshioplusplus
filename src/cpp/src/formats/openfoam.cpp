@@ -62,6 +62,7 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/ghost_names.hpp"
 
 namespace fs = std::filesystem;
 
@@ -4026,8 +4027,8 @@ void write_openfoam_region(const std::string& rPath, const Mesh& rMesh, const Op
 
 void write_openfoam_decomposed(const std::string& rPath, const Mesh& rMesh,
                                const OpenFoamInfo& rInfo, const OpenFoamWriteOptions& rOptions) {
-    if (!rMesh.HasCellData("partition:part") ||
-        rMesh.CellDataNumBlocks("partition:part") != rMesh.NumCellBlocks())
+    if (!rMesh.HasCellData(detail::kPartitionPart) ||
+        rMesh.CellDataNumBlocks(detail::kPartitionPart) != rMesh.NumCellBlocks())
         throw WriteError(
             "OpenFOAM: a decomposed case needs cell_data[\"partition:part\"] on every cell "
             "block (meshioplusplus.partition_labels)");
@@ -4036,7 +4037,7 @@ void write_openfoam_decomposed(const std::string& rPath, const Mesh& rMesh,
     std::vector<std::int64_t> parts(faces.NumCells());
     for (std::size_t c = 0; c < parts.size(); ++c) {
         const auto [block, row] = detail::global_to_block_row(bases, faces.mCellToGlobal[c]);
-        parts[c] = detail::read_int(rMesh.CellData("partition:part", block), row);
+        parts[c] = detail::read_int(rMesh.CellData(detail::kPartitionPart, block), row);
     }
     FoamTarget target;
     target.mParts = &parts;

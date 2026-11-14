@@ -5,7 +5,7 @@ import shlex
 import numpy as np
 from numpy.typing import ArrayLike
 
-from .. import _node_order
+from .. import _ghosts, _node_order
 from .._common import cell_data_from_raw, warn
 from .._exceptions import ReadError, WriteError
 
@@ -198,7 +198,7 @@ def _ghost_cell_data(field_data, tag_blocks):
     if count < 0:
         return {}
     return {
-        "partition:ghost": [
+        _ghosts.PARTITION_GHOST: [
             np.array([int(t) in ghosts for t in tags], dtype=np.int64)
             for tags in tag_blocks
         ]
