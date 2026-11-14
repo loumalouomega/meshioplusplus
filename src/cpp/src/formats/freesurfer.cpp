@@ -83,7 +83,8 @@ FsCursor fs_open(const std::string& rPath, const std::string& rWhat) {
 
 NDArray fs_bytes(std::string_view Text) {
     NDArray out(DType::UInt8, {Text.size()});
-    std::memcpy(out.Data(), Text.data(), Text.size());
+    if (!Text.empty())
+        std::memcpy(out.Data(), Text.data(), Text.size());
     return out;
 }
 

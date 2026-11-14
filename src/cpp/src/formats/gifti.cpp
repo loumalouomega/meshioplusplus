@@ -112,7 +112,8 @@ NDArray gii_decode(const pugi::xml_node& Array) {
             throw ReadError("meshio++: gifti: a DataArray holds " + std::to_string(bytes.size()) +
                             " bytes, not the " + std::to_string(out.Nbytes()) +
                             " its dimensions need");
-        std::memcpy(out.Data(), bytes.data(), bytes.size());
+        if (!bytes.empty())
+            std::memcpy(out.Data(), bytes.data(), bytes.size());
         const bool big = std::string(Array.attribute("Endian").value()) == "BigEndian";
         if (big != (std::endian::native == std::endian::big) && itemsize > 1) {
             auto* b = reinterpret_cast<unsigned char*>(out.Data());
@@ -140,7 +141,8 @@ NDArray gii_decode(const pugi::xml_node& Array) {
 
 NDArray gii_text(const std::string& rText) {
     NDArray out(DType::UInt8, {rText.size()});
-    std::memcpy(out.Data(), rText.data(), rText.size());
+    if (!rText.empty())
+        std::memcpy(out.Data(), rText.data(), rText.size());
     return out;
 }
 
