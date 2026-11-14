@@ -214189,7 +214189,7 @@ SlfHeader slf_header(SlfRecords& rS) {
     }
     h.mFirstStep = rS.mAt;
     // Every complete step: a time record and one record per variable.
-    for (std::size_t r = rS.mAt; r + nvar < rS.mRecords.size() + 1; r += 1 + nvar) {
+    for (std::size_t r = rS.mAt; r < rS.mRecords.size(); r += 1 + nvar) {
         if (rS.mRecords[r].mSize != h.mW)
             break;
         bool complete = true;
