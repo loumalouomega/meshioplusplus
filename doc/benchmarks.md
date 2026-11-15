@@ -1216,6 +1216,31 @@ The front test is still 82% of what remains. Most of it is now `inside`'s orient
 
 The stack expansions also move the other rows whose predicates reach the exact stage: `hull` falls 54%, `silhouette` 11%, `mesh_cad_surface_lop_corners` 3.1%, `delaunay_2d` 3.2%, `mesh_cad_surface_reparam` 2.1% and `clip` 1.8%.
 
+### Profiling `octree_mesh_tet`
+
+Roadmap 5.17.2. The item suspected `octree_mesh_fix_volumes`, the three whole-mesh passes (collapse, cap, sliver) of the tetrahedral output. Callgrind on the `octree_mesh_tet` row (tier S, the warmup and one run) puts them under 4%. Since the volume fix, the passes are skipped when no tetrahedron needs them. The row splits as follows:
+
+| Phase (`octree_mesh_tet`, tier S) | Share |
+| --- | ---: |
+| `octree_mesh_optimize` | 48% |
+| of which `tet_dihedral_angles` (`atan2`, `acos`) | 24% |
+| of which `optimize_volume`'s flips | 16% |
+| `octree_mesh_stuffed_lattice` | 35% |
+| of which the winding number at the lattice vertices (`fast_windings`) | 17% |
+| of which the cut points' bisection on the winding number | 16% |
+| the octree, the skin and the rest | 17% |
+
+`tetrahedralize_octree` has the same shape: the optimizer takes 40%, the lattice 37% and the surface mesh and Hausdorff check the rest.
+
+**Taken: each dihedral angle once** (`operations/octree_mesh_optimize.cpp`). `octmo_min_dihedral` and `octmo_max_dihedral` each called `tet_dihedral_angles` for the same tetrahedron, and the two were always paired. One call now gives both, since the six angles come back ascending. The optimizer also recomputed angles nothing read: a whole-mesh pass right after the ODT relocation, and every tetrahedron again on each of the dihedral-floor guard's up to 64 sweeps. Now only the tetrahedra around the nodes the previous sweep put back are recomputed; the others' corners did not move. Every value is the one the old code computed, and every digest of the octree rows at tiers S and M is unchanged on SEQ, OpenMP and THREADS at 1, 4 and 8 threads.
+
+| Row (SEQ) | Instructions, tier S | Tier S | Tier M |
+| --- | ---: | ---: | ---: |
+| `octree_mesh_tet` | 6.45 G → 5.49 G | 0.64 → 0.57 s | 4.06 → 3.41 s |
+| `tetrahedralize_octree` | 4.63 G → 4.06 G | 0.52 → 0.44 s | 5.14 → 4.55 s |
+
+**Not taken: the cut points' bisection.** `isosurface_stuff` asks for the interface point on each edge that changes sign. The callback walks the skin crossings of the edge from its inside end. When no crossing takes the winding number below the threshold, it falls back to 40 steps of bisection, each a full `fast_winding`. That fallback exists for open skins, yet it takes 16% of this row on a closed box. Why it is reached has not been measured; a crossing that lands on a triangle edge, reported twice or not at all, is the likely cause. Any faster answer would have to give the same 40 comparisons to keep the cut points' bits, so changing it is a behaviour change. It is left open in the roadmap, as are the lattice's own winding numbers, which already use the fast approximation.
+
 ### Rows for every operation
 
 Roadmap 5.1.5. Forty-six rows were added to `meshioplusplus_bench_ops` for the operations that had none, so the determinism check and the instruction gate now see a change to them. Each runs on the tier's cube, its surface or its points, with the options a user would pass first, and its digest covers the returned mesh and the result's counters and measures (the transform for `registration`, `register_landmarks` and `auto_align`; the pixels for `bake_texture`; the report for `stats`, `check_quality`, `check_tetrahedra`, `data_info` and `data_integrate`):
@@ -1437,6 +1462,8 @@ python3 tools/bench_instructions.py --record benchmark/instructions_S.csv  # aft
 A row more than 1% above its baseline fails, and so does a baseline row the run no longer has; a row more than 1% below, or a new row, is reported and passes, and the baseline should then be re-recorded so the gain is kept. The baseline was recorded twice from the same build: across its 130 rows the two runs differ by at most 6 parts per million (`read_obj`), and the whole sweep takes about four minutes on two jobs, `optimize_volume` (25.7 G instructions) and `boundary_layer` (19.4 G) the longest, so every row is gated. A count depends on the compiler, its flags and the C++ library, so the file names its toolchain (GCC 13.3 on Ubuntu 24.04, the `ubuntu-24.04` runner's): a run with another prints the comparison and fails nothing, and the baseline is re-recorded with the new toolchain in its own change. The job writes the rows outside the tolerance to the run's summary and uploads the run's counts.
 
 The gate sees instructions, not time: a change that trades instructions for memory traffic or parallelism (a parallel path is not taken on one thread) is judged by the timed rows above, and a count that falls is not proof the operation got faster.
+
+**Octree rows re-recorded.** `octree_mesh_tet` (6,450,216,461 → 5,485,381,386) and `tetrahedralize_octree` (4,632,251,773 → 4,057,175,908) fell with the optimizer computing each dihedral angle once ([profiling octree_mesh_tet](#profiling-octree_mesh_tet)).
 
 **Faster rows re-recorded.** `boundary_layer` (19,409,351,277 → 1,125,739,898), `hull`, `silhouette`, `clip`, `delaunay_2d`, `mesh_cad_surface_lop_corners` and `mesh_cad_surface_reparam` fell with the stack expansions of the exact predicates and the box test of `boundary_layer`'s front check ([profiling boundary_layer](#profiling-boundary_layer)).
 

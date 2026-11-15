@@ -105,7 +105,7 @@ remesh,10368,31565356
 remesh_volume,10368,79783463
 octree,10368,286472398
 octree_mesh_castellated,10368,753494823
-octree_mesh_tet,10368,6450216461
+octree_mesh_tet,10368,5485381386
 adapt_volume,10368,23466354268
 octree_mesh_hex,10368,828567933
 octree_mesh_hex_graded,10368,756324870
@@ -125,7 +125,7 @@ mesh_cad_surface_quads_greedy,10368,192677009
 mesh_cad_surface_quad9,10368,234630505
 project_to_cad,10368,142729277
 boundary_layer,10368,1125739898
-tetrahedralize_octree,10368,4632251773
+tetrahedralize_octree,10368,4057175908
 sample_distance,10368,31759702
 distance_to_surface,10368,32150699
 distance_to_surface_graded,10368,34905365
