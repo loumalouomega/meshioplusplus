@@ -261,7 +261,7 @@ def is_sample_path(path) -> bool:
 
 
 _SEQUENCE_INPUT_KEYS = ("Pattern", "Paths", "Times", "TimeFrom")
-_SEQUENCE_DOC_KEYS = ("Mode", "Parallel", "Workers", "Resample")
+_SEQUENCE_DOC_KEYS = ("Mode", "Parallel", "Prefetch", "Workers", "Resample")
 
 _DIGITS = re.compile(r"\d+")
 
@@ -1304,11 +1304,77 @@ def _source_from_input(inp, input_path):
     return list(paths)
 
 
-def _run_one(args):
+class _ReadAhead:
+    """The steps of a sequence in order, reading step ``i + 1`` on a second
+    thread while step ``i`` is processed and written (``"Prefetch"``).
+
+    The twin of the C++ engine's read-ahead: the same ``read`` call, so the
+    mesh and the errors are the serial run's, and a failed read surfaces when
+    its step is asked for, after the step before it was written. The native
+    readers release the GIL, so the two overlap; a reader written in Python
+    holds it and the run is as serial as before. The cost is a second mesh
+    alive. Use it as a context manager so a pending read is waited for.
+    """
+
+    def __init__(self, entries, file_format, read_kwargs, enabled):
+        self._entries = entries
+        self._file_format = file_format
+        self._read_kwargs = read_kwargs
+        self._pool = None
+        self._pending = None  # (index, Future)
+        if enabled and len(entries) > 1:
+            from concurrent.futures import ThreadPoolExecutor
+
+            self._pool = ThreadPoolExecutor(max_workers=1)
+
+    def _read(self, index):
+        entry = self._entries[index]
+        return read(
+            entry["path"],
+            file_format=self._file_format or None,
+            time_step=entry["step"],
+            **self._read_kwargs,
+        )
+
+    def read(self, index):
+        if self._pending is not None and self._pending[0] == index:
+            future = self._pending[1]
+            self._pending = None
+            mesh = future.result()
+        else:
+            mesh = self._read(index)
+        if self._pool is not None and index + 1 < len(self._entries):
+            self._pending = (index + 1, self._pool.submit(self._read, index + 1))
+        return mesh
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if self._pool is not None:
+            self._pool.shutdown(wait=True)
+        return False
+
+
+def _prefetch_flag(doc):
+    """``Prefetch``: true or false, or the integers 1 and 0."""
+    value = doc.get("Prefetch", False)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise ValueError(
+        "meshio++: pipeline: the settings document.Prefetch must be true, false, "
+        "1 or 0"
+    )
+
+
+def _run_one(args, mesh=None):
     """One (read -> chain -> write) unit.
 
     The whole point of the parallel path is that each file is independent --
-    so the unit takes plain data and returns plain data.
+    so the unit takes plain data and returns plain data. A ``mesh`` the
+    caller already read (the read-ahead's) skips the read.
     """
     (
         entry,
@@ -1324,12 +1390,13 @@ def _run_one(args):
     ) = args
     from ._pipeline import _apply_step
 
-    mesh = read(
-        entry["path"],
-        file_format=file_format or None,
-        time_step=entry["step"],
-        **read_kwargs,
-    )
+    if mesh is None:
+        mesh = read(
+            entry["path"],
+            file_format=file_format or None,
+            time_step=entry["step"],
+            **read_kwargs,
+        )
     time = _resolve_time(entry, mesh, time_from)
     steps, warnings = [], []
     for step in steps_spec:
@@ -1380,6 +1447,7 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
             "Output",
             "Mode",
             "Parallel",
+            "Prefetch",
             "Workers",
             "Resample",
         ),
@@ -1467,6 +1535,7 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
         )
 
     parallel = bool(doc.get("Parallel", False))
+    prefetch = _prefetch_flag(doc)
     if parallel and resolved_mode == "fan-in":
         # Not a silent serialization: the series writer is one stateful handle
         # whose steps must be appended in order, and the obvious workaround
@@ -1483,18 +1552,17 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
         _check_series_target(out_path, out.get("Format"))
 
         def _steps():
-            for entry in entries:
-                # Streaming: one mesh enters scope per iteration and leaves it.
-                mesh = read(
-                    entry["path"],
-                    file_format=inp.get("Format") or None,
-                    time_step=entry["step"],
-                    **read_kwargs,
-                )
-                time = _resolve_time(entry, mesh, inp.get("TimeFrom", "auto"))
-                for step in steps_spec:
-                    mesh = _apply_step_shim(mesh, step, steps_report, warnings)
-                yield time, mesh
+            # Streaming: one mesh enters scope per iteration and leaves it
+            # (two with Prefetch: the next step is read while this one runs).
+            with _ReadAhead(
+                entries, inp.get("Format"), read_kwargs, prefetch and not parallel
+            ) as ahead:
+                for i, entry in enumerate(entries):
+                    mesh = ahead.read(i)
+                    time = _resolve_time(entry, mesh, inp.get("TimeFrom", "auto"))
+                    for step in steps_spec:
+                        mesh = _apply_step_shim(mesh, step, steps_report, warnings)
+                    yield time, mesh
 
         # write_sequence picks the target's own series writer (until v16.17.0
         # this built the XDMF one directly, so a fan-in to .gid, .pvd or .usd
@@ -1534,10 +1602,11 @@ def run_sequence_pipeline(settings, input_path=None, output_path=None):
                 steps_report.extend(job_steps)
                 warnings.extend(job_warnings)
     else:
-        for job in jobs:
-            job_steps, job_warnings = _run_one(job)
-            steps_report.extend(job_steps)
-            warnings.extend(job_warnings)
+        with _ReadAhead(entries, inp.get("Format"), read_kwargs, prefetch) as ahead:
+            for i, job in enumerate(jobs):
+                job_steps, job_warnings = _run_one(job, ahead.read(i))
+                steps_report.extend(job_steps)
+                warnings.extend(job_warnings)
     return {"steps": steps_report, "warnings": warnings}
 
 

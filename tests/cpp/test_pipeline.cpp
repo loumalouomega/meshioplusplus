@@ -280,6 +280,28 @@ TEST(Pipeline, TransformRequiresExactlyOneSource) {
                  std::invalid_argument);
 }
 
+TEST(Pipeline, TransformScaleTakesABareNumberOrAnArray) {
+    // A bare number is the uniform-scale spelling, as in the Python engine.
+    PipelineReport report;
+    const Mesh src = mt::tri_mesh();
+    const double* p0 = src.Points().As<double>();
+    for (const meshioplusplus::PipelineValue& value :
+         {meshioplusplus::PipelineValue{2.0}, meshioplusplus::PipelineValue{std::int64_t{2}},
+          meshioplusplus::PipelineValue{std::vector<double>{2.0}},
+          meshioplusplus::PipelineValue{std::vector<double>{2.0, 2.0, 2.0}}}) {
+        PipelineStep st = step("Transform");
+        st.mParams["Scale"] = value;
+        Mesh out = meshioplusplus::apply_pipeline_step(mt::tri_mesh(), st, report);
+        const double* q = out.Points().As<double>();
+        for (std::size_t i = 0; i < 3 * src.NumPoints(); ++i)
+            EXPECT_DOUBLE_EQ(q[i], 2.0 * p0[i]);
+    }
+    PipelineStep bad = step("Transform");
+    bad.mParams["Scale"] = std::string("two");
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(mt::tri_mesh(), bad, report),
+                 std::invalid_argument);
+}
+
 TEST(Pipeline, ConvertCellsSimplexifiesAHex) {
     PipelineReport report;
     Mesh out = meshioplusplus::apply_pipeline_step(

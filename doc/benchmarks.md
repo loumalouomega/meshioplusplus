@@ -920,7 +920,14 @@ Roadmap 5.5.2. `valgrind --tool=callgrind --toggle-collect='meshioplusplus::opti
 | `optvol_pass_23` | 2.6% |
 | the five comparison sorts of the face and edge tables, together | 7.4% |
 
-The comparison sorts of each sweep's face and edge tables, which the roadmap named as the likely cost, come to 7.4% between them: replacing them with `group_slots` would save at most that, and was not taken. `optvol_min_dihedral` took `acos` of all six edges of every tet a probe evaluates; `acos` is decreasing, with a slope of magnitude at least 1 and an error of about an ulp, so a cosine more than `1e-12` below the largest one already evaluated cannot give the least angle, and its `acos` is now skipped. The result is the same bit for bit (the row's digest at tiers S and M on every backend). Tier S, SEQ: 4.56 s to 3.34 s. What is left is the smoothing's algorithm, every tet of a star at every probe ([roadmap](./roadmap.md#performance)).
+The comparison sorts of each sweep's face and edge tables, which the roadmap named as the likely cost, come to 7.4% between them: replacing them with `group_slots` would save at most that, and was not taken. `optvol_min_dihedral` took `acos` of all six edges of every tet a probe evaluates; `acos` is decreasing, with a slope of magnitude at least 1 and an error of about an ulp, so a cosine more than `1e-12` below the largest one already evaluated cannot give the least angle, and its `acos` is now skipped. The result is the same bit for bit (the row's digest at tiers S and M on every backend). Tier S, SEQ: 4.56 s to 3.34 s. What is left is the smoothing's algorithm, every tet of a star at every probe.
+
+That is what the next change removed. The smoothing's kernel is now `detail::tet_flip_smooth_worst` (`detail/tet_flips.cpp`, shared with `adapt_volume`), and its line search stops looking at a probe once one tet of the star is at or below the acceptance threshold, since the star's least angle only falls as tets are added and the search reads nothing but the comparison ([the argument](./optimize_volume.md#scope-and-determinism)). Digests are unchanged at tiers S and M (SEQ) and on every backend and thread count at tier S; no arithmetic moved.
+
+| Row (SEQ) | Instructions, tier S | Time, tier S | Time, tier M |
+| --- | ---: | ---: | ---: |
+| `optimize_volume` | 25.03 G to 14.86 G (−41%) | 2.39 s to 1.53 s | 39.9 s to 25.0 s |
+| `adapt_volume` | 29.56 G to 23.47 G (−21%) | 2.87 s to 2.39 s | 18.8 s to 16.2 s |
 
 ### VTK XML parsed in place
 
@@ -1037,6 +1044,157 @@ Roadmap 5.1.2. The two operations had no row in `meshioplusplus_bench_ops` becau
 | --- | ---: | ---: | ---: |
 | `decimate_volume` | 1.48 s | 0.86 s | 8.89 G |
 | `conservative_interpolate` | 0.60 s | 0.29 s | 3.14 G |
+
+### Result-file reader and transform rows
+
+Roadmap 5.1.2 and 5.14. `meshioplusplus_bench_ops` gains rows for the four result-file readers and for the operations an in-place `transform` would touch. Every existing row's digest is unchanged against the run before them (SEQ), and the new rows agree on SEQ and OpenMP at one and four threads (tier S).
+
+- **`read_d3plot`, `read_op2`, `read_rst`, `read_xplt`** read the last of four states of a file written through each format's series writer (`LsdynaD3plotSeriesWriter`, `NastranOp2SeriesWriter`, `AnsysRstSeriesWriter`, `XpltSeriesWriter`), the tetrahedral cube with a displacement field under the name each writer keeps (`displacement`, `DISPLACEMENT`, `U`). The cost is in the state records: OP2 and the Ansys results file are four to six times the d3plot and xplt reads of the same mesh. From Python, `benchmark/bench.py`'s `all_formats()` already sweeps the four as volume formats.
+- **`transform`** applies a skew rotation and a translation to the cube with a vector point field and a vector cell field, rotating both; **`mirror`** reflects it across `x = 0.5` with its vector data; **`flip_normals`** reverses the cube's surface; **`pipeline_transform_chain`** runs three `Transform` steps through `run_pipeline_steps` and writes the result as `vtu`.
+
+| Row (SEQ) | S | M | L |
+| --- | ---: | ---: | ---: |
+| `read_d3plot` | 0.95 ms | 16.6 ms | 132 ms |
+| `read_op2` | 2.9 ms | 68.9 ms | 623 ms |
+| `read_rst` | 4.3 ms | 77.7 ms | 457 ms |
+| `read_xplt` | 1.0 ms | 16.2 ms | 106 ms |
+| `transform` | 0.04 ms | 1.2 ms | 6.8 ms |
+| `mirror` | 0.19 ms | 4.0 ms | 23.9 ms |
+| `flip_normals` | 0.01 ms | 0.09 ms | 0.28 ms |
+| `pipeline_transform_chain` | 11.7 ms | 170 ms | 824 ms |
+
+#### What an in-place `transform` could save
+
+Roadmap 5.14 asked what share of a transform chain the copies are. The answer bounds it from above without stubbing anything: at tier L the chain's `vtu` write alone is 694 ms of its 789 ms (88%), and the three `transform` calls together are at most 20 ms (2.5%) even if every instruction in them were a copy, which it is not (each also transforms the points and rotates the vectors). A whole clone of the mesh is 2.2 ms (0.3%). The data-only operations are the same question with the points untouched, and the answer is the same: `data_rename` 3.7 ms, `data_drop` 3.5 ms and `data_calc` (`norm(velocity)`) 7.3 ms at tier L, each under 1% of the write that follows them in any pipeline that ends in a file. Tier M gives the same proportions (write 149 of 164 ms; `transform` 1.1 ms). The second, in-place entry point was therefore not added; the decision is recorded in the [roadmap's non-goals](./roadmap.md#non-goals-and-decisions-taken).
+
+### Cell volumes without rebuilding the rings, and what bounds `decimate_volume`'s star
+
+Roadmap 5.1.4. `valgrind --tool=callgrind --toggle-collect='meshioplusplus::decimate_volume*'` over the `decimate_volume` row at tier S put 34% of its instructions under `dv_tet_volume`, 1.26 million calls that reached `detail::cell_volume_from_corners` and, through it, the polyhedron `poly_measure`. That function rebuilt the cell's rings (three vectors) on every call although they depend on the cell type alone, and the three allocations were most of its cost. Each thread now keeps the rings of the last type it measured, and `poly_measure` receives the same input as before, so every volume is bit-identical (the digests of the whole tier S sweep are unchanged on SEQ and OpenMP at one and four threads). The shared kernel serves other operations too:
+
+| Row (tier S, SEQ) | Instructions | Time |
+| --- | ---: | ---: |
+| `decimate_volume` | 8.86 G to 6.83 G (−23%) | 0.61 s to 0.46 s |
+| `clean` | 54.7 M to 29.8 M (−45%) | 3.2 ms to 1.9 ms |
+| `clean_weld` | 113 M to 63.6 M (−44%) | 7.1 ms to 4.3 ms |
+| `octree_mesh_tet` | 6.66 G to 6.45 G (−3.2%) | |
+| `tetrahedralize_octree` | 4.77 G to 4.63 G (−2.9%) | |
+| `optimize_volume` | 14.86 G to 14.61 G (−1.7%) | |
+
+Two things were tried for the superlinear growth and not kept. A sorted merge in place of the pairwise comparison of the duplicate-tet guard changed no output and no time (the guard is not where the time goes, and the guards reject in this order: the inversion guard takes 90% of the rejected attempts, 100,716 of 110,140 at 14 cells a side). Bounding the star changes which collapses happen, so it was measured as an experiment on Kuhn cubes of 8, 12 and 14 cells a side at half the tets, with the quality of `compute_quality` on the result:
+
+| Rule (14 cells a side, 16,464 tets) | Time | Least dihedral | Largest aspect ratio | Inverted |
+| --- | ---: | ---: | ---: | ---: |
+| today | 2.7 s | 0.06° | 4.1e4 | 0 |
+| valence cap 48 (a collapse refused when the survivor would have more tets) | 0.10 s | 0.10° | 7.4e5 | 0 (one at 12 a side) |
+| valence cap 72 | 0.17 s | 0.00° | 1.5e9 | 1 |
+| score × (1 + 0.5 × tets around both ends / 24) | 9.2 s | 0.33° | 7.1e3 | 0 |
+
+The cap is 25 times faster and ends in degenerate and, in two of the six configurations, inverted tetrahedra: the collapses it forbids are the ones that were absorbing the slivers. The penalty gives better quality and is 3.5 times slower, and a factor of 2 changed nothing against 0.5. Neither is a better default, so the rule stands as it was; a cap would be an option, a layout change to `DecimateVolumeOptions` ([roadmap](./roadmap.md#performance)). The unchanged rule's time at 16 cells a side (24,576 tets) is 38 s, with 234,410 rejected collapses; 30 cells a side was not run. The meshes are Kuhn cubes: the roadmap's graded Netgen mesh needs Netgen, which was not installed.
+
+### Which byte-level kernels dominate a read (vector kernels, measured)
+
+Roadmap 5.15 asked whether a kernel dominates enough to justify variants selected at run time. `valgrind --tool=callgrind` over the rows below at tier M (SEQ), collecting only the registry call a row times; the new rows `read_vtu_base64`, `read_vtk_binary` and `write_vtu_base64` exist for this and sit beside `read_vtu_ascii`:
+
+| Row | Largest shares |
+| --- | --- |
+| `read_vtu_ascii` | `vtu_parse_ascii` 57%, libc `isspace` 17%, `std::from_chars` 8%, the XML parse 8% |
+| `read_vtu_base64` (zlib-compressed, the writer's default) | zlib inflate 46% and `adler32` 16%, base64 decoding 17% (`vtub_decode_groups_window`) and 5% (its constructor), the XML parse 3% |
+| `write_vtu_base64` | zlib deflate over 90%; base64 encoding is under 1% |
+| `read_vtk_binary` (big-endian legacy VTK) | buffer zero-fill 49% (`memset`, in array construction), the byte-swapping read loop 35%; the row takes 0.13 ms at tier S and 2.3 ms at M |
+| `distance_to_surface` | `sd_nearest_triangle` (with the bounding-volume box tests inlined in it) 74% and `closest_point_on_triangle` 21%, both floating-point arithmetic |
+
+No kernel qualifies. Base64 is the largest byte kernel and 17% to 22% of a read dominated by zlib; encoding is not visible on the write side. The byte swap is 35% of a read that takes two milliseconds at 160,000 tetrahedra. The floating-point paths (number text, the distance query) are arithmetic and not the comparisons whose vector form is bit-identical to the scalar one. So the dispatch layer (`target_clones` on GCC and Clang, a `cpuid` pointer for MSVC, a WASM build flag, a scalar-against-vector test and an environment override) is not built, and the decision against intrinsics and `-march` flags stands.
+
+The profile did show a cost that needs no vector unit: `vtu_parse_ascii` counted and skipped tokens through libc's `isspace`, a function call per byte. It now uses `text_is_blank`, the classic-locale test the other text readers share. Output is unchanged (the tier S sweep's digests agree on SEQ and OpenMP at one and four threads); `read_vtu_ascii` falls from 24.7 M to 19.0 M instructions (−23%) at tier S and from 31.7 ms to 24.5 ms at tier M.
+
+### Read-ahead in sequences
+
+Roadmap 5.11.1. `"Prefetch": true` reads step `i + 1` on a second thread while step `i` is processed and written ([sequences](./sequences.md#prefetch)). Eight VTU files of 82,944 tetrahedra, one per step, through the C++ engine (`run_sequence_json`), best of three, written one file per step:
+
+| Chain | Threads | Serial | Prefetch |
+| --- | ---: | ---: | ---: |
+| none (a copy) | 1 | 0.630 s | 0.562 s (−11%) |
+| `ExtractSurface` | 1 | 0.242 s | 0.180 s (−26%) |
+| none | 2 | 0.337 s | 0.290 s (−14%) |
+| `ExtractSurface` | 2 | 0.182 s | 0.131 s (−28%) |
+| none | 4 | 0.195 s | 0.192 s |
+| `ExtractSurface` | 4 | 0.141 s | 0.161 s (+14%) |
+| `Smooth`, 5 iterations | 4 | 0.763 s | 0.829 s (+9%) |
+
+With fewer threads than cores the second thread has a core of its own and the read hides behind the processing; with a thread per core it competes with the operations' parallel loops for them. So the option is off by default and aimed at the serial build the release CLI is. At two threads, with `ExtractSurface`, a prefetching run is already faster than the serial run at four threads. The files are bit-identical to the serial run's (a test in `test_sequence.py` compares them, for both engines, and the failure case: a step that cannot be read).
+
+The other half of roadmap 5.11, fields-only reads (skip the geometry of a static series after its first step), was measured on a build with HDF5: twelve steps of 162,000 tetrahedra, one step read in full against the same step read with `points_only` (which reads the points and cells and no data):
+
+| Format | Full step read | Geometry only | Geometry share |
+| --- | ---: | ---: | ---: |
+| XDMF | 1.4 ms | 0.9 ms | 66% |
+| VTKHDF | 4.6 ms | 4.1 ms | 88% |
+
+and a whole step of an XDMF series converted to VTU files takes 39.8 ms, so the read is 3.5% of it and the geometry 2%. A flag that skipped the geometry would save at most that, which is why it was not built ([roadmap](./roadmap.md#non-goals-and-decisions-taken)). Exodus has no series writer here, so it was not measured.
+
+### The physics-ML layers and the converters
+
+Roadmap 5.1.2. `benchmark/bench_ml.py` times the Python layers a training loop calls on top of the C++ operations, and the payload layers of the ParaView and Blender converters, which import neither VTK nor Blender and so run without the host application. A Kuhn tetrahedral cube of 30 cells a side (29,791 points, 162,000 tetrahedra) with one smooth point field, SEQ-agnostic Python entry points, best of five in milliseconds:
+
+| Layer | Case | Time |
+| --- | --- | ---: |
+| `sample_grid` | onto a 32³ lattice | 124 ms |
+| `sample_grid` | onto a 64³ lattice | 155 ms |
+| `select_points` | `farthest`, 2,048 points | 28 ms |
+| `select_points` | `grid`, 2,048 points | 16 ms |
+| `select_points` | `random`, 2,048 points | 0.9 ms |
+| `proximity_graph` | radius 0.083 over the points | 158 ms |
+| `proximity_graph` | 8 nearest neighbours | 38 ms |
+| ParaView | mesh to the VTK payload (`_to_vtk_payload`) | 0.75 ms |
+| Blender | mesh to the `bpy` arrays (`_to_blender_payload`, which first reduces the tetrahedra to their surface) | 9.9 ms |
+| Blender | the surface's arrays back to a mesh | 0.3 ms |
+| dataset | eight manifest entries, saved and loaded | 0.24 ms |
+
+Nothing here is slow for the size: the lattice sampler grows with the lattice and the proximity graph with the radius, both parallel in the core, and the converters move whole arrays. The ParaView payload is a view of the mesh's arrays (0.75 ms at 162,000 cells), so a conversion there is dominated by VTK's own object construction, which this layer does not include. The WASM ingestion of a JavaScript mesh (roadmap 5.9) is the one integration without a number: it needs the Emscripten build.
+
+### Profile-guided optimisation
+
+Roadmap 5.12. `-DMESHIOPLUSPLUS_PGO=GENERATE` then `USE` (GCC and Clang, one build directory; see [installation](./installation.md)) was measured against the plain build and link-time optimisation on four SEQ Release builds of `meshioplusplus_bench_ops` (GCC 13.3, the release CLI's backend): plain, LTO, PGO, and PGO with LTO. The profile came from one training run of the harness itself, `meshioplusplus_bench_ops --tier S --tier M` (12.5 minutes instrumented, 347 profile files). The gate held: all 145 rows of tier S have the same digest in all four builds, on one thread.
+
+Instruction counts, tier S, one thread, against the plain build (`bench_instructions.py`):
+
+| Build | Median row | Whole sweep | Rows more than 1% slower | Rows more than 5% faster | Worst rows |
+| --- | ---: | ---: | ---: | ---: | --- |
+| LTO | +1.0% | +2.5% | 72 | 14 | `read_vtk_binary` +50%, `read_vtk_ascii` +40%, `read_vtu_ascii` +37% |
+| PGO | −3.6% | −4.3% | 36 | 55 | `voxelize` +49%, `read_stl_binary` +49%, `read_gltf_weld` +40%, `fit_primitives` +28% |
+| PGO with LTO | −5.0% | −7.2% | 36 | 72 | `voxelize` +49%, `fit_primitives` +44%, `read_stl_binary` +39%, `read_gltf_weld` +38% |
+
+The counts fall for most rows (the surface and region extractions by 20 to 35%), and the rows that rise are the ones the profile weighs least, whose cold code is laid out for size. The time does not follow: over the 18 rows that take 30 ms or more in the plain build (7.5 s of the sweep), best of five, one thread, the median ratio of time is 1.007 for LTO, 1.008 for PGO and 1.013 for PGO with LTO, and the total 1.027, 1.007 and 0.996: `decimate_volume` 471 ms plain, 439 LTO, 507 PGO, 396 with both; `optimize_volume` 1497, 1498, 1538, 1527 ms; `adapt_volume` 2446, 2454, 2432, 2445 ms. The shorter rows are inside the noise.
+
+The roadmap's bar for putting a two-stage build in the release workflows was no row more than 2% slower and a median at least 5% faster. PGO fails the first part on 36 rows (by instruction count) and shows no gain in time on the rows where time is spent, so the release builds do not use it; the option stays, off by default, for a workload that resembles the training run.
+
+### The JS-to-core copy in WebAssembly
+
+Roadmap 5.9. `writeMesh` of a JS mesh object copied every typed array into the core one element at a time through embind and then a second time into the core's own buffer. A typed array whose element type converts value for value to the destination's dtype is now written straight into that memory with one `set` on a typed-array view of it; a plain `Array`, a BigInt array into anything but a 64-bit integer, and a narrowing keep the element path ([WebAssembly](./wasm.md#passing-typed-arrays-is-the-fast-path)).
+
+`tests/wasm/bench.mjs`, Node 22 with the sequential artifact built by Emscripten 6.0.3 without zlib, HDF5 or netCDF (the build the container could make), a Kuhn cube of 998,250 tetrahedra and 175,616 points with one point field and one cell field, best of three:
+
+| Step | Before | After |
+| --- | ---: | ---: |
+| `writeMesh` (JS object to the core to a binary `.vtk`) | 846.6 ms | 251.0 ms (−70%) |
+| `readMesh` (the file to the core to a JS object) | 86.5 ms | 86.2 ms |
+
+The threaded artifact measures the same (248 ms and 88 ms). Behaviour is unchanged: a script writing the same mesh with every combination of connectivity (`Int32Array`, `Uint16Array`, `BigInt64Array`, a plain `Array`, a subarray view) and point data (`Float64Array`, `Float32Array`, `Int32Array`, `Int16Array`, `Uint8Array`, `BigInt64Array`, a plain `Array`) and hashing what `readMesh` returns gives the same SHA-256 on the artifact before and after, and `tests/wasm/smoke.mjs` passes the same 223 steps on both (the 31 that fail need HDF5 or netCDF, which that build lacks). A new smoke step pins the equivalence of the array flavours.
+
+### The WebAssembly heap ceiling
+
+Roadmap 5.13.1. The artifacts are linked with `-sMAXIMUM_MEMORY=4GB`. `tests/wasm/bench.mjs` at larger sizes (a write to a binary `.vtk` and a read-back, one run each, sequential artifact; the sizes are Kuhn cubes of 130, 140, 150, 160, 180 and 200 cells a side):
+
+| Tetrahedra | 2 GB ceiling | 4 GB ceiling |
+| ---: | --- | --- |
+| 13.2 M | `writeMesh` 5.2 s, `readMesh` 1.4 s | 5.9 s, 1.6 s |
+| 16.5 M | `std::bad_alloc` in `readMesh` | 8.3 s, 2.1 s |
+| 20.3 M | `std::bad_alloc` | 9.7 s, 2.5 s |
+| 24.6 M | `std::bad_alloc` | 13.2 s, 2.8 s |
+| 35.0 M | `std::bad_alloc` | `std::bad_alloc` |
+| 48.0 M | `std::bad_alloc` | `std::bad_alloc` |
+
+The ceiling for this round trip moves from between 13 and 16 million tetrahedra to between 25 and 35 million. The times at 13.2 million differ by the noise of two single runs; nothing is paid for the larger ceiling until the heap grows past 2 GB. See [WebAssembly](./wasm.md#the-heap-ceiling).
 
 ## Every format
 

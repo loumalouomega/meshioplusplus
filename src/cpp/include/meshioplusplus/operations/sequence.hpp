@@ -264,6 +264,12 @@ struct SequencePipeline {
     /// already parallelizes internally, so a step-level parallel region nested
     /// over them would oversubscribe on every backend.
     bool mParallel = false;
+    /// Read step `i + 1` on a second thread while step `i` is processed and
+    /// written (`"Prefetch"` in a settings document; sequence and fan-out
+    /// modes and fan-in). Output, order and bytes are unchanged; the cost is a
+    /// second mesh alive. It sits in the padding after `mParallel`, so the
+    /// struct keeps its size and every other offset.
+    bool mPrefetch = false;
     /// Worker count for `mParallel`; 0 means "as many as there are cores".
     /// Ignored, with `mParallel`, by the C++ engine.
     int mWorkers = 0;

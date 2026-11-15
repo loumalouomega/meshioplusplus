@@ -536,21 +536,111 @@ val mesh_to_val(const Mesh& rMesh) {
     return out;
 }
 
+// Bulk copies of JS arrays into the core's own buffers (roadmap 5.9).
+//
+// `emscripten::vecFromJSArray` crosses embind once per element and then the
+// vector is copied again; for a typed array the engine can instead write the
+// elements straight into the destination's memory: `set` on a typed-array view
+// of that memory. That is taken when the source's element type converts to the
+// destination's without changing a value (the same type, a narrower integer
+// into a wider one, an integer or a float into a double); a plain `Array`, a
+// BigInt array into anything but 64-bit integers, and any narrowing keep the
+// element path, so every value and every error is what it was.
+
+/// Whether `rV` is a typed array (an ArrayBuffer view); a plain `Array` is not.
+bool js_is_typed_array(const val& rV) {
+    return val::global("ArrayBuffer").call<bool>("isView", rV);
+}
+
+/// Whether a typed array of element type `S` converts to `T` value for value.
+template <class S, class T>
+constexpr bool js_set_is_exact() {
+    if constexpr (std::is_same_v<S, T>) {
+        return true;
+    } else if constexpr (std::is_floating_point_v<T>) {
+        return sizeof(S) < 8 || std::is_floating_point_v<S>;  // not a BigInt array
+    } else if constexpr (std::is_integral_v<S> && sizeof(S) < 8) {
+        return static_cast<long double>(std::numeric_limits<S>::lowest()) >=
+                   static_cast<long double>(std::numeric_limits<T>::lowest()) &&
+               static_cast<long double>(std::numeric_limits<S>::max()) <=
+                   static_cast<long double>(std::numeric_limits<T>::max());
+    } else {
+        return false;
+    }
+}
+
+/// Copy a typed array of element type `S` into `pDst` when that is exact.
+template <class S, class T>
+bool js_bulk_from(const val& rArr, T* pDst, std::size_t n) {
+    if constexpr (js_set_is_exact<S, T>()) {
+        if constexpr (std::is_same_v<S, T>) {
+            val(emscripten::typed_memory_view(n, pDst)).template call<void>("set", rArr);
+        } else {
+            std::vector<S> tmp(n);
+            val(emscripten::typed_memory_view(n, tmp.data())).template call<void>("set", rArr);
+            std::transform(tmp.begin(), tmp.end(), pDst, [](S v) { return static_cast<T>(v); });
+        }
+        return true;
+    } else {
+        return false;
+    }
+}
+
+/// The typed array `rArr` of exactly `n` elements into `pDst`, or false.
+template <class T>
+bool js_try_bulk_copy(const val& rArr, T* pDst, std::size_t n) {
+    if (!js_is_typed_array(rArr) || rArr["length"].as<std::size_t>() != n)
+        return false;
+    const std::string ctor = rArr["constructor"]["name"].as<std::string>();
+    if (ctor == "Float64Array")
+        return js_bulk_from<double>(rArr, pDst, n);
+    if (ctor == "Float32Array")
+        return js_bulk_from<float>(rArr, pDst, n);
+    if (ctor == "Int8Array")
+        return js_bulk_from<std::int8_t>(rArr, pDst, n);
+    if (ctor == "Int16Array")
+        return js_bulk_from<std::int16_t>(rArr, pDst, n);
+    if (ctor == "Int32Array")
+        return js_bulk_from<std::int32_t>(rArr, pDst, n);
+    if (ctor == "Uint8Array" || ctor == "Uint8ClampedArray")
+        return js_bulk_from<std::uint8_t>(rArr, pDst, n);
+    if (ctor == "Uint16Array")
+        return js_bulk_from<std::uint16_t>(rArr, pDst, n);
+    if (ctor == "Uint32Array")
+        return js_bulk_from<std::uint32_t>(rArr, pDst, n);
+    if (ctor == "BigInt64Array")
+        return js_bulk_from<std::int64_t>(rArr, pDst, n);
+    if (ctor == "BigUint64Array")
+        return js_bulk_from<std::uint64_t>(rArr, pDst, n);
+    return false;
+}
+
+/// Fill `n` elements at `pDst` from a JS array-like of numbers.
+template <class T>
+void js_fill_from(const val& rJsArr, T* pDst, std::size_t n) {
+    if (js_try_bulk_copy(rJsArr, pDst, n))
+        return;
+    const std::vector<T> tmp = emscripten::vecFromJSArray<T>(rJsArr);
+    std::copy_n(tmp.begin(), std::min(n, tmp.size()), pDst);
+}
+
+/// A JS array-like of numbers as a vector of int64.
+std::vector<std::int64_t> js_int64_vector(const val& rJsArr) {
+    std::vector<std::int64_t> out(rJsArr["length"].as<std::size_t>());
+    js_fill_from(rJsArr, out.data(), out.size());
+    return out;
+}
+
 // A JS array-like of numbers -> an owning Float64/Int64 NDArray of `shape`.
-// `emscripten::vecFromJSArray` copies once into a std::vector; the second
-// copy into the NDArray's own buffer is unavoidable without exposing
-// NDArray's internals to JS, which the file-level design deliberately avoids.
 NDArray float64_ndarray_from_val(const val& rJsArr, std::vector<std::size_t> shape) {
-    std::vector<double> tmp = emscripten::vecFromJSArray<double>(rJsArr);
     NDArray out = NDArray::Uninit(DType::Float64, std::move(shape));
-    std::copy(tmp.begin(), tmp.end(), out.As<double>());
+    js_fill_from(rJsArr, out.As<double>(), out.Size());
     return out;
 }
 
 NDArray int64_ndarray_from_val(const val& rJsArr, std::vector<std::size_t> shape) {
-    std::vector<std::int64_t> tmp = emscripten::vecFromJSArray<std::int64_t>(rJsArr);
     NDArray out = NDArray::Uninit(DType::Int64, std::move(shape));
-    std::copy(tmp.begin(), tmp.end(), out.As<std::int64_t>());
+    js_fill_from(rJsArr, out.As<std::int64_t>(), out.Size());
     return out;
 }
 
@@ -590,9 +680,8 @@ DType dtype_of_js_array(const val& rArr, const std::string& rName) {
 // those carry their source dtype instead of always widening to Float64.
 NDArray ndarray_from_js_array(const val& rJsArr, DType dtype, std::vector<std::size_t> shape) {
     return meshioplusplus::detail::dispatch_dtype(dtype, [&]<class T>() -> NDArray {
-        std::vector<T> tmp = emscripten::vecFromJSArray<T>(rJsArr);
         NDArray out = NDArray::Uninit(dtype, std::move(shape));
-        std::copy(tmp.begin(), tmp.end(), out.As<T>());
+        js_fill_from(rJsArr, out.As<T>(), out.Size());
         return out;
     });
 }
@@ -700,11 +789,9 @@ Mesh val_to_mesh(const val& rObj) {
             // the form every mesh backend stores -- moved straight in when
             // they are well-formed, compacted first otherwise (JS callers may
             // hand ranges that skip parts of the node array).
-            std::vector<std::int64_t> flat = emscripten::vecFromJSArray<std::int64_t>(data_val);
-            std::vector<std::int64_t> face_offsets =
-                emscripten::vecFromJSArray<std::int64_t>(block["faceOffsets"]);
-            std::vector<std::int64_t> cell_offsets =
-                emscripten::vecFromJSArray<std::int64_t>(block["cellOffsets"]);
+            std::vector<std::int64_t> flat = js_int64_vector(data_val);
+            std::vector<std::int64_t> face_offsets = js_int64_vector(block["faceOffsets"]);
+            std::vector<std::int64_t> cell_offsets = js_int64_vector(block["cellOffsets"]);
             if (cell_offsets.empty())
                 throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                                  "' has an empty cellOffsets");
@@ -731,9 +818,8 @@ Mesh val_to_mesh(const val& rObj) {
             mesh.AddPolyhedronBlock(type, std::move(nodes), std::move(rows), std::move(cellsx));
         } else if (block.hasOwnProperty("rowOffsets")) {
             // Polygon: two flat CSR arrays, compacted into the stored CSR.
-            std::vector<std::int64_t> flat = emscripten::vecFromJSArray<std::int64_t>(data_val);
-            std::vector<std::int64_t> row_offsets =
-                emscripten::vecFromJSArray<std::int64_t>(block["rowOffsets"]);
+            std::vector<std::int64_t> flat = js_int64_vector(data_val);
+            std::vector<std::int64_t> row_offsets = js_int64_vector(block["rowOffsets"]);
             if (row_offsets.empty())
                 throw meshioplusplus::WriteError("meshio++ (wasm): cell block '" + type +
                                                  "' has an empty rowOffsets");
@@ -3245,9 +3331,9 @@ meshioplusplus::SequenceResample val_to_resample(const val& rObject, const char*
 }
 
 SettingsDocument val_to_settings(const val& rSettings) {
-    check_settings_keys(
-        rSettings, "the settings object",
-        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
+    check_settings_keys(rSettings, "the settings object",
+                        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Prefetch",
+                         "Workers", "Resample"});
     SettingsDocument parsed;
     meshioplusplus::SequencePipeline& pipeline = parsed.mSeq;
     val version = rSettings["Version"];
@@ -3263,6 +3349,11 @@ SettingsDocument val_to_settings(const val& rSettings) {
     if (!parallel.isUndefined() && !parallel.isNull()) {
         parsed.mSequenceKeys = true;
         pipeline.mParallel = parallel.as<bool>();
+    }
+    val prefetch = rSettings["Prefetch"];
+    if (!prefetch.isUndefined() && !prefetch.isNull()) {
+        parsed.mSequenceKeys = true;
+        pipeline.mPrefetch = prefetch.as<bool>();
     }
     val workers = rSettings["Workers"];
     if (!workers.isUndefined() && !workers.isNull()) {

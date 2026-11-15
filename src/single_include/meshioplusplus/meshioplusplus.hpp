@@ -40429,6 +40429,12 @@ struct SequencePipeline {
     /// already parallelizes internally, so a step-level parallel region nested
     /// over them would oversubscribe on every backend.
     bool mParallel = false;
+    /// Read step `i + 1` on a second thread while step `i` is processed and
+    /// written (`"Prefetch"` in a settings document; sequence and fan-out
+    /// modes and fan-in). Output, order and bytes are unchanged; the cost is a
+    /// second mesh alive. It sits in the padding after `mParallel`, so the
+    /// struct keeps its size and every other offset.
+    bool mPrefetch = false;
     /// Worker count for `mParallel`; 0 means "as many as there are cores".
     /// Ignored, with `mParallel`, by the C++ engine.
     int mWorkers = 0;
@@ -110856,16 +110862,28 @@ double cell_volume_from_corners(const Vec3* pCoords, CellType Type) {
     if (corners <= 0)
         return std::nan("");
     // The coordinates are already the cell's corners in order, so the rings are
-    // just cell_faces' local indices with an identity node mapping.
-    CellRings rings;
-    rings.mNodes.resize(static_cast<std::size_t>(corners));
-    for (int i = 0; i < corners; ++i)
-        rings.mNodes[static_cast<std::size_t>(i)] = i;
-    rings.mFaceStart.push_back(0);
-    for (const CellFaceDef& f : faces) {
-        for (int i = 0; i < f.mNumCorners; ++i)
-            rings.mFaceNodes.push_back(f.mNodes[i]);
-        rings.mFaceStart.push_back(static_cast<std::uint32_t>(rings.mFaceNodes.size()));
+    // just cell_faces' local indices with an identity node mapping. They depend
+    // on `Type` alone, and a caller measures one type thousands of times in a
+    // row (decimate_volume's inversion guard calls this a million times on
+    // tetrahedra, three allocations each), so each thread keeps the rings of
+    // the last type it was asked about. The same rings reach `poly_measure`
+    // either way: the result is bit-identical.
+    static thread_local CellRings rings;
+    static thread_local CellType rings_type = CellType::Custom;
+    static thread_local bool rings_built = false;
+    if (!rings_built || rings_type != Type) {
+        rings.mNodes.assign(static_cast<std::size_t>(corners), 0);
+        for (int i = 0; i < corners; ++i)
+            rings.mNodes[static_cast<std::size_t>(i)] = i;
+        rings.mFaceNodes.clear();
+        rings.mFaceStart.assign(1, 0);
+        for (const CellFaceDef& f : faces) {
+            for (int i = 0; i < f.mNumCorners; ++i)
+                rings.mFaceNodes.push_back(f.mNodes[i]);
+            rings.mFaceStart.push_back(static_cast<std::uint32_t>(rings.mFaceNodes.size()));
+        }
+        rings_type = Type;
+        rings_built = true;
     }
     return poly_measure(rings, pCoords).mVolume;
 }
@@ -123970,9 +123988,25 @@ std::int64_t tet_flip_smooth_worst(std::vector<double>& rXyz, const std::vector<
                     shortest = std::min(shortest, std::sqrt(detail::vec3_dot(d, d)));
                 }
         }
-        const auto f_at = [&](const Vec3& x) {
+        // The star's least dihedral angle at x, or -1 when a tet is no longer
+        // positively oriented. A line-search probe is only compared with
+        // `fx + 1e-9`, so it passes that as `Floor`: the least angle of the
+        // star can only fall as more tets are looked at, so once one tet is at
+        // or below `Floor` the probe is rejected whatever the others hold, and
+        // the walk stops. The value then returned is not the star's least
+        // angle, only a number at or below `Floor`: a caller that passes a
+        // `Floor` reads the comparison and nothing else. The walk starts with
+        // the tet that stopped the last one (`probe` is its own order: `local`
+        // keeps its order, which the gradient's active set and the
+        // Frank-Wolfe step depend on, bit for bit).
+        std::vector<std::size_t> probe(local.size());
+        for (std::size_t i = 0; i < probe.size(); ++i)
+            probe[i] = i;
+        const auto f_at = [&](const Vec3& x,
+                              double Floor = -std::numeric_limits<double>::infinity()) {
             double m = 180.0;
-            for (const TetFlipTet& t : local) {
+            for (std::size_t k = 0; k < probe.size(); ++k) {
+                const TetFlipTet& t = local[probe[k]];
                 Vec3 p[4];
                 for (int c = 0; c < 4; ++c)
                     p[c] = t[static_cast<std::size_t>(c)] == v64
@@ -123981,6 +124015,10 @@ std::int64_t tet_flip_smooth_worst(std::vector<double>& rXyz, const std::vector<
                 if (detail::tet_volume6(p[0], p[1], p[2], p[3]) <= eps_vol6)
                     return -1.0;
                 m = std::min(m, tet_flip_min_dihedral(p[0], p[1], p[2], p[3]));
+                if (m <= Floor) {
+                    std::swap(probe[0], probe[k]);
+                    return m;
+                }
             }
             return m;
         };
@@ -124063,7 +124101,7 @@ std::int64_t tet_flip_smooth_worst(std::vector<double>& rXyz, const std::vector<
                 const double alpha = 0.2 * shortest * std::ldexp(1.0, -k);
                 const Vec3 y{x[0] + alpha * g[0] / gn, x[1] + alpha * g[1] / gn,
                              x[2] + alpha * g[2] / gn};
-                const double fy = f_at(y);
+                const double fy = f_at(y, fx + 1e-9);
                 if (fy > fx + 1e-9) {
                     x = y;
                     fx = fy;
@@ -126837,7 +126875,7 @@ namespace {
 /// where it once cut the array short.
 [[noreturn]] void vtkxml_throw_malformed(const char* pText, const char* pAt, const char* pLast) {
     const char* e = pAt;
-    while (e < pLast && !std::isspace(static_cast<unsigned char>(*e)))
+    while (e < pLast && !text_is_blank(*e))
         ++e;
     constexpr std::size_t kShown = 32;
     const std::size_t len = static_cast<std::size_t>(e - pAt);
@@ -126901,7 +126939,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
         std::size_t tokens = 0;
         bool in_token = false;
         for (const char* q = p; q < last; ++q) {
-            const bool space = std::isspace(static_cast<unsigned char>(*q)) != 0;
+            const bool space = text_is_blank(*q);
             tokens += !space && !in_token ? 1 : 0;
             in_token = !space;
         }
@@ -126911,7 +126949,7 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
             iv.reserve(tokens);
     }
     while (*p) {
-        while (*p && std::isspace(static_cast<unsigned char>(*p)))
+        while (*p && text_is_blank(*p))
             ++p;
         if (!*p)
             break;
@@ -126958,9 +126996,9 @@ NDArray vtu_parse_ascii(const char* pText, DType dt) {
 std::string vtu_strip(const char* pS) {
     std::string t = pS ? pS : "";
     std::size_t b = 0, e = t.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(t[b])))
+    while (b < e && text_is_blank(t[b]))
         ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(t[e - 1])))
+    while (e > b && text_is_blank(t[e - 1]))
         --e;
     return t.substr(b, e - b);
 }
@@ -281692,10 +281730,15 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
         ++given;
     }
     if (pipe_find(rStep, "Scale")) {
-        std::vector<double> v = pipe_dvec(rStep, "Scale");
-        // A bare number is the uniform-scale spelling.
-        if (v.empty())
+        // A bare number is the uniform-scale spelling; `pipe_dvec` refuses a
+        // scalar, so read it as a number before it is asked for an array.
+        const PipelineValue* scale_value = pipe_find(rStep, "Scale");
+        std::vector<double> v;
+        if (std::holds_alternative<double>(*scale_value) ||
+            std::holds_alternative<std::int64_t>(*scale_value))
             v.assign(1, pipe_number(rStep, "Scale", 1.0));
+        else
+            v = pipe_dvec(rStep, "Scale");
         if (v.size() == 1)
             xf = transform_scale(v[0], v[0], v[0]);
         else if (v.size() == 3)
@@ -285531,9 +285574,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     }
     if (!doc.is_object())
         pipe_schema_error("the settings document must be a JSON object");
-    pipe_check_keys(
-        doc, "the settings document",
-        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
+    pipe_check_keys(doc, "the settings document",
+                    {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Prefetch",
+                     "Workers", "Resample"});
 
     PipeDocument parsed;
     SequencePipeline& pipeline = parsed.mSeq;
@@ -285554,6 +285597,17 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     if (pipe_get(doc, "Parallel")) {
         parsed.mSequenceKeys = true;
         pipeline.mParallel = pipe_get_bool(doc, "Parallel", "the settings document", false);
+    }
+    if (const pipe_json* v = pipe_get(doc, "Prefetch")) {
+        parsed.mSequenceKeys = true;
+        // True or false, or the integers 1 and 0 (`"Prefetch": 1`).
+        if (v->is_boolean())
+            pipeline.mPrefetch = v->get<bool>();
+        else if ((v->is_number_integer() || v->is_number_unsigned()) &&
+                 (v->get<std::int64_t>() == 0 || v->get<std::int64_t>() == 1))
+            pipeline.mPrefetch = v->get<std::int64_t>() == 1;
+        else
+            pipe_schema_error("the settings document.Prefetch must be true, false, 1 or 0");
     }
     if (const pipe_json* v = pipe_get(doc, "Workers")) {
         parsed.mSequenceKeys = true;
@@ -304057,6 +304111,7 @@ SelectResult select_region(const Mesh& rMesh, const SelectOptions& rOpt) {
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <future>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -305198,6 +305253,47 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
     return report;
 }
 
+// Reads the steps of a sequence in order, and with `Enabled` reads step
+// `i + 1` on a second thread while step `i` is processed and written. The
+// read goes through the same `sequence_read_step`, so the mesh, the errors and
+// their order are the serial ones: a failed read surfaces when its step is asked
+// for, after the step before it was written. A reader that uses HDF5 or netCDF
+// already takes the library lock, so the two threads never enter the library
+// together. The cost is a second mesh alive.
+class SeqReadAhead {
+public:
+    SeqReadAhead(const std::vector<SequenceEntry>& rEntries, const std::string& rFormat,
+                 const ReadOptions& rOptions, bool Enabled)
+        : mEntries(rEntries), mFormat(rFormat), mOptions(rOptions), mEnabled(Enabled) {}
+    SeqReadAhead(const SeqReadAhead&) = delete;
+    SeqReadAhead& operator=(const SeqReadAhead&) = delete;
+    ~SeqReadAhead() {
+        // A pending read is waited for, not abandoned: it holds references.
+        if (mNext.valid())
+            mNext.wait();
+    }
+    Mesh Read(std::size_t Index) {
+        Mesh mesh = mNext.valid() && mNextIndex == Index
+                        ? mNext.get()
+                        : sequence_read_step(mEntries, Index, mFormat, mOptions);
+        if (mEnabled && Index + 1 < mEntries.size()) {
+            mNextIndex = Index + 1;
+            mNext = std::async(std::launch::async, [this, Index] {
+                return sequence_read_step(mEntries, Index + 1, mFormat, mOptions);
+            });
+        }
+        return mesh;
+    }
+
+private:
+    const std::vector<SequenceEntry>& mEntries;
+    const std::string& mFormat;
+    const ReadOptions& mOptions;
+    bool mEnabled;
+    std::future<Mesh> mNext;
+    std::size_t mNextIndex = 0;
+};
+
 }  // namespace
 
 PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
@@ -305238,9 +305334,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
             throw WriteError(why);
         seq_check_series_write_options(ofmt, rPipeline.mOutput.mOptions);
         // One step, read and run through the pipeline, with its time.
+        SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
+                           rPipeline.mPrefetch);
         auto step = [&](std::size_t i, double& rTime) {
-            Mesh mesh =
-                sequence_read_step(entries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
+            Mesh mesh = ahead.Read(i);
             rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
                 rPipeline.mInput.mTimeFrom != SequenceTimeFrom::Index) {
@@ -305282,9 +305379,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
 
     // Sequence / FanOut: both write one file per entry, and differ only in
     // where the entries came from -- which sequence_expand already settled.
+    SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
+                       rPipeline.mPrefetch);
     for (std::size_t i = 0; i < entries.size(); ++i) {
-        Mesh mesh =
-            sequence_read_step(entries, i, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions);
+        Mesh mesh = ahead.Read(i);
         double time = entries[i].mTime;
         if (entries[i].mTimeSource == SequenceTimeSource::Index &&
             rPipeline.mInput.mTimeFrom != SequenceTimeFrom::Index) {

@@ -10,7 +10,7 @@ wrapping, pin_memory, per-sample RNG) supplied by the base class.
 import torch
 from physicsnemo.datapipes.readers.base import Reader
 
-from . import _flat_items, _read_sample, _split_kwargs
+from . import _flat_items, _PairCache, _read_sample, _split_kwargs
 from ._edge_cache import pop_edge_cache
 
 
@@ -34,6 +34,7 @@ class MeshManifestReader(Reader):
         self._graph_kwargs = graph_kwargs
         offset = int(graph_kwargs.get("target_offset", 0))
         self._items = _flat_items(manifest, split, read_kwargs, offset)
+        self._pair_cache = _PairCache() if offset else None
 
     def __len__(self):
         return len(self._items)
@@ -41,7 +42,11 @@ class MeshManifestReader(Reader):
     def _load_sample(self, index):
         entry_id, series, step = self._items[index]
         _, sample = _read_sample(
-            series, step, self._graph_kwargs, edge_cache=self._edge_cache
+            series,
+            step,
+            self._graph_kwargs,
+            edge_cache=self._edge_cache,
+            pair_cache=self._pair_cache,
         )
         return {name: torch.from_numpy(array) for name, array in sample.arrays.items()}
 

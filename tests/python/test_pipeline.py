@@ -704,6 +704,16 @@ def test_transform_requires_exactly_one_source(settings_env):
         meshioplusplus.run_pipeline(make_settings(settings_env, [{"Op": "Transform"}]))
 
 
+@pytest.mark.parametrize("scale", [2, 2.0, [2], [2, 2, 2]])
+def test_transform_scale_takes_a_bare_number_or_an_array(settings_env, scale):
+    # The C++ engine refused a bare number while the Python engine took it.
+    meshioplusplus.run_pipeline(
+        make_settings(settings_env, [{"Op": "Transform", "Scale": scale}])
+    )
+    out = meshioplusplus.read(settings_env["out"])
+    np.testing.assert_allclose(out.points, 2.0 * helpers.tet_mesh.points)
+
+
 # --------------------------------------------------------------------------- #
 # Strict schema errors, always naming the offender                            #
 # --------------------------------------------------------------------------- #

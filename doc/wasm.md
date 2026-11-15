@@ -220,6 +220,10 @@ This deliberately mirrors the Python `Mesh`'s structure (points, a list of cell 
 
 What actually comes back out of `readMesh` is bounded by the mesh's own in-memory representation, which canonicalizes *within kind* — every floating-point dtype to `Float64Array`, every integer dtype to `BigInt64Array` — rather than preserving the exact input class. Concretely: a `Uint8Array` or `Int32Array` array you write is accepted, but a mesh you then read back has it as `BigInt64Array`, with every value exact (not the double it silently became before v11.2.0). `BigInt64Array` elements are JS `bigint`, not `number`; `Number(x)` or `Array.from(arr, Number)` converts them where you need ordinary numbers (see `XdmfTimeSeriesWriter.writeDataArrays`, which does this for you on the values it accepts).
 
+### Passing typed arrays is the fast path
+
+A typed array (`Float64Array`, `Int32Array`, `BigInt64Array` and the rest) is copied into the core's own buffer in one call when its element type converts to the array's dtype without changing a value: the same type, a narrower integer into a wider one, an integer or a float into a `Float64` array. A plain `Array`, a `BigInt64Array` into anything but a 64-bit integer, and a narrowing (a `Float64Array` of connectivity) take the element-by-element path, which gives the same values and the same errors, only slower. On a Kuhn cube of 998,250 tetrahedra (a `Float64Array` of points, an `Int32Array` of connectivity, one point field and one cell field), `writeMesh` to a binary legacy VTK takes 251 ms where it took 847 ms before the bulk copy, and `readMesh` 86 ms; `node tests/wasm/bench.mjs` measures it ([benchmarks](./benchmarks.md#the-js-to-core-copy-in-webassembly)).
+
 ### Multi-component (vector / tensor) data arrays
 
 Data arrays are flat, and **a flat typed array carries no shape** — the same problem `xdmfSeriesWriteDataArrays`' own `components` argument solves. Each of the three data maps therefore has a sibling `*_components` object giving the per-entity width of any array that is not a scalar:
@@ -464,6 +468,17 @@ Under Node no headers are needed — Wasm threads use `worker_threads`. The thre
 
 If instantiation fails — a missing `.wasm` file, a `locateFile` that resolved to the wrong URL, or an environment that cannot host the requested variant — `loadMeshioPlusPlus()` rejects with a `MeshioPlusPlusLoadError` (extends `Error`) instead of a bare Emscripten abort. It carries `variant`, `glue`, `requestedFile` and `resolvedUrl` (what Emscripten asked `locateFile` for and what it returned) and `cause` (the underlying error). A `locateFile` that returns the sequential `.wasm` for the threaded glue (or vice versa) can link successfully and only then report the wrong `parallelBackend()`; `loadMeshioPlusPlus()` checks for this and rejects with the same error type rather than returning a module that silently runs the other variant.
 
+## The heap ceiling
+
+The WebAssembly heap grows on demand up to 4 GB, the most a 32-bit WebAssembly memory can address (`-sMAXIMUM_MEMORY=4GB`; Emscripten's default stops at 2 GB). Measured with `tests/wasm/bench.mjs` on Kuhn tetrahedral cubes, writing a JS mesh object to a binary `.vtk` in the module's file system and reading it back, where the mesh, the in-memory file and the read-back all sit in the heap:
+
+| Heap ceiling | Largest size that round-trips | First size that fails |
+| --- | ---: | ---: |
+| 2 GB (before) | 13.2 million tetrahedra | 16.5 million (`std::bad_alloc` in `readMesh`) |
+| 4 GB | 24.6 million | 35.0 million (`std::bad_alloc`) |
+
+`node tests/wasm/memory.mjs` round-trips 20.3 million tetrahedra, which needs more than 2 GB, and fails on a 2 GB build; it takes about 15 seconds and 4 GB of memory, so it is not part of `smoke.mjs`. A runtime that cannot give 4 GB fails as before, with `std::bad_alloc`: some browsers cap a tab's memory lower, and Node needs the memory to exist. Beyond 4 GB needs a 64-bit WebAssembly build ([roadmap](./roadmap.md#performance)). A mesh in the viewer shares this heap with its file in the module's file system, so the viewer's own limit is lower than the core's.
+
 ## Known v1 limitations
 
 - **No zero-copy.** Every array is copied once crossing the JS/WASM boundary (see above) — for very large meshes this has a real memory/time cost that the Python bindings' numpy views avoid.
@@ -609,7 +624,7 @@ m.runPipeline({
 });
 ```
 
-`runPipeline` **routes** a transient document (a `Pattern`/`Paths` input, a `{step}`/`{index}` output, or `Mode`/`Parallel`/`Workers`) to the sequence driver automatically; a plain single-mesh document takes the unchanged path, so nobody has to know which kind of document they hold.
+`runPipeline` **routes** a transient document (a `Pattern`/`Paths` input, a `{step}`/`{index}` output, or `Mode`/`Parallel`/`Prefetch`/`Workers`) to the sequence driver automatically; a plain single-mesh document takes the unchanged path, so nobody has to know which kind of document they hold.
 
 The pattern language is deliberately just `*` and `?` — **no** `**`, no `[set]`, and the directory component is literal — identical to the core's, so the browser and the CLIs accept exactly the same words.
 

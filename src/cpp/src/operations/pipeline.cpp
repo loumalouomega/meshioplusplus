@@ -500,10 +500,15 @@ Mesh pipe_apply_transform(Mesh mesh, const PipelineStep& rStep, PipelineReport& 
         ++given;
     }
     if (pipe_find(rStep, "Scale")) {
-        std::vector<double> v = pipe_dvec(rStep, "Scale");
-        // A bare number is the uniform-scale spelling.
-        if (v.empty())
+        // A bare number is the uniform-scale spelling; `pipe_dvec` refuses a
+        // scalar, so read it as a number before it is asked for an array.
+        const PipelineValue* scale_value = pipe_find(rStep, "Scale");
+        std::vector<double> v;
+        if (std::holds_alternative<double>(*scale_value) ||
+            std::holds_alternative<std::int64_t>(*scale_value))
             v.assign(1, pipe_number(rStep, "Scale", 1.0));
+        else
+            v = pipe_dvec(rStep, "Scale");
         if (v.size() == 1)
             xf = transform_scale(v[0], v[0], v[0]);
         else if (v.size() == 3)
@@ -4339,9 +4344,9 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     }
     if (!doc.is_object())
         pipe_schema_error("the settings document must be a JSON object");
-    pipe_check_keys(
-        doc, "the settings document",
-        {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Workers", "Resample"});
+    pipe_check_keys(doc, "the settings document",
+                    {"Version", "Input", "Operations", "Output", "Mode", "Parallel", "Prefetch",
+                     "Workers", "Resample"});
 
     PipeDocument parsed;
     SequencePipeline& pipeline = parsed.mSeq;
@@ -4362,6 +4367,17 @@ PipeDocument pipe_document_from_json(const std::string& rText) {
     if (pipe_get(doc, "Parallel")) {
         parsed.mSequenceKeys = true;
         pipeline.mParallel = pipe_get_bool(doc, "Parallel", "the settings document", false);
+    }
+    if (const pipe_json* v = pipe_get(doc, "Prefetch")) {
+        parsed.mSequenceKeys = true;
+        // True or false, or the integers 1 and 0 (`"Prefetch": 1`).
+        if (v->is_boolean())
+            pipeline.mPrefetch = v->get<bool>();
+        else if ((v->is_number_integer() || v->is_number_unsigned()) &&
+                 (v->get<std::int64_t>() == 0 || v->get<std::int64_t>() == 1))
+            pipeline.mPrefetch = v->get<std::int64_t>() == 1;
+        else
+            pipe_schema_error("the settings document.Prefetch must be true, false, 1 or 0");
     }
     if (const pipe_json* v = pipe_get(doc, "Workers")) {
         parsed.mSequenceKeys = true;

@@ -775,6 +775,61 @@ TEST(SequenceDriver, SequenceModeAppliesTheChainPerStep) {
     }
 }
 
+namespace {
+
+std::string seq_slurp(const std::string& rPath) {
+    std::ifstream in(rPath, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+}  // namespace
+
+TEST(SequenceDriver, PrefetchWritesTheSameBytesAsTheSerialRun) {
+    SeqTempDir dir;
+    seq_write_files(dir, "in_", 6);
+    for (const bool prefetch : {false, true}) {
+        SequencePipeline p;
+        p.mInput.mPattern = dir / "in_*.vtu";
+        p.mSteps.push_back({"Quality", {}});
+        p.mPrefetch = prefetch;
+        p.mOutput.mPath = dir / (std::string(prefetch ? "ahead" : "serial") + "_{step}.vtu");
+        const meshioplusplus::PipelineReport report = meshioplusplus::run_sequence_pipeline(p);
+        EXPECT_EQ(report.mSteps.size(), 6u);
+    }
+    for (std::size_t i = 0; i < 6; ++i) {
+        const std::string serial =
+            meshioplusplus::sequence_expand_pattern(dir / "serial_{step}.vtu", i, 6);
+        const std::string ahead =
+            meshioplusplus::sequence_expand_pattern(dir / "ahead_{step}.vtu", i, 6);
+        ASSERT_TRUE(std::filesystem::exists(ahead)) << ahead;
+        EXPECT_EQ(seq_slurp(ahead), seq_slurp(serial)) << "step " << i;
+    }
+}
+
+TEST(SequenceDriver, PrefetchStopsWhereTheSerialRunStops) {
+    // A step that cannot be read ends the run when its turn comes: the steps
+    // before it are written and nothing after it is.
+    SeqTempDir dir;
+    seq_write_files(dir, "in_", 5);
+    {
+        std::ofstream bad(dir / "in_2.vtu", std::ios::binary | std::ios::trunc);
+        bad << "not a mesh";
+    }
+    for (const bool prefetch : {false, true}) {
+        const std::string stem = prefetch ? "ahead" : "serial";
+        SequencePipeline p;
+        p.mInput.mPattern = dir / "in_*.vtu";
+        p.mPrefetch = prefetch;
+        p.mOutput.mPath = dir / (stem + "_{step}.vtu");
+        EXPECT_ANY_THROW(meshioplusplus::run_sequence_pipeline(p)) << stem;
+        for (std::size_t i = 0; i < 5; ++i) {
+            const std::string path =
+                meshioplusplus::sequence_expand_pattern(dir / (stem + "_{step}.vtu"), i, 5);
+            EXPECT_EQ(std::filesystem::exists(path), i < 2) << path;
+        }
+    }
+}
+
 TEST(SequenceDriver, ValidatesTheChainBeforeReadingAnything) {
     SeqTempDir dir;
     seq_write_files(dir, "in_", 2);

@@ -705,6 +705,8 @@ def test_parallel_output_is_identical_to_serial(steps, tmp_path):
         ({"Input": {"Paths": []}}, "non-empty"),
         ({"Mode": "sideways", "Input": {"Path": "a"}}, "Mode must be"),
         ({"Workers": -1, "Input": {"Pattern": "*"}}, "Workers must be"),
+        ({"Prefetch": "yes", "Input": {"Pattern": "*"}}, "Prefetch must be"),
+        ({"Prefetch": 2, "Input": {"Pattern": "*"}}, "Prefetch must be"),
         ({"Input": {"Pattern": "*", "TimeFrom": "vibes"}}, "time_from must be"),
     ],
 )
@@ -714,6 +716,65 @@ def test_schema_errors_name_the_offender(doc, message, tmp_path):
     doc.setdefault("Output", {"Path": str(tmp_path / "o_{step}.vtu")})
     with pytest.raises(ValueError, match=message):
         meshioplusplus.run_sequence_pipeline(doc)
+
+
+def _run_prefetch_doc(engine, doc):
+    if engine == "python":
+        return meshioplusplus.run_sequence_pipeline(doc)
+    return _core.run_sequence_json(json.dumps(doc))
+
+
+def _prefetch_outputs(out_dir):
+    return {p.name: p.read_bytes() for p in sorted(out_dir.iterdir())}
+
+
+@pytest.mark.parametrize(
+    "engine", ["python", pytest.param("core", marks=needs_core_json)]
+)
+@pytest.mark.parametrize("prefetch", [True, 1])
+def test_prefetch_writes_the_same_bytes(steps, tmp_path, engine, prefetch):
+    """Read-ahead is a scheduling change: the files, their names and their
+    bytes are the serial run's, in both engines."""
+    outputs = {}
+    for label, value in (("serial", None), ("ahead", prefetch)):
+        out = tmp_path / label
+        out.mkdir()
+        doc = {
+            "Version": 1,
+            "Input": {"Pattern": str(steps / "out_*.vtu")},
+            "Operations": [{"Op": "ExtractSurface"}],
+            "Output": {"Path": str(out / "o_{index}.vtu")},
+        }
+        if value is not None:
+            doc["Prefetch"] = value
+        _run_prefetch_doc(engine, doc)
+        outputs[label] = _prefetch_outputs(out)
+    assert len(outputs["serial"]) == 12
+    assert outputs["ahead"] == outputs["serial"]
+
+
+@pytest.mark.parametrize(
+    "engine", ["python", pytest.param("core", marks=needs_core_json)]
+)
+def test_prefetch_fails_where_the_serial_run_fails(steps, tmp_path, engine):
+    """A step that cannot be read stops the run when its turn comes: the steps
+    before it are written, and nothing after it is."""
+    (steps / "out_5.vtu").write_text("not a mesh")
+    results = {}
+    for label, value in (("serial", False), ("ahead", True)):
+        out = tmp_path / label
+        out.mkdir()
+        doc = {
+            "Version": 1,
+            "Input": {"Pattern": str(steps / "out_*.vtu")},
+            "Output": {"Path": str(out / "o_{index}.vtu")},
+            "Prefetch": value,
+        }
+        with pytest.raises(Exception) as err:
+            _run_prefetch_doc(engine, doc)
+        results[label] = (type(err.value), sorted(p.name for p in out.iterdir()))
+    assert results["ahead"] == results["serial"]
+    assert results["serial"][1] == [f"o_{i}.vtu" for i in range(5)]
 
 
 def test_a_plain_settings_document_is_unchanged(steps, tmp_path):

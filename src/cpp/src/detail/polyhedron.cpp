@@ -160,16 +160,28 @@ double cell_volume_from_corners(const Vec3* pCoords, CellType Type) {
     if (corners <= 0)
         return std::nan("");
     // The coordinates are already the cell's corners in order, so the rings are
-    // just cell_faces' local indices with an identity node mapping.
-    CellRings rings;
-    rings.mNodes.resize(static_cast<std::size_t>(corners));
-    for (int i = 0; i < corners; ++i)
-        rings.mNodes[static_cast<std::size_t>(i)] = i;
-    rings.mFaceStart.push_back(0);
-    for (const CellFaceDef& f : faces) {
-        for (int i = 0; i < f.mNumCorners; ++i)
-            rings.mFaceNodes.push_back(f.mNodes[i]);
-        rings.mFaceStart.push_back(static_cast<std::uint32_t>(rings.mFaceNodes.size()));
+    // just cell_faces' local indices with an identity node mapping. They depend
+    // on `Type` alone, and a caller measures one type thousands of times in a
+    // row (decimate_volume's inversion guard calls this a million times on
+    // tetrahedra, three allocations each), so each thread keeps the rings of
+    // the last type it was asked about. The same rings reach `poly_measure`
+    // either way: the result is bit-identical.
+    static thread_local CellRings rings;
+    static thread_local CellType rings_type = CellType::Custom;
+    static thread_local bool rings_built = false;
+    if (!rings_built || rings_type != Type) {
+        rings.mNodes.assign(static_cast<std::size_t>(corners), 0);
+        for (int i = 0; i < corners; ++i)
+            rings.mNodes[static_cast<std::size_t>(i)] = i;
+        rings.mFaceNodes.clear();
+        rings.mFaceStart.assign(1, 0);
+        for (const CellFaceDef& f : faces) {
+            for (int i = 0; i < f.mNumCorners; ++i)
+                rings.mFaceNodes.push_back(f.mNodes[i]);
+            rings.mFaceStart.push_back(static_cast<std::uint32_t>(rings.mFaceNodes.size()));
+        }
+        rings_type = Type;
+        rings_built = true;
     }
     return poly_measure(rings, pCoords).mVolume;
 }

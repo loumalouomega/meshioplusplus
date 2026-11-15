@@ -769,6 +769,46 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   list(APPEND _mio_core_copts -ffp-contract=off)
 endif()
 
+# Profile-guided optimisation (roadmap 5.12). Two stages in ONE build directory:
+# configure with -DMESHIOPLUSPLUS_PGO=GENERATE, build, run a training workload
+# (meshioplusplus_bench_ops --tier M, benchmark/bench.py), then reconfigure the
+# same directory with -DMESHIOPLUSPLUS_PGO=USE and rebuild. The directory has
+# to be the same because GCC names a profile after the object's path. Off by
+# default; doc/benchmarks.md ("Profile-guided optimisation") records what it
+# gains and whether the release builds use it. Clang needs the raw profiles
+# merged first (llvm-profdata merge -o <dir>/merged.profdata <dir>/*.profraw).
+# MSVC is not wired (/GENPROFILE and /USEPROFILE are untested here).
+set(MESHIOPLUSPLUS_PGO "OFF" CACHE STRING "Profile-guided optimisation stage: OFF, GENERATE or USE")
+set_property(CACHE MESHIOPLUSPLUS_PGO PROPERTY STRINGS OFF GENERATE USE)
+set(MESHIOPLUSPLUS_PGO_DIR "${CMAKE_BINARY_DIR}/pgo" CACHE PATH "Where the PGO profiles are written and read")
+if(NOT MESHIOPLUSPLUS_PGO STREQUAL "OFF")
+  if(NOT MESHIOPLUSPLUS_PGO STREQUAL "GENERATE" AND NOT MESHIOPLUSPLUS_PGO STREQUAL "USE")
+    message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_PGO must be OFF, GENERATE or USE, not '${MESHIOPLUSPLUS_PGO}'")
+  endif()
+  file(MAKE_DIRECTORY "${MESHIOPLUSPLUS_PGO_DIR}")
+  if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    if(MESHIOPLUSPLUS_PGO STREQUAL "GENERATE")
+      list(APPEND _mio_core_copts -fprofile-generate -fprofile-update=atomic
+           "-fprofile-dir=${MESHIOPLUSPLUS_PGO_DIR}")
+      list(APPEND _mio_core_lopts -fprofile-generate)
+    else()
+      list(APPEND _mio_core_copts -fprofile-use -fprofile-correction -Wno-missing-profile
+           "-fprofile-dir=${MESHIOPLUSPLUS_PGO_DIR}")
+      list(APPEND _mio_core_lopts -fprofile-use)
+    endif()
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    if(MESHIOPLUSPLUS_PGO STREQUAL "GENERATE")
+      list(APPEND _mio_core_copts "-fprofile-instr-generate=${MESHIOPLUSPLUS_PGO_DIR}/%p.profraw")
+      list(APPEND _mio_core_lopts "-fprofile-instr-generate=${MESHIOPLUSPLUS_PGO_DIR}/%p.profraw")
+    else()
+      list(APPEND _mio_core_copts "-fprofile-instr-use=${MESHIOPLUSPLUS_PGO_DIR}/merged.profdata")
+    endif()
+  else()
+    message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_PGO is wired for GCC and Clang only (not ${CMAKE_CXX_COMPILER_ID})")
+  endif()
+  message(STATUS "meshio++: profile-guided optimisation: ${MESHIOPLUSPLUS_PGO} (${MESHIOPLUSPLUS_PGO_DIR})")
+endif()
+
 # On MSVC, /MT vs /MD is a *compile*-time flag baked into each .obj (unlike
 # GNU's -static-libgcc/-static-libstdc++, which is link-only) -- every object
 # library feeding a static-runtime final link must be compiled with the same
@@ -1831,6 +1871,12 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
   # -sUSE_ZLIB=1 is not repeated here: meshioplusplus_core_obj already applies
   # it PUBLIC (both compile and link) when MESHIOPLUSPLUS_WITH_ZLIB is on, and
   # this target inherits it transitively via target_link_libraries above.
+  # MAXIMUM_MEMORY: the heap grows on demand, but only up to this. Emscripten's
+  # default stops at 2 GB, where the core ran out at about 16 million
+  # tetrahedra (`std::bad_alloc` in readMesh, tests/wasm/bench.mjs; roadmap
+  # 5.13.1). 4 GB is the most a wasm32 memory can address. Raising it costs
+  # nothing until the heap grows past 2 GB, and a runtime that cannot give that
+  # much (some browsers cap lower) fails the same way it did, with bad_alloc.
   # STACK_SIZE: Emscripten's default wasm stack is 64 KiB, which HDF5 and
   # netCDF-4 overrun -- their call chains are deep and their frames large (name
   # buffers, B-tree nodes, dataspace scratch). The overrun is SILENT: the stack
@@ -1853,6 +1899,7 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
     "-sMODULARIZE=1"
     "-sEXPORT_ES6=1"
     "-sALLOW_MEMORY_GROWTH=1"
+    "-sMAXIMUM_MEMORY=4GB"
     "-sSTACK_SIZE=4MB"
     "-sSTACK_OVERFLOW_CHECK=1"
     "-sFORCE_FILESYSTEM=1"

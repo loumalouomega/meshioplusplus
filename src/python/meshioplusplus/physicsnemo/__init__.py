@@ -424,16 +424,58 @@ def _flat_items(manifest, split, read_kwargs, offset=0):
     return items
 
 
+class _PairCache:
+    """The steps of the last paired sample, so the next one reads one step.
+
+    A paired walk asks for ``(k, k + offset)`` and then
+    ``(k + 1, k + 1 + offset)``: with ``offset == 1`` the second pair's input
+    is the first pair's target. The cache keeps the meshes of the last pair,
+    keyed by ``(series, step)``, and drops every entry the coming pair does
+    not need *before* reading, so at most two meshes are alive -- the pairing
+    amendment to the streaming invariant holds. A larger offset gains nothing:
+    the step two pairs share is ``offset`` pairs apart, and keeping it would
+    mean holding ``offset + 1`` meshes. A cached mesh is
+    shared, never mutated: augmentation and tessellation build new meshes.
+    """
+
+    def __init__(self):
+        self._series = None
+        self._steps = {}
+        self.reads = 0
+
+    def get(self, series, step, needed):
+        if series is not self._series:
+            self._series = series
+            self._steps = {}
+        for kept in [k for k in self._steps if k not in needed]:
+            del self._steps[kept]
+        if step not in self._steps:
+            self._steps[step] = series[step]
+            self.reads += 1
+        return self._steps[step]
+
+
 def _read_sample(
-    series, step, graph_kwargs, augmentation=None, epoch=0, index=0, edge_cache=None
+    series,
+    step,
+    graph_kwargs,
+    augmentation=None,
+    epoch=0,
+    index=0,
+    edge_cache=None,
+    pair_cache=None,
 ):
     """One (or two, when pairing) mesh reads -> ``(time, GraphSample)``.
 
     The single owner of the read-and-sample step, shared by
     :func:`iter_samples`, the Gen-2 ``Reader`` and the PyG ``Dataset`` so
     the three cannot drift. ``TimeSeries`` caches nothing, so a paired
-    sample (``target_offset >= 1``) costs exactly two reads -- **at most two
-    meshes alive**, the pairing amendment to the streaming invariant.
+    sample (``target_offset >= 1``) costs two reads -- **at most two meshes
+    alive**, the pairing amendment to the streaming invariant. A
+    ``pair_cache`` (:class:`_PairCache`, which the callers pass when pairing)
+    keeps the last pair's meshes, so a walk over consecutive steps with
+    ``target_offset == 1`` reads each step once while still holding at most
+    two.
 
     An ``augmentation`` is drawn ONCE per sample and replayed on the target:
     augmenting the pair independently would teach the model that a part
@@ -451,8 +493,13 @@ def _read_sample(
     result.
     """
     offset = int(graph_kwargs.get("target_offset", 0))
-    time, mesh = series[step]
-    target = series[step + offset][1] if offset else None
+    if pair_cache is not None and offset:
+        needed = (step, step + offset)
+        time, mesh = pair_cache.get(series, step, needed)
+        target = pair_cache.get(series, step + offset, needed)[1]
+    else:
+        time, mesh = series[step]
+        target = series[step + offset][1] if offset else None
     if augmentation is not None and augmentation.active:
         mesh, params = augmentation.apply(mesh, epoch=epoch, index=index)
         if target is not None:
@@ -525,11 +572,19 @@ def iter_samples(manifest, *, split=None, augmentation=None, epoch=0, **kwargs):
     edge_cache = pop_edge_cache(kwargs)
     graph_kwargs, read_kwargs = _split_kwargs(kwargs)
     offset = int(graph_kwargs.get("target_offset", 0))
+    pair_cache = _PairCache() if offset else None
     for index, (entry_id, series, step) in enumerate(
         _flat_items(manifest, split, read_kwargs, offset)
     ):
         time, sample = _read_sample(
-            series, step, graph_kwargs, augmentation, epoch, index, edge_cache
+            series,
+            step,
+            graph_kwargs,
+            augmentation,
+            epoch,
+            index,
+            edge_cache,
+            pair_cache,
         )
         yield entry_id, time, sample
 
