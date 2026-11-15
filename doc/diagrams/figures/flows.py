@@ -1143,6 +1143,31 @@ def roadmap_map():
             ],
             [],
         ),
+        (
+            "§13 manim videos",
+            [
+                ("decisions (design first)", "S"),
+                ("payload: triangles, colour, edges", "M"),
+                ("mobjects in the manim fork", "M"),
+                ("animations: fields, wipes, labels", "M"),
+                ("scene library: twelve episodes", "L"),
+                ("headless CI · docs page", "M"),
+            ],
+            [(1, 2), (2, 3), (3, 4)],
+        ),
+        (
+            "§14 the paper",
+            [
+                ("venue · authors (design first)", "S"),
+                ("claims · outline · attribution", "M"),
+                ("related work · bibliography", "M"),
+                ("experiments: protocol and runs", "L"),
+                ("figures · generated numbers", "M"),
+                ("LaTeX build · arXiv tarball", "S"),
+                ("review · posting · citation", "S"),
+            ],
+            [(0, 1), (3, 4)],
+        ),
     ]
     per_row = 4
     col_w = 176
