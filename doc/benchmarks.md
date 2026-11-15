@@ -1196,6 +1196,26 @@ Roadmap 5.13.1. The artifacts are linked with `-sMAXIMUM_MEMORY=4GB`. `tests/was
 
 The ceiling for this round trip moves from between 13 and 16 million tetrahedra to between 25 and 35 million. The times at 13.2 million differ by the noise of two single runs; nothing is paid for the larger ceiling until the heap grows past 2 GB. See [WebAssembly](./wasm.md#the-heap-ceiling).
 
+### Profiling `boundary_layer`
+
+Roadmap 5.17.1. The row grows four layers on the CAD box's skin twice, once from triangles and once from quads with the layers reversed. It was the second-heaviest row at 19.4 G instructions. Callgrind put 99% of the row in `bl_front_crossings`, the test that no layer cell crosses the front. Its rounds of re-sweeping, which the roadmap item had suspected, held almost nothing. Within the front test, 92% went to `tri_tri_intersect` and 72% to `orient3d`'s exact stage. Every cell face on the box's flat walls is coplanar with its neighbours' wall triangles, so the floating-point filter cannot decide them. The exact stage then built each expansion in a `std::vector`, and `operator new` and `free` alone took about 35% of the row.
+
+Two changes, each leaving every digest of tiers S and M unchanged on SEQ, OpenMP and THREADS at 1, 4 and 8 threads:
+
+- **The exact stages of `orient2d` and `orient3d` on the stack** (`detail/predicates.cpp`). They perform the same expansion arithmetic in the same order on fixed buffers: at most 192 components for `orient3d` and 16 for `orient2d`. Their values are therefore bit-identical to the vector code's, which `Predicates.ExactStagesMatchTheVectorArithmetic` checks on 20,000 coplanar and collinear inputs. `incircle`, `insphere` and the exact constructions of `detail/expansion.hpp` keep the vector code.
+- **A box test before `tri_tri_intersect`** in `bl_front_crossings`. A front triangle is tested against a cell face only when their boxes touch. Two closed triangles with strictly disjoint boxes cannot meet, and the test is exact, so only pairs it would have answered false are skipped.
+
+| Row | Before | Stack expansions | And the box test |
+| --- | ---: | ---: | ---: |
+| `boundary_layer`, instructions (tier S) | 19.41 G | 7.67 G | 1.13 G |
+| tier S, SEQ | 1.27 s | 0.61 s | 0.106 s |
+| tier M, SEQ | 8.30 s | | 0.59 s |
+| tier M, THREADS, 4 threads | 2.24 s | | 0.21 s |
+
+The front test is still 82% of what remains. Most of it is now `inside`'s orient3d pairs, with `tri_tri_intersect` at 13% and the two surface meshes at 13%. Rejecting a point by the cell's box before `inside` was not taken: `inside` accepts the points within the half-spaces of a nearly convex cell, which a box does not bound in general.
+
+The stack expansions also move the other rows whose predicates reach the exact stage: `hull` falls 54%, `silhouette` 11%, `mesh_cad_surface_lop_corners` 3.1%, `delaunay_2d` 3.2%, `mesh_cad_surface_reparam` 2.1% and `clip` 1.8%.
+
 ### Rows for every operation
 
 Roadmap 5.1.5. Forty-six rows were added to `meshioplusplus_bench_ops` for the operations that had none, so the determinism check and the instruction gate now see a change to them. Each runs on the tier's cube, its surface or its points, with the options a user would pass first, and its digest covers the returned mesh and the result's counters and measures (the transform for `registration`, `register_landmarks` and `auto_align`; the pixels for `bake_texture`; the report for `stats`, `check_quality`, `check_tetrahedra`, `data_info` and `data_integrate`):
@@ -1417,6 +1437,8 @@ python3 tools/bench_instructions.py --record benchmark/instructions_S.csv  # aft
 A row more than 1% above its baseline fails, and so does a baseline row the run no longer has; a row more than 1% below, or a new row, is reported and passes, and the baseline should then be re-recorded so the gain is kept. The baseline was recorded twice from the same build: across its 130 rows the two runs differ by at most 6 parts per million (`read_obj`), and the whole sweep takes about four minutes on two jobs, `optimize_volume` (25.7 G instructions) and `boundary_layer` (19.4 G) the longest, so every row is gated. A count depends on the compiler, its flags and the C++ library, so the file names its toolchain (GCC 13.3 on Ubuntu 24.04, the `ubuntu-24.04` runner's): a run with another prints the comparison and fails nothing, and the baseline is re-recorded with the new toolchain in its own change. The job writes the rows outside the tolerance to the run's summary and uploads the run's counts.
 
 The gate sees instructions, not time: a change that trades instructions for memory traffic or parallelism (a parallel path is not taken on one thread) is judged by the timed rows above, and a count that falls is not proof the operation got faster.
+
+**Faster rows re-recorded.** `boundary_layer` (19,409,351,277 → 1,125,739,898), `hull`, `silhouette`, `clip`, `delaunay_2d`, `mesh_cad_surface_lop_corners` and `mesh_cad_surface_reparam` fell with the stack expansions of the exact predicates and the box test of `boundary_layer`'s front check ([profiling boundary_layer](#profiling-boundary_layer)).
 
 **Added rows.** The 46 rows of [rows for every operation](#rows-for-every-operation) were added to the baseline from the same toolchain, with every existing row left as recorded. That run found every existing row inside the tolerance except `read_op2`, 1.6% below its count, which this change does not touch.
 
