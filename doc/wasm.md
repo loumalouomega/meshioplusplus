@@ -468,6 +468,17 @@ Under Node no headers are needed — Wasm threads use `worker_threads`. The thre
 
 If instantiation fails — a missing `.wasm` file, a `locateFile` that resolved to the wrong URL, or an environment that cannot host the requested variant — `loadMeshioPlusPlus()` rejects with a `MeshioPlusPlusLoadError` (extends `Error`) instead of a bare Emscripten abort. It carries `variant`, `glue`, `requestedFile` and `resolvedUrl` (what Emscripten asked `locateFile` for and what it returned) and `cause` (the underlying error). A `locateFile` that returns the sequential `.wasm` for the threaded glue (or vice versa) can link successfully and only then report the wrong `parallelBackend()`; `loadMeshioPlusPlus()` checks for this and rejects with the same error type rather than returning a module that silently runs the other variant.
 
+## The heap ceiling
+
+The WebAssembly heap grows on demand up to 4 GB, the most a 32-bit WebAssembly memory can address (`-sMAXIMUM_MEMORY=4GB`; Emscripten's default stops at 2 GB). Measured with `tests/wasm/bench.mjs` on Kuhn tetrahedral cubes, writing a JS mesh object to a binary `.vtk` in the module's file system and reading it back, where the mesh, the in-memory file and the read-back all sit in the heap:
+
+| Heap ceiling | Largest size that round-trips | First size that fails |
+| --- | ---: | ---: |
+| 2 GB (before) | 13.2 million tetrahedra | 16.5 million (`std::bad_alloc` in `readMesh`) |
+| 4 GB | 24.6 million | 35.0 million (`std::bad_alloc`) |
+
+`node tests/wasm/memory.mjs` round-trips 20.3 million tetrahedra, which needs more than 2 GB, and fails on a 2 GB build; it takes about 15 seconds and 4 GB of memory, so it is not part of `smoke.mjs`. A runtime that cannot give 4 GB fails as before, with `std::bad_alloc`: some browsers cap a tab's memory lower, and Node needs the memory to exist. Beyond 4 GB needs a 64-bit WebAssembly build ([roadmap](./roadmap.md#performance)). A mesh in the viewer shares this heap with its file in the module's file system, so the viewer's own limit is lower than the core's.
+
 ## Known v1 limitations
 
 - **No zero-copy.** Every array is copied once crossing the JS/WASM boundary (see above) — for very large meshes this has a real memory/time cost that the Python bindings' numpy views avoid.

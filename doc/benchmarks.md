@@ -1181,6 +1181,21 @@ Roadmap 5.9. `writeMesh` of a JS mesh object copied every typed array into the c
 
 The threaded artifact measures the same (248 ms and 88 ms). Behaviour is unchanged: a script writing the same mesh with every combination of connectivity (`Int32Array`, `Uint16Array`, `BigInt64Array`, a plain `Array`, a subarray view) and point data (`Float64Array`, `Float32Array`, `Int32Array`, `Int16Array`, `Uint8Array`, `BigInt64Array`, a plain `Array`) and hashing what `readMesh` returns gives the same SHA-256 on the artifact before and after, and `tests/wasm/smoke.mjs` passes the same 223 steps on both (the 31 that fail need HDF5 or netCDF, which that build lacks). A new smoke step pins the equivalence of the array flavours.
 
+### The WebAssembly heap ceiling
+
+Roadmap 5.13.1. The artifacts are linked with `-sMAXIMUM_MEMORY=4GB`. `tests/wasm/bench.mjs` at larger sizes (a write to a binary `.vtk` and a read-back, one run each, sequential artifact; the sizes are Kuhn cubes of 130, 140, 150, 160, 180 and 200 cells a side):
+
+| Tetrahedra | 2 GB ceiling | 4 GB ceiling |
+| ---: | --- | --- |
+| 13.2 M | `writeMesh` 5.2 s, `readMesh` 1.4 s | 5.9 s, 1.6 s |
+| 16.5 M | `std::bad_alloc` in `readMesh` | 8.3 s, 2.1 s |
+| 20.3 M | `std::bad_alloc` | 9.7 s, 2.5 s |
+| 24.6 M | `std::bad_alloc` | 13.2 s, 2.8 s |
+| 35.0 M | `std::bad_alloc` | `std::bad_alloc` |
+| 48.0 M | `std::bad_alloc` | `std::bad_alloc` |
+
+The ceiling for this round trip moves from between 13 and 16 million tetrahedra to between 25 and 35 million. The times at 13.2 million differ by the noise of two single runs; nothing is paid for the larger ceiling until the heap grows past 2 GB. See [WebAssembly](./wasm.md#the-heap-ceiling).
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
