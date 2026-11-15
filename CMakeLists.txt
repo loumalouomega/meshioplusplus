@@ -1871,6 +1871,12 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
   # -sUSE_ZLIB=1 is not repeated here: meshioplusplus_core_obj already applies
   # it PUBLIC (both compile and link) when MESHIOPLUSPLUS_WITH_ZLIB is on, and
   # this target inherits it transitively via target_link_libraries above.
+  # MAXIMUM_MEMORY: the heap grows on demand, but only up to this. Emscripten's
+  # default stops at 2 GB, where the core ran out at about 16 million
+  # tetrahedra (`std::bad_alloc` in readMesh, tests/wasm/bench.mjs; roadmap
+  # 5.13.1). 4 GB is the most a wasm32 memory can address. Raising it costs
+  # nothing until the heap grows past 2 GB, and a runtime that cannot give that
+  # much (some browsers cap lower) fails the same way it did, with bad_alloc.
   # STACK_SIZE: Emscripten's default wasm stack is 64 KiB, which HDF5 and
   # netCDF-4 overrun -- their call chains are deep and their frames large (name
   # buffers, B-tree nodes, dataspace scratch). The overrun is SILENT: the stack
@@ -1893,6 +1899,7 @@ if(MESHIOPLUSPLUS_BUILD_WASM)
     "-sMODULARIZE=1"
     "-sEXPORT_ES6=1"
     "-sALLOW_MEMORY_GROWTH=1"
+    "-sMAXIMUM_MEMORY=4GB"
     "-sSTACK_SIZE=4MB"
     "-sSTACK_OVERFLOW_CHECK=1"
     "-sFORCE_FILESYSTEM=1"
