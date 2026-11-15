@@ -1241,6 +1241,31 @@ Roadmap 5.17.2. The item suspected `octree_mesh_fix_volumes`, the three whole-me
 
 **Not taken: the cut points' bisection.** `isosurface_stuff` asks for the interface point on each edge that changes sign. The callback walks the skin crossings of the edge from its inside end. When no crossing takes the winding number below the threshold, it falls back to 40 steps of bisection, each a full `fast_winding`. That fallback exists for open skins, yet it takes 16% of this row on a closed box. Why it is reached has not been measured; a crossing that lands on a triangle edge, reported twice or not at all, is the likely cause. Any faster answer would have to give the same 40 comparisons to keep the cut points' bits, so changing it is a behaviour change. It is left open in the roadmap, as are the lattice's own winding numbers, which already use the fast approximation.
 
+### Profiling `adapt_volume` and `conservative_interpolate`
+
+Roadmap 5.17.3. Callgrind on each row at tier S (SEQ, the warmup and one timed run, inclusive instructions as a share of the operation's own count; `adapt_volume`'s input, the octree tetrahedra built once by the warmup, is left out). The roadmap's rule was to write an item only for a phase that holds more than a third of a row and has a shape that keeps the output. Neither row has one, so no item was written.
+
+| `adapt_volume` (23.2 G a run) | Share |
+| --- | ---: |
+| `InEnvelope`: the moved boundary's distance to the input skin (`query_surface_projections_filtered`) | 27% |
+| `SmoothInteriorPass` | 27% |
+| of which the shared worst-cell smoothing (`tet_flip_smooth_worst`) | 22% |
+| `SwapPass` | 15% |
+| `TryCollapse` | 15% |
+| the Hausdorff check of the result | 5% |
+| `tet_min_dihedral`, across the passes | 19% |
+
+The two largest phases are each just over a quarter. The smoothing was the subject of [profiling optimize_volume](#profiling-optimize_volume). The envelope queries are nearest-triangle searches (`sd_nearest_triangle_if`) through the same `DistanceQuery` the distance rows reworked, first with [a frozen bucket grid](#frozen-bucket-grid-in-distancequery-abi-23) and then with [a bounding-volume hierarchy](#a-bounding-volume-hierarchy-for-the-distance-query-and-a-grid-for-find_interface).
+
+| `conservative_interpolate` (3.1 G a run) | Share |
+| --- | ---: |
+| `cons_build_overlap`, inclusive | 98% |
+| of which its own instructions: the tetrahedron-tetrahedron clip, inlined | 87% |
+| of which the candidate lists' sorts (exclusive) | 6% |
+| reading the points | 2% |
+
+The phase above a third is the overlap computation itself. Its allocations were removed under roadmap 5.1.2 ([those rows](#decimate_volume-and-conservative_interpolate-rows)), where a box-separation reject before the clip was also measured and dropped.
+
 ### Rows for every operation
 
 Roadmap 5.1.5. Forty-six rows were added to `meshioplusplus_bench_ops` for the operations that had none, so the determinism check and the instruction gate now see a change to them. Each runs on the tier's cube, its surface or its points, with the options a user would pass first, and its digest covers the returned mesh and the result's counters and measures (the transform for `registration`, `register_landmarks` and `auto_align`; the pixels for `bake_texture`; the report for `stats`, `check_quality`, `check_tetrahedra`, `data_info` and `data_integrate`):
