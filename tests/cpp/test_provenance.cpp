@@ -176,7 +176,10 @@ meshioplusplus::NDArray region_entries(const std::vector<std::int64_t>& rVals) {
 }  // namespace
 
 TEST(Provenance, OffModeIgnoresEverySlotTier) {
-    // No scope open -- exactly v10.15.0's contract, for every tier.
+    // No scope open -- exactly v10.15.0's contract, for every tier. Start from
+    // the empty ambient record a write begins with, not from a note an earlier
+    // test's operation left behind.
+    meshioplusplus::detail::provenance_begin_write();
     for (SlotTier tier :
          {SlotTier::None, SlotTier::Bounded, SlotTier::SingleLine, SlotTier::Block}) {
         auto lines = meshioplusplus::detail::provenance_lines(tier);

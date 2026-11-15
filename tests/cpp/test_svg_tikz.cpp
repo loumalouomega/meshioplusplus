@@ -33,6 +33,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/colormap.hpp"
 #include "meshioplusplus/detail/face_color.hpp"
+#include "meshioplusplus/detail/provenance.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/svg.hpp"
 #include "meshioplusplus/formats/tikz.hpp"
@@ -622,6 +623,11 @@ std::int64_t fill_at(const mt::Mesh& rMesh, const char* pName, std::size_t block
 }  // namespace
 
 TEST(SvgRead, WritersMarkerNamesTheDrawing) {
+    // A direct format writer is not a write entry point and keeps the
+    // thread's ambient provenance; start from what a real write() resets to,
+    // so a note an earlier test left behind (an operation's regions-dropped)
+    // does not land between the marker and the comment's end.
+    meshioplusplus::detail::provenance_begin_write();
     std::string flat = mt::temp_path(".svg");
     meshioplusplus::write_svg(flat, mt::tri_mesh());
     const std::string out = slurp(flat);
@@ -867,6 +873,11 @@ TEST(SvgRead, TheRegistryReadsItAndPassesTheOptions) {
 // ---- TikZ ----
 
 TEST(TikzRead, WritersMarkerNamesTheDrawing) {
+    // A direct format writer is not a write entry point and keeps the
+    // thread's ambient provenance; start from what a real write() resets to,
+    // so a note an earlier test left behind (an operation's regions-dropped)
+    // does not land between the marker and the comment's end.
+    meshioplusplus::detail::provenance_begin_write();
     std::string flat = mt::temp_path(".tikz");
     meshioplusplus::write_tikz(flat, mt::tri_mesh());
     const std::string out = slurp(flat);
