@@ -1196,6 +1196,38 @@ Roadmap 5.13.1. The artifacts are linked with `-sMAXIMUM_MEMORY=4GB`. `tests/was
 
 The ceiling for this round trip moves from between 13 and 16 million tetrahedra to between 25 and 35 million. The times at 13.2 million differ by the noise of two single runs; nothing is paid for the larger ceiling until the heap grows past 2 GB. See [WebAssembly](./wasm.md#the-heap-ceiling).
 
+### Rows for every operation
+
+Roadmap 5.1.5. Forty-six rows were added to `meshioplusplus_bench_ops` for the operations that had none, so the determinism check and the instruction gate now see a change to them. Each runs on the tier's cube, its surface or its points, with the options a user would pass first, and its digest covers the returned mesh and the result's counters and measures (the transform for `registration`, `register_landmarks` and `auto_align`; the pixels for `bake_texture`; the report for `stats`, `check_quality`, `check_tetrahedra`, `data_info` and `data_integrate`):
+
+- **Cutting and outlines:** `clip` and `silhouette` of the surface, and `fit_curves` on a chained `slice` of it. The planes sit 0.3 of a lattice step off the lattice so that no point lies on one.
+- **Surface geometry:** `geodesic` (from point 0), `parameterize`, `bake_texture` (a 256² image of a point field on the parameterized surface), `eigenmodes` (ten Laplacian modes), `offset_surface` and `thicken` (half a lattice step), `remove_islands` (the surface beside a copy shrunk to a fiftieth), `deviation` (the inflated surface against the surface), `measure` (two seeded planes, their distance and a flatness), `auto_align`, `refine_patches` and `constrain_primitives` (the cube's segmented and fitted skin), and `fit_cad_iterate` (two rounds on the native backend).
+- **Point sets:** `hull` (the jittered cube's points), `delaunay_2d` (its bottom face), `point_normals` and `reconstruct_surface` (the surface's points, with no cells), and `registration` (point-to-point ICP of the shifted surface onto the surface, from the identity) and `register_landmarks` (the same points as landmarks).
+- **Volume:** `untangle` and `check_tetrahedra` (the cube with every 50th interior point pushed 1.5 lattice steps along a diagonal), `morph` (a smooth displacement field), `check_conformity` (the green-closed refinement of `undo_green`), `tessellate` (the quadratic cube, one level), `select` (a box) and `edit_regions` (union, intersection and difference of two overlapping boxes).
+- **Fields and data:** `estimate_error` (the Zienkiewicz-Zhu indicator of the smooth field, a tenth of the cells marked), `error_size` (sizes for half its global error), `metric` (`prepare_metric` on a graded diagonal metric with a gradation of 1.3), `colorize`, `coordinates` (cylindrical components of a rotating velocity), `blend` (the cube and its jittered twin, points included), `iga_sample` (the CAD box refined to the tier's lattice and elevated once), `stats`, `check_quality`, and the data operations `data_calc`, `data_condition`, `data_info`, `data_manage`, `data_integrate` and `tensor_invariants`.
+- **Ragged:** `clean_ragged` and `merge_ragged` (welded onto itself) on the polyhedron and polygon blocks of `reorder_ragged`, the rows [roadmap 5.18](./roadmap.md#ragged-clean-merge) is measured on.
+
+`cut` and `cut_quadrature` run only in a build with CutCells (`MESHIOPLUSPLUS_WITH_CUTCELLS`), as `tetrahedralize` runs only with Netgen; the gate's SEQ build has neither, so neither is gated. Five operations have no row. `remesh_quads` runs an external `quadriflow` or Instant Meshes executable as a subprocess, whose output the harness cannot pin. MMG's `adapt`, `mesh_domain`, `move` and `discretize_levelset` (and `metric_from_hessian` beside them) need the MMG add-on. `profile_solid` needs a CAD provider. `hollow` is `thicken` inward with its own default, the same path and the same digest. The sequence driver reads and writes files, so its cost is the formats' rows. Format detection (`detect_format`, `sniff_format`) is not an operation.
+
+At tier S every new row finishes in under 0.8 s on SEQ, and every one in under 2.3 s at tier M. These rows run above 100 M instructions at tier S, and they are the ones the next audit reads, as [roadmap 5.17](./roadmap.md#heaviest-rows) read the last:
+
+| Row (tier S) | Instructions |
+| --- | ---: |
+| `eigenmodes` | 1,431 M |
+| `check_conformity` | 973 M |
+| `untangle` | 704 M |
+| `registration` | 325 M |
+| `estimate_error` | 261 M |
+| `clean_ragged` | 222 M |
+| `tessellate` | 215 M |
+| `parameterize` | 159 M |
+| `metric` | 158 M |
+| `morph` | 118 M |
+| `reconstruct_surface` | 106 M |
+| `data_integrate` | 100 M |
+
+Two of them look heavy for their work. `check_conformity` only checks a green-closed refinement for hanging nodes, yet costs 27 times the `refine` row (36 M). `data_integrate` integrates one three-component cell field over 10,368 tetrahedra at about 10 k instructions a cell. Neither has been profiled.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
@@ -1385,6 +1417,8 @@ python3 tools/bench_instructions.py --record benchmark/instructions_S.csv  # aft
 A row more than 1% above its baseline fails, and so does a baseline row the run no longer has; a row more than 1% below, or a new row, is reported and passes, and the baseline should then be re-recorded so the gain is kept. The baseline was recorded twice from the same build: across its 130 rows the two runs differ by at most 6 parts per million (`read_obj`), and the whole sweep takes about four minutes on two jobs, `optimize_volume` (25.7 G instructions) and `boundary_layer` (19.4 G) the longest, so every row is gated. A count depends on the compiler, its flags and the C++ library, so the file names its toolchain (GCC 13.3 on Ubuntu 24.04, the `ubuntu-24.04` runner's): a run with another prints the comparison and fails nothing, and the baseline is re-recorded with the new toolchain in its own change. The job writes the rows outside the tolerance to the run's summary and uploads the run's counts.
 
 The gate sees instructions, not time: a change that trades instructions for memory traffic or parallelism (a parallel path is not taken on one thread) is judged by the timed rows above, and a count that falls is not proof the operation got faster.
+
+**Added rows.** The 46 rows of [rows for every operation](#rows-for-every-operation) were added to the baseline from the same toolchain, with every existing row left as recorded. That run found every existing row inside the tolerance except `read_op2`, 1.6% below its count, which this change does not touch.
 
 **Re-recorded rows.** `octree_mesh_tet` (6,530,414,807 → 6,660,462,454, +2.0%) and `tetrahedralize_octree` (4,655,032,021 → 4,768,363,405, +2.4%) moved on purpose: the volume fix of `octree_mesh` ([octree_mesh](octree_mesh.md#the-tetrahedral-output)) is new work (collapse, cap, sliver and untangle passes, and a count of overlapping pairs) that every tetrahedral output now pays. The first version cost +6.5% and +7.8%; skipping the passes a mesh does not need, evaluating the optimiser's volume guard once per tetrahedron and sweep, and taking the longest edge from squared lengths brought it down without changing the output (the octree goldens pass unchanged). The rest is the passes' own scans and the sort behind the overlap count.
 
