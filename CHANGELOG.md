@@ -8,7 +8,9 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
-## Unreleased
+## v20.2.0 (2026-11-15)
+
+A minor release: seven new formats (Fluent cases, 3MF, LAS, GIFTI, ADCIRC, `ugrid_nc` and PLOT3D) and `detect(path)`, series writers for CGNS, EnSight, Gmsh, MED, Tecplot and UNV, more of CGNS, Exodus II, EnSight Gold and OpenFOAM read and written, the first steps of the freeform `fit_cad` plan, one convention for ghost, owner and global-id arrays with the Conduit, Catalyst and Ascent routes, and a faster core: `boundary_layer` is 12 to 14 times faster on a box's skin, the octree mesher's tetrahedral output 12 to 15%, and the exact `orient2d` and `orient3d` stages no longer allocate, all with output unchanged. `meshioplusplus_bench_ops` now has a row for every operation. **C++ ABI 46** ([ABI](doc/abi.md)): `FitCadOptions`, `FitCadResult`, `CadKernelProvider` and `SequencePipeline` grew, so C++ consumers recompile against the new headers; the C API's option structs only grow into their reserved tails, so the C, Fortran, Julia, R, Octave, WASM and Python callers are unaffected.
 
 - **Benchmarks:** `adapt_volume` and `conservative_interpolate` profiled at tier S (roadmap 5.17.3, [benchmarks](doc/benchmarks.md#profiling-adapt_volume-and-conservative_interpolate)). `adapt_volume` splits about evenly between its envelope queries, its smoothing, its swaps and its collapses. `conservative_interpolate` is its tetrahedron clip. No phase met the bar for a new item.
 - **Performance:** the octree mesher's optimizer computes each tetrahedron's dihedral angles once instead of up to three times, and its dihedral-floor guard recomputes only the tetrahedra around the nodes it put back (roadmap 5.17.2, [benchmarks](doc/benchmarks.md#profiling-octree_mesh_tet)). Output is unchanged. `octree_mesh` with tetrahedral output falls 15% in instructions (3.41 s from 4.06 s at 162,000 cells, SEQ) and `tetrahedralize` with the octree backend 12%.
