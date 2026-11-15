@@ -187,6 +187,38 @@ const tet = {
     field_data: {},
 };
 
+// The JS -> core copy takes a typed array in bulk and a plain Array element by
+// element (roadmap 5.9); both, and a subarray view, must write the same mesh.
+step('writeMesh: typed arrays, plain Arrays and subarrays of the same values agree', () => {
+    const roundTrip = (conn, temperature) => {
+        const mesh = {
+            ...tet,
+            cells: [{ type: 'tetra', data: conn, nodesPerCell: 4 }],
+            point_data: { temperature },
+        };
+        m.writeMesh('/typed_arrays.vtk', mesh, 'vtk', { encoding: 'binary' });
+        return m.readMesh('/typed_arrays.vtk', 'vtk');
+    };
+    const ref = roundTrip(new Int32Array([0, 1, 2, 3]), new Float64Array([1, 2, 3, 4]));
+    const conns = [
+        [0, 1, 2, 3],
+        new Uint16Array([0, 1, 2, 3]),
+        new BigInt64Array([0n, 1n, 2n, 3n]),
+        new Int32Array([7, 0, 1, 2, 3, 7]).subarray(1, 5),
+    ];
+    const temps = [[1, 2, 3, 4], new Int32Array([1, 2, 3, 4]), new Float32Array([1, 2, 3, 4])];
+    for (const conn of conns)
+        for (const temperature of temps) {
+            const out = roundTrip(conn, temperature);
+            assert.deepEqual(Array.from(out.cells[0].data), Array.from(ref.cells[0].data));
+            assert.deepEqual(Array.from(out.points), Array.from(ref.points));
+            assert.deepEqual(
+                Array.from(out.point_data.temperature, Number),
+                Array.from(ref.point_data.temperature, Number),
+            );
+        }
+});
+
 step('numNodesPerCell metadata table', () => {
     const table = m.numNodesPerCell();
     assert.equal(table.tetra, 4);

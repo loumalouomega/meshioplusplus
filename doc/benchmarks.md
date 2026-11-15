@@ -1168,6 +1168,19 @@ The counts fall for most rows (the surface and region extractions by 20 to 35%),
 
 The roadmap's bar for putting a two-stage build in the release workflows was no row more than 2% slower and a median at least 5% faster. PGO fails the first part on 36 rows (by instruction count) and shows no gain in time on the rows where time is spent, so the release builds do not use it; the option stays, off by default, for a workload that resembles the training run.
 
+### The JS-to-core copy in WebAssembly
+
+Roadmap 5.9. `writeMesh` of a JS mesh object copied every typed array into the core one element at a time through embind and then a second time into the core's own buffer. A typed array whose element type converts value for value to the destination's dtype is now written straight into that memory with one `set` on a typed-array view of it; a plain `Array`, a BigInt array into anything but a 64-bit integer, and a narrowing keep the element path ([WebAssembly](./wasm.md#passing-typed-arrays-is-the-fast-path)).
+
+`tests/wasm/bench.mjs`, Node 22 with the sequential artifact built by Emscripten 6.0.3 without zlib, HDF5 or netCDF (the build the container could make), a Kuhn cube of 998,250 tetrahedra and 175,616 points with one point field and one cell field, best of three:
+
+| Step | Before | After |
+| --- | ---: | ---: |
+| `writeMesh` (JS object to the core to a binary `.vtk`) | 846.6 ms | 251.0 ms (−70%) |
+| `readMesh` (the file to the core to a JS object) | 86.5 ms | 86.2 ms |
+
+The threaded artifact measures the same (248 ms and 88 ms). Behaviour is unchanged: a script writing the same mesh with every combination of connectivity (`Int32Array`, `Uint16Array`, `BigInt64Array`, a plain `Array`, a subarray view) and point data (`Float64Array`, `Float32Array`, `Int32Array`, `Int16Array`, `Uint8Array`, `BigInt64Array`, a plain `Array`) and hashing what `readMesh` returns gives the same SHA-256 on the artifact before and after, and `tests/wasm/smoke.mjs` passes the same 223 steps on both (the 31 that fail need HDF5 or netCDF, which that build lacks). A new smoke step pins the equivalence of the array flavours.
+
 ## Every format
 
 `benchmark/bench.py` also times a write and a read of **every** format meshio++ both writes and reads back, each fed the largest input its [conformance declaration](./conformance.md) says it keeps: the synthetic tetrahedral cube for volume formats, its surface for surface formats (STL, OBJ, PLY, …), its points for point clouds.
