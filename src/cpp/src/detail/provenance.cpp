@@ -31,6 +31,7 @@
 
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "text_utils.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -335,11 +336,7 @@ bool prov_starts_with(std::string_view s, std::string_view prefix) {
 
 /// Trims ASCII whitespace from both ends.
 std::string_view prov_trim(std::string_view s) {
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r'))
-        s.remove_prefix(1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
-        s.remove_suffix(1);
-    return s;
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 bool prov_is_provenance_line(std::string_view s) {

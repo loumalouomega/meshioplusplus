@@ -54,6 +54,7 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -68,11 +69,7 @@ std::string ans_upper(std::string_view Text) {
 }
 
 std::string_view ans_strip_view(std::string_view Text) {
-    const std::size_t a = Text.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = Text.find_last_not_of(" \t\r\n");
-    return Text.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::string ans_strip(std::string_view Text) {

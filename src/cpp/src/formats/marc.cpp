@@ -60,6 +60,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/keyword_card_view.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -142,13 +143,7 @@ std::string marc_lower(std::string_view Text) {
 }
 
 std::string_view marc_trim_view(std::string_view Text) {
-    const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    std::size_t a = 0, b = Text.size();
-    while (a < b && blank(Text[a]))
-        ++a;
-    while (b > a && blank(Text[b - 1]))
-        --b;
-    return Text.substr(a, b - a);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::string marc_trim(std::string_view Text) {

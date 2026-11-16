@@ -54,6 +54,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/keyword_card_view.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -69,11 +70,7 @@ struct RadLine {
 };
 
 std::string_view rad_trim_view(std::string_view s) {
-    const std::size_t b = s.find_first_not_of(" \t\r");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = s.find_last_not_of(" \t\r");
-    return s.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 std::string rad_trim(std::string_view s) {

@@ -50,6 +50,7 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -171,11 +172,7 @@ struct PatComponent {
 };
 
 std::string pat_trim(std::string_view Text) {
-    const std::size_t b = Text.find_first_not_of(" \t");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = Text.find_last_not_of(" \t");
-    return std::string(Text.substr(b, e - b + 1));
+    return meshioplusplus::detail::TextUtils::Trim(Text, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 // A load or boundary-condition packet (06, 07, 08, 10, 11) as read: its data

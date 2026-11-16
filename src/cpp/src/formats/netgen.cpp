@@ -42,6 +42,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_ZLIB
 #include <zlib.h>
@@ -119,12 +120,7 @@ std::vector<std::string_view> netgen_split_ws(std::string_view rS) {
 }
 
 std::string_view netgen_strip(std::string_view rS) {
-    std::size_t a = 0, b = rS.size();
-    while (a < b && std::isspace(static_cast<unsigned char>(rS[a])))
-        ++a;
-    while (b > a && std::isspace(static_cast<unsigned char>(rS[b - 1])))
-        --b;
-    return rS.substr(a, b - a);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 // Cursor over the file's lines, with comment/blank handling like the Python

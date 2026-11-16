@@ -49,6 +49,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -144,11 +145,7 @@ const char* fn_topology_name(std::int64_t Code) {
 }
 
 std::string_view fn_trim(std::string_view Text) {
-    const std::size_t b = Text.find_first_not_of(" \t");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = Text.find_last_not_of(" \t");
-    return Text.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 // The comma-separated fields of a record line; a trailing comma adds none.

@@ -57,6 +57,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "../detail/nastran_write_common.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -227,11 +228,7 @@ std::string op2_text(const std::string& rRaw, int Ws) {
 }
 
 std::string op2_strip(const std::string& rS) {
-    const char* ws = " \t\r\n\v\f";
-    const auto first = rS.find_first_not_of(ws);
-    if (first == std::string::npos)
-        return {};
-    return rS.substr(first, rS.find_last_not_of(ws) - first + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct Op2Table {

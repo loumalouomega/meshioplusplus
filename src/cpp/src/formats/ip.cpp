@@ -31,15 +31,14 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
 std::string ip_strip(const std::string& s) {
-    std::size_t a = s.find_first_not_of(" \t\r");
-    std::size_t b = s.find_last_not_of(" \t\r");
-    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 }  // namespace

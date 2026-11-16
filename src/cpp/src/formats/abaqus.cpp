@@ -46,6 +46,7 @@
 #include "../detail/typed_view.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -77,12 +78,7 @@ std::string abaqus_upper(std::string s) {
     return s;
 }
 std::string_view abaqus_trim_view(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 std::string abaqus_trim(std::string_view rS) {
     return std::string(abaqus_trim_view(rS));

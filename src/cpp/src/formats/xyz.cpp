@@ -40,6 +40,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -54,12 +55,7 @@ bool xyz_is_space(char c) {
 }
 
 std::string_view xyz_strip(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && xyz_is_space(rS[b]))
-        ++b;
-    while (e > b && xyz_is_space(rS[e - 1]))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string xyz_lower(std::string s) {

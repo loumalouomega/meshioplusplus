@@ -57,6 +57,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/ghost_names.hpp"
+#include "../detail/text_utils.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_TECIO
 // External includes
@@ -77,11 +78,7 @@ std::string tecplot_upper(std::string s) {
     return s;
 }
 std::string tecplot_strip(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 /// Data tokens as views into @p Line (appended to @p rOut, cleared first):
 /// blanks and commas separate values, as replacing the commas with blanks

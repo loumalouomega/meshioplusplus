@@ -38,6 +38,7 @@
 #include "../detail/sketch_pieces.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -392,11 +393,7 @@ std::string dxf_document(const Mesh& rMesh) {
 // ---- reading -------------------------------------------------------------------
 
 std::string dxf_strip(const std::string& rS) {
-    const std::size_t a = rS.find_first_not_of(" \t\r\n\v\f");
-    if (a == std::string::npos)
-        return {};
-    const std::size_t b = rS.find_last_not_of(" \t\r\n\v\f");
-    return rS.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 double dxf_float(const std::string& rValue, int Code) {

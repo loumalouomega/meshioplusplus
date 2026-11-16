@@ -45,6 +45,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -109,11 +110,7 @@ int meshio_to_su2(const std::string& rT) {
 }
 
 std::string_view su2_strip(std::string_view S) {
-    std::size_t b = S.find_first_not_of(" \t\r\n");
-    if (b == std::string_view::npos)
-        return {};
-    std::size_t e = S.find_last_not_of(" \t\r\n");
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 /// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
 std::vector<std::string_view> su2_tokens(std::string_view S) {

@@ -38,6 +38,7 @@
 #include "../detail/drawing.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -238,11 +239,7 @@ std::vector<std::string_view> tikzr_split_options(std::string_view Text) {
 }
 
 std::string_view tikzr_trim(std::string_view Text) {
-    while (!Text.empty() && detail::text_is_blank(Text.front()))
-        Text.remove_prefix(1);
-    while (!Text.empty() && detail::text_is_blank(Text.back()))
-        Text.remove_suffix(1);
-    return Text;
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 // `{rgb,255:red,R;green,G;blue,B}` -> {R, G, B}; anything else (gray!30, ...) -> nullopt.

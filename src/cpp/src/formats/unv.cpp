@@ -58,6 +58,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/fortran_number.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -296,11 +297,7 @@ void unv_tensor_from_meshio(std::size_t NumComps, double* pValues) {
 // ---------------------------------------------------------------------------
 
 std::string_view unv_strip(std::string_view s) {
-    const std::size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::vector<std::string_view> unv_split(std::string_view s) {

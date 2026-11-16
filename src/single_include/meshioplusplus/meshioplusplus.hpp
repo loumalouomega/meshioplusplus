@@ -59414,6 +59414,56 @@ void require_tet_only_blocks(const Mesh& rMesh, const char* pPrefix);
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/tet_scope.hpp =====
+// ===== begin src/cpp/src/detail/text_utils.hpp =====
+/**
+ * @file detail/text_utils.hpp
+ * @brief `TextUtils`: the trim the text readers each wrote out under their own
+ * name, with the whitespace sets they used (roadmap 6.1).
+ *
+ * A reader strips a different set of characters (a keyword deck blanks and
+ * line ends, a column format blanks only), so the set is an argument and the
+ * three that occur are named. Each member does exactly what the copies did and
+ * never calls `<cctype>`, so the result does not depend on the global locale.
+ * A **core-private** header (not installed).
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+#include <string_view>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+struct TextUtils {
+    /// Space, tab, carriage return and newline: what the keyword decks strip.
+    static constexpr std::string_view kBlanks = " \t\r\n";
+    /// Space and tab only: the fixed-column formats.
+    static constexpr std::string_view kSpaceTab = " \t";
+    /// Space, tab and carriage return, not the newline.
+    static constexpr std::string_view kSpaceTabCr = " \t\r";
+    /// `std::isspace` in the classic locale: also form feed and vertical tab.
+    static constexpr std::string_view kClassicSpace = " \t\n\v\f\r";
+
+    /// `Text` without the characters of `Set` at either end.
+    static MIO_ALWAYS_INLINE std::string_view TrimView(std::string_view Text,
+                                                       std::string_view Set = kBlanks) {
+        const std::size_t b = Text.find_first_not_of(Set);
+        if (b == std::string_view::npos)
+            return {};
+        return Text.substr(b, Text.find_last_not_of(Set) - b + 1);
+    }
+
+    /// `TrimView` as an owned string.
+    static MIO_ALWAYS_INLINE std::string Trim(std::string_view Text,
+                                              std::string_view Set = kBlanks) {
+        return std::string(TrimView(Text, Set));
+    }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/text_utils.hpp =====
 // ===== begin src/cpp/src/detail/thb_spline.hpp =====
 /**
  * @file detail/thb_spline.hpp
@@ -100924,13 +100974,7 @@ namespace detail {
 namespace {
 
 std::string_view kwc_strip_view(std::string_view Text) {
-    std::size_t b = 0;
-    std::size_t e = Text.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(Text[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(Text[e - 1])))
-        --e;
-    return Text.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string kwc_strip(std::string_view Text) {
@@ -114273,11 +114317,7 @@ bool prov_starts_with(std::string_view s, std::string_view prefix) {
 
 /// Trims ASCII whitespace from both ends.
 std::string_view prov_trim(std::string_view s) {
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r'))
-        s.remove_prefix(1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
-        s.remove_suffix(1);
-    return s;
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 bool prov_is_provenance_line(std::string_view s) {
@@ -130911,12 +130951,7 @@ std::string abaqus_upper(std::string s) {
     return s;
 }
 std::string_view abaqus_trim_view(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 std::string abaqus_trim(std::string_view rS) {
     return std::string(abaqus_trim_view(rS));
@@ -138235,11 +138270,7 @@ std::string ans_upper(std::string_view Text) {
 }
 
 std::string_view ans_strip_view(std::string_view Text) {
-    const std::size_t a = Text.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = Text.find_last_not_of(" \t\r\n");
-    return Text.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::string ans_strip(std::string_view Text) {
@@ -145669,11 +145700,7 @@ std::string dxf_document(const Mesh& rMesh) {
 // ---- reading -------------------------------------------------------------------
 
 std::string dxf_strip(const std::string& rS) {
-    const std::size_t a = rS.find_first_not_of(" \t\r\n\v\f");
-    if (a == std::string::npos)
-        return {};
-    const std::size_t b = rS.find_last_not_of(" \t\r\n\v\f");
-    return rS.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 double dxf_float(const std::string& rValue, int Code) {
@@ -152870,11 +152897,7 @@ const char* fn_topology_name(std::int64_t Code) {
 }
 
 std::string_view fn_trim(std::string_view Text) {
-    const std::size_t b = Text.find_first_not_of(" \t");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = Text.find_last_not_of(" \t");
-    return Text.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 // The comma-separated fields of a record line; a trailing comma adds none.
@@ -154281,11 +154304,7 @@ std::string flac3d_read_str(std::istream& rIn) {
 }
 
 std::string flac3d_trim(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return std::string();
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // The ascii slot is the raw remainder of the header line and may or may not be
@@ -159887,9 +159906,7 @@ std::string gii_meta(const pugi::xml_node& Node, const std::string& rKey) {
 }
 
 std::string gii_trim(std::string Text) {
-    const auto b = Text.find_first_not_of(" \t\r\n");
-    const auto e = Text.find_last_not_of(" \t\r\n");
-    return b == std::string::npos ? std::string() : Text.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 /// One `DataArray`'s values, row-major, of its own dtype.
@@ -162801,12 +162818,7 @@ const std::vector<int>& meshio_to_gmsh_perm(const std::string& rT) {
 }
 
 std::string gmsh_trim(const std::string& rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct GmshCursor : detail::TextCursor {
@@ -166736,9 +166748,7 @@ namespace meshioplusplus {
 namespace {
 
 std::string ip_strip(const std::string& s) {
-    std::size_t a = s.find_first_not_of(" \t\r");
-    std::size_t b = s.find_last_not_of(" \t\r");
-    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 }  // namespace
@@ -175618,13 +175628,7 @@ std::string marc_lower(std::string_view Text) {
 }
 
 std::string_view marc_trim_view(std::string_view Text) {
-    const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    std::size_t a = 0, b = Text.size();
-    while (a < b && blank(Text[a]))
-        ++a;
-    while (b > a && blank(Text[b - 1]))
-        --b;
-    return Text.substr(a, b - a);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::string marc_trim(std::string_view Text) {
@@ -177889,11 +177893,7 @@ namespace {
 // ---------------------------------------------------------------------------
 
 std::string_view mdpa_strip(std::string_view S) {
-    const std::size_t b = S.find_first_not_of(" \t\r\n");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = S.find_last_not_of(" \t\r\n");
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 /// The line with any `//` comment removed, then stripped.
@@ -190339,11 +190339,7 @@ bool nas_is_quietly_skipped(const std::string& rKeyword) {
 }
 
 std::string_view nas_strip_view(std::string_view rS) {
-    const std::size_t b = rS.find_first_not_of(" \t");
-    if (b == std::string::npos)
-        return "";
-    const std::size_t e = rS.find_last_not_of(" \t");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 std::string nas_strip(std::string_view rS) {
@@ -195163,11 +195159,7 @@ std::string op2_text(const std::string& rRaw, int Ws) {
 }
 
 std::string op2_strip(const std::string& rS) {
-    const char* ws = " \t\r\n\v\f";
-    const auto first = rS.find_first_not_of(ws);
-    if (first == std::string::npos)
-        return {};
-    return rS.substr(first, rS.find_last_not_of(ws) - first + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct Op2Table {
@@ -200058,12 +200050,7 @@ std::vector<std::string_view> netgen_split_ws(std::string_view rS) {
 }
 
 std::string_view netgen_strip(std::string_view rS) {
-    std::size_t a = 0, b = rS.size();
-    while (a < b && std::isspace(static_cast<unsigned char>(rS[a])))
-        ++a;
-    while (b > a && std::isspace(static_cast<unsigned char>(rS[b - 1])))
-        --b;
-    return rS.substr(a, b - a);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 // Cursor over the file's lines, with comment/blank handling like the Python
@@ -201292,12 +201279,7 @@ namespace meshioplusplus {
 namespace {
 
 std::string off_strip(const std::string& rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string off_cell_type_from_count(std::size_t n) {
@@ -201575,20 +201557,12 @@ FoamText read_whole(const std::string& rPath) {
 }
 
 std::string openfoam_strip(const std::string& rS) {
-    std::size_t a = rS.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos)
-        return "";
-    std::size_t b = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // `openfoam_strip` over a view: the same " \t\r\n" set, no copy.
 std::string_view foam_trim(std::string_view S) {
-    const std::size_t a = S.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = S.find_last_not_of(" \t\r\n");
-    return S.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // Parse the FoamFile header for format/arch (label/scalar byte widths) from the
@@ -205894,11 +205868,7 @@ struct PatComponent {
 };
 
 std::string pat_trim(std::string_view Text) {
-    const std::size_t b = Text.find_first_not_of(" \t");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = Text.find_last_not_of(" \t");
-    return std::string(Text.substr(b, e - b + 1));
+    return meshioplusplus::detail::TextUtils::Trim(Text, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 // A load or boundary-condition packet (06, 07, 08, 10, 11) as read: its data
@@ -207160,12 +207130,7 @@ std::string pcd_upper(std::string s) {
 }
 
 std::string_view pcd_strip(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::vector<std::string_view> pcd_words(std::string_view rS) {
@@ -208770,12 +208735,7 @@ std::string cell_type_from_count(std::size_t n) {
 }
 
 std::string ply_trim(const std::string& rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct VProp {
@@ -210169,11 +210129,7 @@ struct RadLine {
 };
 
 std::string_view rad_trim_view(std::string_view s) {
-    const std::size_t b = s.find_first_not_of(" \t\r");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = s.find_last_not_of(" \t\r");
-    return s.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 std::string rad_trim(std::string_view s) {
@@ -216301,11 +216257,7 @@ int meshio_to_su2(const std::string& rT) {
 }
 
 std::string_view su2_strip(std::string_view S) {
-    std::size_t b = S.find_first_not_of(" \t\r\n");
-    if (b == std::string_view::npos)
-        return {};
-    std::size_t e = S.find_last_not_of(" \t\r\n");
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 /// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
 std::vector<std::string_view> su2_tokens(std::string_view S) {
@@ -217462,11 +217414,7 @@ std::string tecplot_upper(std::string s) {
     return s;
 }
 std::string tecplot_strip(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 /// Data tokens as views into @p Line (appended to @p rOut, cleared first):
 /// blanks and commas separate values, as replacing the commas with blanks
@@ -221983,11 +221931,7 @@ std::vector<std::string_view> tikzr_split_options(std::string_view Text) {
 }
 
 std::string_view tikzr_trim(std::string_view Text) {
-    while (!Text.empty() && detail::text_is_blank(Text.front()))
-        Text.remove_prefix(1);
-    while (!Text.empty() && detail::text_is_blank(Text.back()))
-        Text.remove_suffix(1);
-    return Text;
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 // `{rgb,255:red,R;green,G;blue,B}` -> {R, G, B}; anything else (gray!30, ...) -> nullopt.
@@ -224506,11 +224450,7 @@ void unv_tensor_from_meshio(std::size_t NumComps, double* pValues) {
 // ---------------------------------------------------------------------------
 
 std::string_view unv_strip(std::string_view s) {
-    const std::size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::vector<std::string_view> unv_split(std::string_view s) {
@@ -231840,12 +231780,7 @@ struct VtxSchema {
 };
 
 std::string vtx_trim(std::string S) {
-    const char* kWs = " \t\r\n";
-    const std::size_t b = S.find_first_not_of(kWs);
-    if (b == std::string::npos)
-        return {};
-    const std::size_t e = S.find_last_not_of(kWs);
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 VtxSchema vtx_parse_schema(const std::string& rXml) {
@@ -236827,12 +236762,7 @@ bool xyz_is_space(char c) {
 }
 
 std::string_view xyz_strip(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && xyz_is_space(rS[b]))
-        ++b;
-    while (e > b && xyz_is_space(rS[e - 1]))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string xyz_lower(std::string s) {
@@ -281921,11 +281851,7 @@ void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
 }
 
 std::string pipe_trim(const std::string& rText) {
-    std::size_t b = rText.find_first_not_of(" \t");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rText.find_last_not_of(" \t");
-    return rText.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rText, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 /// Cells across every block. The uniform mesh API counts per block only.
@@ -290969,13 +290895,7 @@ std::string qg_full_name(const std::string& rMetric) {
 }
 
 std::string qg_trim(const std::string& rS) {
-    std::size_t b = 0;
-    std::size_t e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 double qg_number(const std::string& rText, const std::string& rClause) {

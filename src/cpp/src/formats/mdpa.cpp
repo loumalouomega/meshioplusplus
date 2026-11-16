@@ -56,6 +56,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -67,11 +68,7 @@ namespace {
 // ---------------------------------------------------------------------------
 
 std::string_view mdpa_strip(std::string_view S) {
-    const std::size_t b = S.find_first_not_of(" \t\r\n");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = S.find_last_not_of(" \t\r\n");
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 /// The line with any `//` comment removed, then stripped.

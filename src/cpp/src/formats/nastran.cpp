@@ -46,6 +46,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -163,11 +164,7 @@ bool nas_is_quietly_skipped(const std::string& rKeyword) {
 }
 
 std::string_view nas_strip_view(std::string_view rS) {
-    const std::size_t b = rS.find_first_not_of(" \t");
-    if (b == std::string::npos)
-        return "";
-    const std::size_t e = rS.find_last_not_of(" \t");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 std::string nas_strip(std::string_view rS) {
