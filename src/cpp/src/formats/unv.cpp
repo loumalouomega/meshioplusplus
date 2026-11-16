@@ -301,19 +301,7 @@ std::string_view unv_strip(std::string_view s) {
 }
 
 std::vector<std::string_view> unv_split(std::string_view s) {
-    std::vector<std::string_view> out;
-    std::size_t i = 0;
-    while (i < s.size()) {
-        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r'))
-            ++i;
-        std::size_t j = i;
-        while (j < s.size() && s[j] != ' ' && s[j] != '\t' && s[j] != '\r')
-            ++j;
-        if (j > i)
-            out.push_back(s.substr(i, j - i));
-        i = j;
-    }
-    return out;
+    return detail::split_blanks(s);
 }
 
 std::int64_t unv_int(std::string_view t) {

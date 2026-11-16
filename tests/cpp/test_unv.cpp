@@ -351,6 +351,23 @@ TEST(Unv, CartesianCoordinateSystemsAreApplied) {
     std::filesystem::remove(p);
 }
 
+TEST(Unv, AFormFeedSeparatesTheFieldsOfARecordAsPythonSplitDoes) {
+    // The Python reference splits records with str.split(), which treats a
+    // form feed and a vertical tab as blanks; so does the native reader.
+    const std::string text =
+        "    -1\n  2411\n"
+        "         1         1         1        11\n"
+        "   1.5D+00\f  2.5D+00\v  3.5D+00\n"
+        "    -1\n";
+    const std::string p = write_text(text);
+    const Mesh m = meshioplusplus::read_unv(p);
+    ASSERT_EQ(m.NumPoints(), 1);
+    EXPECT_DOUBLE_EQ(read_double(m.Points(), 0), 1.5);
+    EXPECT_DOUBLE_EQ(read_double(m.Points(), 1), 2.5);
+    EXPECT_DOUBLE_EQ(read_double(m.Points(), 2), 3.5);
+    std::filesystem::remove(p);
+}
+
 TEST(Unv, WrongNodeCountForADescriptorIsSkipped) {
     // gmsh writes its quad9 under the linear quad id 94.
     const std::string text =
