@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -53,47 +54,43 @@ namespace {
 
 constexpr int kOctmoFace[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
 
-double octmo_min_dihedral(const std::vector<Vec3>& rP, const std::array<std::int64_t, 4>& rT) {
+// The smallest and the largest dihedral angle of a tetrahedron, from one
+// tet_dihedral_angles call (its angles are ascending); -1 and 181 for one
+// that is not positive.
+std::pair<double, double> octmo_min_max_dihedral(const std::vector<Vec3>& rP,
+                                                 const std::array<std::int64_t, 4>& rT) {
     const Vec3& a = rP[static_cast<std::size_t>(rT[0])];
     const Vec3& b = rP[static_cast<std::size_t>(rT[1])];
     const Vec3& c = rP[static_cast<std::size_t>(rT[2])];
     const Vec3& d = rP[static_cast<std::size_t>(rT[3])];
     if (triple_product(vec3_sub(b, a), vec3_sub(c, a), vec3_sub(d, a)) <= 0.0)
-        return -1.0;
-    return tet_dihedral_angles(a, b, c, d)[0];
+        return {-1.0, 181.0};
+    const std::array<double, 6> angles = tet_dihedral_angles(a, b, c, d);
+    return {angles[0], angles[5]};
 }
 
-double octmo_max_dihedral(const std::vector<Vec3>& rP, const std::array<std::int64_t, 4>& rT) {
-    const Vec3& a = rP[static_cast<std::size_t>(rT[0])];
-    const Vec3& b = rP[static_cast<std::size_t>(rT[1])];
-    const Vec3& c = rP[static_cast<std::size_t>(rT[2])];
-    const Vec3& d = rP[static_cast<std::size_t>(rT[3])];
-    if (triple_product(vec3_sub(b, a), vec3_sub(c, a), vec3_sub(d, a)) <= 0.0)
-        return 181.0;
-    return tet_dihedral_angles(a, b, c, d)[5];
-}
-
-// The worst dihedral angle of every tetrahedron, and its minimum.
-double octmo_angles(const std::vector<Vec3>& rP, const std::vector<std::array<std::int64_t, 4>>& rT,
-                    std::vector<double>& rOut) {
-    rOut.resize(rT.size());
-    parallel_for(rT.size(), [&](std::size_t t) { rOut[t] = octmo_min_dihedral(rP, rT[t]); });
+// The smallest dihedral angle of every tetrahedron into @p rLo and the largest
+// into @p rHi, recomputed only where @p pDirty is set (every tetrahedron when it
+// is null, or when the arrays do not have the tetrahedra's size); returns the
+// minimum of @p rLo and the maximum of @p rHi.
+std::pair<double, double> octmo_angles(const std::vector<Vec3>& rP,
+                                       const std::vector<std::array<std::int64_t, 4>>& rT,
+                                       std::vector<double>& rLo, std::vector<double>& rHi,
+                                       const std::vector<std::uint8_t>* pDirty = nullptr) {
+    const bool all = !pDirty || rLo.size() != rT.size() || rHi.size() != rT.size();
+    rLo.resize(rT.size());
+    rHi.resize(rT.size());
+    parallel_for(rT.size(), [&](std::size_t t) {
+        if (all || (*pDirty)[t])
+            std::tie(rLo[t], rHi[t]) = octmo_min_max_dihedral(rP, rT[t]);
+    });
     double lo = 180.0;
-    for (double a : rOut)
+    for (double a : rLo)
         lo = std::min(lo, a);
-    return lo;
-}
-
-// The largest dihedral angle of every tetrahedron, and its maximum.
-double octmo_max_angles(const std::vector<Vec3>& rP,
-                        const std::vector<std::array<std::int64_t, 4>>& rT,
-                        std::vector<double>& rOut) {
-    rOut.resize(rT.size());
-    parallel_for(rT.size(), [&](std::size_t t) { rOut[t] = octmo_max_dihedral(rP, rT[t]); });
     double hi = 0.0;
-    for (double a : rOut)
+    for (double a : rHi)
         hi = std::max(hi, a);
-    return hi;
+    return {lo, hi};
 }
 
 std::vector<std::vector<std::int64_t>> octmo_incidence(
@@ -186,8 +183,7 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
     std::int64_t flips = 0;
     for (std::int64_t round = 0; round < rO.mFitIterations; ++round) {
         std::vector<double> angle, big;
-        const double floor = octmo_angles(pts, tets, angle);
-        const double ceiling = octmo_max_angles(pts, tets, big);
+        const auto [floor, ceiling] = octmo_angles(pts, tets, angle, big);
         const std::vector<Vec3> before = pts;
         // 1. ODT relocation of the interior nodes.
         std::vector<double> xyz(np * 3);
@@ -200,7 +196,6 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                 pts[p][k] = xyz[p * 3 + k];
         // 2. The skin's nodes slide along it, where that helps.
         const auto inc = octmo_incidence(np, tets);
-        octmo_angles(pts, tets, angle);
         std::vector<std::size_t> sliders;
         for (std::size_t p = 0; p < np; ++p)
             if (slide[p])
@@ -220,9 +215,9 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
             auto worst_at = [&]() {
                 double w = 180.0;
                 for (std::int64_t t : inc[p]) {
-                    const auto& tt = tets[static_cast<std::size_t>(t)];
-                    w = std::min(
-                        {w, octmo_min_dihedral(pts, tt), 180.0 - octmo_max_dihedral(pts, tt)});
+                    const auto [lo, hi] =
+                        octmo_min_max_dihedral(pts, tets[static_cast<std::size_t>(t)]);
+                    w = std::min({w, lo, 180.0 - hi});
                 }
                 return w;
             };
@@ -259,9 +254,13 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                     octree_mesh_volume_and_tolerance(before, rT, rO.mZeroVolumeFactor);
                 return volume_before > tolerance_before;
             };
+            // The angles of a sweep: all of them on the first, then only those of the
+            // tetrahedra around a node the previous sweep put back (the others' corners
+            // did not move, so their angles are what a full recomputation gives).
+            std::vector<std::uint8_t> dirty(tets.size(), 1);
             for (int sweep = 0; sweep < 64; ++sweep) {
-                octmo_angles(pts, tets, angle);
-                octmo_max_angles(pts, tets, big);
+                octmo_angles(pts, tets, angle, big, sweep == 0 ? nullptr : &dirty);
+                std::fill(dirty.begin(), dirty.end(), std::uint8_t{0});
                 std::fill(fine_now.begin(), fine_now.end(), std::int8_t{-1});
                 bool any = false;
                 for (std::size_t p = 0; p < np; ++p) {
@@ -272,8 +271,10 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                             big[static_cast<std::size_t>(t)] > ceiling ||
                             spoiled_by_move(static_cast<std::size_t>(t))) {
                             pts[p] = before[p];
-                            for (std::int64_t u : inc[p])
+                            for (std::int64_t u : inc[p]) {
                                 fine_now[static_cast<std::size_t>(u)] = -1;
+                                dirty[static_cast<std::size_t>(u)] = 1;
+                            }
                             any = true;
                             break;
                         }
@@ -308,10 +309,9 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                     for (std::size_t k = 0; k < 4; ++k)
                         flipped[n][k] = c[n * 4 + k];
                 std::vector<double> fa, fb;
-                const double now = octmo_angles(pts, tets, angle);
-                const double now_hi = octmo_max_angles(pts, tets, big);
-                if (octmo_angles(pts, flipped, fa) >= std::min(now, floor) &&
-                    octmo_max_angles(pts, flipped, fb) <= std::max(now_hi, ceiling)) {
+                const auto [now, now_hi] = octmo_angles(pts, tets, angle, big);
+                const auto [flipped_lo, flipped_hi] = octmo_angles(pts, flipped, fa, fb);
+                if (flipped_lo >= std::min(now, floor) && flipped_hi <= std::max(now_hi, ceiling)) {
                     tets.swap(flipped);
                     flips += r.mNumFlips;
                 }

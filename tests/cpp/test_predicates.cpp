@@ -27,12 +27,14 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <random>
 
 // External includes
 #include <gtest/gtest.h>
 
 // Project includes
+#include "../../src/cpp/src/detail/expansion.hpp"
 #include "../../src/cpp/src/detail/predicates.hpp"
 
 namespace {
@@ -249,6 +251,118 @@ TEST(Predicates, Orient3dRandomAndCoplanar) {
             r_e = double(big(rng));
         ASSERT_EQ(sign_of(mio::detail::orient3d(a, b, c, e)), sign_of(exact_orient3d(a, b, c, e)));
     }
+}
+
+// The exact stages of orient2d and orient3d run on stack buffers; this is
+// the vector arithmetic they replaced (the paper's, through the exp_*
+// functions of detail/expansion.hpp, products in the order the predicates
+// take them), and their values must agree bit for bit wherever the filter
+// hands over, so no caller's output moves.
+namespace {
+using Ex = mio::detail::Expansion;
+
+Ex ref_mul(const Ex& rE, const Ex& rF) {
+    Ex acc;
+    for (const double c : rF)
+        acc = mio::detail::exp_sum(acc, mio::detail::exp_scale(rE, c));
+    return acc;
+}
+
+Ex ref_minor(const Ex& rA, const Ex& rD, const Ex& rB, const Ex& rC) {
+    return mio::detail::exp_sub(ref_mul(rA, rD), ref_mul(rB, rC));
+}
+
+double ref_orient2d(const double* pA, const double* pB, const double* pC) {
+    using mio::detail::exp_diff;
+    return mio::detail::exp_estimate(ref_minor(exp_diff(pA[0], pC[0]), exp_diff(pB[1], pC[1]),
+                                               exp_diff(pA[1], pC[1]), exp_diff(pB[0], pC[0])));
+}
+
+double ref_orient3d(const double* pA, const double* pB, const double* pC, const double* pD) {
+    using mio::detail::exp_diff;
+    const Ex adx = exp_diff(pA[0], pD[0]), ady = exp_diff(pA[1], pD[1]),
+             adz = exp_diff(pA[2], pD[2]);
+    const Ex bdx = exp_diff(pB[0], pD[0]), bdy = exp_diff(pB[1], pD[1]),
+             bdz = exp_diff(pB[2], pD[2]);
+    const Ex cdx = exp_diff(pC[0], pD[0]), cdy = exp_diff(pC[1], pD[1]),
+             cdz = exp_diff(pC[2], pD[2]);
+    Ex det = ref_mul(adz, ref_minor(bdx, cdy, cdx, bdy));
+    det = mio::detail::exp_sum(det, ref_mul(bdz, ref_minor(cdx, ady, adx, cdy)));
+    det = mio::detail::exp_sum(det, ref_mul(cdz, ref_minor(adx, bdy, bdx, ady)));
+    return mio::detail::exp_estimate(det);
+}
+
+// Whether the filter decides (the predicates' own stage-A test).
+bool filter_decides_3d(const double* pA, const double* pB, const double* pC, const double* pD) {
+    double a[3], b[3], c[3];
+    for (int k = 0; k < 3; ++k)
+        a[k] = pA[k] - pD[k], b[k] = pB[k] - pD[k], c[k] = pC[k] - pD[k];
+    const double det = a[2] * (b[0] * c[1] - c[0] * b[1]) + b[2] * (c[0] * a[1] - a[0] * c[1]) +
+                       c[2] * (a[0] * b[1] - b[0] * a[1]);
+    const double perm = (std::fabs(b[0] * c[1]) + std::fabs(c[0] * b[1])) * std::fabs(a[2]) +
+                        (std::fabs(c[0] * a[1]) + std::fabs(a[0] * c[1])) * std::fabs(b[2]) +
+                        (std::fabs(a[0] * b[1]) + std::fabs(b[0] * a[1])) * std::fabs(c[2]);
+    const double eps = std::ldexp(1.0, -53);
+    return std::fabs(det) > (7.0 + 56.0 * eps) * eps * perm;
+}
+
+bool filter_decides_2d(const double* pA, const double* pB, const double* pC) {
+    const double l = (pA[0] - pC[0]) * (pB[1] - pC[1]);
+    const double r = (pA[1] - pC[1]) * (pB[0] - pC[0]);
+    // orient2d returns the float value outright unless both products are
+    // nonzero and of one sign.
+    if (!((l > 0.0 && r > 0.0) || (l < 0.0 && r < 0.0)))
+        return true;
+    const double eps = std::ldexp(1.0, -53);
+    return std::fabs(l - r) >= (3.0 + 16.0 * eps) * eps * std::fabs(l + r);
+}
+
+std::uint64_t bits_of(double V) {
+    std::uint64_t b = 0;
+    std::memcpy(&b, &V, sizeof b);
+    return b;
+}
+}  // namespace
+
+TEST(Predicates, ExactStagesMatchTheVectorArithmetic) {
+    std::mt19937_64 rng(23);
+    std::uniform_real_distribution<double> coord(-3.0, 3.0);
+    std::uniform_real_distribution<double> param(-2.0, 2.0);
+    int exact3 = 0;
+    int exact2 = 0;
+    for (int it = 0; it < 20000; ++it) {
+        // Four points on a plane through a, rounded to doubles: what a
+        // layer's flat wall gives, where the filter cannot decide.
+        double a[3], u[3], v[3], b[3], c[3], d[3];
+        for (int k = 0; k < 3; ++k)
+            a[k] = coord(rng), u[k] = coord(rng), v[k] = coord(rng);
+        const double s = param(rng), t = param(rng);
+        for (int k = 0; k < 3; ++k) {
+            b[k] = a[k] + u[k];
+            c[k] = a[k] + v[k];
+            d[k] = a[k] + s * u[k] + t * v[k];
+        }
+        if (it % 4 == 1)
+            d[2] = std::nextafter(d[2], 10.0);
+        if (it % 4 == 2)  // an axis-aligned plane, exactly
+            a[2] = b[2] = c[2] = d[2];
+        if (!filter_decides_3d(a, b, c, d)) {
+            ++exact3;
+            ASSERT_EQ(bits_of(mio::detail::orient3d(a, b, c, d)), bits_of(ref_orient3d(a, b, c, d)))
+                << it;
+        }
+        // Three points on a line, in the plane.
+        const double p[2] = {a[0], a[1]};
+        const double q[2] = {a[0] + u[0], a[1] + u[1]};
+        const double r[2] = {a[0] + s * u[0], a[1] + s * u[1]};
+        if (!filter_decides_2d(p, q, r)) {
+            ++exact2;
+            ASSERT_EQ(bits_of(mio::detail::orient2d(p, q, r)), bits_of(ref_orient2d(p, q, r)))
+                << it;
+        }
+    }
+    EXPECT_GT(exact3, 10000) << "the inputs no longer reach orient3d's exact stage";
+    EXPECT_GT(exact2, 1000) << "the inputs no longer reach orient2d's exact stage";
 }
 
 TEST(Predicates, InsphereRandomAndCospherical) {

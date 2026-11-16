@@ -186,6 +186,20 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
                 }
                 return true;
             };
+            // Each face's box: a triangle whose box is strictly apart from a
+            // face's cannot meet it, and tri_tri_intersect is exact, so the
+            // test below skips only pairs it would have answered false.
+            const std::vector<Tri>& r_faces = faces_of(kind);
+            std::array<BlV3, 12> face_lo{};
+            std::array<BlV3, 12> face_hi{};
+            for (std::size_t f = 0; f < r_faces.size(); ++f)
+                for (std::size_t d = 0; d < 3; ++d) {
+                    const double* a = pt(r_c.mNodes[static_cast<std::size_t>(r_faces[f][0])]);
+                    const double* b = pt(r_c.mNodes[static_cast<std::size_t>(r_faces[f][1])]);
+                    const double* c = pt(r_c.mNodes[static_cast<std::size_t>(r_faces[f][2])]);
+                    face_lo[f][d] = std::min({a[d], b[d], c[d]});
+                    face_hi[f][d] = std::max({a[d], b[d], c[d]});
+                }
             std::vector<std::int32_t> stack{0};
             while (!stack.empty()) {
                 const auto n = static_cast<std::size_t>(stack.back());
@@ -210,9 +224,19 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
                     const double* d1 = soup.mCorners[3 * u + 1].data();
                     const double* d2 = soup.mCorners[3 * u + 2].data();
                     bool meets = inside(d0);
-                    for (const Tri& r_f : faces_of(kind)) {
-                        if (meets)
-                            break;
+                    BlV3 tri_lo{};
+                    BlV3 tri_hi{};
+                    for (std::size_t d = 0; d < 3; ++d) {
+                        tri_lo[d] = std::min({d0[d], d1[d], d2[d]});
+                        tri_hi[d] = std::max({d0[d], d1[d], d2[d]});
+                    }
+                    for (std::size_t f = 0; f < r_faces.size() && !meets; ++f) {
+                        const Tri& r_f = r_faces[f];
+                        bool apart_f = false;
+                        for (std::size_t d = 0; d < 3 && !apart_f; ++d)
+                            apart_f = face_hi[f][d] < tri_lo[d] || face_lo[f][d] > tri_hi[d];
+                        if (apart_f)
+                            continue;
                         meets = detail::tri_tri_intersect(
                             pt(r_c.mNodes[static_cast<std::size_t>(r_f[0])]),
                             pt(r_c.mNodes[static_cast<std::size_t>(r_f[1])]),

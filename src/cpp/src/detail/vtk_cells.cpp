@@ -65,7 +65,9 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
         shape = {0};
     shape[0] = r1 - r0;
     NDArray out = NDArray::Uninit(rA.Dtype(), shape);  // fully overwritten below
-    if (r1 > r0)
+    // A zero-width array (shape (n, 0)) has no buffer, and memcpy with a null pointer is
+    // undefined even for zero bytes (UBSan's nonnull-attribute): copy only real bytes.
+    if (r1 > r0 && rowbytes > 0)
         std::memcpy(out.Data(), rA.Data() + r0 * rowbytes, (r1 - r0) * rowbytes);
     return out;
 }
@@ -84,8 +86,10 @@ NDArray vtkcells_gather_rows(const NDArray& rA, const std::vector<std::size_t>& 
         shape = {0};
     shape[0] = rIdx.size();
     NDArray out = NDArray::Uninit(rA.Dtype(), shape);  // fully overwritten below
-    for (std::size_t i = 0; i < rIdx.size(); ++i)
-        std::memcpy(out.Data() + i * rowbytes, rA.Data() + rIdx[i] * rowbytes, rowbytes);
+    // Zero-width rows have no buffer to copy from or into (see slice_rows).
+    if (rowbytes > 0)
+        for (std::size_t i = 0; i < rIdx.size(); ++i)
+            std::memcpy(out.Data() + i * rowbytes, rA.Data() + rIdx[i] * rowbytes, rowbytes);
     return out;
 }
 

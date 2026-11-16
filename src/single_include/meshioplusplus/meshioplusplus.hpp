@@ -12663,7 +12663,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
 /// Major component of the release version.
 #define MESHIOPLUSPLUS_VERSION_MAJOR 20
 /// Minor component of the release version.
-#define MESHIOPLUSPLUS_VERSION_MINOR 1
+#define MESHIOPLUSPLUS_VERSION_MINOR 2
 /// Patch component of the release version.
 #define MESHIOPLUSPLUS_VERSION_PATCH 0
 
@@ -12673,7 +12673,7 @@ inline PointTriangleHit closest_point_on_triangle(const Vec3& rP, const Vec3& rA
      MESHIOPLUSPLUS_VERSION_PATCH)
 
 /// The release version as a string literal, e.g. `"9.6.0"`.
-#define MESHIOPLUSPLUS_VERSION_STRING "20.1.0"
+#define MESHIOPLUSPLUS_VERSION_STRING "20.2.0"
 
 /// Whether the headers being compiled against are at least `major.minor.patch`.
 #define MESHIOPLUSPLUS_VERSION_AT_LEAST(major, minor, patch) \
@@ -111389,12 +111389,150 @@ PredExpansion pred_minor(const PredExpansion& rA, const PredExpansion& rD, const
     return pred_sub(pred_mul(rA, rD), pred_mul(rB, rC));
 }
 
+// The same arithmetic on fixed buffers, for the two predicates that inputs
+// on a plane or a line reach constantly (a box's boundary layer, a flat
+// section): each function below performs exactly the operations of its
+// vector twin above, in the same order, so its components, and the estimate
+// taken from them, are bit-identical; the expansions live on the stack, with
+// capacities from their bounded lengths (a sum is at most the two lengths, a
+// scaling twice the length), instead of a heap allocation per step.
+
+/// `A - B` exactly, into @p pH (at most 2 components); returns the length.
+int pred_fdiff(double A, double B, double* pH) {
+    double x = 0.0;
+    double y = 0.0;
+    pred_two_diff(A, B, x, y);
+    int n = 0;
+    if (y != 0.0)
+        pH[n++] = y;
+    if (x != 0.0)
+        pH[n++] = x;
+    return n;
+}
+
+/// `e + s f` (s = 1 or -1), pred_sum's merge and chain, into @p pH, which
+/// must hold `nE + nF` components and not alias either input; @p pG is
+/// scratch of the same size.
+int pred_fsum(const double* pE, int nE, const double* pF, int nF, double Sign, double* pH,
+              double* pG) {
+    if (nE == 0) {
+        for (int k = 0; k < nF; ++k)
+            pH[k] = Sign * pF[k];
+        return nF;
+    }
+    if (nF == 0) {
+        for (int k = 0; k < nE; ++k)
+            pH[k] = pE[k];
+        return nE;
+    }
+    int i = 0;
+    int j = 0;
+    int ng = 0;
+    while (i < nE && j < nF) {
+        if (std::fabs(pE[i]) <= std::fabs(pF[j]))
+            pG[ng++] = pE[i++];
+        else
+            pG[ng++] = Sign * pF[j++];
+    }
+    while (i < nE)
+        pG[ng++] = pE[i++];
+    while (j < nF)
+        pG[ng++] = Sign * pF[j++];
+    int nh = 0;
+    double q = pG[0];
+    for (int k = 1; k < ng; ++k) {
+        double qnew = 0.0;
+        double hh = 0.0;
+        pred_two_sum(q, pG[k], qnew, hh);
+        if (hh != 0.0)
+            pH[nh++] = hh;
+        q = qnew;
+    }
+    if (q != 0.0)
+        pH[nh++] = q;
+    return nh;
+}
+
+/// `e * b`, pred_scale's, into @p pH (at most `2 nE` components).
+int pred_fscale(const double* pE, int nE, double B, double* pH) {
+    if (nE == 0 || B == 0.0)
+        return 0;
+    int nh = 0;
+    double q = 0.0;
+    double hh = 0.0;
+    pred_two_product(pE[0], B, q, hh);
+    if (hh != 0.0)
+        pH[nh++] = hh;
+    for (int i = 1; i < nE; ++i) {
+        double p1 = 0.0;
+        double p0 = 0.0;
+        pred_two_product(pE[i], B, p1, p0);
+        double sum = 0.0;
+        pred_two_sum(q, p0, sum, hh);
+        if (hh != 0.0)
+            pH[nh++] = hh;
+        pred_two_sum(p1, sum, q, hh);
+        if (hh != 0.0)
+            pH[nh++] = hh;
+    }
+    if (q != 0.0)
+        pH[nh++] = q;
+    return nh;
+}
+
+/// `e * f`, pred_mul's (one scaling of `e` per component of `f`, summed in
+/// order), into @p pH, which must hold `2 nE nF` components; @p pScratch
+/// must hold `2 (2 nE nF) + 2 nE`.
+int pred_fmul(const double* pE, int nE, const double* pF, int nF, double* pH, double* pScratch) {
+    const int cap = 2 * nE * nF;
+    double* p_acc = pScratch;
+    double* p_merge = p_acc + cap;
+    double* p_term = p_merge + cap;
+    int nacc = 0;
+    for (int k = 0; k < nF; ++k) {
+        const int nt = pred_fscale(pE, nE, pF[k], p_term);
+        const int n = pred_fsum(p_acc, nacc, p_term, nt, 1.0, pH, p_merge);
+        for (int c = 0; c < n; ++c)
+            p_acc[c] = pH[c];
+        nacc = n;
+    }
+    for (int c = 0; c < nacc; ++c)
+        pH[c] = p_acc[c];
+    return nacc;
+}
+
+/// pred_estimate's.
+double pred_festimate(const double* pE, int nE) {
+    double s = 0.0;
+    for (int k = 0; k < nE; ++k)
+        s += pE[k];
+    if (s == 0.0 && nE > 0)
+        return pE[nE - 1];
+    return s;
+}
+
+/// `a d - b c` of four expansions of at most 2 components (pred_minor's),
+/// into @p pH (at most 16).
+int pred_fminor2(const double* pA, int nA, const double* pD, int nD, const double* pB, int nB,
+                 const double* pC, int nC, double* pH) {
+    double ad[8];
+    double bc[8];
+    double scratch[2 * 8 + 4];
+    double merge[16];
+    const int nad = pred_fmul(pA, nA, pD, nD, ad, scratch);
+    const int nbc = pred_fmul(pB, nB, pC, nC, bc, scratch);
+    return pred_fsum(ad, nad, bc, nbc, -1.0, pH, merge);
+}
+
 double pred_orient2d_exact(const double* pA, const double* pB, const double* pC) {
-    const PredExpansion acx = pred_diff(pA[0], pC[0]);
-    const PredExpansion acy = pred_diff(pA[1], pC[1]);
-    const PredExpansion bcx = pred_diff(pB[0], pC[0]);
-    const PredExpansion bcy = pred_diff(pB[1], pC[1]);
-    return pred_estimate(pred_minor(acx, bcy, acy, bcx));
+    double acx[2], acy[2], bcx[2], bcy[2];
+    const int nacx = pred_fdiff(pA[0], pC[0], acx);
+    const int nacy = pred_fdiff(pA[1], pC[1], acy);
+    const int nbcx = pred_fdiff(pB[0], pC[0], bcx);
+    const int nbcy = pred_fdiff(pB[1], pC[1], bcy);
+    double det[16];
+    const int n = pred_fminor2(acx, nacx, bcy, nbcy, acy, nacy, bcx, nbcx, det);
+    return pred_festimate(det, n);
 }
 
 double pred_incircle_exact(const double* pA, const double* pB, const double* pC, const double* pD) {
@@ -111414,19 +111552,32 @@ double pred_incircle_exact(const double* pA, const double* pB, const double* pC,
 }
 
 double pred_orient3d_exact(const double* pA, const double* pB, const double* pC, const double* pD) {
-    const PredExpansion adx = pred_diff(pA[0], pD[0]);
-    const PredExpansion ady = pred_diff(pA[1], pD[1]);
-    const PredExpansion adz = pred_diff(pA[2], pD[2]);
-    const PredExpansion bdx = pred_diff(pB[0], pD[0]);
-    const PredExpansion bdy = pred_diff(pB[1], pD[1]);
-    const PredExpansion bdz = pred_diff(pB[2], pD[2]);
-    const PredExpansion cdx = pred_diff(pC[0], pD[0]);
-    const PredExpansion cdy = pred_diff(pC[1], pD[1]);
-    const PredExpansion cdz = pred_diff(pC[2], pD[2]);
-    PredExpansion det = pred_mul(adz, pred_minor(bdx, cdy, cdx, bdy));
-    det = pred_sum(det, pred_mul(bdz, pred_minor(cdx, ady, adx, cdy)));
-    det = pred_sum(det, pred_mul(cdz, pred_minor(adx, bdy, bdx, ady)));
-    return pred_estimate(det);
+    double d[9][2];
+    int nd[9];
+    const double* pts[3] = {pA, pB, pC};
+    for (int i = 0; i < 3; ++i)
+        for (int k = 0; k < 3; ++k)
+            nd[3 * i + k] = pred_fdiff(pts[i][k], pD[k], d[3 * i + k]);
+    // adx = d[0], ady = d[1], adz = d[2], bdx = d[3], ..., cdz = d[8].
+    const auto minor = [&](int A, int Dd, int B, int C, double* pH) {
+        return pred_fminor2(d[A], nd[A], d[Dd], nd[Dd], d[B], nd[B], d[C], nd[C], pH);
+    };
+    double m[16];
+    double term[64];
+    double scratch[2 * 64 + 4];
+    double det[192];
+    double next[192];
+    double merge[192];
+    // adz (bdx cdy - cdx bdy) + bdz (cdx ady - adx cdy) + cdz (adx bdy - bdx ady).
+    int nm = minor(3, 7, 6, 4, m);
+    int n = pred_fmul(d[2], nd[2], m, nm, det, scratch);
+    nm = minor(6, 1, 0, 7, m);
+    int nt = pred_fmul(d[5], nd[5], m, nm, term, scratch);
+    n = pred_fsum(det, n, term, nt, 1.0, next, merge);
+    nm = minor(0, 4, 3, 1, m);
+    nt = pred_fmul(d[8], nd[8], m, nm, term, scratch);
+    n = pred_fsum(next, n, term, nt, 1.0, det, merge);
+    return pred_festimate(det, n);
 }
 
 double pred_insphere_exact(const double* pA, const double* pB, const double* pC, const double* pD,
@@ -126305,7 +126456,9 @@ NDArray slice_rows(const NDArray& rA, std::size_t r0, std::size_t r1) {
         shape = {0};
     shape[0] = r1 - r0;
     NDArray out = NDArray::Uninit(rA.Dtype(), shape);  // fully overwritten below
-    if (r1 > r0)
+    // A zero-width array (shape (n, 0)) has no buffer, and memcpy with a null pointer is
+    // undefined even for zero bytes (UBSan's nonnull-attribute): copy only real bytes.
+    if (r1 > r0 && rowbytes > 0)
         std::memcpy(out.Data(), rA.Data() + r0 * rowbytes, (r1 - r0) * rowbytes);
     return out;
 }
@@ -126324,8 +126477,10 @@ NDArray vtkcells_gather_rows(const NDArray& rA, const std::vector<std::size_t>& 
         shape = {0};
     shape[0] = rIdx.size();
     NDArray out = NDArray::Uninit(rA.Dtype(), shape);  // fully overwritten below
-    for (std::size_t i = 0; i < rIdx.size(); ++i)
-        std::memcpy(out.Data() + i * rowbytes, rA.Data() + rIdx[i] * rowbytes, rowbytes);
+    // Zero-width rows have no buffer to copy from or into (see slice_rows).
+    if (rowbytes > 0)
+        for (std::size_t i = 0; i < rIdx.size(); ++i)
+            std::memcpy(out.Data() + i * rowbytes, rA.Data() + rIdx[i] * rowbytes, rowbytes);
     return out;
 }
 
@@ -242351,6 +242506,20 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
                 }
                 return true;
             };
+            // Each face's box: a triangle whose box is strictly apart from a
+            // face's cannot meet it, and tri_tri_intersect is exact, so the
+            // test below skips only pairs it would have answered false.
+            const std::vector<Tri>& r_faces = faces_of(kind);
+            std::array<BlV3, 12> face_lo{};
+            std::array<BlV3, 12> face_hi{};
+            for (std::size_t f = 0; f < r_faces.size(); ++f)
+                for (std::size_t d = 0; d < 3; ++d) {
+                    const double* a = pt(r_c.mNodes[static_cast<std::size_t>(r_faces[f][0])]);
+                    const double* b = pt(r_c.mNodes[static_cast<std::size_t>(r_faces[f][1])]);
+                    const double* c = pt(r_c.mNodes[static_cast<std::size_t>(r_faces[f][2])]);
+                    face_lo[f][d] = std::min({a[d], b[d], c[d]});
+                    face_hi[f][d] = std::max({a[d], b[d], c[d]});
+                }
             std::vector<std::int32_t> stack{0};
             while (!stack.empty()) {
                 const auto n = static_cast<std::size_t>(stack.back());
@@ -242375,9 +242544,19 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
                     const double* d1 = soup.mCorners[3 * u + 1].data();
                     const double* d2 = soup.mCorners[3 * u + 2].data();
                     bool meets = inside(d0);
-                    for (const Tri& r_f : faces_of(kind)) {
-                        if (meets)
-                            break;
+                    BlV3 tri_lo{};
+                    BlV3 tri_hi{};
+                    for (std::size_t d = 0; d < 3; ++d) {
+                        tri_lo[d] = std::min({d0[d], d1[d], d2[d]});
+                        tri_hi[d] = std::max({d0[d], d1[d], d2[d]});
+                    }
+                    for (std::size_t f = 0; f < r_faces.size() && !meets; ++f) {
+                        const Tri& r_f = r_faces[f];
+                        bool apart_f = false;
+                        for (std::size_t d = 0; d < 3 && !apart_f; ++d)
+                            apart_f = face_hi[f][d] < tri_lo[d] || face_lo[f][d] > tri_hi[d];
+                        if (apart_f)
+                            continue;
                         meets = detail::tri_tri_intersect(
                             pt(r_c.mNodes[static_cast<std::size_t>(r_f[0])]),
                             pt(r_c.mNodes[static_cast<std::size_t>(r_f[1])]),
@@ -278076,6 +278255,7 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -278088,47 +278268,43 @@ namespace {
 
 constexpr int kOctmoFace[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
 
-double octmo_min_dihedral(const std::vector<Vec3>& rP, const std::array<std::int64_t, 4>& rT) {
+// The smallest and the largest dihedral angle of a tetrahedron, from one
+// tet_dihedral_angles call (its angles are ascending); -1 and 181 for one
+// that is not positive.
+std::pair<double, double> octmo_min_max_dihedral(const std::vector<Vec3>& rP,
+                                                 const std::array<std::int64_t, 4>& rT) {
     const Vec3& a = rP[static_cast<std::size_t>(rT[0])];
     const Vec3& b = rP[static_cast<std::size_t>(rT[1])];
     const Vec3& c = rP[static_cast<std::size_t>(rT[2])];
     const Vec3& d = rP[static_cast<std::size_t>(rT[3])];
     if (triple_product(vec3_sub(b, a), vec3_sub(c, a), vec3_sub(d, a)) <= 0.0)
-        return -1.0;
-    return tet_dihedral_angles(a, b, c, d)[0];
+        return {-1.0, 181.0};
+    const std::array<double, 6> angles = tet_dihedral_angles(a, b, c, d);
+    return {angles[0], angles[5]};
 }
 
-double octmo_max_dihedral(const std::vector<Vec3>& rP, const std::array<std::int64_t, 4>& rT) {
-    const Vec3& a = rP[static_cast<std::size_t>(rT[0])];
-    const Vec3& b = rP[static_cast<std::size_t>(rT[1])];
-    const Vec3& c = rP[static_cast<std::size_t>(rT[2])];
-    const Vec3& d = rP[static_cast<std::size_t>(rT[3])];
-    if (triple_product(vec3_sub(b, a), vec3_sub(c, a), vec3_sub(d, a)) <= 0.0)
-        return 181.0;
-    return tet_dihedral_angles(a, b, c, d)[5];
-}
-
-// The worst dihedral angle of every tetrahedron, and its minimum.
-double octmo_angles(const std::vector<Vec3>& rP, const std::vector<std::array<std::int64_t, 4>>& rT,
-                    std::vector<double>& rOut) {
-    rOut.resize(rT.size());
-    parallel_for(rT.size(), [&](std::size_t t) { rOut[t] = octmo_min_dihedral(rP, rT[t]); });
+// The smallest dihedral angle of every tetrahedron into @p rLo and the largest
+// into @p rHi, recomputed only where @p pDirty is set (every tetrahedron when it
+// is null, or when the arrays do not have the tetrahedra's size); returns the
+// minimum of @p rLo and the maximum of @p rHi.
+std::pair<double, double> octmo_angles(const std::vector<Vec3>& rP,
+                                       const std::vector<std::array<std::int64_t, 4>>& rT,
+                                       std::vector<double>& rLo, std::vector<double>& rHi,
+                                       const std::vector<std::uint8_t>* pDirty = nullptr) {
+    const bool all = !pDirty || rLo.size() != rT.size() || rHi.size() != rT.size();
+    rLo.resize(rT.size());
+    rHi.resize(rT.size());
+    parallel_for(rT.size(), [&](std::size_t t) {
+        if (all || (*pDirty)[t])
+            std::tie(rLo[t], rHi[t]) = octmo_min_max_dihedral(rP, rT[t]);
+    });
     double lo = 180.0;
-    for (double a : rOut)
+    for (double a : rLo)
         lo = std::min(lo, a);
-    return lo;
-}
-
-// The largest dihedral angle of every tetrahedron, and its maximum.
-double octmo_max_angles(const std::vector<Vec3>& rP,
-                        const std::vector<std::array<std::int64_t, 4>>& rT,
-                        std::vector<double>& rOut) {
-    rOut.resize(rT.size());
-    parallel_for(rT.size(), [&](std::size_t t) { rOut[t] = octmo_max_dihedral(rP, rT[t]); });
     double hi = 0.0;
-    for (double a : rOut)
+    for (double a : rHi)
         hi = std::max(hi, a);
-    return hi;
+    return {lo, hi};
 }
 
 std::vector<std::vector<std::int64_t>> octmo_incidence(
@@ -278221,8 +278397,7 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
     std::int64_t flips = 0;
     for (std::int64_t round = 0; round < rO.mFitIterations; ++round) {
         std::vector<double> angle, big;
-        const double floor = octmo_angles(pts, tets, angle);
-        const double ceiling = octmo_max_angles(pts, tets, big);
+        const auto [floor, ceiling] = octmo_angles(pts, tets, angle, big);
         const std::vector<Vec3> before = pts;
         // 1. ODT relocation of the interior nodes.
         std::vector<double> xyz(np * 3);
@@ -278235,7 +278410,6 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                 pts[p][k] = xyz[p * 3 + k];
         // 2. The skin's nodes slide along it, where that helps.
         const auto inc = octmo_incidence(np, tets);
-        octmo_angles(pts, tets, angle);
         std::vector<std::size_t> sliders;
         for (std::size_t p = 0; p < np; ++p)
             if (slide[p])
@@ -278255,9 +278429,9 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
             auto worst_at = [&]() {
                 double w = 180.0;
                 for (std::int64_t t : inc[p]) {
-                    const auto& tt = tets[static_cast<std::size_t>(t)];
-                    w = std::min(
-                        {w, octmo_min_dihedral(pts, tt), 180.0 - octmo_max_dihedral(pts, tt)});
+                    const auto [lo, hi] =
+                        octmo_min_max_dihedral(pts, tets[static_cast<std::size_t>(t)]);
+                    w = std::min({w, lo, 180.0 - hi});
                 }
                 return w;
             };
@@ -278294,9 +278468,13 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                     octree_mesh_volume_and_tolerance(before, rT, rO.mZeroVolumeFactor);
                 return volume_before > tolerance_before;
             };
+            // The angles of a sweep: all of them on the first, then only those of the
+            // tetrahedra around a node the previous sweep put back (the others' corners
+            // did not move, so their angles are what a full recomputation gives).
+            std::vector<std::uint8_t> dirty(tets.size(), 1);
             for (int sweep = 0; sweep < 64; ++sweep) {
-                octmo_angles(pts, tets, angle);
-                octmo_max_angles(pts, tets, big);
+                octmo_angles(pts, tets, angle, big, sweep == 0 ? nullptr : &dirty);
+                std::fill(dirty.begin(), dirty.end(), std::uint8_t{0});
                 std::fill(fine_now.begin(), fine_now.end(), std::int8_t{-1});
                 bool any = false;
                 for (std::size_t p = 0; p < np; ++p) {
@@ -278307,8 +278485,10 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                             big[static_cast<std::size_t>(t)] > ceiling ||
                             spoiled_by_move(static_cast<std::size_t>(t))) {
                             pts[p] = before[p];
-                            for (std::int64_t u : inc[p])
+                            for (std::int64_t u : inc[p]) {
                                 fine_now[static_cast<std::size_t>(u)] = -1;
+                                dirty[static_cast<std::size_t>(u)] = 1;
+                            }
                             any = true;
                             break;
                         }
@@ -278343,10 +278523,9 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
                     for (std::size_t k = 0; k < 4; ++k)
                         flipped[n][k] = c[n * 4 + k];
                 std::vector<double> fa, fb;
-                const double now = octmo_angles(pts, tets, angle);
-                const double now_hi = octmo_max_angles(pts, tets, big);
-                if (octmo_angles(pts, flipped, fa) >= std::min(now, floor) &&
-                    octmo_max_angles(pts, flipped, fb) <= std::max(now_hi, ceiling)) {
+                const auto [now, now_hi] = octmo_angles(pts, tets, angle, big);
+                const auto [flipped_lo, flipped_hi] = octmo_angles(pts, flipped, fa, fb);
+                if (flipped_lo >= std::min(now, floor) && flipped_hi <= std::max(now_hi, ceiling)) {
                     tets.swap(flipped);
                     flips += r.mNumFlips;
                 }

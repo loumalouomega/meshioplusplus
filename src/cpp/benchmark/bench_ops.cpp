@@ -108,6 +108,48 @@
 #include "meshioplusplus/operations/neighbors.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/thickness.hpp"
+#include "meshioplusplus/operations/auto_align.hpp"
+#include "meshioplusplus/operations/bake_texture.hpp"
+#include "meshioplusplus/operations/blend.hpp"
+#include "meshioplusplus/operations/check_conformity.hpp"
+#include "meshioplusplus/operations/check_tetrahedra.hpp"
+#include "meshioplusplus/operations/clip.hpp"
+#include "meshioplusplus/operations/constrain_primitives.hpp"
+#include "meshioplusplus/operations/fit_cad_loop.hpp"
+#include "meshioplusplus/operations/colorize.hpp"
+#include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/cut.hpp"
+#include "meshioplusplus/operations/data_calc.hpp"
+#include "meshioplusplus/operations/data_condition.hpp"
+#include "meshioplusplus/operations/data_info.hpp"
+#include "meshioplusplus/operations/data_integrate.hpp"
+#include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/operations/deviation.hpp"
+#include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/error.hpp"
+#include "meshioplusplus/operations/error_size.hpp"
+#include "meshioplusplus/operations/fit_curves.hpp"
+#include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/iga.hpp"
+#include "meshioplusplus/operations/measure.hpp"
+#include "meshioplusplus/operations/metric.hpp"
+#include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/operations/offset_surface.hpp"
+#include "meshioplusplus/operations/parameterize.hpp"
+#include "meshioplusplus/operations/point_normals.hpp"
+#include "meshioplusplus/operations/quality_gate.hpp"
+#include "meshioplusplus/operations/reconstruct_surface.hpp"
+#include "meshioplusplus/operations/refine_patches.hpp"
+#include "meshioplusplus/operations/region_ops.hpp"
+#include "meshioplusplus/operations/registration.hpp"
+#include "meshioplusplus/operations/remove_islands.hpp"
+#include "meshioplusplus/operations/select.hpp"
+#include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/tensor_invariants.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
+#include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/segment.hpp"
@@ -2036,6 +2078,505 @@ int main(int argc, char** argv) {
                 pD->Arrays(r.mCellMaps);
             }
         });
+        // Roadmap 5.1.5: a row for each operation that had none, so the
+        // determinism check and the instruction gate see a change to it. Each
+        // runs on the tier's cube, its surface or its points, with the options
+        // a user would pass first; the digest covers the returned mesh and the
+        // result's counters and measures.
+        const auto f64 = [](MeshDigest* pD, double v) {
+            if (pD)
+                pD->Bytes(&v, sizeof v);
+        };
+        const auto i64 = [](MeshDigest* pD, std::int64_t v) {
+            if (pD)
+                pD->U64(static_cast<std::uint64_t>(v));
+        };
+        const auto doubles = [](MeshDigest* pD, const auto& rV) {
+            if (pD && !rV.empty())
+                pD->Bytes(rV.data(), rV.size() * sizeof rV[0]);
+        };
+        // An offset off the lattice planes, so no cutting plane holds a point.
+        const double off = 0.5 + 0.3 * h;
+        // The surface's points with no cells: the point-cloud rows' input.
+        const BenchLazyMesh cloud([&] {
+            NDArray pts = NDArray::Uninit(DType::Float64, {surface.NumPoints(), 3});
+            std::memcpy(pts.Data(), surface.Points().Data(), pts.Nbytes());
+            Mesh m;
+            m.AssignPoints(std::move(pts));
+            return m;
+        });
+        // The cube with a velocity, a cell flux, a smooth displacement, a
+        // symmetric stress tensor and a diagonal metric tensor per point.
+        const BenchLazyMesh with_tensors([&] {
+            Mesh m = bench_ops_moved(volume, [](std::size_t, double*) {});
+            const std::size_t np = m.NumPoints();
+            const double* p = m.Points().As<double>();
+            NDArray vel = NDArray::Uninit(DType::Float64, {np, 3});
+            NDArray disp = NDArray::Uninit(DType::Float64, {np, 3});
+            NDArray stress = NDArray::Uninit(DType::Float64, {np, 6});
+            NDArray metric = NDArray::Uninit(DType::Float64, {np, 6});
+            const double inv_h2 = 1.0 / (h * h);
+            for (std::size_t i = 0; i < np; ++i) {
+                const double x = p[3 * i], y = p[3 * i + 1], z = p[3 * i + 2];
+                double* v = vel.As<double>() + 3 * i;
+                v[0] = -y + 0.5;
+                v[1] = x - 0.5;
+                v[2] = 0.1 * z;
+                double* d = disp.As<double>() + 3 * i;
+                const double s =
+                    0.05 * h * std::sin(3.0 * x) * std::sin(3.0 * y) * std::sin(3.0 * z);
+                d[0] = s;
+                d[1] = 0.5 * s;
+                d[2] = -s;
+                double* t = stress.As<double>() + 6 * i;
+                t[0] = 1.0 + x;
+                t[1] = 2.0 - y;
+                t[2] = 0.5 + z * z;
+                t[3] = 0.1 * x * y;
+                t[4] = 0.2 * y * z;
+                t[5] = 0.3 * z * x;
+                // m11 m21 m22 m31 m32 m33: finer towards the origin corner.
+                double* q = metric.As<double>() + 6 * i;
+                const double g = inv_h2 * (1.0 + 3.0 * (1.0 - x));
+                q[0] = g;
+                q[1] = 0.0;
+                q[2] = g;
+                q[3] = 0.0;
+                q[4] = 0.0;
+                q[5] = g;
+            }
+            m.AddPointData("velocity", std::move(vel));
+            m.AddPointData("d", std::move(disp));
+            m.AddPointData("stress", std::move(stress));
+            m.AddPointData("m", std::move(metric));
+            const std::size_t nc = m.Cells(0).NumCells();
+            NDArray flux = NDArray::Uninit(DType::Float64, {nc, 3});
+            for (std::size_t c = 0; c < 3 * nc; ++c)
+                flux.As<double>()[c] = std::sin(0.01 * static_cast<double>(c));
+            std::vector<NDArray> blocks;
+            blocks.push_back(std::move(flux));
+            m.AddCellData("flux", std::move(blocks));
+            return m;
+        });
+        row("clip", [&](MeshDigest* pD) {
+            mio::ClipOptions o;
+            o.mOrigin = {off, off, off};
+            o.mNormal = {0.3, 0.2, 1.0};
+            auto r = mio::clip(surface, o);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumCapTriangles);
+        });
+        row("silhouette", [&](MeshDigest* pD) {
+            mio::SilhouetteOptions o;
+            o.mNormal = {1.0, 1.0, 1.0};
+            auto r = mio::silhouette(surface, o);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumLoops);
+        });
+        // A chained section of the surface, for fit_curves.
+        const BenchLazyMesh section([&] {
+            mio::SliceOptions o;
+            o.mOrigin = {off, off, off};
+            o.mNormal = {0.0, 0.0, 1.0};
+            o.mChain = true;
+            return mio::slice(surface, o);
+        });
+        row("fit_curves", [&](MeshDigest* pD) {
+            auto r = mio::fit_curves(section);
+            of(pD, r.mMesh);
+            i64(pD, static_cast<std::int64_t>(r.mPieces.size()));
+            f64(pD, r.mMaxResidual);
+        });
+        row("geodesic", [&](MeshDigest* pD) {
+            mio::GeodesicOptions o;
+            o.mSources = {0};
+            auto r = mio::geodesic_distance(surface, o);
+            of(pD, r.mMesh);
+            i64(pD, r.mHeatIterations);
+            i64(pD, r.mPoissonIterations);
+        });
+        row("parameterize", [&](MeshDigest* pD) {
+            auto r = mio::parameterize(surface, {});
+            of(pD, r.mMesh);
+            i64(pD, r.mNumCharts);
+        });
+        // The surface with its UV charts and a point field, for bake_texture.
+        const BenchLazyMesh charted([&] {
+            Mesh m = mio::parameterize(surface, {}).mMesh;
+            NDArray u = NDArray::Uninit(DType::Float64, {m.NumPoints()});
+            const double* p = m.Points().As<double>();
+            for (std::size_t i = 0; i < m.NumPoints(); ++i)
+                u.As<double>()[i] = p[3 * i] * p[3 * i] + p[3 * i + 1] * p[3 * i + 2];
+            m.AddPointData("u", std::move(u));
+            return m;
+        });
+        row("bake_texture", [&](MeshDigest* pD) {
+            mio::BakeTextureOptions o;
+            o.mArray = "u";
+            o.mWidth = 256;
+            o.mHeight = 256;
+            auto r = mio::bake_texture(charted, o);
+            if (pD)
+                pD->Array(r.mImage);
+        });
+        row("hull", [&](MeshDigest* pD) {
+            auto r = mio::convex_hull(jittered);
+            of(pD, r.mMesh);
+            f64(pD, r.mVolume);
+        });
+        // The jittered cube's points on its bottom face, for the planar
+        // Delaunay triangulation.
+        const BenchLazyMesh bottom([&] {
+            const Mesh& rJ = jittered;
+            const double* p = rJ.Points().As<double>();
+            std::vector<double> kept;
+            for (std::size_t i = 0; i < rJ.NumPoints(); ++i)
+                if (p[3 * i + 2] <= 0.0)
+                    kept.insert(kept.end(), p + 3 * i, p + 3 * i + 3);
+            NDArray pts = NDArray::Uninit(DType::Float64, {kept.size() / 3, 3});
+            std::memcpy(pts.Data(), kept.data(), pts.Nbytes());
+            Mesh m;
+            m.AssignPoints(std::move(pts));
+            return m;
+        });
+        row("delaunay_2d", [&](MeshDigest* pD) {
+            auto r = mio::delaunay_2d(bottom);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumDuplicates);
+        });
+        row("deviation", [&](MeshDigest* pD) {
+            auto r = mio::deviation(inflated, surface);
+            of(pD, r.mMesh);
+            f64(pD, r.mRms);
+            doubles(pD, r.mHistogramCounts);
+        });
+        row("eigenmodes", [&](MeshDigest* pD) {
+            auto r = mio::laplacian_eigenmodes(surface);
+            of(pD, r.mMesh);
+            doubles(pD, r.mEigenvalues);
+            i64(pD, r.mIterations);
+        });
+        row("registration", [&](MeshDigest* pD) {
+            // Point-to-point ICP from the identity: the shift is a few
+            // lattice steps, which the default start recovers.
+            auto r = mio::register_rigid(shifted, surface);
+            doubles(pD, r.mMatrix);
+            f64(pD, r.mRms);
+            i64(pD, r.mIterations);
+        });
+        row("register_landmarks", [&](MeshDigest* pD) {
+            std::vector<std::array<double, 3>> a(surface.NumPoints()), b(surface.NumPoints());
+            std::memcpy(a.data(), surface.Points().Data(), a.size() * sizeof a[0]);
+            std::memcpy(b.data(), shifted->Points().Data(), b.size() * sizeof b[0]);
+            auto r = mio::register_landmarks(a, b);
+            doubles(pD, r.mMatrix);
+            doubles(pD, r.mResiduals);
+        });
+        row("point_normals", [&](MeshDigest* pD) {
+            auto r = mio::estimate_normals(cloud);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumComponents);
+        });
+        row("reconstruct_surface", [&](MeshDigest* pD) {
+            auto r = mio::reconstruct_surface(cloud);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumLatticePoints);
+        });
+        row("offset_surface", [&](MeshDigest* pD) {
+            mio::OffsetSurfaceOptions o;
+            o.mDistance = 0.5 * h;
+            of(pD, mio::offset_surface(surface, o).mMesh);
+        });
+        row("thicken", [&](MeshDigest* pD) {
+            mio::ThickenOptions o;
+            o.mThickness = 0.5 * h;
+            of(pD, mio::thicken(surface, o).mMesh);
+        });
+        // The surface with a copy shrunk to a fiftieth of its size beside it:
+        // one island below remove_islands' default diagonal.
+        const BenchLazyMesh islands([&] {
+            const Mesh speck = bench_ops_moved(surface, [](std::size_t, double* pP) {
+                for (int d = 0; d < 3; ++d)
+                    pP[d] = 1.5 + 0.02 * pP[d];
+            });
+            mio::MergeOptions o;
+            o.source_tag = false;
+            return mio::merge({&surface, &speck}, o).mMesh;
+        });
+        row("remove_islands", [&](MeshDigest* pD) {
+            auto r = mio::remove_islands(islands);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumComponents);
+        });
+        row("tessellate", [&](MeshDigest* pD) {
+            mio::TessellateOptions o;
+            o.mLevels = 1;
+            of(pD, mio::tessellate(quadratic, o).mMesh);
+        });
+        // The cube with every 50th interior point pushed 1.5 lattice steps
+        // along a diagonal, which inverts cells of its star.
+        const BenchLazyMesh tangled([&] {
+            return bench_ops_moved(volume, [&](std::size_t i, double* pP) {
+                if (i % 50 != 7)
+                    return;
+                for (int d = 0; d < 3; ++d)
+                    if (pP[d] <= 0.0 || pP[d] >= 1.0)
+                        return;
+                for (int d = 0; d < 3; ++d)
+                    pP[d] += (d == 1 ? -1.5 : 1.5) * h;
+            });
+        });
+        row("untangle", [&](MeshDigest* pD) {
+            auto r = mio::untangle(tangled);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumInvertedAfter);
+            i64(pD, r.mMoves);
+        });
+        row("check_tetrahedra", [&](MeshDigest* pD) {
+            auto r = mio::check_tetrahedra(tangled);
+            i64(pD, r.mNumInverted);
+            i64(pD, r.mNumOverlaps);
+            f64(pD, r.mMinVolume);
+        });
+        row("morph", [&](MeshDigest* pD) {
+            mio::MorphOptions o;
+            o.mArray = "d";
+            o.mFixBoundary = false;
+            auto r = mio::morph(with_tensors, o);
+            of(pD, r.mMesh);
+            i64(pD, r.mIterations);
+        });
+        row("check_conformity", [&](MeshDigest* pD) {
+            auto r = mio::check_conformity(green);
+            of(pD, r.mMesh);
+            i64(pD, r.mConforming ? 1 : 0);
+        });
+        row("refine_patches", [&](MeshDigest* pD) {
+            auto r = mio::refine_patches(segmented);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumPatches);
+        });
+        row("measure", [&](MeshDigest* pD) {
+            const std::string spec =
+                R"({"elements": [{"name": "A", "fit": "plane", "seeds": [[0.5, 0.5, 0.0]]},)"
+                R"( {"name": "B", "fit": "plane", "seeds": [[0.5, 0.5, 1.0]]}],)"
+                R"( "dimensions": [{"name": "AB", "type": "distance", "between": ["A", "B"]}],)"
+                R"( "tolerances": [{"name": "flat_A", "type": "flatness", "feature": "A",)"
+                R"( "limit": 0.01}]})";
+            auto r = mio::measure(surface, spec);
+            of(pD, r.mMesh);
+            if (pD)
+                pD->Str(r.mReportJson);
+        });
+        row("auto_align", [&](MeshDigest* pD) {
+            auto r = mio::auto_align(shifted);
+            of(pD, r.mMesh);
+            doubles(pD, r.mMatrix);
+        });
+        row("select", [&](MeshDigest* pD) {
+            mio::SelectOptions o;
+            o.mName = "box";
+            o.mBox = true;
+            o.mBoxLo = {0.0, 0.0, 0.0};
+            o.mBoxHi = {off, off, off};
+            auto r = mio::select_region(volume, o);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumSelected);
+        });
+        // The cube with two overlapping box regions, for edit_regions.
+        const BenchLazyMesh two_regions([&] {
+            mio::SelectOptions o;
+            o.mBox = true;
+            o.mName = "a";
+            o.mBoxLo = {0.0, 0.0, 0.0};
+            o.mBoxHi = {off, off, off};
+            Mesh m = mio::select_region(volume, o).mMesh;
+            o.mName = "b";
+            o.mBoxLo = {0.25, 0.25, 0.25};
+            o.mBoxHi = {1.0, 1.0, 1.0};
+            return mio::select_region(m, o).mMesh;
+        });
+        row("edit_regions", [&](MeshDigest* pD) {
+            std::vector<mio::RegionEdit> edits(3);
+            const mio::RegionOp ops[3] = {mio::RegionOp::Union, mio::RegionOp::Intersection,
+                                          mio::RegionOp::Difference};
+            const char* names[3] = {"a_or_b", "a_and_b", "a_not_b"};
+            for (int k = 0; k < 3; ++k) {
+                edits[k].mOp = ops[k];
+                edits[k].mInputs = {mio::RegionSelector{"a"}, mio::RegionSelector{"b"}};
+                edits[k].mOutputName = names[k];
+            }
+            of(pD, mio::edit_regions(two_regions, edits));
+        });
+        row("stats", [&](MeshDigest* pD) {
+            auto r = mio::compute_stats(volume);
+            f64(pD, r.mTotalArea);
+            f64(pD, r.mSignedVolume);
+            if (pD)
+                pD->Bytes(r.mCentroid, sizeof r.mCentroid);
+        });
+        row("check_quality", [&](MeshDigest* pD) {
+            mio::QualityGateOptions o;
+            o.mThresholds = mio::parse_quality_thresholds("scaled_jacobian >= 0.2");
+            auto r = mio::check_quality(jittered, o);
+            for (const auto& c : r.mChecks) {
+                i64(pD, c.mViolations);
+                f64(pD, c.mWorst);
+            }
+        });
+        row("colorize", [&](MeshDigest* pD) {
+            mio::ColorizeOptions o;
+            o.mField = "u";
+            of(pD, mio::colorize(with_field, o).mMesh);
+        });
+        row("coordinates", [&](MeshDigest* pD) {
+            mio::CoordinateOptions o;
+            o.mOrigin = {0.5, 0.5, 0.0};
+            o.mArrays = {"velocity"};
+            of(pD, mio::convert_coordinates(with_tensors, o).mMesh);
+        });
+        row("blend", [&](MeshDigest* pD) {
+            mio::BlendOptions o;
+            o.mBlendPoints = true;
+            of(pD, mio::blend_steps(volume, jittered, 0.5, o));
+        });
+        row("estimate_error", [&](MeshDigest* pD) {
+            mio::ErrorOptions o;
+            o.mArrayName = "u";
+            o.mMarking = mio::ErrorMarking::Fraction;
+            o.mMarkingValue = 0.1;
+            auto r = mio::estimate_error(with_field, o);
+            of(pD, r.mMesh);
+            f64(pD, r.mGlobalError);
+        });
+        // The indicator of `estimate_error`, and half its global error as
+        // the target error_size sizes the cells for.
+        double target_error = 0.0;
+        const BenchLazyMesh with_error([&] {
+            mio::ErrorOptions o;
+            o.mArrayName = "u";
+            auto r = mio::estimate_error(with_field, o);
+            target_error = 0.5 * r.mGlobalError;
+            return r.mMesh;
+        });
+        row("error_size", [&](MeshDigest* pD) {
+            const Mesh& rIn = with_error;  // built first: it sets target_error
+            mio::ErrorSizeOptions o;
+            o.mTargetError = target_error;
+            o.mMinSize = 0.25 * h;
+            o.mMaxSize = 4.0 * h;
+            of(pD, mio::error_size(rIn, o).mMesh);
+        });
+        row("metric", [&](MeshDigest* pD) {
+            mio::PrepareMetricOptions o;
+            o.mArrays = {"m"};
+            o.mTargetVertices = static_cast<double>(volume.NumPoints());
+            o.mHmin = 0.25 * h;
+            o.mHmax = 4.0 * h;
+            o.mGradation = 1.3;
+            auto r = mio::prepare_metric(with_tensors, o);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumGraded);
+        });
+        row("iga_sample", [&](MeshDigest* pD) {
+            mio::IgaRefineOptions o;
+            o.mSubdivisions = {static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), 1};
+            o.mElevate = {1, 1, 0};
+            of(pD, mio::iga_sample(mio::iga_refine(cad_box(), o)));
+        });
+        // The data operations: data only, so points and cells pass through.
+        row("data_calc", [&](MeshDigest* pD) {
+            mio::DataCalcOptions o;
+            o.output = "speed";
+            of(pD, mio::data_calc(with_tensors, "norm(velocity)*2+1", o));
+        });
+        row("data_condition", [&](MeshDigest* pD) {
+            mio::DataConditionOptions o;
+            o.names = {"velocity", "stress"};
+            o.mode = mio::ConditionMode::Normalize;
+            of(pD, mio::data_condition(with_tensors, o));
+        });
+        row("data_info", [&](MeshDigest* pD) {
+            auto r = mio::data_info(with_tensors);
+            for (const auto& a : r.mArrays) {
+                i64(pD, a.mNumValues);
+                f64(pD, a.mMin);
+                f64(pD, a.mMax);
+                f64(pD, a.mMean);
+            }
+        });
+        row("data_manage", [&](MeshDigest* pD) {
+            mio::DataManageOptions o;
+            o.drop = {{mio::DataLocation::Cell, "flux"}};
+            o.rename = {{mio::DataLocation::Point, "velocity", "v"}};
+            of(pD, mio::data_manage(with_tensors, o).mMesh);
+        });
+        row("data_integrate", [&](MeshDigest* pD) {
+            auto r = mio::data_integrate(with_tensors);
+            for (const auto& a : r.mArrays)
+                doubles(pD, a.mDomain.mTotalPerComponent);
+        });
+        row("tensor_invariants", [&](MeshDigest* pD) {
+            mio::TensorInvariantsOptions o;
+            o.names = {"stress"};
+            of(pD, mio::tensor_invariants(with_tensors, o));
+        });
+        // The ragged clean and merge of roadmap 5.18: the polyhedron and
+        // polygon blocks of `reorder_ragged`, cleaned, and welded onto
+        // themselves.
+        row("clean_ragged", [&](MeshDigest* pD) {
+            auto r = mio::clean(ragged, {});
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->Array(r.mPointMap);
+                pD->Arrays(r.mCellMaps);
+            }
+        });
+        row("merge_ragged", [&](MeshDigest* pD) {
+            mio::MergeOptions o;
+            o.weld = true;
+            auto r = mio::merge({&ragged.Get(), &ragged.Get()}, o);
+            of(pD, r.mMesh);
+            if (pD) {
+                pD->Arrays(r.mPointMaps);
+                pD->Arrays(r.mCellMaps);
+            }
+        });
+        // The cube's six fitted planes, constrained (perpendicular and
+        // parallel families), and the segment-fit-build loop of
+        // fit_cad_iterate on the kernel-free backend, two rounds.
+        const BenchLazyMesh box_fitted([&] { return mio::fit_primitives(segmented).mMesh; });
+        row("constrain_primitives", [&](MeshDigest* pD) {
+            auto r = mio::constrain_primitives(box_fitted);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumConstrained);
+            i64(pD, r.mNumGroups);
+        });
+        row("fit_cad_iterate", [&](MeshDigest* pD) {
+            mio::FitCadIterateOptions o;
+            o.mFitCad.mBackend = mio::FitCadBackend::Native;
+            o.mMaxRounds = 2;
+            auto r = mio::fit_cad_iterate(surface, "", o);
+            of(pD, r.mFit.mMesh);
+            i64(pD, r.mBestRound);
+            i64(pD, static_cast<std::int64_t>(r.mRounds.size()));
+        });
+        // cut needs the CutCells backend (MESHIOPLUSPLUS_WITH_CUTCELLS).
+        if (mio::cut_has_cutcells()) {
+            row("cut", [&](MeshDigest* pD) {
+                mio::CutOptions o;
+                o.mPlanes = {mio::CutPlane{{off, 0.0, 0.0}, {1.0, 0.0, 0.0}}};
+                auto r = mio::cut_level_set(volume, o);
+                of(pD, r.mMesh);
+            });
+            row("cut_quadrature", [&](MeshDigest* pD) {
+                mio::CutOptions o;
+                o.mPlanes = {mio::CutPlane{{off, 0.0, 0.0}, {1.0, 0.0, 0.0}}};
+                auto r = mio::cut_quadrature(volume, o);
+                of(pD, r.mMesh);
+                i64(pD, r.mNumPoints);
+            });
+        }
     }
     return 0;
 }
