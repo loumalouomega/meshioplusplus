@@ -1,0 +1,72 @@
+Zero-initialise the VL buffers that HDF5's dimension-scale code reads attributes into.
+
+H5DSiterate_scales (and the five other functions in hl/src/H5DS.c that read the
+DIMENSION_LIST or REFERENCE_LIST attribute) allocate one `hvl_t` per dimension of the
+dataset with malloc and fill them with H5Aread. An attribute that holds fewer entries
+than the dataset has dimensions leaves the rest of the buffer unwritten, and the code
+then reads buf[dim].len and dereferences buf[dim].p from that uninitialised memory
+(found by fuzzing a corrupt UGRID netCDF file through nc_inq_var -> get_attached_info
+-> H5DSiterate_scales; ASan's malloc fill shows as 0xbebebebebebebebe). calloc makes an
+unwritten entry empty (len 0, p NULL), which the existing `len > 0` test already skips,
+and gives H5Treclaim on the failure path nothing to free from it.
+
+This is a local fix for the instrumented fuzz build, not a backport: it has not been
+reported or fixed upstream as far as the maintainers know (HDF5 1.14.6). Same size, same
+behaviour on every valid file.
+
+--- a/hl/src/H5DS.c
++++ b/hl/src/H5DS.c
+@@ -302,7 +302,7 @@
+             goto out;
+ 
+         /* allocate and initialize the VL */
+-        buf = (hvl_t *)malloc((size_t)rank * sizeof(hvl_t));
++        buf = (hvl_t *)calloc((size_t)rank, sizeof(hvl_t));
+         if (buf == NULL)
+             goto out;
+ 
+@@ -358,7 +358,7 @@
+             goto out;
+ 
+         /* allocate and initialize the VL */
+-        buf = (hvl_t *)malloc((size_t)rank * sizeof(hvl_t));
++        buf = (hvl_t *)calloc((size_t)rank, sizeof(hvl_t));
+         if (buf == NULL)
+             goto out;
+ 
+@@ -841,7 +841,7 @@
+         goto out;
+ 
+     /* allocate and initialize the VL */
+-    buf = (hvl_t *)malloc((size_t)rank * sizeof(hvl_t));
++    buf = (hvl_t *)calloc((size_t)rank, sizeof(hvl_t));
+     if (buf == NULL)
+         goto out;
+ 
+@@ -1321,7 +1321,7 @@
+             goto out;
+ 
+         /* allocate and initialize the VL */
+-        buf = (hvl_t *)malloc((size_t)rank * sizeof(hvl_t));
++        buf = (hvl_t *)calloc((size_t)rank, sizeof(hvl_t));
+         if (buf == NULL)
+             goto out;
+ 
+@@ -1652,7 +1652,7 @@
+             goto out;
+ 
+         /* allocate and initialize the VL */
+-        buf = (hvl_t *)malloc((size_t)rank * sizeof(hvl_t));
++        buf = (hvl_t *)calloc((size_t)rank, sizeof(hvl_t));
+ 
+         if (buf == NULL)
+             goto out;
+@@ -2387,7 +2387,7 @@
+             goto out;
+ 
+         /* allocate and initialize the VL */
+-        buf = (hvl_t *)malloc((size_t)rank * sizeof(hvl_t));
++        buf = (hvl_t *)calloc((size_t)rank, sizeof(hvl_t));
+         if (buf == NULL)
+             goto out;
+ 
