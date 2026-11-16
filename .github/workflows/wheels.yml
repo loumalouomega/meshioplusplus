@@ -16,7 +16,7 @@ jobs:
         # runner; cibuildwheel's CIBW_ARCHS defaults to "auto" (the runner's
         # native arch), so this leg builds aarch64 wheels with no QEMU/binfmt
         # setup, using CIBW_MANYLINUX_AARCH64_IMAGE (below) automatically.
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -192,7 +192,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -289,7 +289,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -389,7 +389,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
 
@@ -472,7 +472,7 @@ jobs:
 
   build_sdist:
     name: Source distribution
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Build sdist
@@ -495,7 +495,7 @@ jobs:
   blender_extension:
     name: Blender extension (${{ matrix.platform }})
     needs: [build_wheels]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -546,7 +546,7 @@ jobs:
   paraview_bundle:
     name: ParaView bundle (${{ matrix.platform }}, cp${{ matrix.python }})
     needs: [build_wheels, build_occt_addon, build_netgen_addon, build_mmg_addon]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -588,7 +588,7 @@ jobs:
   publish:
     name: Publish to PyPI
     needs: [build_wheels, build_sdist, build_occt_addon, build_netgen_addon, build_mmg_addon]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi
@@ -608,7 +608,7 @@ jobs:
   publish_occt:
     name: Publish meshioplusplus-occt to PyPI
     needs: [build_occt_addon, publish]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi-occt
@@ -626,7 +626,7 @@ jobs:
   publish_netgen:
     name: Publish meshioplusplus-netgen to PyPI
     needs: [build_netgen_addon, publish]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi-netgen
@@ -644,7 +644,7 @@ jobs:
   publish_mmg:
     name: Publish meshioplusplus-mmg to PyPI
     needs: [build_mmg_addon, publish]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     environment:
       name: pypi-mmg

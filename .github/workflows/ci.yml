@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,7 +92,7 @@ jobs:
       - name: Install native libraries
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -294,7 +294,7 @@ jobs:
   determinism:
     name: Operation output across SEQ / OpenMP / TBB
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -353,7 +353,7 @@ jobs:
   cpp-install:
     name: C++ API install (${{ matrix.name }})
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -370,7 +370,7 @@ jobs:
       - name: Install dependencies
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -591,7 +591,7 @@ jobs:
   kahip:
     name: KaHIP partition backend
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -617,7 +617,7 @@ jobs:
       - name: Install native libraries
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -1185,7 +1185,7 @@ jobs:
   optional-readers:
     name: ADIOS2 (DOLFINx .bp) and TecIO (.szplt) readers
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       SU2_TECIO_COMMIT: bc15466602a687d6fb796d5df7a12ce3fde0949a
     steps:
@@ -1299,7 +1299,7 @@ jobs:
       - name: Install native libraries
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -1361,7 +1361,7 @@ jobs:
   include-cleanup:
     name: Include hygiene (clang-tidy include-cleaner)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -1370,7 +1370,7 @@ jobs:
       - name: Install clang-tidy + native libraries
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -1392,7 +1392,7 @@ jobs:
   amalgamation:
     name: Single-header amalgamation
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -1456,7 +1456,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -1536,7 +1536,7 @@ jobs:
     name: Coverage (Python + C++)
     needs: [lint]
     if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The `secrets` context is not allowed in step-level `if:` expressions
     # (referencing it there makes the whole workflow file invalid and GitHub
     # runs NOTHING — zero checks on the PR). Hoist the token into a job-level
@@ -1574,7 +1574,7 @@ jobs:
       - name: Install native libraries and lcov
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -1662,7 +1662,7 @@ jobs:
           pip install --no-build-isolation -e . --verbose
           pytest tests/python/ --codeblocks --cov meshioplusplus --cov-report xml --cov-report term
 
-      # lcov 2.x (ubuntu-latest) is strict about gcov edge cases that are not
+      # lcov 2.x (ubuntu-24.04) is strict about gcov edge cases that are not
       # actionable here and would otherwise hard-stop the capture:
       #   mismatch/inconsistent - TUs compiled once but linked into two binaries
       #     (the gtest binary and _core), and gtest headers pulled from _deps;
@@ -1757,7 +1757,7 @@ jobs:
   viewer-python:
     name: Viewer (polyscope, headless)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -1772,7 +1772,7 @@ jobs:
       - name: Install a GL runtime
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -1814,7 +1814,7 @@ jobs:
   interop:
     name: Interop (PyVista, trimesh, Arrow, pandas, polars, ML)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -1831,7 +1831,7 @@ jobs:
       - name: Install a GL runtime
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -1936,7 +1936,7 @@ jobs:
   gltf-validator:
     name: glTF (Khronos validator, trimesh)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: Initialise submodules
@@ -1973,7 +1973,7 @@ jobs:
   mcp:
     name: MCP server (${{ matrix.sdk }})
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -2034,7 +2034,7 @@ jobs:
   blender:
     name: Blender bridge (bpy)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -2049,7 +2049,7 @@ jobs:
       # bpy links against a full GL/X11 stack even when nothing is rendered.
       - name: Install the runtime libraries bpy needs
         run: |
-          # packages.microsoft.com ships preinstalled on the ubuntu-latest
+          # packages.microsoft.com ships preinstalled on the ubuntu-24.04
           # runner image and this repo never uses it; when that repo 403s it
           # aborts `apt-get update` under the default `-e` shell before the
           # packages we actually need are ever fetched. Strip it first.
@@ -2081,7 +2081,7 @@ jobs:
   viewer-web:
     name: Viewer (browser, Playwright)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -2232,7 +2232,7 @@ jobs:
   viewer-packaging:
     name: Viewer asset ships in the wheel
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -2266,7 +2266,7 @@ jobs:
   blender-packaging:
     name: Blender extension zip is well-formed
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -2392,7 +2392,7 @@ jobs:
   cli-polyscope:
     name: CLI native viewer (Polyscope)
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2419,7 +2419,7 @@ jobs:
       - name: Install the GL/X11 stack Polyscope needs
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -2489,7 +2489,7 @@ jobs:
   julia:
     name: Julia binding
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2520,7 +2520,7 @@ jobs:
       - name: Install native libraries
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -2590,7 +2590,7 @@ jobs:
   r:
     name: R binding
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -2626,7 +2626,7 @@ jobs:
       - name: Install native libraries
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
-          # the ubuntu-latest runner image and this repo never uses it; when
+          # the ubuntu-24.04 runner image and this repo never uses it; when
           # that repo 403s or "is no longer signed" (a recurring GitHub
           # runner-image issue, unrelated to any change here), it aborts
           # `apt-get update` under the default `-e` shell before the packages
@@ -2696,7 +2696,7 @@ jobs:
   octave:
     name: Octave binding
     needs: [lint]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:

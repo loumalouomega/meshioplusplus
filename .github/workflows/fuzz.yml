@@ -27,7 +27,7 @@ concurrency:
 jobs:
   libraries:
     name: Fuzz instrumented HDF5 and netCDF readers
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,7 +108,7 @@ jobs:
     # fixtures through mesh_cad_surface, and near-degenerate polygons through
     # triangulate_polygon_2d (tests/fuzz/fuzz_mesh_cad.cpp).
     name: Fuzz mesh generation
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -168,7 +168,7 @@ jobs:
 
   fuzz:
     name: Fuzz readers (shard ${{ matrix.shard }}/4)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
