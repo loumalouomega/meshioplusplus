@@ -59644,6 +59644,71 @@ TriTriSegment tri_tri_segment(const double* pA, const double* pB, const double* 
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/tri_tri.hpp =====
+// ===== begin src/cpp/src/detail/union_find.hpp =====
+/**
+ * @file detail/union_find.hpp
+ * @brief `UnionFind<Index>`: disjoint sets with path halving, whose root is
+ * always the smallest index of its set (roadmap 6.2).
+ *
+ * The smaller root wins a join, so the partition, its representatives and any
+ * group numbering derived from them do not depend on the order the joins are
+ * applied in. Serial by design (the union sweeps are a non-goal to
+ * parallelise). A **core-private** header (not installed).
+ */
+
+// System includes
+#include <cstddef>
+#include <numeric>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+template <class Index>
+class UnionFind {
+public:
+    explicit UnionFind(std::size_t N) : mParent(N) {
+        std::iota(mParent.begin(), mParent.end(), Index{0});
+    }
+
+    /// The root of `X`'s set, halving the path on the way.
+    MIO_ALWAYS_INLINE Index Find(Index X) { return FindIn(mParent, X); }
+
+    /// Join the sets of `A` and `B`, the smaller root winning; true when they were apart.
+    MIO_ALWAYS_INLINE bool Unite(Index A, Index B) {
+        A = Find(A);
+        B = Find(B);
+        if (A == B)
+            return false;
+        if (A < B)
+            mParent[static_cast<std::size_t>(B)] = A;
+        else
+            mParent[static_cast<std::size_t>(A)] = B;
+        return true;
+    }
+
+    /// The parent link of `X`: never above `X`, since a root is its set's
+    /// smallest index and path halving only moves links down.
+    Index Parent(std::size_t X) const { return mParent[X]; }
+
+    /// Path-halving find over a caller-owned parent vector, for a union written
+    /// with its own rule beside the same walk.
+    static MIO_ALWAYS_INLINE Index FindIn(std::vector<Index>& rParent, Index X) {
+        while (rParent[static_cast<std::size_t>(X)] != X) {
+            Index& p = rParent[static_cast<std::size_t>(X)];
+            p = rParent[static_cast<std::size_t>(p)];
+            X = p;
+        }
+        return X;
+    }
+
+private:
+    std::vector<Index> mParent;
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/union_find.hpp =====
 // ===== begin src/cpp/src/detail/utf8.hpp =====
 /**
  * @file detail/utf8.hpp
@@ -115129,23 +115194,7 @@ std::vector<std::size_t> ql_corners(QlState& rS, const QlPiece& rPiece,
     return chosen;
 }
 
-struct QlUnionFind {
-    std::vector<std::size_t> mParent;
-    explicit QlUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), std::size_t{0});
-    }
-    std::size_t Find(std::size_t A) {
-        while (mParent[A] != A)
-            A = mParent[A] = mParent[mParent[A]];
-        return A;
-    }
-    void Unite(std::size_t A, std::size_t B) {
-        A = Find(A);
-        B = Find(B);
-        if (A != B)
-            mParent[std::max(A, B)] = std::min(A, B);
-    }
-};
+using QlUnionFind = UnionFind<std::size_t>;
 
 // A finished piece: its triangles, its boundary from its first corner, its
 // corners' positions there and, per direction (sides 0 and 2, sides 1 and
@@ -122510,36 +122559,7 @@ bool sn_edge_use_less(const SnEdgeUse& rA, const SnEdgeUse& rB) {
 // Union-find whose root is always the smallest index of its set. That is what
 // makes the partition, and the group numbering derived from it, independent of
 // the order the joins are applied in.
-class SnUnionFind {
-public:
-    explicit SnUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), std::int64_t{0});
-    }
-    std::int64_t Find(std::int64_t X) {
-        while (mParent[static_cast<std::size_t>(X)] != X) {
-            std::int64_t& p = mParent[static_cast<std::size_t>(X)];
-            p = mParent[static_cast<std::size_t>(p)];
-            X = p;
-        }
-        return X;
-    }
-    /// The parent link of @p X: never above @p X, since a root is its set's
-    /// smallest index and path halving only moves links down.
-    std::int64_t Parent(std::size_t X) const { return mParent[X]; }
-    void Unite(std::int64_t A, std::int64_t B) {
-        const std::int64_t ra = Find(A);
-        const std::int64_t rb = Find(B);
-        if (ra == rb)
-            return;
-        if (ra < rb)
-            mParent[static_cast<std::size_t>(rb)] = ra;
-        else
-            mParent[static_cast<std::size_t>(ra)] = rb;
-    }
-
-private:
-    std::vector<std::int64_t> mParent;
-};
+using SnUnionFind = UnionFind<std::int64_t>;
 
 double sn_corner_weight(const TriangleSoup& rSoup, std::size_t Tri, std::size_t Corner, double Len,
                         SdfPseudonormalWeight Weight) {
@@ -214938,11 +214958,7 @@ std::int64_t step_find(const std::vector<std::int64_t>& rSorted, std::int64_t Ke
 }
 
 std::size_t step_uf_find(std::vector<std::size_t>& rParent, std::size_t X) {
-    while (rParent[X] != X) {
-        rParent[X] = rParent[rParent[X]];
-        X = rParent[X];
-    }
-    return X;
+    return detail::UnionFind<std::size_t>::FindIn(rParent, X);
 }
 
 void step_unit3(const double* pV, double* pOut) {
@@ -259130,11 +259146,7 @@ std::vector<std::int64_t> geo_region_points(const Mesh& rMesh, const Region& rR)
 }
 
 std::size_t geo_find(std::vector<std::size_t>& rParent, std::size_t X) {
-    while (rParent[X] != X) {
-        rParent[X] = rParent[rParent[X]];
-        X = rParent[X];
-    }
-    return X;
+    return detail::UnionFind<std::size_t>::FindIn(rParent, X);
 }
 
 // Gauss-Seidel sweeps on @p rA x = @p rB from x = 0, in point order (serial, so
@@ -266237,29 +266249,7 @@ std::vector<std::size_t> mcad_chain(const BrepLoop& rLoop) {
     return order;
 }
 
-class McadUnionFind {
-public:
-    explicit McadUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), 0);
-    }
-    std::size_t Find(std::size_t X) {
-        while (mParent[X] != X) {
-            mParent[X] = mParent[mParent[X]];
-            X = mParent[X];
-        }
-        return X;
-    }
-    // The smaller root wins, so the classes do not depend on the union order.
-    void Join(std::size_t A, std::size_t B) {
-        A = Find(A);
-        B = Find(B);
-        if (A != B)
-            mParent[std::max(A, B)] = std::min(A, B);
-    }
-
-private:
-    std::vector<std::size_t> mParent;
-};
+using McadUnionFind = detail::UnionFind<std::size_t>;
 
 /// A uniform hash grid of 3-D points and segments, for the spacing test.
 class McadGrid {
@@ -269866,23 +269856,23 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             continue;
         for (const auto& r_loop : r_f.mLoops)
             for (std::size_t k = 0; k < r_loop.size(); ++k)
-                corners.Join(slot(r_loop[k], 1), slot(r_loop[(k + 1) % r_loop.size()], 0));
+                corners.Unite(slot(r_loop[k], 1), slot(r_loop[(k + 1) % r_loop.size()], 0));
     }
     for (McadEdge& r_e : edges) {
         const std::size_t m = r_e.mMaster;
         const detail::TrimTrace& r_m = *traces[m];
         const bool degenerate = !(r_m.Length() > tol);
         if (degenerate)
-            corners.Join(slot(m, 0), slot(m, 1));
+            corners.Unite(slot(m, 0), slot(m, 1));
         for (const std::size_t o : r_e.mUses) {
             if (o == m)
                 continue;
             uses[o].mSame =
                 degenerate || detail::edge_same_direction(r_m, *traces[o], uses[o].mStartLength);
-            corners.Join(slot(m, 0), slot(o, uses[o].mSame ? 0 : 1));
-            corners.Join(slot(m, 1), slot(o, uses[o].mSame ? 1 : 0));
+            corners.Unite(slot(m, 0), slot(o, uses[o].mSame ? 0 : 1));
+            corners.Unite(slot(m, 1), slot(o, uses[o].mSame ? 1 : 0));
             if (degenerate)
-                corners.Join(slot(o, 0), slot(o, 1));
+                corners.Unite(slot(o, 0), slot(o, 1));
         }
     }
     // An embedded edge has no loop to close it: a closed one is one corner,
@@ -269895,7 +269885,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             if (!live(u))
                 continue;
             if (closed_3d(u))
-                corners.Join(slot(u, 0), slot(u, 1));
+                corners.Unite(slot(u, 0), slot(u, 1));
             for (int end = 0; end < 2; ++end) {
                 const Vec3 p = end_point(u, end);
                 bool joined = false;
@@ -269903,7 +269893,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     for (const std::size_t l : r_loop)
                         for (int k = 0; k < 2 && !joined; ++k)
                             if (detail::vec3_norm(detail::vec3_sub(end_point(l, k), p)) <= tol) {
-                                corners.Join(slot(u, end), slot(l, k));
+                                corners.Unite(slot(u, end), slot(l, k));
                                 joined = true;
                             }
             }
@@ -302140,12 +302130,7 @@ RepairStar repair_build_star(const std::vector<RepairTri>& rTris, std::size_t n)
 }
 
 std::int64_t repair_uf_find(std::vector<std::int64_t>& rParent, std::int64_t i) {
-    while (rParent[static_cast<std::size_t>(i)] != i) {
-        rParent[static_cast<std::size_t>(i)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(i)])];
-        i = rParent[static_cast<std::size_t>(i)];
-    }
-    return i;
+    return detail::UnionFind<std::int64_t>::FindIn(rParent, i);
 }
 
 /// Splits bowties in place. Returns the number of vertices split; appends the

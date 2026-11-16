@@ -46,6 +46,7 @@
 // Project includes (private, not installed)
 #include "../detail/sparse_solve.hpp"
 #include "../detail/surface_fem.hpp"
+#include "../detail/union_find.hpp"
 
 namespace meshioplusplus {
 
@@ -85,11 +86,7 @@ std::vector<std::int64_t> geo_region_points(const Mesh& rMesh, const Region& rR)
 }
 
 std::size_t geo_find(std::vector<std::size_t>& rParent, std::size_t X) {
-    while (rParent[X] != X) {
-        rParent[X] = rParent[rParent[X]];
-        X = rParent[X];
-    }
-    return X;
+    return detail::UnionFind<std::size_t>::FindIn(rParent, X);
 }
 
 // Gauss-Seidel sweeps on @p rA x = @p rB from x = 0, in point order (serial, so

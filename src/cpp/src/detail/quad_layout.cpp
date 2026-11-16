@@ -36,6 +36,7 @@
 #include "math_utils.hpp"
 #include "param_disc.hpp"
 #include "quad_layout.hpp"
+#include "union_find.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -907,23 +908,7 @@ std::vector<std::size_t> ql_corners(QlState& rS, const QlPiece& rPiece,
     return chosen;
 }
 
-struct QlUnionFind {
-    std::vector<std::size_t> mParent;
-    explicit QlUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), std::size_t{0});
-    }
-    std::size_t Find(std::size_t A) {
-        while (mParent[A] != A)
-            A = mParent[A] = mParent[mParent[A]];
-        return A;
-    }
-    void Unite(std::size_t A, std::size_t B) {
-        A = Find(A);
-        B = Find(B);
-        if (A != B)
-            mParent[std::max(A, B)] = std::min(A, B);
-    }
-};
+using QlUnionFind = UnionFind<std::size_t>;
 
 // A finished piece: its triangles, its boundary from its first corner, its
 // corners' positions there and, per direction (sides 0 and 2, sides 1 and

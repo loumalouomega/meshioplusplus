@@ -17,7 +17,7 @@ import os
 import numpy as np
 
 from .. import _provenance
-from .._common import fortran_exponent, num_nodes_per_cell, warn
+from .._common import fortran_exponent, num_nodes_per_cell, unit_vector, warn
 from .._exceptions import ReadError, WriteError
 from .._facets import FacetIndex, facet_nodes
 from .._mesh import Mesh, topological_dimension
@@ -330,7 +330,7 @@ def _cross(a, b):
 
 def _unit(a):
     n = math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2])
-    return ([x / n for x in a] if n > 0.0 else list(a)), n > 0.0
+    return unit_vector(a), n > 0.0
 
 
 def _skew_axes(skew):

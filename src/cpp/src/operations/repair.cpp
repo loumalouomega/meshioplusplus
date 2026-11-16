@@ -47,6 +47,7 @@
 // Project includes (private, not installed)
 #include "../detail/hole_fill.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/union_find.hpp"
 #include "meshioplusplus/region.hpp"
 
 namespace meshioplusplus {
@@ -190,12 +191,7 @@ RepairStar repair_build_star(const std::vector<RepairTri>& rTris, std::size_t n)
 }
 
 std::int64_t repair_uf_find(std::vector<std::int64_t>& rParent, std::int64_t i) {
-    while (rParent[static_cast<std::size_t>(i)] != i) {
-        rParent[static_cast<std::size_t>(i)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(i)])];
-        i = rParent[static_cast<std::size_t>(i)];
-    }
-    return i;
+    return detail::UnionFind<std::int64_t>::FindIn(rParent, i);
 }
 
 /// Splits bowties in place. Returns the number of vertices split; appends the

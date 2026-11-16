@@ -17,6 +17,7 @@ import math
 
 import numpy as np
 
+from ._common import unit_vector
 from ._fallback import core_op_declined
 from ._feature_edges import _coords3, ring_unit_normals
 from ._regions import block_bases
@@ -199,9 +200,7 @@ def _canonical(v):
     return [-x for x in v] if v[big] < 0.0 else list(v)
 
 
-def _unit(v):
-    ln = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
-    return [x / ln for x in v] if ln > 0.0 else list(v)
+_unit = unit_vector
 
 
 def _scatter(v, mean):

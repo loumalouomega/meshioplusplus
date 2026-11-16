@@ -32,6 +32,7 @@
 
 // Project includes (private, not installed)
 #include "slot_runs.hpp"
+#include "union_find.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -65,36 +66,7 @@ bool sn_edge_use_less(const SnEdgeUse& rA, const SnEdgeUse& rB) {
 // Union-find whose root is always the smallest index of its set. That is what
 // makes the partition, and the group numbering derived from it, independent of
 // the order the joins are applied in.
-class SnUnionFind {
-public:
-    explicit SnUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), std::int64_t{0});
-    }
-    std::int64_t Find(std::int64_t X) {
-        while (mParent[static_cast<std::size_t>(X)] != X) {
-            std::int64_t& p = mParent[static_cast<std::size_t>(X)];
-            p = mParent[static_cast<std::size_t>(p)];
-            X = p;
-        }
-        return X;
-    }
-    /// The parent link of @p X: never above @p X, since a root is its set's
-    /// smallest index and path halving only moves links down.
-    std::int64_t Parent(std::size_t X) const { return mParent[X]; }
-    void Unite(std::int64_t A, std::int64_t B) {
-        const std::int64_t ra = Find(A);
-        const std::int64_t rb = Find(B);
-        if (ra == rb)
-            return;
-        if (ra < rb)
-            mParent[static_cast<std::size_t>(rb)] = ra;
-        else
-            mParent[static_cast<std::size_t>(ra)] = rb;
-    }
-
-private:
-    std::vector<std::int64_t> mParent;
-};
+using SnUnionFind = UnionFind<std::int64_t>;
 
 double sn_corner_weight(const TriangleSoup& rSoup, std::size_t Tri, std::size_t Corner, double Len,
                         SdfPseudonormalWeight Weight) {
