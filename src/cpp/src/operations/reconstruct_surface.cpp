@@ -34,6 +34,7 @@
 // Project includes
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "../detail/point_knn.hpp"
+#include "../detail/math_utils.hpp"
 #include "../detail/bounding_box_utils.hpp"
 #include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/marching.hpp"
@@ -214,9 +215,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
                  nn.end());
         if (nn.empty())
             rcs_fail("the samples all coincide");
-        const auto mid = nn.begin() + static_cast<std::ptrdiff_t>(nn.size() / 2);
-        std::nth_element(nn.begin(), mid, nn.end());
-        result.mSpacing = *mid;
+        result.mSpacing = detail::MathUtils::MedianUpper(nn);
     }
     const double h = rOptions.mCellSize > 0.0   ? rOptions.mCellSize
                      : rOptions.mResolution > 0 ? extent / static_cast<double>(rOptions.mResolution)

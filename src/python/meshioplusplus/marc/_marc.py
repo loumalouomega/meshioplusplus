@@ -19,7 +19,7 @@ import re
 import numpy as np
 
 from .. import _provenance
-from .._common import num_nodes_per_cell, warn
+from .._common import fortran_exponent, num_nodes_per_cell, warn
 from .._exceptions import ReadError, WriteError
 from .._files import is_buffer, open_file
 from .._mesh import Mesh, topological_dimension
@@ -164,7 +164,7 @@ def _real(text, label, where):
     text = text.strip()
     if not text:
         return 0.0
-    t = text.replace("D", "E").replace("d", "e")
+    t = fortran_exponent(text)
     try:
         return float(t)
     except ValueError:

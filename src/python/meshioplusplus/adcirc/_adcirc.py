@@ -7,6 +7,7 @@ import os
 
 import numpy as np
 
+from .._common import fortran_exponent
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
 from .._regions import Region
@@ -73,7 +74,7 @@ def _int(tok):
 
 def _real(tok):
     try:
-        return float(tok.replace("d", "e").replace("D", "e"))
+        return float(fortran_exponent(tok))
     except ValueError:
         raise ReadError(f"meshio++: adcirc: '{tok}' is not a number") from None
 

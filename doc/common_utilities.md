@@ -79,7 +79,10 @@ Core-private: no installed header names them, so they change freely. The general
 
 | Header | Contents |
 | --- | --- |
-| `math_utils.hpp`, `geometry_utils.hpp`, `bounding_box_utils.hpp` | The Kratos-style utility classes `MathUtils`, `GeometryUtils` (with `PointInPolygon2D`, the even-odd test of a parameter-space trim), `BoundingBoxUtils` ([kernels](./geometry_kernels.md)). |
+| `math_utils.hpp`, `geometry_utils.hpp`, `bounding_box_utils.hpp` | The Kratos-style utility classes `MathUtils` (with the order statistics `MedianUpper`, `QuantileNearest` and `PercentileLinear`), `GeometryUtils` (with `PointInPolygon2D`, the even-odd test of a parameter-space trim), `BoundingBoxUtils` ([kernels](./geometry_kernels.md)). |
+| `splitmix.hpp` | `splitmix64_mix` (the finalizer) and `SplitMix64` (`Next`, `NextUnit`): the seeded generators of `box_points` and `refine_patches`, `eigenmodes`' start vectors and the bucket table's slot hash. |
+| `hash_utils.hpp` | `HashUtils::Combine`, the boost-style hash combiner, and `ArrayHash<N>` and `SizedVectorHash` built on it: the key hashes of `mfem`, `gltf`, `remesh_volume`, `refine` and `decimate_volume`, with the values of the loops they replaced. |
+| `fortran_number.hpp` | `fortran_exponent_to_e`: the `D` or `d` of a Fortran real turned into the exponent letter `parse_double` reads; the readers of `mff`, `adcirc`, `code_aster`, `abaqus_fil`, `dex`, `unv` and `plot3d` call it. The Python twin is `_common.fortran_exponent`. |
 | `lattice_cells.hpp` | `detail::lattice_cells`, the cells of a structured lattice (hexahedra, quads or lines, `i` fastest); the twin of the Python `_grid.lattice_cells`, used by the EnSight block parts and the CGNS structured zones. |
 | `fem_kernels.hpp`, `cell_centroids.hpp`, `predicates.hpp`, `expansion.hpp` | Tet volume, scaled-Jacobian corner factors and corner tables; per-cell centroids; exact predicates and expansion arithmetic. |
 | `size_field_utils.hpp` | `SizeFieldUtils`: metric edge length of a geometrically graded isotropic size field, the metric midpoint of an edge, size interpolation and the Dijkstra gradation `h(v) <= h(u) + (hgrad - 1) |uv|` (`adapt_volume`). |

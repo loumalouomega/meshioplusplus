@@ -14,6 +14,7 @@ version-3 file.
 
 import numpy as np
 
+from .._common import fortran_exponent
 from .._files import open_file
 from .._mesh import Mesh
 
@@ -46,7 +47,7 @@ def read(filename):
     # the rest is (dim + ncomp) sections of npoint reals each, column-major;
     # '(' and ')' are section delimiters -> treat as whitespace.
     rest = " ".join(lines[idx:]).replace("(", " ").replace(")", " ")
-    rest = rest.replace("D", "E").replace("d", "e")
+    rest = fortran_exponent(rest)
     flat = [float(t) for t in rest.split()]
 
     nsec = dim + ncomp

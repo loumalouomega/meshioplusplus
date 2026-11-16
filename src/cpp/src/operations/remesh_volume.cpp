@@ -42,6 +42,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/hash_utils.hpp"
 #include "../detail/slot_runs.hpp"
 #include "../detail/surface_edge_runs.hpp"
 
@@ -78,10 +79,7 @@ struct RvolPosKey {
 };
 struct RvolPosKeyHash {
     std::size_t operator()(const RvolPosKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t b : rKey.mBits)
-            h ^= std::hash<std::int64_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
+        return detail::HashUtils::Range64(rKey.mBits, 0);
     }
 };
 RvolPosKey rvol_pos_key(const Vec3& rP) {

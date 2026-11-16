@@ -32,6 +32,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/fortran_number.hpp"
 
 namespace meshioplusplus {
 
@@ -73,9 +74,7 @@ double dex_real_token(std::string_view Text) {
         large.assign(Text);
         first = large.data();
     }
-    for (std::size_t i = 0; i < Text.size(); ++i)
-        if (first[i] == 'D' || first[i] == 'd')
-            first[i] = 'E';
+    detail::fortran_exponent_to_e(first, Text.size());
     const char* end = nullptr;
     return detail::parse_double(first, end);
 }

@@ -72,6 +72,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/data_plumbing.hpp"
+#include "../detail/hash_utils.hpp"
 #include "../detail/slot_runs.hpp"
 #include "../detail/ndarray_utils.hpp"
 
@@ -90,14 +91,7 @@ namespace {
 // the coordinate pass needs no side table.
 using RefineNodeKey = std::array<std::int64_t, 4>;
 
-struct RefineNodeKeyHash {
-    std::size_t operator()(const RefineNodeKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+using RefineNodeKeyHash = detail::ArrayHash<4>;
 
 RefineNodeKey refine_edge_key(std::int64_t a, std::int64_t b) {
     return a < b ? RefineNodeKey{-1, -1, a, b} : RefineNodeKey{-1, -1, b, a};

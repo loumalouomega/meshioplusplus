@@ -52775,6 +52775,40 @@ CadStepCheck occt_check_step(const std::string& rPath);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/fit_cad_native.hpp =====
+// ===== begin src/cpp/src/detail/fortran_number.hpp =====
+/**
+ * @file detail/fortran_number.hpp
+ * @brief The Fortran double-precision exponent letter (`1.5D+03`), turned into
+ * the one `parse_double` reads, written once (roadmap 6.7).
+ *
+ * Fortran writes `D` (or `d`) where C writes `e`; the text readers of formats
+ * that Fortran solvers wrote each looped over their token to replace it. A
+ * **core-private** header (not installed). `detail/keyword_card.cpp` keeps its
+ * own bounded number, which also reads an exponent written without a letter.
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Replace every `D` or `d` of `[pFirst, pFirst + N)` by `Exponent` (`'E'` or `'e'`).
+MIO_ALWAYS_INLINE void fortran_exponent_to_e(char* pFirst, std::size_t N, char Exponent = 'E') {
+    for (std::size_t i = 0; i < N; ++i)
+        if (pFirst[i] == 'D' || pFirst[i] == 'd')
+            pFirst[i] = Exponent;
+}
+
+/// Replace every `D` or `d` of a number's text by `Exponent`.
+MIO_ALWAYS_INLINE void fortran_exponent_to_e(std::string& rText, char Exponent = 'E') {
+    fortran_exponent_to_e(rText.data(), rText.size(), Exponent);
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/fortran_number.hpp =====
 // ===== begin src/cpp/src/detail/math_utils.hpp =====
 /**
  * @file detail/math_utils.hpp
@@ -52800,6 +52834,9 @@ CadStepCheck occt_check_step(const std::string& rPath);
 // System includes
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <limits>
+#include <vector>
 
 // Project includes
 
@@ -52930,6 +52967,46 @@ struct MathUtils {
         pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
         pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
         return true;
+    }
+
+    ///@}
+
+    ///@name Order statistics
+    ///@{
+
+    /// The median of a non-empty vector: the element at `n / 2`, the upper one
+    /// of an even count. Reorders `rV` (a scratch vector).
+    static double MedianUpper(std::vector<double>& rV) {
+        const std::size_t mid = rV.size() / 2;
+        std::nth_element(rV.begin(), rV.begin() + static_cast<std::ptrdiff_t>(mid), rV.end());
+        return rV[mid];
+    }
+
+    /// The smallest value covering `Coverage` (0 to 1) of the values: the
+    /// element at rank `ceil(Coverage * n) - 1`, no interpolation; 0 when empty.
+    static double QuantileNearest(std::vector<double> Values, double Coverage) {
+        if (Values.empty())
+            return 0.0;
+        const double want = std::ceil(Coverage * static_cast<double>(Values.size()));
+        std::size_t k = want < 1.0 ? 0 : static_cast<std::size_t>(want) - 1;
+        k = std::min(k, Values.size() - 1);
+        std::nth_element(Values.begin(), Values.begin() + static_cast<std::ptrdiff_t>(k),
+                         Values.end());
+        return Values[k];
+    }
+
+    /// The linearly interpolated percentile `P` (0 to 100, clamped) of the
+    /// values; NaN when empty. Sorts `rValues` in place.
+    static double PercentileLinear(std::vector<double>& rValues, double P) {
+        if (rValues.empty())
+            return std::numeric_limits<double>::quiet_NaN();
+        std::sort(rValues.begin(), rValues.end());
+        const double pos =
+            std::min(std::max(P, 0.0), 100.0) / 100.0 * static_cast<double>(rValues.size() - 1);
+        const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
+        const std::size_t hi = std::min(lo + 1, rValues.size() - 1);
+        const double frac = pos - static_cast<double>(lo);
+        return rValues[lo] + frac * (rValues[hi] - rValues[lo]);
     }
 
     ///@}
@@ -53140,6 +53217,66 @@ std::string gzip_compress(std::string_view In, const char* pWhat);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/gzip_deflate.hpp =====
+// ===== begin src/cpp/src/detail/hash_utils.hpp =====
+/**
+ * @file detail/hash_utils.hpp
+ * @brief `HashUtils`: the boost-style hash combiner the key hashes of the core
+ * wrote out by hand, and the key hashes built on it (roadmap 6.3).
+ *
+ * `Combine` is exactly `h ^= v + 0x9e3779b97f4a7c15 + (h << 6) + (h >> 2)`, so
+ * a key hash that switches to it keeps every hash value, and with it the
+ * iteration order of the unordered container it serves. The integer keys go
+ * through `std::hash<std::int64_t>` as before. A **core-private** header (not
+ * installed); the two installed key hashes (`SurfaceEdgeKeyHash`,
+ * `GridKeyHash`) keep their own inline bodies until an ABI bump is due.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Static hash-combining helpers.
+struct HashUtils {
+    /// `Seed ^ (Value + 0x9e3779b97f4a7c15 + (Seed << 6) + (Seed >> 2))`.
+    template <class T>
+    static MIO_ALWAYS_INLINE T Combine(T Seed, T Value) {
+        return Seed ^ (Value + static_cast<T>(0x9e3779b97f4a7c15ULL) + (Seed << 6) + (Seed >> 2));
+    }
+
+    /// Combines every element of a range, each through `std::hash<std::int64_t>`.
+    template <class Range>
+    static std::size_t Range64(const Range& rKeys, std::size_t Seed) {
+        std::size_t h = Seed;
+        for (const std::int64_t v : rKeys)
+            h = Combine<std::size_t>(h, std::hash<std::int64_t>{}(v));
+        return h;
+    }
+};
+
+/// Hash of a fixed-size integer key, seed 0.
+template <std::size_t N>
+struct ArrayHash {
+    std::size_t operator()(const std::array<std::int64_t, N>& rKey) const {
+        return HashUtils::Range64(rKey, 0);
+    }
+};
+
+/// Hash of a vector key, seed its size.
+struct SizedVectorHash {
+    std::size_t operator()(const std::vector<std::int64_t>& rKey) const {
+        return HashUtils::Range64(rKey, rKey.size());
+    }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/hash_utils.hpp =====
 // ===== begin src/cpp/src/detail/hausdorff_samples.hpp =====
 /**
  * @file detail/hausdorff_samples.hpp
@@ -57473,6 +57610,52 @@ SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/sparse_solve.hpp =====
+// ===== begin src/cpp/src/detail/splitmix.hpp =====
+/**
+ * @file detail/splitmix.hpp
+ * @brief splitmix64 (Steele, Lea and Flood 2014): the finalizer and the
+ * counter-based generator, written once (roadmap 6.4).
+ *
+ * The same sequence on every platform, unlike a standard-library distribution,
+ * so seeded operations (`box_points`, `refine_patches`' RANSAC) stay
+ * reproducible. A **core-private** header (not installed).
+ */
+
+// System includes
+#include <cstdint>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// The golden-ratio increment of splitmix64.
+inline constexpr std::uint64_t kSplitMix64Gamma = 0x9E3779B97F4A7C15ULL;
+
+/// The splitmix64 finalizer: a bijective mix of one 64-bit word.
+MIO_ALWAYS_INLINE std::uint64_t splitmix64_mix(std::uint64_t Z) {
+    Z = (Z ^ (Z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    Z = (Z ^ (Z >> 27)) * 0x94D049BB133111EBULL;
+    return Z ^ (Z >> 31);
+}
+
+/// splitmix64 over a caller-owned state word.
+struct SplitMix64 {
+    std::uint64_t mState;
+
+    /// The next 64-bit value.
+    MIO_ALWAYS_INLINE std::uint64_t Next() {
+        mState += kSplitMix64Gamma;
+        return splitmix64_mix(mState);
+    }
+
+    /// A uniform draw in [0, 1): the top 53 bits, exact in a double.
+    MIO_ALWAYS_INLINE double NextUnit() {
+        return static_cast<double>(Next() >> 11) * (1.0 / 9007199254740992.0);
+    }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/splitmix.hpp =====
 // ===== begin src/cpp/src/detail/staged_block.hpp =====
 /**
  * @file detail/staged_block.hpp
@@ -81593,10 +81776,7 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
                     const std::size_t b = tr[static_cast<std::size_t>((c + 1) % 3)];
                     lens.push_back(std::hypot((rU[a] - rU[b]) / ext[0], (rV[a] - rV[b]) / ext[1]));
                 }
-            std::nth_element(lens.begin(),
-                             lens.begin() + static_cast<std::ptrdiff_t>(lens.size() / 2),
-                             lens.end());
-            const double h = lens[lens.size() / 2];
+            const double h = MathUtils::MedianUpper(lens);
             const std::size_t reach = static_cast<std::size_t>(std::ceil(h * kG)) + 1;
             std::vector<std::uint8_t> occupied(kG * kG, 0);
             for (std::size_t k = 0; k < smp.mNumData; ++k) {
@@ -82377,9 +82557,7 @@ BucketTable build_bucket_table(double Cell, const std::vector<GridKey>& rLo,
                     // GridKeyHash's low bits cluster for neighbouring cells;
                     // the splitmix64 finalizer spreads them over the mask.
                     std::uint64_t h = static_cast<std::uint64_t>(hash(key));
-                    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
-                    h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
-                    h ^= h >> 31;
+                    h = splitmix64_mix(h);
                     std::size_t at = static_cast<std::size_t>(h) & mask;
                     for (;; at = (at + 1) & mask) {
                         if (slot[at] == kEmpty) {
@@ -113001,10 +113179,7 @@ PrimitiveFormMetrics primitive_form_metrics(std::int64_t Type, const double* pPa
         gap.back() = angle.front() + 360.0 - angle.back();
         const double largest = *std::max_element(gap.begin(), gap.end());
         std::vector<double> sorted = gap;
-        std::nth_element(sorted.begin(),
-                         sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2),
-                         sorted.end());
-        const double median = sorted[sorted.size() / 2];
+        const double median = MathUtils::MedianUpper(sorted);
         m.mArcDeg = largest <= 2.0 * median ? 360.0 : 360.0 - largest;
     }
     return m;
@@ -117976,15 +118151,7 @@ double render_scale_forward(RenderScale Scale, double Threshold, double v) {
 }
 
 double render_percentile(std::vector<double>& rValues, double P) {
-    if (rValues.empty())
-        return std::numeric_limits<double>::quiet_NaN();
-    std::sort(rValues.begin(), rValues.end());
-    const double pos =
-        std::min(std::max(P, 0.0), 100.0) / 100.0 * static_cast<double>(rValues.size() - 1);
-    const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
-    const std::size_t hi = std::min(lo + 1, rValues.size() - 1);
-    const double frac = pos - static_cast<double>(lo);
-    return rValues[lo] + frac * (rValues[hi] - rValues[lo]);
+    return MathUtils::PercentileLinear(rValues, P);
 }
 
 namespace {
@@ -122842,9 +123009,7 @@ namespace {
 
 // The median of a non-empty vector (the upper one of an even count).
 double sv_median(std::vector<double> rV) {
-    const std::size_t mid = rV.size() / 2;
-    std::nth_element(rV.begin(), rV.begin() + static_cast<std::ptrdiff_t>(mid), rV.end());
-    return rV[mid];
+    return MathUtils::MedianUpper(rV);
 }
 
 }  // namespace
@@ -131343,9 +131508,7 @@ void fil_parse_ascii(std::string_view rText, FilData& rOut) {
             if (pos + 23 > s.size())
                 fail("truncated real item");
             std::string num = s.substr(pos + 1, 22);
-            for (char& c : num)
-                if (c == 'D' || c == 'd')
-                    c = 'E';
+            detail::fortran_exponent_to_e(num);
             // D22.15 with a three-digit exponent drops the letter: 1.0+100.
             if (num.find('E') == std::string::npos) {
                 const std::size_t sign = num.find_last_of("+-");
@@ -133629,9 +133792,7 @@ long long adc_int(const std::string& rTok) {
 
 double adc_real(const std::string& rTok) {
     std::string t = rTok;
-    for (char& c : t)
-        if (c == 'd' || c == 'D')
-            c = 'e';
+    detail::fortran_exponent_to_e(t, 'e');
     const char* end = nullptr;
     const double v = detail::parse_double(t.c_str(), end);
     if (end == t.c_str())
@@ -144100,9 +144261,7 @@ double ca_number(const CaToken& rToken) {
     if (!ca_is_number(rToken.mText))
         ca_fail("expected a coordinate, found '" + rToken.mText + "'", rToken.mLine);
     std::string text = rToken.mText;
-    for (char& c : text)
-        if (c == 'D' || c == 'd')
-            c = 'E';
+    detail::fortran_exponent_to_e(text);
     const char* end = nullptr;
     return detail::parse_double(text.c_str(), end);
 }
@@ -144566,9 +144725,7 @@ double dex_real_token(std::string_view Text) {
         large.assign(Text);
         first = large.data();
     }
-    for (std::size_t i = 0; i < Text.size(); ++i)
-        if (first[i] == 'D' || first[i] == 'd')
-            first[i] = 'E';
+    detail::fortran_exponent_to_e(first, Text.size());
     const char* end = nullptr;
     return detail::parse_double(first, end);
 }
@@ -160468,10 +160625,8 @@ struct GltfVertexKey {
 
 struct GltfVertexKeyHash {
     std::size_t operator()(const GltfVertexKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : {rKey.mPoint, rKey.mGroup, rKey.mCell})
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
+        return detail::HashUtils::Range64(
+            std::array<std::int64_t, 3>{rKey.mPoint, rKey.mGroup, rKey.mCell}, 0);
     }
 };
 
@@ -183740,14 +183895,7 @@ int mf_geom_of_type(std::string_view Type) {
 
 using MfKey = std::vector<std::int64_t>;  // sorted vertex ids
 
-struct MfKeyHash {
-    std::size_t operator()(const MfKey& rKey) const {
-        std::size_t h = rKey.size();
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>()(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+using MfKeyHash = detail::SizedVectorHash;
 
 MfKey mf_key(std::vector<std::int64_t> v) {
     std::sort(v.begin(), v.end());
@@ -188815,9 +188963,7 @@ Mesh read_mff(const std::string& rPath) {
     std::vector<std::string> toks;
     std::string t;
     while (in >> t) {
-        for (char& c : t)
-            if (c == 'D' || c == 'd')
-                c = 'E';
+        detail::fortran_exponent_to_e(t);
         toks.push_back(t);
     }
 
@@ -207976,9 +208122,7 @@ struct P3dStream {
     double RealAt(std::size_t At, int W, bool Big) const {
         if (mAscii) {
             std::string t = mTokens[At];
-            for (char& c : t)
-                if (c == 'd' || c == 'D')
-                    c = 'e';
+            detail::fortran_exponent_to_e(t, 'e');
             const char* end = nullptr;
             const double v = detail::parse_double(t.c_str(), end);
             if (end != t.c_str() + t.size())
@@ -224326,9 +224470,7 @@ double unv_real(std::string_view t) {
         large.assign(t);
         first = large.data();
     }
-    for (std::size_t i = 0; i < t.size(); ++i)
-        if (first[i] == 'D' || first[i] == 'd')
-            first[i] = 'E';
+    detail::fortran_exponent_to_e(first, t.size());
     const char* end = nullptr;
     const double v = detail::parse_double(first, end);
     if (end == first)
@@ -251243,14 +251385,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
     // --- phase 6: unique tet edges (6 per tet, dedup by first occurrence) ----
     using DvEdgeKey = std::array<std::int64_t, 2>;
-    struct DvEdgeKeyHash {
-        std::size_t operator()(const DvEdgeKey& rKey) const {
-            std::size_t h = 0;
-            for (std::int64_t v : rKey)
-                h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-            return h;
-        }
-    };
+    using DvEdgeKeyHash = detail::ArrayHash<2>;
     static constexpr int kTetEdgeCorners[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
     std::vector<DvEdgeKey> edges;
     {
@@ -252849,10 +252984,8 @@ using LapColumn = std::vector<double>;
 
 /// A deterministic value in [-1, 1) for (row, column): splitmix64.
 double lap_hash(std::uint64_t Row, std::uint64_t Col) {
-    std::uint64_t z = Row * 0x9E3779B97F4A7C15ull + Col * 0xD1B54A32D192ED03ull + 1;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-    z ^= z >> 31;
+    const std::uint64_t z =
+        detail::splitmix64_mix(Row * detail::kSplitMix64Gamma + Col * 0xD1B54A32D192ED03ull + 1);
     return static_cast<double>(z >> 11) * (2.0 / 9007199254740992.0) - 1.0;
 }
 
@@ -257030,9 +257163,7 @@ bool fc_fit_run(const FcContext& rC, std::size_t I, std::size_t J, FcFit& rOut) 
     for (std::size_t k = I; k < J; ++k)
         chords.push_back(fc_norm(fc_sub(p[k + 1], p[k])));
     std::vector<double> sorted = chords;
-    std::nth_element(sorted.begin(),
-                     sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
-    const double median = sorted[sorted.size() / 2];
+    const double median = detail::MathUtils::MedianUpper(sorted);
     if (*std::max_element(chords.begin(), chords.end()) > 4.0 * median)
         return false;
     FcFit arc;
@@ -258233,9 +258364,7 @@ std::vector<std::uint8_t> fp_lmeds_inliers(const FpPatch& rP, std::int64_t Type)
             r2[i] = d * d;
         }
         std::vector<double> sorted = r2;
-        std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n / 2),
-                         sorted.end());
-        const double med = sorted[n / 2];
+        const double med = detail::MathUtils::MedianUpper(sorted);
         if (med < best_med) {
             best_med = med;
             std::copy(prm, prm + kFpParams, best);
@@ -260176,13 +260305,7 @@ std::vector<double> hausdorff_sample_distances(const Mesh& rA, const Mesh& rB,
 }
 
 double coverage_quantile(std::vector<double> Values, double Coverage) {
-    if (Values.empty())
-        return 0.0;
-    const double want = std::ceil(Coverage * static_cast<double>(Values.size()));
-    std::size_t k = want < 1.0 ? 0 : static_cast<std::size_t>(want) - 1;
-    k = std::min(k, Values.size() - 1);
-    std::nth_element(Values.begin(), Values.begin() + static_cast<std::ptrdiff_t>(k), Values.end());
-    return Values[k];
+    return MathUtils::QuantileNearest(std::move(Values), Coverage);
 }
 
 }  // namespace detail
@@ -272645,8 +272768,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             for (const auto& r_c : r_cells)
                 for (const std::int64_t p : r_c)
                     along.push_back(field.At(point_of(p)));
-            std::nth_element(along.begin(), along.begin() + along.size() / 2, along.end());
-            const double finest = along[along.size() / 2];
+            const double finest = detail::MathUtils::MedianUpper(along);
             for (const std::int64_t f : faces)
                 if (f >= 0 && static_cast<std::size_t>(f) < nf &&
                     std::isfinite(face_size[static_cast<std::size_t>(f)]) &&
@@ -288336,17 +288458,12 @@ Mesh helix(double Radius, double Pitch, double Turns, std::int64_t N,
 
 namespace {
 
-std::uint64_t prim_splitmix(std::uint64_t& rState) {
-    rState += 0x9E3779B97F4A7C15ULL;
-    std::uint64_t z = rState;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
-
 // A uniform draw in [0, 1): the top 53 bits, exact in a double.
 double prim_draw(std::uint64_t& rState) {
-    return static_cast<double>(prim_splitmix(rState) >> 11) * (1.0 / 9007199254740992.0);
+    detail::SplitMix64 rng{rState};
+    const double u = rng.NextUnit();
+    rState = rng.mState;
+    return u;
 }
 
 Mesh prim_vertices(PrimSoup& rSoup) {
@@ -291202,9 +291319,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
                  nn.end());
         if (nn.empty())
             rcs_fail("the samples all coincide");
-        const auto mid = nn.begin() + static_cast<std::ptrdiff_t>(nn.size() / 2);
-        std::nth_element(nn.begin(), mid, nn.end());
-        result.mSpacing = *mid;
+        result.mSpacing = detail::MathUtils::MedianUpper(nn);
     }
     const double h = rOptions.mCellSize > 0.0   ? rOptions.mCellSize
                      : rOptions.mResolution > 0 ? extent / static_cast<double>(rOptions.mResolution)
@@ -291522,14 +291637,7 @@ namespace {
 // the coordinate pass needs no side table.
 using RefineNodeKey = std::array<std::int64_t, 4>;
 
-struct RefineNodeKeyHash {
-    std::size_t operator()(const RefineNodeKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+using RefineNodeKeyHash = detail::ArrayHash<4>;
 
 RefineNodeKey refine_edge_key(std::int64_t a, std::int64_t b) {
     return a < b ? RefineNodeKey{-1, -1, a, b} : RefineNodeKey{-1, -1, b, a};
@@ -292849,15 +292957,7 @@ constexpr double kRpEnergySlack = 1e-12;
 
 // splitmix64 (Steele, Lea and Flood 2014): the same sequence on every
 // platform, unlike a standard-library distribution.
-struct RpRng {
-    std::uint64_t mState;
-    std::uint64_t Next() {
-        std::uint64_t z = (mState += 0x9e3779b97f4a7c15ull);
-        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-        return z ^ (z >> 31);
-    }
-};
+using RpRng = detail::SplitMix64;
 
 // The surface as faces: rings, geometry, smooth neighbours and paired edges.
 struct RpSurface {
@@ -294381,9 +294481,7 @@ RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<RegVec>& rSource,
             const RegVec d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
             d2s[i] = detail::vec3_dot(d, d);
         }
-        const std::size_t mid = d2s.size() / 2;
-        std::nth_element(d2s.begin(), d2s.begin() + static_cast<std::ptrdiff_t>(mid), d2s.end());
-        const double med = std::sqrt(d2s[mid]);
+        const double med = std::sqrt(detail::MathUtils::MedianUpper(d2s));
         // A floor keeps the exact pairs of a perfect fit (median zero).
         const double cut = std::max(Trim * med, 1e-300);
         cut2 = std::min(cut2, cut * cut);
@@ -296864,10 +296962,7 @@ struct RvolPosKey {
 };
 struct RvolPosKeyHash {
     std::size_t operator()(const RvolPosKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t b : rKey.mBits)
-            h ^= std::hash<std::int64_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
+        return detail::HashUtils::Range64(rKey.mBits, 0);
     }
 };
 RvolPosKey rvol_pos_key(const Vec3& rP) {

@@ -51,6 +51,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
+#include "../detail/hash_utils.hpp"
 #include "../detail/hex_color.hpp"
 #include "../detail/typed_view.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -550,10 +551,8 @@ struct GltfVertexKey {
 
 struct GltfVertexKeyHash {
     std::size_t operator()(const GltfVertexKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : {rKey.mPoint, rKey.mGroup, rKey.mCell})
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
+        return detail::HashUtils::Range64(
+            std::array<std::int64_t, 3>{rKey.mPoint, rKey.mGroup, rKey.mCell}, 0);
     }
 };
 

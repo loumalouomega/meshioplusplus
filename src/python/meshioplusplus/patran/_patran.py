@@ -38,7 +38,7 @@ import re
 import numpy as np
 
 from .. import _provenance
-from .._common import warn
+from .._common import fortran_exponent, warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import Mesh, topological_dimension
@@ -94,7 +94,7 @@ def _real(text, line):
     text = text.strip()
     if not text:
         return 0.0
-    s = text.replace("D", "E").replace("d", "e")
+    s = fortran_exponent(text)
     m = _EXPONENT_WITHOUT_LETTER.match(s)  # Fortran's 1.5-3
     if m:
         s = m.group(1) + "e" + m.group(2)

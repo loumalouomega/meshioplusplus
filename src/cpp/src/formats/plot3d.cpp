@@ -41,6 +41,7 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/lattice_cells.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/fortran_number.hpp"
 
 namespace meshioplusplus {
 
@@ -94,9 +95,7 @@ struct P3dStream {
     double RealAt(std::size_t At, int W, bool Big) const {
         if (mAscii) {
             std::string t = mTokens[At];
-            for (char& c : t)
-                if (c == 'd' || c == 'D')
-                    c = 'e';
+            detail::fortran_exponent_to_e(t, 'e');
             const char* end = nullptr;
             const double v = detail::parse_double(t.c_str(), end);
             if (end != t.c_str() + t.size())

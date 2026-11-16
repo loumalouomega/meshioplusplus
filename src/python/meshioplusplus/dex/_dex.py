@@ -15,6 +15,7 @@ import re
 
 import numpy as np
 
+from .._common import fortran_exponent
 from .._files import open_file
 from .._mesh import Mesh
 
@@ -48,7 +49,7 @@ def read(filename):
 
     rows = []
     for ln in lines[body_start:]:
-        toks = ln.replace("D", "E").replace("d", "e").split()
+        toks = fortran_exponent(ln).split()
         if toks:
             rows.append([float(t) for t in toks])
         if npoint and len(rows) >= npoint:

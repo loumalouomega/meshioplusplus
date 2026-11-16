@@ -43,6 +43,7 @@
 
 // Project includes
 #include "../detail/cdt2d.hpp"
+#include "../detail/math_utils.hpp"
 #include "../detail/curved_triangle.hpp"
 #include "../detail/curved_quad.hpp"
 #include "../detail/curved_untangle.hpp"
@@ -6730,8 +6731,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             for (const auto& r_c : r_cells)
                 for (const std::int64_t p : r_c)
                     along.push_back(field.At(point_of(p)));
-            std::nth_element(along.begin(), along.begin() + along.size() / 2, along.end());
-            const double finest = along[along.size() / 2];
+            const double finest = detail::MathUtils::MedianUpper(along);
             for (const std::int64_t f : faces)
                 if (f >= 0 && static_cast<std::size_t>(f) < nf &&
                     std::isfinite(face_size[static_cast<std::size_t>(f)]) &&

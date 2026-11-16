@@ -17,7 +17,7 @@ import os
 import numpy as np
 
 from .. import _provenance
-from .._common import num_nodes_per_cell, warn
+from .._common import fortran_exponent, num_nodes_per_cell, warn
 from .._exceptions import ReadError, WriteError
 from .._facets import FacetIndex, facet_nodes
 from .._mesh import Mesh, topological_dimension
@@ -131,7 +131,7 @@ def _int(text, where):
         return int(text)
     except ValueError:
         try:
-            v = float(text.replace("D", "E").replace("d", "e"))
+            v = float(fortran_exponent(text))
         except ValueError:
             raise ReadError(f"Radioss: bad integer field '{text}' ({where})")
         if v != int(v):
@@ -143,7 +143,7 @@ def _real(text, where):
     text = text.strip()
     if not text:
         return 0.0
-    t = text.replace("D", "E").replace("d", "e")
+    t = fortran_exponent(text)
     try:
         return float(t)
     except ValueError:
@@ -307,7 +307,7 @@ def _engine_fields(path):
             continue
         for tok in t.split():
             try:
-                out[-1][1].append(float(tok.replace("D", "E").replace("d", "e")))
+                out[-1][1].append(float(fortran_exponent(tok)))
             except ValueError:
                 pass
     return out

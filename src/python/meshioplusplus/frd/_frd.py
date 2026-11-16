@@ -35,7 +35,7 @@ import struct
 import numpy as np
 
 from .. import _provenance
-from .._common import warn
+from .._common import fortran_exponent, warn
 from .._exceptions import ReadError, WriteError
 from .._files import is_buffer, open_file
 from .._mesh import Mesh
@@ -85,7 +85,7 @@ def _int(text, where):
 
 
 def _real(text, where):
-    s = text.strip().replace("D", "E").replace("d", "e")
+    s = fortran_exponent(text.strip())
     try:
         return float(s)
     except ValueError:

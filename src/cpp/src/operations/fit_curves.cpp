@@ -30,6 +30,7 @@
 // Project includes
 #include "meshioplusplus/operations/fit_curves.hpp"
 #include "../detail/lsq_fit.hpp"
+#include "../detail/math_utils.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -178,9 +179,7 @@ bool fc_fit_run(const FcContext& rC, std::size_t I, std::size_t J, FcFit& rOut) 
     for (std::size_t k = I; k < J; ++k)
         chords.push_back(fc_norm(fc_sub(p[k + 1], p[k])));
     std::vector<double> sorted = chords;
-    std::nth_element(sorted.begin(),
-                     sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
-    const double median = sorted[sorted.size() / 2];
+    const double median = detail::MathUtils::MedianUpper(sorted);
     if (*std::max_element(chords.begin(), chords.end()) > 4.0 * median)
         return false;
     FcFit arc;

@@ -22,7 +22,7 @@ import re
 import numpy as np
 
 from .. import _provenance
-from .._common import warn
+from .._common import fortran_exponent, warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import Mesh, topological_dimension
@@ -126,7 +126,7 @@ def _tokenize(data):
 def _number(token, line):
     if not _NUMBER.match(token):
         _fail(f"expected a coordinate, found '{_text(token)}'", line)
-    return float(token.replace("D", "E").replace("d", "E"))
+    return float(fortran_exponent(token, "E"))
 
 
 def read(filename):

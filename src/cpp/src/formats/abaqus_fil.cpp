@@ -54,6 +54,7 @@
 #include "abaqus_face.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/fortran_number.hpp"
 
 namespace meshioplusplus {
 
@@ -215,9 +216,7 @@ void fil_parse_ascii(std::string_view rText, FilData& rOut) {
             if (pos + 23 > s.size())
                 fail("truncated real item");
             std::string num = s.substr(pos + 1, 22);
-            for (char& c : num)
-                if (c == 'D' || c == 'd')
-                    c = 'E';
+            detail::fortran_exponent_to_e(num);
             // D22.15 with a three-digit exponent drops the letter: 1.0+100.
             if (num.find('E') == std::string::npos) {
                 const std::size_t sign = num.find_last_of("+-");

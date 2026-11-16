@@ -40,6 +40,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/region.hpp"
 
+#include "../detail/splitmix.hpp"
 #include "../formats/lagrange_common.hpp"
 
 namespace meshioplusplus {
@@ -2048,17 +2049,12 @@ Mesh helix(double Radius, double Pitch, double Turns, std::int64_t N,
 
 namespace {
 
-std::uint64_t prim_splitmix(std::uint64_t& rState) {
-    rState += 0x9E3779B97F4A7C15ULL;
-    std::uint64_t z = rState;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
-
 // A uniform draw in [0, 1): the top 53 bits, exact in a double.
 double prim_draw(std::uint64_t& rState) {
-    return static_cast<double>(prim_splitmix(rState) >> 11) * (1.0 / 9007199254740992.0);
+    detail::SplitMix64 rng{rState};
+    const double u = rng.NextUnit();
+    rState = rng.mState;
+    return u;
 }
 
 Mesh prim_vertices(PrimSoup& rSoup) {

@@ -57,6 +57,7 @@
 #include "../detail/keyword_card_view.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/fortran_number.hpp"
 
 namespace meshioplusplus {
 
@@ -352,9 +353,7 @@ double unv_real(std::string_view t) {
         large.assign(t);
         first = large.data();
     }
-    for (std::size_t i = 0; i < t.size(); ++i)
-        if (first[i] == 'D' || first[i] == 'd')
-            first[i] = 'E';
+    detail::fortran_exponent_to_e(first, t.size());
     const char* end = nullptr;
     const double v = detail::parse_double(first, end);
     if (end == first)

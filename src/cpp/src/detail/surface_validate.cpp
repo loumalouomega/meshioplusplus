@@ -23,6 +23,7 @@
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "geometry_utils.hpp"
+#include "math_utils.hpp"
 #include "lsq_fit.hpp"
 #include "nurbs_eval.hpp"
 #include "param_disc.hpp"
@@ -35,9 +36,7 @@ namespace {
 
 // The median of a non-empty vector (the upper one of an even count).
 double sv_median(std::vector<double> rV) {
-    const std::size_t mid = rV.size() / 2;
-    std::nth_element(rV.begin(), rV.begin() + static_cast<std::ptrdiff_t>(mid), rV.end());
-    return rV[mid];
+    return MathUtils::MedianUpper(rV);
 }
 
 }  // namespace

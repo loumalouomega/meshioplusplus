@@ -36,6 +36,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/fortran_number.hpp"
 
 namespace meshioplusplus {
 
@@ -121,9 +122,7 @@ long long adc_int(const std::string& rTok) {
 
 double adc_real(const std::string& rTok) {
     std::string t = rTok;
-    for (char& c : t)
-        if (c == 'd' || c == 'D')
-            c = 'e';
+    detail::fortran_exponent_to_e(t, 'e');
     const char* end = nullptr;
     const double v = detail::parse_double(t.c_str(), end);
     if (end == t.c_str())

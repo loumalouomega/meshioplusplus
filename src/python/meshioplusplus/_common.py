@@ -175,3 +175,13 @@ def replace_space(string: str) -> tuple[str, str]:
             break
     assert char is not None
     return string.replace(" ", char), char
+
+
+def fortran_exponent(text: str, lower: str = "e") -> str:
+    """Spell a Fortran double-precision exponent (``1.5D+03``) as a C one.
+
+    ``D`` becomes ``E`` and ``d`` becomes ``lower`` (``"e"``, or ``"E"`` for a
+    caller that then looks for an upper-case exponent letter); ``float`` reads
+    either. The C++ twin is ``detail::fortran_exponent_to_e``.
+    """
+    return text.replace("D", "E").replace("d", lower)

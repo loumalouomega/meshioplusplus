@@ -17,6 +17,7 @@ The C++ twin is ``detail/keyword_card.hpp``; keep the two in step.
 
 import re
 
+from .._common import fortran_exponent
 from .._exceptions import ReadError
 
 STD = "std"
@@ -82,7 +83,7 @@ def to_float(text, where="", fmt="LS-DYNA"):
     ``fmt`` names the format in the error."""
     if not text:
         return 0.0
-    s = text.replace("D", "E").replace("d", "e")
+    s = fortran_exponent(text)
     m = _EXPONENT_WITHOUT_LETTER.match(s)
     if m:
         s = m.group(1) + "e" + m.group(2)

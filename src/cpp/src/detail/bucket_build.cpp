@@ -24,6 +24,7 @@
 
 // Project includes
 #include "bucket_build.hpp"
+#include "splitmix.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -71,9 +72,7 @@ BucketTable build_bucket_table(double Cell, const std::vector<GridKey>& rLo,
                     // GridKeyHash's low bits cluster for neighbouring cells;
                     // the splitmix64 finalizer spreads them over the mask.
                     std::uint64_t h = static_cast<std::uint64_t>(hash(key));
-                    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
-                    h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
-                    h ^= h >> 31;
+                    h = splitmix64_mix(h);
                     std::size_t at = static_cast<std::size_t>(h) & mask;
                     for (;; at = (at + 1) & mask) {
                         if (slot[at] == kEmpty) {

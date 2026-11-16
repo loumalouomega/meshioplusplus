@@ -8,6 +8,10 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- **Refactor:** the first four items of the audit by role (roadmap §6, code duplication), with output unchanged. `detail/splitmix.hpp` holds splitmix64 once (6.4: `box_points`, `refine_patches`, `eigenmodes` and the bucket table's slot hash), `detail/hash_utils.hpp` the hash combiner of five key hashes (6.3), `MathUtils` the median, coverage quantile and linear percentile that ten files wrote out (6.6), and `detail/fortran_number.hpp` and `_common.fortran_exponent` the Fortran `D` exponent of seven native readers and twelve Python twins (6.7).
+
 ## v20.2.0 (2026-11-15)
 
 A minor release: seven new formats (Fluent cases, 3MF, LAS, GIFTI, ADCIRC, `ugrid_nc` and PLOT3D) and `detect(path)`, series writers for CGNS, EnSight, Gmsh, MED, Tecplot and UNV, more of CGNS, Exodus II, EnSight Gold and OpenFOAM read and written, the first steps of the freeform `fit_cad` plan, one convention for ghost, owner and global-id arrays with the Conduit, Catalyst and Ascent routes, and a faster core: `boundary_layer` is 12 to 14 times faster on a box's skin, the octree mesher's tetrahedral output 12 to 15%, and the exact `orient2d` and `orient3d` stages no longer allocate, all with output unchanged. `meshioplusplus_bench_ops` now has a row for every operation. **C++ ABI 46** ([ABI](doc/abi.md)): `FitCadOptions`, `FitCadResult`, `CadKernelProvider` and `SequencePipeline` grew, so C++ consumers recompile against the new headers; the C API's option structs only grow into their reserved tails, so the C, Fortran, Julia, R, Octave, WASM and Python callers are unaffected.
