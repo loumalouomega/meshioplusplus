@@ -29,6 +29,7 @@
 // Project includes (private, not installed)
 #include "feature_snap.hpp"
 #include "predicates.hpp"
+#include "union_find.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -40,27 +41,6 @@ constexpr double kTetrmPi = 3.14159265358979323846;
 // The outward face of a positive tetrahedron opposite each corner
 // (detail/cell_faces' tetra table, indexed by the corner it omits).
 constexpr int kTetrmOppositeFace[4][3] = {{1, 2, 3}, {2, 0, 3}, {0, 1, 3}, {0, 2, 1}};
-
-std::int64_t tetrm_find(std::vector<std::int64_t>& rParent, std::int64_t X) {
-    while (rParent[static_cast<std::size_t>(X)] != X) {
-        rParent[static_cast<std::size_t>(X)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(X)])];
-        X = rParent[static_cast<std::size_t>(X)];
-    }
-    return X;
-}
-
-void tetrm_union(std::vector<std::int64_t>& rParent, std::int64_t A, std::int64_t B) {
-    A = tetrm_find(rParent, A);
-    B = tetrm_find(rParent, B);
-    if (A == B)
-        return;
-    // the lower root wins, so the partition's roots do not depend on the order
-    if (A < B)
-        rParent[static_cast<std::size_t>(B)] = A;
-    else
-        rParent[static_cast<std::size_t>(A)] = B;
-}
 
 Vec3 tetrm_unit_normal(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     return vec3_normalize(vec3_cross(vec3_sub(rB, rA), vec3_sub(rC, rA)));
@@ -418,8 +398,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
     });
 
     const double cos_feature = std::cos(FeatureAngleDeg * kTetrmPi / 180.0);
-    std::vector<std::int64_t> parent(nf);
-    std::iota(parent.begin(), parent.end(), std::int64_t{0});
+    UnionFind<std::int64_t> patches(nf);
     std::vector<std::array<std::int64_t, 2>> ridge_edges;
     std::vector<std::vector<std::int64_t>> ridge_faces;  // the faces of each ridge edge
     for (std::size_t i = 0; i < erecs.size();) {
@@ -449,7 +428,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
                 fs.push_back(erecs[k].mFace);
             ridge_faces.push_back(std::move(fs));
         } else {
-            tetrm_union(parent, erecs[i].mFace, erecs[i + 1].mFace);
+            patches.Unite(erecs[i].mFace, erecs[i + 1].mFace);
         }
         i = j;
     }
@@ -459,8 +438,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
     std::vector<std::int32_t> patch(nf, -1);
     std::int32_t num_patches = 0;
     for (std::size_t f = 0; f < nf; ++f) {
-        const std::size_t r =
-            static_cast<std::size_t>(tetrm_find(parent, static_cast<std::int64_t>(f)));
+        const std::size_t r = static_cast<std::size_t>(patches.Find(static_cast<std::int64_t>(f)));
         if (patch_of_root[r] < 0)
             patch_of_root[r] = num_patches++;
         patch[f] = patch_of_root[r];

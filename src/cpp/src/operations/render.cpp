@@ -57,6 +57,7 @@
 // Project includes (private, not installed)
 #include "../detail/cdt2d.hpp"
 #include "../detail/crease_edges.hpp"
+#include "../detail/edge_use_table.hpp"
 #include "../detail/raster.hpp"
 #include "../detail/render_field.hpp"
 #include "../detail/streamlines.hpp"
@@ -1240,19 +1241,20 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
     std::vector<std::int64_t> cap_nodes;
     {
         const std::size_t first = g.mSkinFaces.mIds.size();
-        std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
         for (std::size_t f = first; f < num_faces; ++f) {
             const std::int64_t lo = f_start[f];
             const std::int64_t n = f_start[f + 1] - lo;
             for (std::int64_t k = 0; k < n; ++k) {
                 const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
                 const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
-                ++uses[{std::min(a, b), std::max(a, b)}];
+                uses.Add(a, b, static_cast<std::int64_t>(f));
             }
         }
-        const bool closed =
-            !uses.empty() && std::all_of(uses.begin(), uses.end(),
-                                         [](const auto& rUse) { return rUse.second == 2; });
+        uses.Build();
+        bool closed = uses.NumEdges() > 0;
+        for (std::size_t e = 0; closed && e < uses.NumEdges(); ++e)
+            closed = uses.Count(e) == 2;
         if (closed) {
             cap_start.push_back(0);
             for (std::size_t f = first; f < num_faces; ++f) {

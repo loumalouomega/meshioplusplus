@@ -43,6 +43,7 @@
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "../detail/union_find.hpp"
 
 namespace meshioplusplus {
 
@@ -80,15 +81,6 @@ void rcs_dilate(std::vector<std::int64_t>& rIds, const std::array<std::int64_t, 
 }
 
 /// Union-find root with path halving.
-std::int64_t rcs_find(std::vector<std::int64_t>& rParent, std::int64_t I) {
-    while (rParent[static_cast<std::size_t>(I)] != I) {
-        rParent[static_cast<std::size_t>(I)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(I)])];
-        I = rParent[static_cast<std::size_t>(I)];
-    }
-    return I;
-}
-
 }  // namespace
 
 ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
@@ -479,16 +471,12 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         detail::set_mesh_length_unit(out, unit);
 
     // Edge-connected pieces.
-    std::vector<std::int64_t> parent(final_pts.size());
-    std::iota(parent.begin(), parent.end(), std::int64_t{0});
+    detail::UnionFind<std::int64_t> sets(final_pts.size());
     for (const auto& t : tris)
-        for (std::size_t e = 1; e < 3; ++e) {
-            const std::int64_t a = rcs_find(parent, t[0]), b = rcs_find(parent, t[e]);
-            if (a != b)
-                parent[static_cast<std::size_t>(std::max(a, b))] = std::min(a, b);
-        }
+        for (std::size_t e = 1; e < 3; ++e)
+            sets.Unite(t[0], t[e]);
     for (std::size_t i = 0; i < final_pts.size(); ++i)
-        if (rcs_find(parent, static_cast<std::int64_t>(i)) == static_cast<std::int64_t>(i))
+        if (sets.Find(static_cast<std::int64_t>(i)) == static_cast<std::int64_t>(i))
             ++result.mNumComponents;
     result.mNumTriangles = static_cast<std::int64_t>(tris.size());
     result.mMesh = std::move(out);

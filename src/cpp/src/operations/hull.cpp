@@ -36,6 +36,7 @@
 #include "../detail/cdt2d.hpp"
 #include "../detail/geometry_utils.hpp"
 #include "../detail/predicates.hpp"
+#include "../detail/union_find.hpp"
 
 namespace meshioplusplus {
 
@@ -360,17 +361,8 @@ private:
 /// into triangles, wound outward.
 std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>& rP,
                                                      const std::vector<HullFace>& rFaces) {
-    std::vector<std::int64_t> parent(rFaces.size());
-    for (std::size_t f = 0; f < parent.size(); ++f)
-        parent[f] = static_cast<std::int64_t>(f);
-    const auto find = [&](std::int64_t F) {
-        while (parent[static_cast<std::size_t>(F)] != F) {
-            parent[static_cast<std::size_t>(F)] =
-                parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(F)])];
-            F = parent[static_cast<std::size_t>(F)];
-        }
-        return F;
-    };
+    detail::UnionFind<std::int64_t> sets(rFaces.size());
+    const auto find = [&](std::int64_t F) { return sets.Find(F); };
     for (std::size_t f = 0; f < rFaces.size(); ++f) {
         const HullFace& face = rFaces[f];
         if (!face.mAlive)
@@ -385,8 +377,7 @@ std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>&
                                  rP[static_cast<std::size_t>(face.mV[1])].data(),
                                  rP[static_cast<std::size_t>(face.mV[2])].data(),
                                  rP[static_cast<std::size_t>(opposite)].data()) == 0.0) {
-                const std::int64_t a = find(static_cast<std::int64_t>(f)), b = find(face.mN[e]);
-                parent[static_cast<std::size_t>(std::max(a, b))] = std::min(a, b);
+                sets.Unite(static_cast<std::int64_t>(f), face.mN[e]);
             }
         }
     }

@@ -30,6 +30,7 @@
 // Project includes
 #include "dense_chol.hpp"
 #include "feature_fit.hpp"
+#include "edge_use_table.hpp"
 #include "lsq_fit.hpp"
 #include "math_utils.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
@@ -59,8 +60,9 @@ void ff_axial(const double* pP, const PatchVec& rX, double& rH, double& rRho) {
 void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
                        std::vector<PatchVec>& rNormals, std::vector<std::uint8_t>& rInterior) {
     rNormals.assign(rPts.size(), PatchVec{0.0, 0.0, 0.0});
-    std::map<std::pair<std::size_t, std::size_t>, int> uses;
-    for (const PatchTri& t : rTris) {
+    EdgeUseTable<std::size_t> uses;
+    for (std::size_t ti = 0; ti < rTris.size(); ++ti) {
+        const PatchTri& t = rTris[ti];
         const PatchVec e1 = vec3_sub(rPts[t[1]], rPts[t[0]]);
         const PatchVec e2 = vec3_sub(rPts[t[2]], rPts[t[0]]);
         const PatchVec n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
@@ -70,9 +72,10 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
         for (int k = 0; k < 3; ++k) {
             const std::size_t a = t[static_cast<std::size_t>(k)];
             const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            ++uses[{std::min(a, b), std::max(a, b)}];
+            uses.Add(a, b, ti);
         }
     }
+    uses.Build();
     for (PatchVec& n : rNormals) {
         const double len = vec3_norm(n);
         if (len > 0.0)
@@ -82,9 +85,9 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
     for (const PatchTri& t : rTris)
         for (std::size_t v : t)
             rInterior[v] = 1;
-    for (const auto& kv : uses)
-        if (kv.second == 1)
-            rInterior[kv.first.first] = rInterior[kv.first.second] = 0;
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1)
+            rInterior[uses.Lo(e)] = rInterior[uses.Hi(e)] = 0;
 }
 
 }  // namespace
@@ -388,15 +391,15 @@ void ff_law_basis(bool Periodic, double T0, double T1, std::size_t N, double T, 
 }
 
 // Every edge of a triangle set, counted: an edge used once is a boundary edge.
-std::map<std::pair<std::size_t, std::size_t>, int> ff_edge_uses(
-    const std::vector<PatchTri>& rTris) {
-    std::map<std::pair<std::size_t, std::size_t>, int> uses;
-    for (const PatchTri& t : rTris)
+EdgeUseTable<std::size_t> ff_edge_uses(const std::vector<PatchTri>& rTris) {
+    EdgeUseTable<std::size_t> uses;
+    for (std::size_t ti = 0; ti < rTris.size(); ++ti)
         for (int k = 0; k < 3; ++k) {
-            const std::size_t a = t[static_cast<std::size_t>(k)];
-            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            ++uses[{std::min(a, b), std::max(a, b)}];
+            const std::size_t a = rTris[ti][static_cast<std::size_t>(k)];
+            const std::size_t b = rTris[ti][static_cast<std::size_t>((k + 1) % 3)];
+            uses.Add(a, b, ti);
         }
+    uses.Build();
     return uses;
 }
 
@@ -636,17 +639,17 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     // averaged in bins along that order.
     const auto uses = ff_edge_uses(rTris);
     std::vector<std::uint8_t> on_rail(rPts.size(), 0);
-    for (const auto& kv : uses)
-        if (kv.second == 1)
-            for (std::size_t v : {kv.first.first, kv.first.second})
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1)
+            for (std::size_t v : {uses.Lo(e), uses.Hi(e)})
                 if (!on_rail[v] && dist(rS1, rPts[v]) <= 0.1 * r_med &&
                     dist(rS1, rPts[v]) < dist(rS2, rPts[v]))
                     on_rail[v] = 1;
     std::vector<std::vector<std::size_t>> adj(rPts.size());
-    for (const auto& kv : uses)
-        if (kv.second == 1 && on_rail[kv.first.first] && on_rail[kv.first.second]) {
-            adj[kv.first.first].push_back(kv.first.second);
-            adj[kv.first.second].push_back(kv.first.first);
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1 && on_rail[uses.Lo(e)] && on_rail[uses.Hi(e)]) {
+            adj[uses.Lo(e)].push_back(uses.Hi(e));
+            adj[uses.Hi(e)].push_back(uses.Lo(e));
         }
     // The component of the rail edges with the greatest length.
     std::vector<std::int64_t> comp(rPts.size(), -1);
@@ -1474,15 +1477,15 @@ double ff_conic_distance(const PatchVec& rR1, const PatchVec& rA, const PatchVec
 // The boundary edges rKeep selects, chained: the component of greatest
 // length, from one of its ends (or anywhere on a loop).
 bool ff_boundary_chain(const std::vector<PatchVec>& rPts,
-                       const std::map<std::pair<std::size_t, std::size_t>, int>& rUses,
+                       const EdgeUseTable<std::size_t>& rUses,
                        const std::function<bool(std::size_t, std::size_t)>& rKeep,
                        std::vector<std::size_t>& rChain, bool& rClosed) {
     const std::size_t n = rPts.size();
     std::vector<std::vector<std::size_t>> adj(n);
-    for (const auto& kv : rUses)
-        if (kv.second == 1 && rKeep(kv.first.first, kv.first.second)) {
-            adj[kv.first.first].push_back(kv.first.second);
-            adj[kv.first.second].push_back(kv.first.first);
+    for (std::size_t e = 0; e < rUses.NumEdges(); ++e)
+        if (rUses.Count(e) == 1 && rKeep(rUses.Lo(e), rUses.Hi(e))) {
+            adj[rUses.Lo(e)].push_back(rUses.Hi(e));
+            adj[rUses.Hi(e)].push_back(rUses.Lo(e));
         }
     std::vector<std::int64_t> comp(n, -1);
     std::vector<double> comp_len;
@@ -1662,9 +1665,9 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
     const auto uses = ff_edge_uses(rTris);
     std::vector<std::uint8_t> on1(rPts.size(), 0), on2(rPts.size(), 0);
     if (!rEdgeSide)
-        for (const auto& kv : uses)
-            if (kv.second == 1)
-                for (std::size_t v : {kv.first.first, kv.first.second}) {
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+            if (uses.Count(e) == 1)
+                for (std::size_t v : {uses.Lo(e), uses.Hi(e)}) {
                     const double d1 = dist(rS1, rPts[v], nullptr), d2 = dist(rS2, rPts[v], nullptr);
                     if (d1 <= Tol && d1 < d2)
                         on1[v] = 1;
@@ -1801,13 +1804,13 @@ VertexBlendBoundary vertex_blend_boundary(
     VertexBlendBoundary out;
     // The directed boundary edges, as the triangles wind them: one loop when
     // each boundary vertex starts exactly one.
-    std::map<std::pair<std::size_t, std::size_t>, int> uses = ff_edge_uses(rTris);
+    const EdgeUseTable<std::size_t> uses = ff_edge_uses(rTris);
     std::map<std::size_t, std::size_t> next;
     for (const PatchTri& t : rTris)
         for (int k = 0; k < 3; ++k) {
             const std::size_t a = t[static_cast<std::size_t>(k)];
             const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            if (uses[{std::min(a, b), std::max(a, b)}] != 1)
+            if (uses.CountOf(a, b) != 1)
                 continue;
             if (!next.emplace(a, b).second)
                 return out;  // two boundary edges leave one vertex: not a disc

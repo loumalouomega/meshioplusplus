@@ -42,6 +42,8 @@
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "../detail/edge_use_table.hpp"
+#include "../detail/union_find.hpp"
 
 namespace meshioplusplus {
 
@@ -256,25 +258,17 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     const std::size_t nt = tris.size();
     // Shells: the triangles connected across edges, in the order of their
     // first triangle.
-    std::vector<std::size_t> parent(nt);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    const auto find = [&](std::size_t A) {
-        while (parent[A] != A)
-            A = parent[A] = parent[parent[A]];
-        return A;
-    };
+    detail::UnionFind<std::size_t> sets(nt);
+    const auto find = [&](std::size_t A) { return sets.Find(A); };
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> first;
+        detail::EdgeUseTable<std::int64_t> edges;
         for (std::size_t t = 0; t < nt; ++t)
-            for (std::size_t k = 0; k < 3; ++k) {
-                const auto key = std::minmax(tris[t][k], tris[t][(k + 1) % 3]);
-                const auto [it, fresh] = first.emplace(key, t);
-                if (!fresh) {
-                    const std::size_t a = find(it->second), b = find(t);
-                    if (a != b)
-                        parent[std::max(a, b)] = std::min(a, b);
-                }
-            }
+            for (std::size_t k = 0; k < 3; ++k)
+                edges.Add(tris[t][k], tris[t][(k + 1) % 3], static_cast<std::int64_t>(t));
+        edges.Build();
+        edges.ForEachSharedFace([&](std::int64_t A, std::int64_t B) {
+            sets.Unite(static_cast<std::size_t>(A), static_cast<std::size_t>(B));
+        });
     }
     std::vector<std::int64_t> shell_of(nt, -1);
     std::vector<std::vector<std::size_t>> shells;

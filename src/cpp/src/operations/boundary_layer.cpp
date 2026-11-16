@@ -29,6 +29,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/edge_use_table.hpp"
 #include "../detail/layer_sweep.hpp"
 #include "../detail/math_utils.hpp"
 #include "../detail/offset_normals.hpp"
@@ -328,22 +329,22 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     const auto corners = [&](std::size_t F) { return faces[F][3] >= 0 ? 4 : 3; };
     // Manifold and consistently oriented.
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, std::array<int, 2>> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
         for (std::size_t f = 0; f < nf; ++f)
             for (int i = 0; i < corners(f); ++i) {
                 const std::int64_t a = faces[f][static_cast<std::size_t>(i)];
                 const std::int64_t b = faces[f][static_cast<std::size_t>((i + 1) % corners(f))];
-                auto& r_u = uses[{std::min(a, b), std::max(a, b)}];
-                ++r_u[0];
-                r_u[1] += a < b ? 1 : -1;
+                uses.Add(a, b, static_cast<std::int64_t>(f));
             }
-        for (const auto& [e, r_u] : uses) {
-            if (r_u[0] > 2)
-                bl_fail("edge (" + std::to_string(e.first) + ", " + std::to_string(e.second) +
-                        ") is used by more than two faces");
-            if (r_u[0] == 2 && r_u[1] != 0)
-                bl_fail("the faces at edge (" + std::to_string(e.first) + ", " +
-                        std::to_string(e.second) + ") disagree on its direction (orient them)");
+        uses.Build();
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e) {
+            const std::size_t count = uses.Count(e);
+            const std::string name =
+                "(" + std::to_string(uses.Lo(e)) + ", " + std::to_string(uses.Hi(e)) + ")";
+            if (count > 2)
+                bl_fail("edge " + name + " is used by more than two faces");
+            if (count == 2 && uses.At(e, 0).mForward == uses.At(e, 1).mForward)
+                bl_fail("the faces at edge " + name + " disagree on its direction (orient them)");
         }
     }
     // Each point's most normal normal (Aubry and Löhner 2009), smoothed
@@ -679,22 +680,23 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     if (!std::isfinite(result.mMinThickness))
         result.mMinThickness = 0.0;
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
+        std::int64_t cap_face = 0;
         for (const auto* p_cap : {&sweep.mCapTriangles, &sweep.mCapQuads})
             for (const auto& r_c : *p_cap) {
                 const int k = r_c.mNodes[3] >= 0 ? 4 : 3;
                 for (int i = 0; i < k; ++i) {
                     const std::int64_t a = r_c.mNodes[static_cast<std::size_t>(i)];
                     const std::int64_t b = r_c.mNodes[static_cast<std::size_t>((i + 1) % k)];
-                    ++uses[{std::min(a, b), std::max(a, b)}];
+                    uses.Add(a, b, cap_face);
                 }
+                ++cap_face;
             }
-        result.mCapClosed = !uses.empty();
-        for (const auto& [e, n] : uses) {
-            (void)e;
-            if (n != 2)
+        uses.Build();
+        result.mCapClosed = uses.NumEdges() > 0;
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+            if (uses.Count(e) != 2)
                 result.mCapClosed = false;
-        }
     }
     if (result.mNumFrontCrossings > 0)
         log::debug("boundary_layer: {} crossings of the last layer's faces given way to",

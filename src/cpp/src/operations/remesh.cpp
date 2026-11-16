@@ -66,6 +66,7 @@
 #include "meshioplusplus/operations/refine.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+#include "../detail/edge_use_table.hpp"
 #include "../detail/geometry_utils.hpp"
 #include "../detail/surface_rings.hpp"
 
@@ -541,8 +542,8 @@ std::vector<std::int64_t> remesh_unique_edges(const detail::NodeAdjacency& rAdj,
 /// NOT shared with `decimate.cpp`'s own `decim_build_edges`, whose header
 /// comment already scopes that helper to decimate's two current callers
 /// only ("stays private to decimate.cpp ... neither concept applies" to the
-/// other one). `std::map` (not a hash map) is deliberate: it costs nothing
-/// here and gives a canonical, deterministic edge-visitation order for free.
+/// other one). It counts with `detail::EdgeUseTable`, which visits the edges in
+/// `(lo, hi)` order, the canonical deterministic order a `std::map` gave.
 struct RemeshBoundaryInfo {
     std::vector<std::uint8_t> mIsBoundaryVertex;                        ///< size NumPoints.
     std::vector<std::pair<std::int64_t, std::int64_t>> mBoundaryEdges;  ///< lo < hi, sorted.
@@ -551,22 +552,20 @@ struct RemeshBoundaryInfo {
 RemeshBoundaryInfo remesh_boundary_info(const RemeshSurface& rS) {
     RemeshBoundaryInfo info;
     info.mIsBoundaryVertex.assign(rS.mNumPoints, 0);
-    std::map<std::pair<std::int64_t, std::int64_t>, int> use_count;
+    detail::EdgeUseTable<std::int64_t> uses;
+    uses.Reserve(rS.mNumFaces * 3);
     for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
         const std::int64_t v[3] = {rS.mCorners[f * 3], rS.mCorners[f * 3 + 1],
                                    rS.mCorners[f * 3 + 2]};
-        for (int k = 0; k < 3; ++k) {
-            std::int64_t a = v[k], b = v[(k + 1) % 3];
-            if (a > b)
-                std::swap(a, b);
-            ++use_count[{a, b}];
-        }
+        for (int k = 0; k < 3; ++k)
+            uses.Add(v[k], v[(k + 1) % 3], static_cast<std::int64_t>(f));
     }
-    for (const auto& [edge, count] : use_count) {
-        if (count == 1) {
-            info.mBoundaryEdges.push_back(edge);
-            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.first)] = 1;
-            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.second)] = 1;
+    uses.Build();
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e) {
+        if (uses.Count(e) == 1) {
+            info.mBoundaryEdges.push_back({uses.Lo(e), uses.Hi(e)});
+            info.mIsBoundaryVertex[static_cast<std::size_t>(uses.Lo(e))] = 1;
+            info.mIsBoundaryVertex[static_cast<std::size_t>(uses.Hi(e))] = 1;
         }
     }
     return info;

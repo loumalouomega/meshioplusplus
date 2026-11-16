@@ -46,6 +46,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/staged_block.hpp"
+#include "../detail/union_find.hpp"
 
 namespace meshioplusplus {
 
@@ -223,17 +224,8 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         }
     }
     std::sort(uses.begin(), uses.end());
-    std::vector<std::int64_t> parent(nf);
-    for (std::size_t f = 0; f < nf; ++f)
-        parent[f] = static_cast<std::int64_t>(f);
-    auto find = [&](std::int64_t x) {
-        while (parent[static_cast<std::size_t>(x)] != x) {
-            parent[static_cast<std::size_t>(x)] =
-                parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(x)])];
-            x = parent[static_cast<std::size_t>(x)];
-        }
-        return x;
-    };
+    detail::UnionFind<std::int64_t> sets(nf);
+    auto find = [&](std::int64_t x) { return sets.Find(x); };
     for (std::size_t i = 0; i < uses.size();) {
         std::size_t j = i + 1;
         while (j < uses.size() && uses[j].mA == uses[i].mA && uses[j].mB == uses[i].mB &&
@@ -243,10 +235,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
             const auto fa = static_cast<std::size_t>(uses[i].mFace);
             const auto fb = static_cast<std::size_t>(uses[i + 1].mFace);
             if (detail::vec3_dot(unit(fa), unit(fb)) >= CosTol) {
-                const std::int64_t ra = find(static_cast<std::int64_t>(fa));
-                const std::int64_t rb = find(static_cast<std::int64_t>(fb));
-                if (ra != rb)
-                    parent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
+                sets.Unite(static_cast<std::int64_t>(fa), static_cast<std::int64_t>(fb));
             }
         }
         i = j;

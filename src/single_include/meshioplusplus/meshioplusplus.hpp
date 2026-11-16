@@ -50422,6 +50422,123 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/edge_sampler.hpp =====
+// ===== begin src/cpp/src/detail/edge_use_table.hpp =====
+/**
+ * @file detail/edge_use_table.hpp
+ * @brief `EdgeUseTable`: the uses of each undirected edge of a face list,
+ * grouped by edge in `(lo, hi)` order (roadmap 6.2).
+ *
+ * Fed the edges of a surface one `Add(a, b, face)` at a time and `Build()` once,
+ * it answers what a `std::map` keyed by the sorted vertex pair did: how many
+ * faces use an edge (one is a boundary edge, two a manifold one), which faces
+ * and in which direction, and every edge in key order, so a message or a
+ * tie-break that followed the map's order keeps it. The uses of an edge keep
+ * their insertion order, so the first use is the first face that met the edge.
+ *
+ * A sorted flat table: no node per edge, one sort. A **core-private** header
+ * (not installed).
+ */
+
+// System includes
+#include <algorithm>
+#include <cstddef>
+#include <limits>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+template <class Index>
+class EdgeUseTable {
+public:
+    static constexpr std::size_t kNone = std::numeric_limits<std::size_t>::max();
+
+    /// One use of an edge: the face and whether it walks the edge `lo -> hi`.
+    struct Use {
+        Index mFace;
+        bool mForward;
+    };
+
+    void Reserve(std::size_t NumUses) { mRecords.reserve(NumUses); }
+
+    /// Record face `Face` walking the edge from `A` to `B`.
+    void Add(Index A, Index B, Index Face) {
+        const bool forward = A < B;
+        mRecords.push_back({forward ? A : B, forward ? B : A, Face, forward});
+    }
+
+    /// Group the recorded uses by edge. Call once, after the last `Add`.
+    void Build() {
+        std::stable_sort(mRecords.begin(), mRecords.end(), [](const Record& rA, const Record& rB) {
+            return rA.mLo != rB.mLo ? rA.mLo < rB.mLo : rA.mHi < rB.mHi;
+        });
+        mStart.assign(1, 0);
+        for (std::size_t i = 1; i < mRecords.size(); ++i)
+            if (mRecords[i].mLo != mRecords[i - 1].mLo || mRecords[i].mHi != mRecords[i - 1].mHi)
+                mStart.push_back(i);
+        if (!mRecords.empty())
+            mStart.push_back(mRecords.size());
+        else
+            mStart.clear();
+    }
+
+    /// How many distinct edges there are.
+    std::size_t NumEdges() const { return mStart.empty() ? 0 : mStart.size() - 1; }
+    Index Lo(std::size_t Edge) const { return mRecords[mStart[Edge]].mLo; }
+    Index Hi(std::size_t Edge) const { return mRecords[mStart[Edge]].mHi; }
+
+    /// How many faces use the edge.
+    std::size_t Count(std::size_t Edge) const { return mStart[Edge + 1] - mStart[Edge]; }
+
+    /// The `K`-th use of the edge, in insertion order.
+    Use At(std::size_t Edge, std::size_t K) const {
+        const Record& r = mRecords[mStart[Edge] + K];
+        return {r.mFace, r.mForward};
+    }
+
+    /// The index of the edge `{A, B}`, or `kNone`.
+    std::size_t Find(Index A, Index B) const {
+        const Index lo = A < B ? A : B, hi = A < B ? B : A;
+        std::size_t first = 0, last = NumEdges();
+        while (first < last) {
+            const std::size_t mid = first + (last - first) / 2;
+            const Record& r = mRecords[mStart[mid]];
+            if (r.mLo < lo || (r.mLo == lo && r.mHi < hi))
+                first = mid + 1;
+            else
+                last = mid;
+        }
+        if (first < NumEdges() && mRecords[mStart[first]].mLo == lo &&
+            mRecords[mStart[first]].mHi == hi)
+            return first;
+        return kNone;
+    }
+
+    /// How many faces use the edge `{A, B}`; zero when none does.
+    std::size_t CountOf(Index A, Index B) const {
+        const std::size_t e = Find(A, B);
+        return e == kNone ? 0 : Count(e);
+    }
+
+    /// Call `Join(first_face, face)` for every later use of every edge: the
+    /// faces an edge shares, each joined to the first that met it.
+    template <class Fn>
+    void ForEachSharedFace(Fn&& Join) const {
+        for (std::size_t e = 0; e < NumEdges(); ++e)
+            for (std::size_t k = 1; k < Count(e); ++k)
+                Join(At(e, 0).mFace, At(e, k).mFace);
+    }
+
+private:
+    struct Record {
+        Index mLo, mHi, mFace;
+        bool mForward;
+    };
+    std::vector<Record> mRecords;
+    std::vector<std::size_t> mStart;
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/edge_use_table.hpp =====
 // ===== begin src/cpp/src/detail/slot_runs.hpp =====
 /**
  * @file detail/slot_runs.hpp
@@ -92784,8 +92901,9 @@ void ff_axial(const double* pP, const PatchVec& rX, double& rH, double& rRho) {
 void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
                        std::vector<PatchVec>& rNormals, std::vector<std::uint8_t>& rInterior) {
     rNormals.assign(rPts.size(), PatchVec{0.0, 0.0, 0.0});
-    std::map<std::pair<std::size_t, std::size_t>, int> uses;
-    for (const PatchTri& t : rTris) {
+    EdgeUseTable<std::size_t> uses;
+    for (std::size_t ti = 0; ti < rTris.size(); ++ti) {
+        const PatchTri& t = rTris[ti];
         const PatchVec e1 = vec3_sub(rPts[t[1]], rPts[t[0]]);
         const PatchVec e2 = vec3_sub(rPts[t[2]], rPts[t[0]]);
         const PatchVec n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
@@ -92795,9 +92913,10 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
         for (int k = 0; k < 3; ++k) {
             const std::size_t a = t[static_cast<std::size_t>(k)];
             const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            ++uses[{std::min(a, b), std::max(a, b)}];
+            uses.Add(a, b, ti);
         }
     }
+    uses.Build();
     for (PatchVec& n : rNormals) {
         const double len = vec3_norm(n);
         if (len > 0.0)
@@ -92807,9 +92926,9 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
     for (const PatchTri& t : rTris)
         for (std::size_t v : t)
             rInterior[v] = 1;
-    for (const auto& kv : uses)
-        if (kv.second == 1)
-            rInterior[kv.first.first] = rInterior[kv.first.second] = 0;
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1)
+            rInterior[uses.Lo(e)] = rInterior[uses.Hi(e)] = 0;
 }
 
 }  // namespace
@@ -93113,15 +93232,15 @@ void ff_law_basis(bool Periodic, double T0, double T1, std::size_t N, double T, 
 }
 
 // Every edge of a triangle set, counted: an edge used once is a boundary edge.
-std::map<std::pair<std::size_t, std::size_t>, int> ff_edge_uses(
-    const std::vector<PatchTri>& rTris) {
-    std::map<std::pair<std::size_t, std::size_t>, int> uses;
-    for (const PatchTri& t : rTris)
+EdgeUseTable<std::size_t> ff_edge_uses(const std::vector<PatchTri>& rTris) {
+    EdgeUseTable<std::size_t> uses;
+    for (std::size_t ti = 0; ti < rTris.size(); ++ti)
         for (int k = 0; k < 3; ++k) {
-            const std::size_t a = t[static_cast<std::size_t>(k)];
-            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            ++uses[{std::min(a, b), std::max(a, b)}];
+            const std::size_t a = rTris[ti][static_cast<std::size_t>(k)];
+            const std::size_t b = rTris[ti][static_cast<std::size_t>((k + 1) % 3)];
+            uses.Add(a, b, ti);
         }
+    uses.Build();
     return uses;
 }
 
@@ -93361,17 +93480,17 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     // averaged in bins along that order.
     const auto uses = ff_edge_uses(rTris);
     std::vector<std::uint8_t> on_rail(rPts.size(), 0);
-    for (const auto& kv : uses)
-        if (kv.second == 1)
-            for (std::size_t v : {kv.first.first, kv.first.second})
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1)
+            for (std::size_t v : {uses.Lo(e), uses.Hi(e)})
                 if (!on_rail[v] && dist(rS1, rPts[v]) <= 0.1 * r_med &&
                     dist(rS1, rPts[v]) < dist(rS2, rPts[v]))
                     on_rail[v] = 1;
     std::vector<std::vector<std::size_t>> adj(rPts.size());
-    for (const auto& kv : uses)
-        if (kv.second == 1 && on_rail[kv.first.first] && on_rail[kv.first.second]) {
-            adj[kv.first.first].push_back(kv.first.second);
-            adj[kv.first.second].push_back(kv.first.first);
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1 && on_rail[uses.Lo(e)] && on_rail[uses.Hi(e)]) {
+            adj[uses.Lo(e)].push_back(uses.Hi(e));
+            adj[uses.Hi(e)].push_back(uses.Lo(e));
         }
     // The component of the rail edges with the greatest length.
     std::vector<std::int64_t> comp(rPts.size(), -1);
@@ -94199,15 +94318,15 @@ double ff_conic_distance(const PatchVec& rR1, const PatchVec& rA, const PatchVec
 // The boundary edges rKeep selects, chained: the component of greatest
 // length, from one of its ends (or anywhere on a loop).
 bool ff_boundary_chain(const std::vector<PatchVec>& rPts,
-                       const std::map<std::pair<std::size_t, std::size_t>, int>& rUses,
+                       const EdgeUseTable<std::size_t>& rUses,
                        const std::function<bool(std::size_t, std::size_t)>& rKeep,
                        std::vector<std::size_t>& rChain, bool& rClosed) {
     const std::size_t n = rPts.size();
     std::vector<std::vector<std::size_t>> adj(n);
-    for (const auto& kv : rUses)
-        if (kv.second == 1 && rKeep(kv.first.first, kv.first.second)) {
-            adj[kv.first.first].push_back(kv.first.second);
-            adj[kv.first.second].push_back(kv.first.first);
+    for (std::size_t e = 0; e < rUses.NumEdges(); ++e)
+        if (rUses.Count(e) == 1 && rKeep(rUses.Lo(e), rUses.Hi(e))) {
+            adj[rUses.Lo(e)].push_back(rUses.Hi(e));
+            adj[rUses.Hi(e)].push_back(rUses.Lo(e));
         }
     std::vector<std::int64_t> comp(n, -1);
     std::vector<double> comp_len;
@@ -94387,9 +94506,9 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
     const auto uses = ff_edge_uses(rTris);
     std::vector<std::uint8_t> on1(rPts.size(), 0), on2(rPts.size(), 0);
     if (!rEdgeSide)
-        for (const auto& kv : uses)
-            if (kv.second == 1)
-                for (std::size_t v : {kv.first.first, kv.first.second}) {
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+            if (uses.Count(e) == 1)
+                for (std::size_t v : {uses.Lo(e), uses.Hi(e)}) {
                     const double d1 = dist(rS1, rPts[v], nullptr), d2 = dist(rS2, rPts[v], nullptr);
                     if (d1 <= Tol && d1 < d2)
                         on1[v] = 1;
@@ -94526,13 +94645,13 @@ VertexBlendBoundary vertex_blend_boundary(
     VertexBlendBoundary out;
     // The directed boundary edges, as the triangles wind them: one loop when
     // each boundary vertex starts exactly one.
-    std::map<std::pair<std::size_t, std::size_t>, int> uses = ff_edge_uses(rTris);
+    const EdgeUseTable<std::size_t> uses = ff_edge_uses(rTris);
     std::map<std::size_t, std::size_t> next;
     for (const PatchTri& t : rTris)
         for (int k = 0; k < 3; ++k) {
             const std::size_t a = t[static_cast<std::size_t>(k)];
             const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            if (uses[{std::min(a, b), std::max(a, b)}] != 1)
+            if (uses.CountOf(a, b) != 1)
                 continue;
             if (!next.emplace(a, b).second)
                 return out;  // two boundary edges leave one vertex: not a disc
@@ -99751,34 +99870,38 @@ std::vector<HfTri> hf_min_area(const std::vector<Vec3>& rP, std::size_t N) {
 void hf_relax(const std::vector<Vec3>& rP, std::vector<HfTri>& rTris) {
     for (int pass = 0; pass < 64; ++pass) {
         bool flipped = false;
-        std::map<std::pair<std::size_t, std::size_t>, std::vector<std::size_t>> uses;
+        EdgeUseTable<std::size_t> uses;
         for (std::size_t t = 0; t < rTris.size(); ++t)
-            for (std::size_t e = 0; e < 3; ++e) {
-                const std::size_t a = rTris[t][e], b = rTris[t][(e + 1) % 3];
-                uses[{std::min(a, b), std::max(a, b)}].push_back(t);
-            }
+            for (std::size_t e = 0; e < 3; ++e)
+                uses.Add(rTris[t][e], rTris[t][(e + 1) % 3], t);
+        uses.Build();
         std::vector<char> touched(rTris.size(), 0);
-        for (const auto& [edge, r_ts] : uses) {
-            if (r_ts.size() != 2 || touched[r_ts[0]] || touched[r_ts[1]])
+        for (std::size_t edge_at = 0; edge_at < uses.NumEdges(); ++edge_at) {
+            if (uses.Count(edge_at) != 2)
                 continue;
-            const HfTri& t1 = rTris[r_ts[0]];
-            const HfTri& t2 = rTris[r_ts[1]];
+            const std::size_t first_tri = uses.At(edge_at, 0).mFace;
+            const std::size_t second_tri = uses.At(edge_at, 1).mFace;
+            if (touched[first_tri] || touched[second_tri])
+                continue;
+            const std::size_t edge_lo = uses.Lo(edge_at), edge_hi = uses.Hi(edge_at);
+            const HfTri& t1 = rTris[first_tri];
+            const HfTri& t2 = rTris[second_tri];
             // t1 = (a, b, c) traverses a -> b; t2 = (b, a, d).
             std::size_t k = 0;
-            while (!(t1[k] != edge.first && t1[k] != edge.second))
+            while (!(t1[k] != edge_lo && t1[k] != edge_hi))
                 ++k;
             const std::size_t c = t1[k], a = t1[(k + 1) % 3], b = t1[(k + 2) % 3];
             std::size_t d = t2[0];
             for (const std::size_t v : t2)
                 if (v != a && v != b)
                     d = v;
-            if (uses.count({std::min(c, d), std::max(c, d)}))
+            if (uses.Find(c, d) != EdgeUseTable<std::size_t>::kNone)
                 continue;
             if (hf_angle(rP[c], rP[a], rP[b]) + hf_angle(rP[d], rP[a], rP[b]) <= kHfPi + 1e-12)
                 continue;
-            rTris[r_ts[0]] = {c, a, d};
-            rTris[r_ts[1]] = {d, b, c};
-            touched[r_ts[0]] = touched[r_ts[1]] = 1;
+            rTris[first_tri] = {c, a, d};
+            rTris[second_tri] = {d, b, c};
+            touched[first_tri] = touched[second_tri] = 1;
             flipped = true;
         }
         if (!flipped)
@@ -108275,32 +108398,18 @@ void pf_local(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rT
 // their lowest triangle.
 std::vector<std::vector<std::size_t>> pf_components(const std::vector<PatchTri>& rTris,
                                                     const std::vector<std::size_t>& rSubset) {
-    std::vector<std::size_t> parent(rSubset.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t X) {
-        while (parent[X] != X) {
-            parent[X] = parent[parent[X]];
-            X = parent[X];
-        }
-        return X;
-    };
-    std::map<std::pair<std::size_t, std::size_t>, std::size_t> first;
+    UnionFind<std::size_t> sets(rSubset.size());
+    EdgeUseTable<std::size_t> edges;
     for (std::size_t i = 0; i < rSubset.size(); ++i) {
         const PatchTri& t = rTris[rSubset[i]];
-        for (int k = 0; k < 3; ++k) {
-            const std::size_t a = t[static_cast<std::size_t>(k)];
-            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            auto ins = first.emplace(std::make_pair(std::min(a, b), std::max(a, b)), i);
-            if (!ins.second) {
-                const std::size_t ra = find(i), rb = find(ins.first->second);
-                if (ra != rb)
-                    parent[std::max(ra, rb)] = std::min(ra, rb);
-            }
-        }
+        for (int k = 0; k < 3; ++k)
+            edges.Add(t[static_cast<std::size_t>(k)], t[static_cast<std::size_t>((k + 1) % 3)], i);
     }
+    edges.Build();
+    edges.ForEachSharedFace([&](std::size_t A, std::size_t B) { sets.Unite(A, B); });
     std::map<std::size_t, std::vector<std::size_t>> by_root;
     for (std::size_t i = 0; i < rSubset.size(); ++i)
-        by_root[find(i)].push_back(rSubset[i]);
+        by_root[sets.Find(i)].push_back(rSubset[i]);
     std::vector<std::vector<std::size_t>> out;
     for (auto& kv : by_root)
         out.push_back(std::move(kv.second));
@@ -118858,15 +118967,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
     std::vector<double> normals = rShell.mNormals;
 
     // Pieces, and the ones wound inwards turned outwards.
-    std::vector<std::size_t> parent(nf);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t X) {
-        while (parent[X] != X) {
-            parent[X] = parent[parent[X]];
-            X = parent[X];
-        }
-        return X;
-    };
+    UnionFind<std::size_t> sets(nf);
+    auto find = [&](std::size_t X) { return sets.Find(X); };
     {
         std::unordered_map<std::uint64_t, std::size_t> owner;
         owner.reserve(nodes.size());
@@ -118877,9 +118979,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                                  nodes[static_cast<std::size_t>(b + (k + 1) % s)]);
                 auto ins = owner.emplace(key, f);
                 if (!ins.second) {
-                    const std::size_t ra = find(f), rb = find(ins.first->second);
-                    if (ra != rb)
-                        parent[std::max(ra, rb)] = std::min(ra, rb);
+                    sets.Unite(f, ins.first->second);
                 }
             }
         }
@@ -124539,27 +124639,6 @@ constexpr double kTetrmPi = 3.14159265358979323846;
 // (detail/cell_faces' tetra table, indexed by the corner it omits).
 constexpr int kTetrmOppositeFace[4][3] = {{1, 2, 3}, {2, 0, 3}, {0, 1, 3}, {0, 2, 1}};
 
-std::int64_t tetrm_find(std::vector<std::int64_t>& rParent, std::int64_t X) {
-    while (rParent[static_cast<std::size_t>(X)] != X) {
-        rParent[static_cast<std::size_t>(X)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(X)])];
-        X = rParent[static_cast<std::size_t>(X)];
-    }
-    return X;
-}
-
-void tetrm_union(std::vector<std::int64_t>& rParent, std::int64_t A, std::int64_t B) {
-    A = tetrm_find(rParent, A);
-    B = tetrm_find(rParent, B);
-    if (A == B)
-        return;
-    // the lower root wins, so the partition's roots do not depend on the order
-    if (A < B)
-        rParent[static_cast<std::size_t>(B)] = A;
-    else
-        rParent[static_cast<std::size_t>(A)] = B;
-}
-
 Vec3 tetrm_unit_normal(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     return vec3_normalize(vec3_cross(vec3_sub(rB, rA), vec3_sub(rC, rA)));
 }
@@ -124916,8 +124995,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
     });
 
     const double cos_feature = std::cos(FeatureAngleDeg * kTetrmPi / 180.0);
-    std::vector<std::int64_t> parent(nf);
-    std::iota(parent.begin(), parent.end(), std::int64_t{0});
+    UnionFind<std::int64_t> patches(nf);
     std::vector<std::array<std::int64_t, 2>> ridge_edges;
     std::vector<std::vector<std::int64_t>> ridge_faces;  // the faces of each ridge edge
     for (std::size_t i = 0; i < erecs.size();) {
@@ -124947,7 +125025,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
                 fs.push_back(erecs[k].mFace);
             ridge_faces.push_back(std::move(fs));
         } else {
-            tetrm_union(parent, erecs[i].mFace, erecs[i + 1].mFace);
+            patches.Unite(erecs[i].mFace, erecs[i + 1].mFace);
         }
         i = j;
     }
@@ -124957,8 +125035,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
     std::vector<std::int32_t> patch(nf, -1);
     std::int32_t num_patches = 0;
     for (std::size_t f = 0; f < nf; ++f) {
-        const std::size_t r =
-            static_cast<std::size_t>(tetrm_find(parent, static_cast<std::int64_t>(f)));
+        const std::size_t r = static_cast<std::size_t>(patches.Find(static_cast<std::int64_t>(f)));
         if (patch_of_root[r] < 0)
             patch_of_root[r] = num_patches++;
         patch[f] = patch_of_root[r];
@@ -241549,17 +241626,8 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         }
     }
     std::sort(uses.begin(), uses.end());
-    std::vector<std::int64_t> parent(nf);
-    for (std::size_t f = 0; f < nf; ++f)
-        parent[f] = static_cast<std::int64_t>(f);
-    auto find = [&](std::int64_t x) {
-        while (parent[static_cast<std::size_t>(x)] != x) {
-            parent[static_cast<std::size_t>(x)] =
-                parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(x)])];
-            x = parent[static_cast<std::size_t>(x)];
-        }
-        return x;
-    };
+    detail::UnionFind<std::int64_t> sets(nf);
+    auto find = [&](std::int64_t x) { return sets.Find(x); };
     for (std::size_t i = 0; i < uses.size();) {
         std::size_t j = i + 1;
         while (j < uses.size() && uses[j].mA == uses[i].mA && uses[j].mB == uses[i].mB &&
@@ -241569,10 +241637,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
             const auto fa = static_cast<std::size_t>(uses[i].mFace);
             const auto fb = static_cast<std::size_t>(uses[i + 1].mFace);
             if (detail::vec3_dot(unit(fa), unit(fb)) >= CosTol) {
-                const std::int64_t ra = find(static_cast<std::int64_t>(fa));
-                const std::int64_t rb = find(static_cast<std::int64_t>(fb));
-                if (ra != rb)
-                    parent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
+                sets.Unite(static_cast<std::int64_t>(fa), static_cast<std::int64_t>(fb));
             }
         }
         i = j;
@@ -242840,22 +242905,22 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     const auto corners = [&](std::size_t F) { return faces[F][3] >= 0 ? 4 : 3; };
     // Manifold and consistently oriented.
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, std::array<int, 2>> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
         for (std::size_t f = 0; f < nf; ++f)
             for (int i = 0; i < corners(f); ++i) {
                 const std::int64_t a = faces[f][static_cast<std::size_t>(i)];
                 const std::int64_t b = faces[f][static_cast<std::size_t>((i + 1) % corners(f))];
-                auto& r_u = uses[{std::min(a, b), std::max(a, b)}];
-                ++r_u[0];
-                r_u[1] += a < b ? 1 : -1;
+                uses.Add(a, b, static_cast<std::int64_t>(f));
             }
-        for (const auto& [e, r_u] : uses) {
-            if (r_u[0] > 2)
-                bl_fail("edge (" + std::to_string(e.first) + ", " + std::to_string(e.second) +
-                        ") is used by more than two faces");
-            if (r_u[0] == 2 && r_u[1] != 0)
-                bl_fail("the faces at edge (" + std::to_string(e.first) + ", " +
-                        std::to_string(e.second) + ") disagree on its direction (orient them)");
+        uses.Build();
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e) {
+            const std::size_t count = uses.Count(e);
+            const std::string name =
+                "(" + std::to_string(uses.Lo(e)) + ", " + std::to_string(uses.Hi(e)) + ")";
+            if (count > 2)
+                bl_fail("edge " + name + " is used by more than two faces");
+            if (count == 2 && uses.At(e, 0).mForward == uses.At(e, 1).mForward)
+                bl_fail("the faces at edge " + name + " disagree on its direction (orient them)");
         }
     }
     // Each point's most normal normal (Aubry and Löhner 2009), smoothed
@@ -243191,22 +243256,23 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     if (!std::isfinite(result.mMinThickness))
         result.mMinThickness = 0.0;
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
+        std::int64_t cap_face = 0;
         for (const auto* p_cap : {&sweep.mCapTriangles, &sweep.mCapQuads})
             for (const auto& r_c : *p_cap) {
                 const int k = r_c.mNodes[3] >= 0 ? 4 : 3;
                 for (int i = 0; i < k; ++i) {
                     const std::int64_t a = r_c.mNodes[static_cast<std::size_t>(i)];
                     const std::int64_t b = r_c.mNodes[static_cast<std::size_t>((i + 1) % k)];
-                    ++uses[{std::min(a, b), std::max(a, b)}];
+                    uses.Add(a, b, cap_face);
                 }
+                ++cap_face;
             }
-        result.mCapClosed = !uses.empty();
-        for (const auto& [e, n] : uses) {
-            (void)e;
-            if (n != 2)
+        uses.Build();
+        result.mCapClosed = uses.NumEdges() > 0;
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+            if (uses.Count(e) != 2)
                 result.mCapClosed = false;
-        }
     }
     if (result.mNumFrontCrossings > 0)
         log::debug("boundary_layer: {} crossings of the last layer's faces given way to",
@@ -255334,29 +255400,22 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
                          (hi[2] - lo[2]) * (hi[2] - lo[2]));
     }
-    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_item;
-    std::vector<std::size_t> parent(rItems.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    const auto find = [&](std::size_t A) {
-        while (parent[A] != A)
-            A = parent[A] = parent[parent[A]];
-        return A;
-    };
+    detail::EdgeUseTable<std::int64_t> edge_item;
+    detail::UnionFind<std::size_t> sets(rItems.size());
+    const auto find = [&](std::size_t A) { return sets.Find(A); };
     for (std::size_t i = 0; i < rItems.size(); ++i)
         for (std::size_t f : rItems[i]) {
             const std::int64_t b = rFc.mStart[f], n = rFc.mStart[f + 1] - b;
             for (std::int64_t k = 0; k < n; ++k) {
                 const std::int64_t a = rFc.mNodes[static_cast<std::size_t>(b + k)];
                 const std::int64_t c = rFc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)];
-                const auto key = std::make_pair(std::min(a, c), std::max(a, c));
-                const auto ins = edge_item.emplace(key, i);
-                if (!ins.second) {
-                    const std::size_t x = find(ins.first->second), y = find(i);
-                    if (x != y)
-                        parent[std::max(x, y)] = std::min(x, y);
-                }
+                edge_item.Add(a, c, static_cast<std::int64_t>(i));
             }
         }
+    edge_item.Build();
+    edge_item.ForEachSharedFace([&](std::int64_t A, std::int64_t B) {
+        sets.Unite(static_cast<std::size_t>(A), static_cast<std::size_t>(B));
+    });
     std::map<std::size_t, std::vector<std::size_t>> regions;
     for (std::size_t i = 0; i < rItems.size(); ++i)
         regions[find(i)].push_back(i);
@@ -260817,17 +260876,8 @@ private:
 /// into triangles, wound outward.
 std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>& rP,
                                                      const std::vector<HullFace>& rFaces) {
-    std::vector<std::int64_t> parent(rFaces.size());
-    for (std::size_t f = 0; f < parent.size(); ++f)
-        parent[f] = static_cast<std::int64_t>(f);
-    const auto find = [&](std::int64_t F) {
-        while (parent[static_cast<std::size_t>(F)] != F) {
-            parent[static_cast<std::size_t>(F)] =
-                parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(F)])];
-            F = parent[static_cast<std::size_t>(F)];
-        }
-        return F;
-    };
+    detail::UnionFind<std::int64_t> sets(rFaces.size());
+    const auto find = [&](std::int64_t F) { return sets.Find(F); };
     for (std::size_t f = 0; f < rFaces.size(); ++f) {
         const HullFace& face = rFaces[f];
         if (!face.mAlive)
@@ -260842,8 +260892,7 @@ std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>&
                                  rP[static_cast<std::size_t>(face.mV[1])].data(),
                                  rP[static_cast<std::size_t>(face.mV[2])].data(),
                                  rP[static_cast<std::size_t>(opposite)].data()) == 0.0) {
-                const std::int64_t a = find(static_cast<std::int64_t>(f)), b = find(face.mN[e]);
-                parent[static_cast<std::size_t>(std::max(a, b))] = std::min(a, b);
+                sets.Unite(static_cast<std::int64_t>(f), face.mN[e]);
             }
         }
     }
@@ -280734,15 +280783,8 @@ ParameterizeResult parameterize(const Mesh& rMesh, const ParameterizeOptions& rO
     }
 
     // --- the edge-connected pieces, in order of their lowest triangle ---
-    std::vector<std::size_t> parent(tris.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t x) {
-        while (parent[x] != x) {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        return x;
-    };
+    detail::UnionFind<std::size_t> sets(tris.size());
+    auto find = [&](std::size_t x) { return sets.Find(x); };
     {
         std::vector<std::array<std::int64_t, 3>> edges;  // lo, hi, triangle
         edges.reserve(3 * tris.size());
@@ -280754,10 +280796,8 @@ ParameterizeResult parameterize(const Mesh& rMesh, const ParameterizeOptions& rO
         std::sort(edges.begin(), edges.end());
         for (std::size_t i = 1; i < edges.size(); ++i)
             if (edges[i][0] == edges[i - 1][0] && edges[i][1] == edges[i - 1][1]) {
-                const std::size_t ra = find(static_cast<std::size_t>(edges[i][2]));
-                const std::size_t rb = find(static_cast<std::size_t>(edges[i - 1][2]));
-                if (ra != rb)
-                    parent[std::max(ra, rb)] = std::min(ra, rb);
+                sets.Unite(static_cast<std::size_t>(edges[i][2]),
+                           static_cast<std::size_t>(edges[i - 1][2]));
             }
     }
     std::vector<PrmPiece> queue;
@@ -291174,15 +291214,6 @@ void rcs_dilate(std::vector<std::int64_t>& rIds, const std::array<std::int64_t, 
 }
 
 /// Union-find root with path halving.
-std::int64_t rcs_find(std::vector<std::int64_t>& rParent, std::int64_t I) {
-    while (rParent[static_cast<std::size_t>(I)] != I) {
-        rParent[static_cast<std::size_t>(I)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(I)])];
-        I = rParent[static_cast<std::size_t>(I)];
-    }
-    return I;
-}
-
 }  // namespace
 
 ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
@@ -291573,16 +291604,12 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         detail::set_mesh_length_unit(out, unit);
 
     // Edge-connected pieces.
-    std::vector<std::int64_t> parent(final_pts.size());
-    std::iota(parent.begin(), parent.end(), std::int64_t{0});
+    detail::UnionFind<std::int64_t> sets(final_pts.size());
     for (const auto& t : tris)
-        for (std::size_t e = 1; e < 3; ++e) {
-            const std::int64_t a = rcs_find(parent, t[0]), b = rcs_find(parent, t[e]);
-            if (a != b)
-                parent[static_cast<std::size_t>(std::max(a, b))] = std::min(a, b);
-        }
+        for (std::size_t e = 1; e < 3; ++e)
+            sets.Unite(t[0], t[e]);
     for (std::size_t i = 0; i < final_pts.size(); ++i)
-        if (rcs_find(parent, static_cast<std::int64_t>(i)) == static_cast<std::int64_t>(i))
+        if (sets.Find(static_cast<std::int64_t>(i)) == static_cast<std::int64_t>(i))
             ++result.mNumComponents;
     result.mNumTriangles = static_cast<std::int64_t>(tris.size());
     result.mMesh = std::move(out);
@@ -295668,8 +295695,8 @@ std::vector<std::int64_t> remesh_unique_edges(const detail::NodeAdjacency& rAdj,
 /// NOT shared with `decimate.cpp`'s own `decim_build_edges`, whose header
 /// comment already scopes that helper to decimate's two current callers
 /// only ("stays private to decimate.cpp ... neither concept applies" to the
-/// other one). `std::map` (not a hash map) is deliberate: it costs nothing
-/// here and gives a canonical, deterministic edge-visitation order for free.
+/// other one). It counts with `detail::EdgeUseTable`, which visits the edges in
+/// `(lo, hi)` order, the canonical deterministic order a `std::map` gave.
 struct RemeshBoundaryInfo {
     std::vector<std::uint8_t> mIsBoundaryVertex;                        ///< size NumPoints.
     std::vector<std::pair<std::int64_t, std::int64_t>> mBoundaryEdges;  ///< lo < hi, sorted.
@@ -295678,22 +295705,20 @@ struct RemeshBoundaryInfo {
 RemeshBoundaryInfo remesh_boundary_info(const RemeshSurface& rS) {
     RemeshBoundaryInfo info;
     info.mIsBoundaryVertex.assign(rS.mNumPoints, 0);
-    std::map<std::pair<std::int64_t, std::int64_t>, int> use_count;
+    detail::EdgeUseTable<std::int64_t> uses;
+    uses.Reserve(rS.mNumFaces * 3);
     for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
         const std::int64_t v[3] = {rS.mCorners[f * 3], rS.mCorners[f * 3 + 1],
                                    rS.mCorners[f * 3 + 2]};
-        for (int k = 0; k < 3; ++k) {
-            std::int64_t a = v[k], b = v[(k + 1) % 3];
-            if (a > b)
-                std::swap(a, b);
-            ++use_count[{a, b}];
-        }
+        for (int k = 0; k < 3; ++k)
+            uses.Add(v[k], v[(k + 1) % 3], static_cast<std::int64_t>(f));
     }
-    for (const auto& [edge, count] : use_count) {
-        if (count == 1) {
-            info.mBoundaryEdges.push_back(edge);
-            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.first)] = 1;
-            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.second)] = 1;
+    uses.Build();
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e) {
+        if (uses.Count(e) == 1) {
+            info.mBoundaryEdges.push_back({uses.Lo(e), uses.Hi(e)});
+            info.mIsBoundaryVertex[static_cast<std::size_t>(uses.Lo(e))] = 1;
+            info.mIsBoundaryVertex[static_cast<std::size_t>(uses.Hi(e))] = 1;
         }
     }
     return info;
@@ -299071,19 +299096,20 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
     std::vector<std::int64_t> cap_nodes;
     {
         const std::size_t first = g.mSkinFaces.mIds.size();
-        std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
         for (std::size_t f = first; f < num_faces; ++f) {
             const std::int64_t lo = f_start[f];
             const std::int64_t n = f_start[f + 1] - lo;
             for (std::int64_t k = 0; k < n; ++k) {
                 const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
                 const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
-                ++uses[{std::min(a, b), std::max(a, b)}];
+                uses.Add(a, b, static_cast<std::int64_t>(f));
             }
         }
-        const bool closed =
-            !uses.empty() && std::all_of(uses.begin(), uses.end(),
-                                         [](const auto& rUse) { return rUse.second == 2; });
+        uses.Build();
+        bool closed = uses.NumEdges() > 0;
+        for (std::size_t e = 0; closed && e < uses.NumEdges(); ++e)
+            closed = uses.Count(e) == 2;
         if (closed) {
             cap_start.push_back(0);
             for (std::size_t f = first; f < num_faces; ++f) {
@@ -311673,14 +311699,6 @@ double tp_signed_volume(const double* pXyz, const std::int64_t* pN) {
 }
 
 /// Find-with-path-halving over a small local forest.
-std::size_t tp_find(std::vector<std::size_t>& rParent, std::size_t i) {
-    while (rParent[i] != i) {
-        rParent[i] = rParent[rParent[i]];
-        i = rParent[i];
-    }
-    return i;
-}
-
 /// Build every dual cell (and destined boundary polygon) around vertex @p v.
 TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     TpVertexOut out;
@@ -311698,8 +311716,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     };
 
     // Components: tets around v joined through faces at v interior to a block.
-    std::vector<std::size_t> parent(ntets);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    detail::UnionFind<std::size_t> sets(ntets);
     for (std::size_t i = 0; i < ntets; ++i) {
         const std::int64_t t = tets[i];
         for (int k = 0; k < 4; ++k) {
@@ -311707,10 +311724,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
             if (!tp_contains(rCtx.Ring(t, k), v) || !rCtx.Interior(f))
                 continue;
             const std::size_t j = local_of(rCtx.Across(f, t));
-            const std::size_t ri = tp_find(parent, i);
-            const std::size_t rj = tp_find(parent, j);
-            if (ri != rj)
-                parent[std::max(ri, rj)] = std::min(ri, rj);
+            sets.Unite(i, j);
         }
     }
     // Roots are each component's smallest local index, so walking i upward
@@ -311718,7 +311732,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     std::vector<std::vector<std::size_t>> comps;
     std::vector<std::int64_t> comp_of_root(ntets, -1);
     for (std::size_t i = 0; i < ntets; ++i) {
-        const std::size_t r = tp_find(parent, i);
+        const std::size_t r = sets.Find(i);
         if (comp_of_root[r] < 0) {
             comp_of_root[r] = static_cast<std::int64_t>(comps.size());
             comps.emplace_back();
@@ -312734,25 +312748,17 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     const std::size_t nt = tris.size();
     // Shells: the triangles connected across edges, in the order of their
     // first triangle.
-    std::vector<std::size_t> parent(nt);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    const auto find = [&](std::size_t A) {
-        while (parent[A] != A)
-            A = parent[A] = parent[parent[A]];
-        return A;
-    };
+    detail::UnionFind<std::size_t> sets(nt);
+    const auto find = [&](std::size_t A) { return sets.Find(A); };
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> first;
+        detail::EdgeUseTable<std::int64_t> edges;
         for (std::size_t t = 0; t < nt; ++t)
-            for (std::size_t k = 0; k < 3; ++k) {
-                const auto key = std::minmax(tris[t][k], tris[t][(k + 1) % 3]);
-                const auto [it, fresh] = first.emplace(key, t);
-                if (!fresh) {
-                    const std::size_t a = find(it->second), b = find(t);
-                    if (a != b)
-                        parent[std::max(a, b)] = std::min(a, b);
-                }
-            }
+            for (std::size_t k = 0; k < 3; ++k)
+                edges.Add(tris[t][k], tris[t][(k + 1) % 3], static_cast<std::int64_t>(t));
+        edges.Build();
+        edges.ForEachSharedFace([&](std::int64_t A, std::int64_t B) {
+            sets.Unite(static_cast<std::size_t>(A), static_cast<std::size_t>(B));
+        });
     }
     std::vector<std::int64_t> shell_of(nt, -1);
     std::vector<std::vector<std::size_t>> shells;
