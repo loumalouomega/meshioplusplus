@@ -8,6 +8,11 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 **Keep this file current: add an entry in the same change as every version bump.** See the
 "Version bumps" section of `AGENTS.md`.
 
+## Unreleased
+
+- **Docs:** `tetrahedralize` backend comparison — `example/python/72_tetrahedralize_backends.ipynb` measures the native octree (plain and with `post_adapt`), Netgen, TetGen and Gmsh on a sphere, cube, cylinder and the Stanford bunny (counts, time, skin kept, dihedral angles, slivers, scaled Jacobian and aspect ratio); results in `doc/tetrahedralize.md`.
+- **CI:** the Linux jobs run on `ubuntu-24.04` instead of `ubuntu-latest`.
+
 ## v20.2.0 (2026-11-15)
 
 A minor release: seven new formats (Fluent cases, 3MF, LAS, GIFTI, ADCIRC, `ugrid_nc` and PLOT3D) and `detect(path)`, series writers for CGNS, EnSight, Gmsh, MED, Tecplot and UNV, more of CGNS, Exodus II, EnSight Gold and OpenFOAM read and written, the first steps of the freeform `fit_cad` plan, one convention for ghost, owner and global-id arrays with the Conduit, Catalyst and Ascent routes, and a faster core: `boundary_layer` is 12 to 14 times faster on a box's skin, the octree mesher's tetrahedral output 12 to 15%, and the exact `orient2d` and `orient3d` stages no longer allocate, all with output unchanged. `meshioplusplus_bench_ops` now has a row for every operation. **C++ ABI 46** ([ABI](doc/abi.md)): `FitCadOptions`, `FitCadResult`, `CadKernelProvider` and `SequencePipeline` grew, so C++ consumers recompile against the new headers; the C API's option structs only grow into their reserved tails, so the C, Fortran, Julia, R, Octave, WASM and Python callers are unaffected.
