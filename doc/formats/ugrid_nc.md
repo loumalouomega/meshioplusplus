@@ -19,6 +19,7 @@ last = meshioplusplus.ugrid_nc.read("model_map.nc", time_step=-1)
 times = meshioplusplus.ugrid_nc.time_values("model_map.nc")
 ```
 
+- A variable on a dimension netCDF named itself (`phony_dim_<n>`) is refused by name. netCDF-C gives a dataset whose dimension scales are missing or corrupt such a dimension, and when its `DIMENSION_LIST` names datasets that are no dimension scales it leaves the variable's dimensions NULL, so reading it crashed inside the library (found by fuzzing; `tests/fuzz/regressions/ugrid_nc/dimension-list-names-no-scale`). A plain HDF5 file without dimension scales is therefore not read as UGRID, which resolves its node, face and edge dimensions by name.
 - The first variable with `cf_role = "mesh_topology"` is the mesh; a volume (`topology_dimension = 3`) topology is refused by name, and an Exodus file (`num_nodes`, `num_dim`) is told to read as `exodus`.
 - `node_coordinates` gives x, y and an optional third coordinate (z is 0 otherwise). Spherical `lon`/`lat` coordinates are kept as they are.
 - `face_node_connectivity`: `start_index` (0 or 1) is honoured, the `_FillValue` padding of mixed polygons is dropped, and an array stored `(max_nodes, faces)` is read through the topology's `face_dimension`. Faces become a `triangle`, a `quad` and one `polygon` block per larger node count, in that order, each in the file's face order.

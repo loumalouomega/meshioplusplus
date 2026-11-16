@@ -207,3 +207,21 @@ def test_a_time_variable_longer_than_its_dimension_is_refused(tmp_path, monkeypa
         h[:] = np.zeros((2, 2))
     with pytest.raises(mio.ReadError, match="holds 5 values"):
         mio.ugrid_nc.read(path)
+
+
+def test_a_variable_on_a_netcdf_invented_dimension_is_refused(reader):
+    """fuzz finding: a face-connectivity variable whose DIMENSION_LIST names datasets that
+    are no dimension scales. netCDF-C invents ``phony_dim_<n>`` dimensions for it and leaves
+    its dimension pointers NULL, so reading it dereferenced NULL inside the library
+    (tests/fuzz/regressions/ugrid_nc/dimension-list-names-no-scale)."""
+    import pathlib
+
+    path = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "fuzz"
+        / "regressions"
+        / "ugrid_nc"
+        / "dimension-list-names-no-scale"
+    )
+    with pytest.raises(mio.ReadError, match="phony_dim_"):
+        reader(str(path))

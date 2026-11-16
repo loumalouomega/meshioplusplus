@@ -56,6 +56,15 @@ NDArray read_var(int Ncid, int Varid, const std::vector<std::size_t>& rStart,
                  const std::vector<std::size_t>& rCount, const char* pWho = "netCDF",
                  const char* pWhoType = "netCDF");
 
+/// Refuse (`ReadError`) a variable one of whose dimensions netCDF named itself
+/// (`phony_dim_<n>`). netCDF-C gives a dataset the file's dimension scales do not describe
+/// such a dimension, and when the dataset's `DIMENSION_LIST` names datasets that are not
+/// dimension scales it also leaves the variable's dimension pointers NULL, so reading the
+/// variable dereferences NULL inside the library (found by fuzzing the UGRID reader; the
+/// call cannot be made safe once it is made). A mesh format that resolves its dimensions by
+/// name has no use for such a variable.
+void require_named_dims(int Ncid, int Varid, const char* pWho = "netCDF");
+
 /// The lengths of a variable's dimensions.
 std::vector<std::size_t> var_dims(int Ncid, int Varid, const char* pWho = "netCDF");
 
