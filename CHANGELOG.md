@@ -10,7 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
-- **Docs:** `tetrahedralize` backend comparison — `example/python/72_tetrahedralize_backends.ipynb` measures the native octree (plain and with `post_adapt`), Netgen, TetGen and Gmsh on a sphere, cube, cylinder and the Stanford bunny (counts, time, skin kept, dihedral angles, slivers, scaled Jacobian and aspect ratio); results in `doc/tetrahedralize.md`.
+- **Docs:** `tetrahedralize` backend comparison — `example/python/72_tetrahedralize_backends.ipynb` measures the native octree (plain and with `post_adapt`), Netgen, TetGen and Gmsh on a sphere, cube, cylinder and the Stanford bunny (counts, time, skin kept, dihedral angles, slivers, scaled Jacobian and aspect ratio; the adapted octree on the same lattice as the plain one); results in `doc/tetrahedralize.md`.
 - **CI:** the Linux jobs run on `ubuntu-24.04` instead of `ubuntu-latest`.
 
 ## v20.2.0 (2026-11-15)
