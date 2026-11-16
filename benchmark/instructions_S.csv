@@ -37,7 +37,7 @@ extract_surface_ragged,10368,21936908
 feature_edges_ragged,10368,89890698
 read_ragged_ensight,10368,11598445
 read_ragged_tecplot,10368,138363677
-read_stl,10368,15383054
+read_stl,10368,15014012
 read_stl_binary,10368,2186925
 read_gltf_weld,10368,1813747
 read_wkt,10368,28241837

@@ -58,3 +58,34 @@ TEST(TextUtils, TrimReturnsAnOwnedCopy) {
     s = "changed";
     EXPECT_EQ(t, "x");
 }
+
+TEST(TextUtils, OneSidedTrims) {
+    EXPECT_EQ(TextUtils::LeftTrimView("  a b  "), "a b  ");
+    EXPECT_EQ(TextUtils::RightTrimView("  a b  "), "  a b");
+    EXPECT_EQ(TextUtils::LeftTrimView("   "), "");
+    EXPECT_EQ(TextUtils::RightTrimView(""), "");
+    EXPECT_EQ(TextUtils::RightTrimView("a \r", TextUtils::kSpaceTab), "a \r");
+}
+
+TEST(TextUtils, CaseFoldIsAsciiOnly) {
+    EXPECT_EQ(TextUtils::Upper("Node-1 abz"), "NODE-1 ABZ");
+    EXPECT_EQ(TextUtils::Lower("NODE-1 ABZ"), "node-1 abz");
+    EXPECT_EQ(TextUtils::Lower(""), "");
+    // A byte above 0x7F (Latin-1 "A grave" and "a grave") is left alone.
+    EXPECT_EQ(TextUtils::Upper("\xE0"), "\xE0");
+    EXPECT_EQ(TextUtils::Lower("\xC0"), "\xC0");
+    for (int c = 0; c < 256; ++c) {
+        const char ch = static_cast<char>(c);
+        const bool upper = c >= 'A' && c <= 'Z', lower = c >= 'a' && c <= 'z';
+        EXPECT_EQ(TextUtils::LowerChar(ch), upper ? static_cast<char>(c + 32) : ch);
+        EXPECT_EQ(TextUtils::UpperChar(ch), lower ? static_cast<char>(c - 32) : ch);
+    }
+}
+
+TEST(TextUtils, EndsWithLoweredComparesTheTailWithoutCase) {
+    EXPECT_TRUE(TextUtils::EndsWithLowered("model.GLB", ".glb"));
+    EXPECT_TRUE(TextUtils::EndsWithLowered("model.glb", ".glb"));
+    EXPECT_FALSE(TextUtils::EndsWithLowered("model.glt", ".glb"));
+    EXPECT_FALSE(TextUtils::EndsWithLowered("b", ".glb"));
+    EXPECT_TRUE(TextUtils::EndsWithLowered(".glb", ".glb"));
+}

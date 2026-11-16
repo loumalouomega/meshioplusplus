@@ -59455,6 +59455,59 @@ struct TextUtils {
         return Text.substr(b, Text.find_last_not_of(Set) - b + 1);
     }
 
+    /// `Text` without the characters of `Set` at its start.
+    static MIO_ALWAYS_INLINE std::string_view LeftTrimView(std::string_view Text,
+                                                           std::string_view Set = kBlanks) {
+        const std::size_t b = Text.find_first_not_of(Set);
+        return b == std::string_view::npos ? std::string_view{} : Text.substr(b);
+    }
+
+    /// `Text` without the characters of `Set` at its end.
+    static MIO_ALWAYS_INLINE std::string_view RightTrimView(std::string_view Text,
+                                                            std::string_view Set = kBlanks) {
+        const std::size_t e = Text.find_last_not_of(Set);
+        return e == std::string_view::npos ? std::string_view{} : Text.substr(0, e + 1);
+    }
+
+    /// `C` with an ASCII capital turned into its small letter; no locale.
+    static MIO_ALWAYS_INLINE char LowerChar(char C) {
+        return C >= 'A' && C <= 'Z' ? static_cast<char>(C - 'A' + 'a') : C;
+    }
+
+    /// `C` with an ASCII small letter turned into its capital; no locale.
+    static MIO_ALWAYS_INLINE char UpperChar(char C) {
+        return C >= 'a' && C <= 'z' ? static_cast<char>(C - 'a' + 'A') : C;
+    }
+
+    /// `Text` with its ASCII capitals turned into small letters.
+    static MIO_ALWAYS_INLINE std::string Lower(std::string_view Text) {
+        std::string out(Text);
+        for (char& c : out)
+            c = LowerChar(c);
+        return out;
+    }
+
+    /// `Text` with its ASCII small letters turned into capitals.
+    static MIO_ALWAYS_INLINE std::string Upper(std::string_view Text) {
+        std::string out(Text);
+        for (char& c : out)
+            c = UpperChar(c);
+        return out;
+    }
+
+    /// Whether the end of `Text`, with its capitals lowered, is the lower-case
+    /// `LowerSuffix` (a file extension compared without regard to case).
+    static MIO_ALWAYS_INLINE bool EndsWithLowered(std::string_view Text,
+                                                  std::string_view LowerSuffix) {
+        if (Text.size() < LowerSuffix.size())
+            return false;
+        const std::string_view tail = Text.substr(Text.size() - LowerSuffix.size());
+        for (std::size_t i = 0; i < tail.size(); ++i)
+            if (LowerChar(tail[i]) != LowerSuffix[i])
+                return false;
+        return true;
+    }
+
     /// `TrimView` as an owned string.
     static MIO_ALWAYS_INLINE std::string Trim(std::string_view Text,
                                               std::string_view Set = kBlanks) {
@@ -63522,6 +63575,7 @@ inline Face polygon_from_edges(const std::vector<std::array<std::int64_t, 2>>& r
 #include <array>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -63532,8 +63586,7 @@ namespace gid_detail {
 
 /// True when @p rS ends with @p rSuffix.
 inline bool gid_has_suffix(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 /**
@@ -78550,7 +78603,7 @@ const std::vector<std::pair<std::string, std::string>>& abaqus_type_table() {
 namespace {
 
 bool abq_starts_with(std::string_view Name, std::string_view Prefix) {
-    return Name.substr(0, Prefix.size()) == Prefix;
+    return std::string_view(Name).starts_with(Prefix);
 }
 
 // "S" followed by a digit: S3, S4R, S8R5, S9R5 (not SAX1, SC8R, SPRINGA).
@@ -87184,10 +87237,7 @@ namespace detail {
 namespace {
 
 std::string cmpin_lower(std::string Text) {
-    std::transform(Text.begin(), Text.end(), Text.begin(), [](unsigned char c) {
-        return static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
-    });
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 [[noreturn]] void cmpin_missing(Compression Kind) {
@@ -114312,7 +114362,7 @@ constexpr const char* kProvenancePrefixes[] = {
 };
 
 bool prov_starts_with(std::string_view s, std::string_view prefix) {
-    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+    return std::string_view(s).starts_with(prefix);
 }
 
 /// Trims ASCII whitespace from both ends.
@@ -117497,6 +117547,7 @@ const RefineMaskTemplate& refine_mask_template(CellType Type, std::uint16_t Mask
 #include <cstdint>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -117511,7 +117562,7 @@ constexpr const char* kRfdPrefix = "region:";
 constexpr const char* kRfdMetaPrefix = "region-meta:";
 
 bool rfd_starts_with(const std::string& rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 const char* rfd_kind_name(RegionKind Kind) {
@@ -130915,6 +130966,7 @@ void FileSource::MoveFrom(FileSource&& rOther) noexcept {
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -130946,9 +130998,7 @@ const std::unordered_map<std::string, std::string>& meshio_to_abaqus() {
 }
 
 std::string abaqus_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 std::string_view abaqus_trim_view(std::string_view rS) {
     return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
@@ -133246,8 +133296,7 @@ void filw_ndi_nshr(std::size_t Count, std::int64_t& rNdi, std::int64_t& rNshr) {
 }
 
 bool filw_ends_with(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 std::optional<double> filw_scalar(const Mesh& rMesh, const std::string& rName) {
@@ -138262,11 +138311,7 @@ namespace meshioplusplus {
 namespace {
 
 std::string ans_upper(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        if (c >= 'a' && c <= 'z')
-            c = static_cast<char>(c - 'a' + 'A');
-    return out;
+    return meshioplusplus::detail::TextUtils::Upper(Text);
 }
 
 std::string_view ans_strip_view(std::string_view Text) {
@@ -144253,11 +144298,7 @@ const CaTypeSpec* ca_spec_by_type(const std::string& rType) {
 }
 
 std::string ca_upper(std::string s) {
-    // ASCII only, like the name sanitiser: no locale may touch bytes above 0x7F.
-    std::transform(s.begin(), s.end(), s.begin(), [](char c) {
-        return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
-    });
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 struct CaToken {
@@ -151633,11 +151674,7 @@ constexpr FebLossy kFebLossy[] = {
     {"tet5", 5, "tetra"}, {"tet15", 15, "tetra10"}, {"tet20", 20, nullptr}};
 
 std::string feb_lower(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-    return out;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 // `TET10G4` -> `tet10`: an integration-rule suffix `g<digits>` after the node count.
@@ -155241,7 +155278,7 @@ bool frd_is_tensor_name(const std::string& rName) {
 }
 
 bool frd_starts_with(std::string_view Line, std::string_view Prefix) {
-    return Line.size() >= Prefix.size() && Line.compare(0, Prefix.size(), Prefix) == 0;
+    return std::string_view(Line).starts_with(Prefix);
 }
 
 /// Columns [Pos, Pos + Len) of @p Line, clipped to its end.
@@ -160241,6 +160278,7 @@ void write_gifti(const std::string& rPath, const Mesh& rMesh) {
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -160266,7 +160304,7 @@ constexpr int kGltfModeLines = 1;
 constexpr int kGltfModeTriangles = 4;
 
 bool gltf_starts_with(const std::string& rText, const char* pPrefix) {
-    return rText.rfind(pPrefix, 0) == 0;
+    return std::string_view(rText).starts_with(pPrefix);
 }
 
 // --------------------------------------------------------------------------- //
@@ -161657,15 +161695,11 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
 }
 
 std::string gltf_lower(std::string Text) {
-    for (char& c : Text)
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 bool gltf_has_suffix(const std::string& rText, const char* pSuffix) {
-    const std::string s = pSuffix;
-    return rText.size() >= s.size() && gltf_lower(rText.substr(rText.size() - s.size())) == s;
+    return meshioplusplus::detail::TextUtils::EndsWithLowered(rText, pSuffix);
 }
 
 // The basename of the sidecar, percent-encoded (RFC 3986 unreserved characters
@@ -161790,6 +161824,7 @@ void write_gltf(const std::string& rPath, const Mesh& rMesh, const GltfWriteOpti
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -161863,17 +161898,7 @@ std::vector<double> gltfr_numbers(const JsonValue& rValue, std::size_t Count,
 // ---- the container ------------------------------------------------------- //
 
 bool gltfr_has_suffix_ci(const std::string& rText, const char* pSuffix) {
-    const std::string s = pSuffix;
-    if (rText.size() < s.size())
-        return false;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        char c = rText[rText.size() - s.size() + i];
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-        if (c != s[i])
-            return false;
-    }
-    return true;
+    return meshioplusplus::detail::TextUtils::EndsWithLowered(rText, pSuffix);
 }
 
 std::string gltfr_read_file(const std::string& rPath) {
@@ -169289,9 +169314,7 @@ const char* lsd_family_name(LsdFamily Family) {
 }
 
 std::string lsd_upper(std::string Text) {
-    for (char& c : Text)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return Text;
+    return meshioplusplus::detail::TextUtils::Upper(Text);
 }
 
 std::string lsd_strip(std::string_view rText, const char* pChars = " \t\r\n\f\v") {
@@ -169303,7 +169326,7 @@ std::string lsd_strip(std::string_view rText, const char* pChars = " \t\r\n\f\v"
 }
 
 bool lsd_starts_with(std::string_view rText, const char* pPrefix) {
-    return rText.rfind(pPrefix, 0) == 0;
+    return std::string_view(rText).starts_with(pPrefix);
 }
 
 std::vector<std::string_view> lsd_split(std::string_view rText, char Sep) {
@@ -175621,10 +175644,7 @@ const MarcType* marc_type(std::int64_t Type) {
 constexpr std::size_t kMarcFirstLineNodes = 14;
 
 std::string marc_lower(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 std::string_view marc_trim_view(std::string_view Text) {
@@ -176949,9 +176969,7 @@ std::string marcw_keyword(const std::vector<std::string>& rWords) {
 }
 
 std::string marcw_lower(std::string Text) {
-    for (char& c : Text)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 /// A set name the reader reads back as one token: blanks, commas and `$`
@@ -177908,7 +177926,7 @@ std::vector<std::string_view> mdpa_tokens(std::string_view S) {
 }
 
 bool mdpa_starts_with(std::string_view S, std::string_view Prefix) {
-    return S.size() >= Prefix.size() && S.compare(0, Prefix.size(), Prefix) == 0;
+    return std::string_view(S).starts_with(Prefix);
 }
 
 /// strtoll(…, 10) over the whole token.
@@ -193330,12 +193348,11 @@ double nh5w_time_of(const Mesh& rMesh) {
 }
 
 bool nh5w_starts_with(const std::string& rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 bool nh5w_ends_with(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 /// Insert or replace a member in a table's ordered members.
@@ -207124,9 +207141,7 @@ void pcd_store(NDArray& rColumn, std::size_t index, double value, long long ival
 }
 
 std::string pcd_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 std::string_view pcd_strip(std::string_view rS) {
@@ -207878,6 +207893,7 @@ void write_pcd(const std::string& rPath, const Mesh& rMesh, PcdData data, bool f
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -207940,9 +207956,7 @@ std::vector<std::string_view> permas_split_ws(std::string_view rS) {
 }
 
 std::string permas_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 // "$COOR" -> "COOR", "$ELEMENT TYPE=QUAD4" -> "ELEMENT TYPE=QUAD4" (uppercased).
@@ -210137,9 +210151,7 @@ std::string rad_trim(std::string_view s) {
 }
 
 std::string rad_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 // The deck's lines with `#include` files inlined and comments dropped, up to
@@ -215770,7 +215782,7 @@ Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
 }
 
 bool stl_starts_with(std::string_view S, std::string_view Prefix) {
-    return S.substr(0, Prefix.size()) == Prefix;
+    return std::string_view(S).starts_with(Prefix);
 }
 
 bool stl_is_comment_line(std::string_view S) {
@@ -217409,9 +217421,7 @@ namespace {
 thread_local const double* tecplot_series_time = nullptr;
 
 std::string tecplot_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 std::string tecplot_strip(const std::string& rS) {
     return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
@@ -227078,9 +227088,7 @@ std::vector<std::string> split(const std::string& rS) {
 }
 
 std::string vtk_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {
@@ -236766,9 +236774,7 @@ std::string_view xyz_strip(std::string_view rS) {
 }
 
 std::string xyz_lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Lower(s);
 }
 
 bool xyz_all_digits(std::string_view rS) {
@@ -236778,7 +236784,7 @@ bool xyz_all_digits(std::string_view rS) {
 }
 
 bool xyz_starts_with(std::string_view rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 std::vector<std::string_view> xyz_whitespace_split(std::string_view rS) {
@@ -237450,9 +237456,7 @@ std::string z88_read_text(const std::string& rPath) {
 }
 
 std::string z88_lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Lower(s);
 }
 
 // The file named `rName` (any case) in `rDir`, or an empty path.
@@ -251747,9 +251751,7 @@ const std::vector<DetectShared>& detect_shared_extensions() {
 }
 
 std::string detect_lower(std::string Text) {
-    std::transform(Text.begin(), Text.end(), Text.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 /// The extension candidates of @p rPath and the suffix that named them (longest first,
@@ -307728,6 +307730,7 @@ std::int64_t smooth_odt_pass(std::vector<double>& rXyz,
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -307739,8 +307742,7 @@ namespace {
 
 // Whether `hay` starts with `needle`.
 bool sniff_starts_with(const std::string& rHay, const char* pNeedle) {
-    const std::string needle(pNeedle);
-    return rHay.size() >= needle.size() && rHay.compare(0, needle.size(), needle) == 0;
+    return std::string_view(rHay).starts_with(pNeedle);
 }
 
 // Whether `hay` contains `needle`.

@@ -48,6 +48,7 @@
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/vtk_hex_order.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -177,9 +178,7 @@ std::vector<std::string> split(const std::string& rS) {
 }
 
 std::string vtk_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {

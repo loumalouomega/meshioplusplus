@@ -331,7 +331,7 @@ constexpr const char* kProvenancePrefixes[] = {
 };
 
 bool prov_starts_with(std::string_view s, std::string_view prefix) {
-    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+    return std::string_view(s).starts_with(prefix);
 }
 
 /// Trims ASCII whitespace from both ends.

@@ -59,9 +59,7 @@ std::string_view xyz_strip(std::string_view rS) {
 }
 
 std::string xyz_lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Lower(s);
 }
 
 bool xyz_all_digits(std::string_view rS) {
@@ -71,7 +69,7 @@ bool xyz_all_digits(std::string_view rS) {
 }
 
 bool xyz_starts_with(std::string_view rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 std::vector<std::string_view> xyz_whitespace_split(std::string_view rS) {

@@ -136,10 +136,7 @@ const MarcType* marc_type(std::int64_t Type) {
 constexpr std::size_t kMarcFirstLineNodes = 14;
 
 std::string marc_lower(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 std::string_view marc_trim_view(std::string_view Text) {
@@ -1464,9 +1461,7 @@ std::string marcw_keyword(const std::vector<std::string>& rWords) {
 }
 
 std::string marcw_lower(std::string Text) {
-    for (char& c : Text)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 /// A set name the reader reads back as one token: blanks, commas and `$`

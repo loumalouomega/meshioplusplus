@@ -78,9 +78,7 @@ std::string rad_trim(std::string_view s) {
 }
 
 std::string rad_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 // The deck's lines with `#include` files inlined and comments dropped, up to

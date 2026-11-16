@@ -257,9 +257,7 @@ void pcd_store(NDArray& rColumn, std::size_t index, double value, long long ival
 }
 
 std::string pcd_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 std::string_view pcd_strip(std::string_view rS) {

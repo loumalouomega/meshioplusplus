@@ -61,11 +61,7 @@ namespace meshioplusplus {
 namespace {
 
 std::string ans_upper(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        if (c >= 'a' && c <= 'z')
-            c = static_cast<char>(c - 'a' + 'A');
-    return out;
+    return meshioplusplus::detail::TextUtils::Upper(Text);
 }
 
 std::string_view ans_strip_view(std::string_view Text) {

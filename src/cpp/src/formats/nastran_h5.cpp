@@ -53,6 +53,7 @@
 #include "meshioplusplus/operations/sequence.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -2200,12 +2201,11 @@ double nh5w_time_of(const Mesh& rMesh) {
 }
 
 bool nh5w_starts_with(const std::string& rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 bool nh5w_ends_with(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 /// Insert or replace a member in a table's ordered members.

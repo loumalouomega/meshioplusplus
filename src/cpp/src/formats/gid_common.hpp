@@ -49,11 +49,13 @@
 #include <array>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/formats/gid.hpp"
+#include "../detail/text_utils.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 
 namespace meshioplusplus {
@@ -61,8 +63,7 @@ namespace gid_detail {
 
 /// True when @p rS ends with @p rSuffix.
 inline bool gid_has_suffix(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 /**

@@ -83,7 +83,7 @@ std::vector<std::string_view> mdpa_tokens(std::string_view S) {
 }
 
 bool mdpa_starts_with(std::string_view S, std::string_view Prefix) {
-    return S.size() >= Prefix.size() && S.compare(0, Prefix.size(), Prefix) == 0;
+    return std::string_view(S).starts_with(Prefix);
 }
 
 /// strtoll(…, 10) over the whole token.

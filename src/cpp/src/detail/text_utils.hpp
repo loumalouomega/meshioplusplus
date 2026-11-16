@@ -56,6 +56,59 @@ struct TextUtils {
         return Text.substr(b, Text.find_last_not_of(Set) - b + 1);
     }
 
+    /// `Text` without the characters of `Set` at its start.
+    static MIO_ALWAYS_INLINE std::string_view LeftTrimView(std::string_view Text,
+                                                           std::string_view Set = kBlanks) {
+        const std::size_t b = Text.find_first_not_of(Set);
+        return b == std::string_view::npos ? std::string_view{} : Text.substr(b);
+    }
+
+    /// `Text` without the characters of `Set` at its end.
+    static MIO_ALWAYS_INLINE std::string_view RightTrimView(std::string_view Text,
+                                                            std::string_view Set = kBlanks) {
+        const std::size_t e = Text.find_last_not_of(Set);
+        return e == std::string_view::npos ? std::string_view{} : Text.substr(0, e + 1);
+    }
+
+    /// `C` with an ASCII capital turned into its small letter; no locale.
+    static MIO_ALWAYS_INLINE char LowerChar(char C) {
+        return C >= 'A' && C <= 'Z' ? static_cast<char>(C - 'A' + 'a') : C;
+    }
+
+    /// `C` with an ASCII small letter turned into its capital; no locale.
+    static MIO_ALWAYS_INLINE char UpperChar(char C) {
+        return C >= 'a' && C <= 'z' ? static_cast<char>(C - 'a' + 'A') : C;
+    }
+
+    /// `Text` with its ASCII capitals turned into small letters.
+    static MIO_ALWAYS_INLINE std::string Lower(std::string_view Text) {
+        std::string out(Text);
+        for (char& c : out)
+            c = LowerChar(c);
+        return out;
+    }
+
+    /// `Text` with its ASCII small letters turned into capitals.
+    static MIO_ALWAYS_INLINE std::string Upper(std::string_view Text) {
+        std::string out(Text);
+        for (char& c : out)
+            c = UpperChar(c);
+        return out;
+    }
+
+    /// Whether the end of `Text`, with its capitals lowered, is the lower-case
+    /// `LowerSuffix` (a file extension compared without regard to case).
+    static MIO_ALWAYS_INLINE bool EndsWithLowered(std::string_view Text,
+                                                  std::string_view LowerSuffix) {
+        if (Text.size() < LowerSuffix.size())
+            return false;
+        const std::string_view tail = Text.substr(Text.size() - LowerSuffix.size());
+        for (std::size_t i = 0; i < tail.size(); ++i)
+            if (LowerChar(tail[i]) != LowerSuffix[i])
+                return false;
+        return true;
+    }
+
     /// `TrimView` as an owned string.
     static MIO_ALWAYS_INLINE std::string Trim(std::string_view Text,
                                               std::string_view Set = kBlanks) {

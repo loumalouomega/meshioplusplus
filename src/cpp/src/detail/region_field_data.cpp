@@ -22,11 +22,13 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 // Project includes
 #include "region_field_data.hpp"
+#include "text_utils.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/log.hpp"
@@ -41,7 +43,7 @@ constexpr const char* kRfdPrefix = "region:";
 constexpr const char* kRfdMetaPrefix = "region-meta:";
 
 bool rfd_starts_with(const std::string& rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 const char* rfd_kind_name(RegionKind Kind) {

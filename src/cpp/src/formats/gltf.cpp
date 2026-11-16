@@ -30,12 +30,14 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/formats/gltf.hpp"
+#include "../detail/text_utils.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -78,7 +80,7 @@ constexpr int kGltfModeLines = 1;
 constexpr int kGltfModeTriangles = 4;
 
 bool gltf_starts_with(const std::string& rText, const char* pPrefix) {
-    return rText.rfind(pPrefix, 0) == 0;
+    return std::string_view(rText).starts_with(pPrefix);
 }
 
 // --------------------------------------------------------------------------- //
@@ -1469,15 +1471,11 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
 }
 
 std::string gltf_lower(std::string Text) {
-    for (char& c : Text)
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 bool gltf_has_suffix(const std::string& rText, const char* pSuffix) {
-    const std::string s = pSuffix;
-    return rText.size() >= s.size() && gltf_lower(rText.substr(rText.size() - s.size())) == s;
+    return meshioplusplus::detail::TextUtils::EndsWithLowered(rText, pSuffix);
 }
 
 // The basename of the sidecar, percent-encoded (RFC 3986 unreserved characters

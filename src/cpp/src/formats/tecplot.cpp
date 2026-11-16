@@ -73,9 +73,7 @@ namespace {
 thread_local const double* tecplot_series_time = nullptr;
 
 std::string tecplot_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 std::string tecplot_strip(const std::string& rS) {
     return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);

@@ -31,6 +31,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/code_aster.hpp"
+#include "../detail/text_utils.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -91,11 +92,7 @@ const CaTypeSpec* ca_spec_by_type(const std::string& rType) {
 }
 
 std::string ca_upper(std::string s) {
-    // ASCII only, like the name sanitiser: no locale may touch bytes above 0x7F.
-    std::transform(s.begin(), s.end(), s.begin(), [](char c) {
-        return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
-    });
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 struct CaToken {

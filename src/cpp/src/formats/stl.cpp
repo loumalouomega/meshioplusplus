@@ -46,6 +46,7 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -119,7 +120,7 @@ Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
 }
 
 bool stl_starts_with(std::string_view S, std::string_view Prefix) {
-    return S.substr(0, Prefix.size()) == Prefix;
+    return std::string_view(S).starts_with(Prefix);
 }
 
 bool stl_is_comment_line(std::string_view S) {

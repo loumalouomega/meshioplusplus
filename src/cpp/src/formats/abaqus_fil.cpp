@@ -39,6 +39,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/abaqus_fil.hpp"
+#include "../detail/text_utils.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/abaqus_types.hpp"
 #include "meshioplusplus/detail/byteswap.hpp"
@@ -1822,8 +1823,7 @@ void filw_ndi_nshr(std::size_t Count, std::int64_t& rNdi, std::int64_t& rNshr) {
 }
 
 bool filw_ends_with(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 std::optional<double> filw_scalar(const Mesh& rMesh, const std::string& rName) {
