@@ -50,12 +50,27 @@ def _int_att(var, name, default=None):
         return default
 
 
+def _named_dims(name, var):
+    """Refuse a variable on a dimension netCDF named itself (``phony_dim_<n>``): the
+    library gives one to a dataset whose dimension scales are missing or corrupt and
+    then dereferences NULL when the variable is read (fuzz; the core refuses it too)."""
+    for dim in var.dimensions:
+        if dim.startswith("phony_dim_"):
+            raise ReadError(
+                f"meshio++: ugrid_nc: variable '{name}' uses the dimension '{dim}', "
+                "which the file does not define (netCDF invents such a name for a "
+                "dataset whose dimension scales are missing or corrupt); refusing to "
+                "read it"
+            )
+    return var
+
+
 def _var(nc, name):
     if name not in nc.variables:
         raise ReadError(
             f"meshio++: ugrid_nc: the mesh names a variable '{name}' the file does not have"
         )
-    return nc.variables[name]
+    return _named_dims(name, nc.variables[name])
 
 
 def _connectivity(nc, name, along, num_nodes):
@@ -120,9 +135,10 @@ def _scan(nc):
     if edges:
         edge_dim = _att(tvar, "edge_dimension") or _var(nc, edges).dimensions[0]
     time_dim = None
-    for var in nc.variables.values():
+    for vname, var in nc.variables.items():
         if _att(var, "mesh") != topo or not _att(var, "location"):
             continue
+        _named_dims(vname, var)
         dims = var.dimensions
         if len(dims) >= 2 and dims[0] not in (node_dim, face_dim, edge_dim):
             time_dim = dims[0]
@@ -231,6 +247,7 @@ def read(filename, time_step=0):
             if loc_dim is None:
                 continue
             name = _att(var, NAME_ATT) or vname
+            _named_dims(vname, var)
             dims = var.dimensions
             var.set_auto_mask(False)
             k = 1 if (dims and time_dim is not None and dims[0] == time_dim) else 0

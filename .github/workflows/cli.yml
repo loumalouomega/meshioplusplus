@@ -79,7 +79,7 @@ jobs:
   # ---------------------------------------------------------------------------
   linux-x86_64:
     name: Linux x86_64
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     container: quay.io/pypa/manylinux_2_34_x86_64
     steps:
       - uses: actions/checkout@v4
@@ -362,7 +362,7 @@ jobs:
   # ---------------------------------------------------------------------------
   release:
     name: Attach CLI binaries to GitHub Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [linux-x86_64, linux-arm64, macos, windows]
     permissions:

@@ -114,6 +114,9 @@ int ug_varid(int Ncid, const std::string& rName) {
 }
 
 std::vector<int> ug_dimids(int Ncid, int Varid) {
+    // Every read below is preceded by this lookup: a variable on a netCDF-invented dimension
+    // is refused here, before the library can dereference its missing dimension (fuzz).
+    detail::nc::require_named_dims(Ncid, Varid, kUgWho);
     int nd = 0;
     ug_check(nc_inq_varndims(Ncid, Varid, &nd), "inq_varndims");
     std::vector<int> ids(static_cast<std::size_t>(nd));

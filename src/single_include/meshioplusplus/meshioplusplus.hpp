@@ -55229,6 +55229,15 @@ NDArray read_var(int Ncid, int Varid, const std::vector<std::size_t>& rStart,
                  const std::vector<std::size_t>& rCount, const char* pWho = "netCDF",
                  const char* pWhoType = "netCDF");
 
+/// Refuse (`ReadError`) a variable one of whose dimensions netCDF named itself
+/// (`phony_dim_<n>`). netCDF-C gives a dataset the file's dimension scales do not describe
+/// such a dimension, and when the dataset's `DIMENSION_LIST` names datasets that are not
+/// dimension scales it also leaves the variable's dimension pointers NULL, so reading the
+/// variable dereferences NULL inside the library (found by fuzzing the UGRID reader; the
+/// call cannot be made safe once it is made). A mesh format that resolves its dimensions by
+/// name has no use for such a variable.
+void require_named_dims(int Ncid, int Varid, const char* pWho = "netCDF");
+
 /// The lengths of a variable's dimensions.
 std::vector<std::size_t> var_dims(int Ncid, int Varid, const char* pWho = "netCDF");
 
@@ -106177,6 +106186,28 @@ void check(int Status, const char* pWhat, bool Writing, const char* pWho) {
         if (Writing)
             throw WriteError(msg);
         throw ReadError(msg);
+    }
+}
+
+void require_named_dims(int Ncid, int Varid, const char* pWho) {
+    int nd = 0;
+    check(nc_inq_varndims(Ncid, Varid, &nd), "inq_varndims", false, pWho);
+    if (nd <= 0)
+        return;
+    std::vector<int> ids(static_cast<std::size_t>(nd));
+    check(nc_inq_vardimid(Ncid, Varid, ids.data()), "inq_vardimid", false, pWho);
+    for (const int id : ids) {
+        char dname[NC_MAX_NAME + 1] = {0};
+        check(nc_inq_dimname(Ncid, id, dname), "inq_dimname", false, pWho);
+        if (std::strncmp(dname, "phony_dim_", 10) != 0)
+            continue;
+        char vname[NC_MAX_NAME + 1] = {0};
+        check(nc_inq_varname(Ncid, Varid, vname), "inq_varname", false, pWho);
+        throw ReadError(std::string("meshio++: ") + pWho + ": variable '" + vname +
+                        "' uses the dimension '" + dname +
+                        "', which the file does not define (netCDF invents such a name for a "
+                        "dataset whose dimension scales are missing or corrupt); refusing to "
+                        "read it");
     }
 }
 
@@ -223423,6 +223454,9 @@ int ug_varid(int Ncid, const std::string& rName) {
 }
 
 std::vector<int> ug_dimids(int Ncid, int Varid) {
+    // Every read below is preceded by this lookup: a variable on a netCDF-invented dimension
+    // is refused here, before the library can dereference its missing dimension (fuzz).
+    detail::nc::require_named_dims(Ncid, Varid, kUgWho);
     int nd = 0;
     ug_check(nc_inq_varndims(Ncid, Varid, &nd), "inq_varndims");
     std::vector<int> ids(static_cast<std::size_t>(nd));

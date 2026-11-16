@@ -44,7 +44,7 @@ The octree backend meshes each region with [`octree_mesh`](./octree_mesh.md) und
 
 ## Measured
 
-On the unit sphere meshed by `mesh_cad_surface` at `h = 0.2` and 25 degrees, `tetrahedralize` makes 3,145 tetrahedra whose boundary is the skin itself, with dihedral angles of 8.5 to 164.7 degrees (3,680 and 8.9 to 164.4 with `max_size=0.2`); their volume, 4.1500, is the skin's enclosed volume to rounding, 0.9% under `4/3 π`, the skin's own chordal error. A box inside a box gives two regions that share the inner box's triangles. The octree backend fills the same sphere with 15,480 tetrahedra whose dihedral angles lie between 21.4 and 134.3 degrees, its boundary within 0.0097 (0.05 `h`) of the skin and its volume, 4.1252, 0.6% under the skin's; the unit cube's skin it fills exactly, with angles of 45 to 98 degrees. The two trade as their names say: Netgen keeps the skin with a fifth of the tetrahedra and wider angle extremes, the octree backend bounds the angles and moves the boundary. `tests/cpp/test_tetrahedralize.cpp` and `tests/python/test_tetrahedralize.py` pin these, and CI's `netgen` job runs the Netgen tests against Ubuntu's Netgen.
+On the unit sphere meshed by `mesh_cad_surface` at `h = 0.2` and 25 degrees, `tetrahedralize` makes 3,145 tetrahedra whose boundary is the skin itself, with dihedral angles of 8.5 to 164.7 degrees (3,680 and 8.9 to 164.4 with `max_size=0.2`); their volume, 4.1500, is the skin's enclosed volume to rounding, 0.9% under `4/3 π`, the skin's own chordal error. A box inside a box gives two regions that share the inner box's triangles. The octree backend fills the same sphere with 15,480 tetrahedra whose dihedral angles lie between 21.4 and 134.3 degrees, its boundary within 0.0097 (0.05 `h`) of the skin and its volume, 4.1252, 0.6% under the skin's; the unit cube's skin it fills exactly, with angles of 45 to 98 degrees. The two trade as their names say: Netgen keeps the skin with a fifth of the tetrahedra and wider angle extremes, the octree backend bounds the angles and moves the boundary. `tests/cpp/test_tetrahedralize.cpp` and `tests/python/test_tetrahedralize.py` pin these, and CI's `netgen` job runs the Netgen tests against Ubuntu's Netgen. [Backend comparison](#backend-comparison) measures all the backends on four skins, a scanned bunny among them.
 
 [`optimize_volume`](./optimize_volume.md) takes the tetrahedra once the triangle block is dropped. Its ODT energy objective (ODT relocation with 2-3 and 3-2 flips, Alliez et al. 2005; `objective="energy"`, the only one up to v18.0.0) was measured on Netgen's output (October 2026): ODT relocation lowers an energy summed over the cells, not the worst one, so it trades extremes for the average.
 
@@ -61,6 +61,48 @@ On the unit sphere meshed by `mesh_cad_surface` at `h = 0.2` and 25 degrees, `te
 On Netgen's raw output the energy objective halves the slivers; after Netgen's three passes it makes the extremes worse on every skin. The default objective since, `worst` (guarded relocation, edge removal, multi-face removal and worst-cell smoothing; Klingner and Shewchuk 2007, Freitag and Ollivier-Gooch 1997), never lowers the least dihedral angle and raises it past Netgen's own passes: 17.4 to 32.4 degrees on the sphere and 13.3 to 19.6 on the capped cylinder, with no tet left under 15 degrees ([measured](./optimize_volume.md#measured)).
 
 ![The unit sphere's skin at h = 0.2 filled by tetrahedralize's octree backend and by Netgen, each cut open at x = 0 and coloured by each tetrahedron's smallest dihedral angle, beside the histograms of those angles](/images/tetrahedralize_sphere.png)
+
+## Backend comparison
+
+[`72_tetrahedralize_backends.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/72_tetrahedralize_backends.ipynb) meshes four skins with every backend, the native octree backend plain and with `post_adapt=True` ([`adapt_volume`](./adapt_volume.md) on its tetrahedra with every `adapt_*` keyword at its default, v20.1.0; the same `octree_mesh` call as the plain backend, so the two differ only by the remeshing pass), Netgen, TetGen and Gmsh, and measures each result with [`compute_quality`](./mesh_quality.md) and the report (November 2026, Ubuntu 24.04 with its packaged Netgen, TetGen 1.5.0 and Gmsh; `h` is `max_size`, times are the best of three). The skins are the unit sphere (1,280 triangles, `h` 0.2), the unit cube (300, 0.2), a cylinder of radius 0.5 and height 1 (800, 0.2) and the Stanford bunny scan of `example/data`, remeshed to 2,996 triangles by `remesh` and oriented by `repair` (bounding box about 108 units, `h` 5.97), a complex skin with thin ears and concave folds. "SJ" is the scaled Jacobian, "AR" the aspect ratio, "slivers" the tetrahedra whose smallest dihedral angle is under 15 degrees, and the distance is the report's `hausdorff_to_surface` (`hausdorff_to_skin` for the adapted octree); "kept" says whether the skin's triangles are the result's boundary. No backend produced an inverted tetrahedron.
+
+![Counts, time and slivers by backend and skin](/images/tetrahedralize_backends_counts.png)
+
+| skin | backend | tets | time s | kept | distance | volume error % | dihedral min - max | slivers | SJ < 0.2 | SJ min / mean | AR max / mean |
+|---|---|---:|---:|:-:|---:|---:|---|---:|---:|---|---|
+| sphere | octree | 15,480 | 0.20 | no | 0.0072 | -1.50 | 31.9 - 121.5 | 0 | 0 | 0.327 / 0.848 | 2.22 / 1.11 |
+| sphere | octree + adapt | 13,433 | 3.19 | no | 0.0076 | -1.60 | 36.7 - 131.4 | 0 | 0 | 0.225 / 0.664 | 2.61 / 1.24 |
+| sphere | netgen | 4,070 | 0.15 | yes | 0 | -0.86 | 22.3 - 142.8 | 0 | 0 | 0.217 / 0.611 | 3.05 / 1.29 |
+| sphere | tetgen | 8,307 | 0.08 | yes | 0 | -0.86 | 9.0 - 164.6 | 86 | 48 | 0.117 / 0.637 | 5.53 / 1.34 |
+| sphere | gmsh | 5,193 | 0.13 | yes | 0 | -0.86 | 13.6 - 155.5 | 10 | 0 | 0.205 / 0.598 | 3.33 / 1.34 |
+| cube | octree | 1,800 | 0.04 | no | 0 | 0 | 45.0 - 90.0 | 0 | 0 | 0.577 / 0.821 | 1.43 / 1.18 |
+| cube | octree + adapt | 1,800 | 0.08 | no | 0 | 0 | 45.0 - 100.5 | 0 | 0 | 0.577 / 0.804 | 1.53 / 1.17 |
+| cube | netgen | 941 | 0.08 | yes | 0 | 0 | 27.0 - 139.2 | 0 | 0 | 0.394 / 0.657 | 1.97 / 1.22 |
+| cube | tetgen | 1,436 | 0.03 | yes | 0 | 0 | 9.2 - 164.5 | 26 | 16 | 0.118 / 0.578 | 5.80 / 1.45 |
+| cube | gmsh | 641 | 0.09 | yes | 0 | 0 | 9.7 - 159.8 | 3 | 11 | 0.099 / 0.548 | 4.25 / 1.49 |
+| cylinder | octree | 3,744 | 0.07 | no | 0.0054 | -0.88 | 27.1 - 127.8 | 0 | 0 | 0.360 / 0.819 | 1.85 / 1.13 |
+| cylinder | octree + adapt | 3,602 | 0.42 | no | 0.0054 | -0.93 | 38.3 - 134.9 | 0 | 0 | 0.326 / 0.717 | 2.36 / 1.21 |
+| cylinder | netgen | 1,677 | 0.20 | yes | 0 | -0.42 | 5.9 - 170.2 | 36 | 126 | 0.065 / 0.449 | 45.99 / 1.89 |
+| cylinder | tetgen | 1,966 | 0.06 | yes | 0 | -0.42 | 2.0 - 174.2 | 128 | 196 | 0.019 / 0.432 | 95.48 / 2.22 |
+| cylinder | gmsh | 1,503 | 0.11 | yes | 0 | -0.42 | 1.2 - 175.3 | 112 | 219 | 0.027 / 0.355 | 150.76 / 2.66 |
+| bunny | octree | 30,786 | 0.65 | no | 2.54 | -0.50 | 0.2 - 179.7 | 91 | 147 | 0.002 / 0.815 | 50,405 / 3.94 |
+| bunny | octree + adapt | 29,061 | 7.98 | no | 2.54 | -0.59 | 8.6 - 176.7 | 28 | 92 | 0.002 / 0.636 | 444 / 1.33 |
+| bunny | netgen | 11,566 | 1.21 | yes | 0 | 0 | 0.0 - 179.9 | 775 | 1,322 | 0.000 / 0.469 | 973,746 / 119.6 |
+| bunny | tetgen | 17,330 | 0.22 | yes | 0 | 0 | 0.0 - 179.1 | 586 | 803 | 0.000 / 0.595 | 75,532 / 9.59 |
+| bunny | gmsh | 9,335 | 0.34 | yes | 0 | 0 | 0.0 - 177.3 | 220 | 370 | 0.000 / 0.527 | 79,834 / 12.32 |
+
+![Scaled Jacobian and dihedral-angle distributions](/images/tetrahedralize_backends_quality.png)
+
+What the numbers say:
+
+- **Skin kept or fitted.** The three backends that keep the skin conform to it exactly (distance 0, the same volume error, the skin's own chordal error); the octree backends trade that for the best element shapes on the primitives: plain octree has no sliver and a scaled Jacobian of at least 0.33 on the sphere, cube and cylinder, and on the cube it reproduces the skin exactly with angles of 45 to 90 degrees. Of the three that keep the skin Netgen has the best shapes on the sphere, cube and cylinder (its optimisation passes), TetGen's constrained tetrahedralisation is the fastest and leaves the most slivers on the primitives, Gmsh sits between them.
+- **Count against quality.** Fewer elements is not better by itself: Gmsh and Netgen use 30 to 60 percent fewer tetrahedra than TetGen on the sphere and cube, with fewer bad ones. The plain octree's interior is the finest at equal `h` (3.8 times Netgen's count on the sphere) and so the most expensive for a solver.
+- **The adapted octree** never has more elements than the plain one on the same lattice (0.87 of the plain count on the sphere, 1.00 on the cube, whose lattice is already minimal, 0.96 on the cylinder, 0.94 on the bunny) and leaves the boundary where it was (the distance to the skin is unchanged to the fourth digit). What it buys is shape at the extremes: the smallest dihedral angle rises from 27.1 to 38.3 degrees on the cylinder, 31.9 to 36.7 on the sphere and 0.2 to 8.6 on the bunny, whose slivers fall from 91 to 28 and worst aspect ratio from 50,405 to 444. The mean scaled Jacobian falls (0.85 to 0.66 on the sphere), since the lattice's regular cells are the best a mesh can have and any remeshing moves away from them, and the call costs 2 to 13 times as long (3.2 s against 0.22 s on the sphere). It coarsens only a little because the plain octree already sits at the target size; a coarser target is what reduces the count, and `adapt_boundary_sizing="geometry"` can coarsen a flat or gently curved boundary further (0.45 of the plain count on the sphere in a trial) but refined the cylinder's (1.47), so it is not a default.
+- **The complex skin** separates the backends. The scan's thin ears and creases leave slivers everywhere: with the skin kept every mesher makes flat tetrahedra (dihedral angles up to 177-180 degrees, 220 to 775 slivers, Netgen the most); the plain octree has 91 slivers and a scaled Jacobian floor of 0.002, but moves the boundary by 2.54 units (2.4 percent of the size) and loses 0.5 percent of the volume. A skin like this is better prepared first ([`repair`](./repair.md), `remesh`, a coarser `h` near the ears) when the skin has to be kept.
+
+![Cut-away views of the sphere's and the bunny's tetrahedra, coloured by scaled Jacobian](/images/tetrahedralize_backends_cutaway.png)
+
+The figures are the notebook's matplotlib fallback, since the machine that executed it had no off-screen GL; the notebook uses PyVista renders where GL is available. TetGen and Gmsh appear only when their programs are installed and Netgen when built in or added, so a run elsewhere has the columns it can. The timings are a single machine's wall clock and the sizes come from one run each, so read the ordering, not the third digit.
 
 ## Options and report
 

@@ -40,6 +40,28 @@ void check(int Status, const char* pWhat, bool Writing, const char* pWho) {
     }
 }
 
+void require_named_dims(int Ncid, int Varid, const char* pWho) {
+    int nd = 0;
+    check(nc_inq_varndims(Ncid, Varid, &nd), "inq_varndims", false, pWho);
+    if (nd <= 0)
+        return;
+    std::vector<int> ids(static_cast<std::size_t>(nd));
+    check(nc_inq_vardimid(Ncid, Varid, ids.data()), "inq_vardimid", false, pWho);
+    for (const int id : ids) {
+        char dname[NC_MAX_NAME + 1] = {0};
+        check(nc_inq_dimname(Ncid, id, dname), "inq_dimname", false, pWho);
+        if (std::strncmp(dname, "phony_dim_", 10) != 0)
+            continue;
+        char vname[NC_MAX_NAME + 1] = {0};
+        check(nc_inq_varname(Ncid, Varid, vname), "inq_varname", false, pWho);
+        throw ReadError(std::string("meshio++: ") + pWho + ": variable '" + vname +
+                        "' uses the dimension '" + dname +
+                        "', which the file does not define (netCDF invents such a name for a "
+                        "dataset whose dimension scales are missing or corrupt); refusing to "
+                        "read it");
+    }
+}
+
 nc_type nc_type_of(DType Dtype) {
     return detail::DTypeUtils::Pick<nc_type>(
         Dtype, {NC_FLOAT, NC_DOUBLE, NC_BYTE, NC_SHORT, NC_INT, NC_INT64, NC_UBYTE, NC_USHORT,
