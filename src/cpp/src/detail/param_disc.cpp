@@ -27,6 +27,7 @@
 #include <vector>
 
 // Project includes (private, not installed)
+#include "edge_use_table.hpp"
 #include "geometry_utils.hpp"
 #include "param_disc.hpp"
 #include "sparse_solve.hpp"
@@ -95,19 +96,37 @@ std::vector<std::vector<std::size_t>> param_boundary_loops(const std::vector<Pat
                                                            bool& rOk) {
     rOk = true;
     // Directed edges; a boundary edge is one whose reverse no triangle uses.
-    std::map<std::pair<std::size_t, std::size_t>, int> directed;
-    for (const PatchTri& t : rTris)
-        for (int k = 0; k < 3; ++k)
-            ++directed[{t[static_cast<std::size_t>(k)], t[static_cast<std::size_t>((k + 1) % 3)]}];
-    std::map<std::size_t, std::size_t> next;
-    for (const auto& kv : directed) {
-        if (kv.second > 1)
-            rOk = false;  // an edge used twice the same way: inconsistent or non-manifold
-        if (directed.count({kv.first.second, kv.first.first}))
+    EdgeUseTable<std::size_t> uses;
+    for (std::size_t ti = 0; ti < rTris.size(); ++ti)
+        for (std::size_t k = 0; k < 3; ++k)
+            uses.Add(rTris[ti][k], rTris[ti][(k + 1) % 3], ti);
+    uses.Build();
+    // An undirected edge holds the uses of `lo -> hi` (forward) and `hi -> lo`.
+    std::vector<std::pair<std::size_t, std::size_t>> boundary;
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e) {
+        std::size_t forward = 0, backward = 0;
+        for (std::size_t k = 0; k < uses.Count(e); ++k)
+            (uses.At(e, k).mForward ? forward : backward)++;
+        if (uses.Lo(e) == uses.Hi(e)) {  // a degenerate edge is its own reverse
+            if (uses.Count(e) > 1)
+                rOk = false;
             continue;
-        if (next.count(kv.first.first))
+        }
+        if (forward > 1 || backward > 1)
+            rOk = false;  // an edge used twice the same way: inconsistent or non-manifold
+        if (forward > 0 && backward == 0)
+            boundary.emplace_back(uses.Lo(e), uses.Hi(e));
+        if (backward > 0 && forward == 0)
+            boundary.emplace_back(uses.Hi(e), uses.Lo(e));
+    }
+    // In directed-key order, as the map this replaced visited them: when two
+    // boundary edges leave one vertex, the later one is kept.
+    std::sort(boundary.begin(), boundary.end());
+    std::map<std::size_t, std::size_t> next;
+    for (const auto& r_edge : boundary) {
+        if (next.count(r_edge.first))
             rOk = false;  // a pinched boundary vertex
-        next[kv.first.first] = kv.first.second;
+        next[r_edge.first] = r_edge.second;
     }
     std::vector<std::vector<std::size_t>> loops;
     std::set<std::size_t> done;

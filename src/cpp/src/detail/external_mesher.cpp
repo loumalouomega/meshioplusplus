@@ -47,8 +47,10 @@
 
 // Project includes (private, not installed)
 #include "bounding_box_utils.hpp"
+#include "edge_use_table.hpp"
 #include "geometry_utils.hpp"
 #include "subprocess.hpp"
+#include "union_find.hpp"
 
 namespace meshioplusplus {
 
@@ -221,24 +223,22 @@ struct EmShells {
 
 EmShells em_shells(const TetMeshRegionRequest& rRequest) {
     const std::size_t nt = rRequest.mTriangles.size();
-    std::vector<std::size_t> parent(nt);
-    for (std::size_t t = 0; t < nt; ++t)
-        parent[t] = t;
-    const auto find = [&](std::size_t A) {
-        while (parent[A] != A)
-            A = parent[A] = parent[parent[A]];
-        return A;
-    };
-    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_owner;
-    for (std::size_t t = 0; t < nt; ++t)
-        for (std::size_t k = 0; k < 3; ++k) {
-            std::int64_t a = rRequest.mTriangles[t][k], b = rRequest.mTriangles[t][(k + 1) % 3];
-            if (a > b)
-                std::swap(a, b);
-            const auto [it, fresh] = edge_owner.emplace(std::make_pair(a, b), t);
-            if (!fresh)
-                parent[find(t)] = find(it->second);
-        }
+    // Shells are the triangles joined across shared edges. Only the partition
+    // is read: the shells below are numbered by their lowest triangle, never by
+    // a root, so any union rule gives the same shells.
+    detail::UnionFind<std::size_t> sets(nt);
+    const auto find = [&](std::size_t A) { return sets.Find(A); };
+    {
+        detail::EdgeUseTable<std::int64_t> edges;
+        for (std::size_t t = 0; t < nt; ++t)
+            for (std::size_t k = 0; k < 3; ++k)
+                edges.Add(rRequest.mTriangles[t][k], rRequest.mTriangles[t][(k + 1) % 3],
+                          static_cast<std::int64_t>(t));
+        edges.Build();
+        edges.ForEachSharedFace([&](std::int64_t A, std::int64_t B) {
+            sets.Unite(static_cast<std::size_t>(A), static_cast<std::size_t>(B));
+        });
+    }
     std::map<std::size_t, std::size_t> root_index;
     EmShells out;
     for (std::size_t t = 0; t < nt; ++t) {

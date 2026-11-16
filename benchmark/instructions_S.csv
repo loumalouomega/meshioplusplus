@@ -87,7 +87,7 @@ neighbors,10368,38237815
 feature_edges,10368,91371629
 segment,10368,3362185
 fit_primitives,10368,2439173
-fit_cad_adaptive,10368,63173735
+fit_cad_adaptive,10368,61570030
 fit_cad_network,10368,271907085
 render_frame_160x96,10368,31343795
 render_ss4_800x480,10368,830282425
@@ -116,8 +116,8 @@ mesh_cad_surface_curved,10368,264901991
 mesh_cad_surface_sized,10368,297046722
 mesh_cad_surface_given_sizes,10368,100382491
 mesh_cad_surface_metric,10368,254563823
-mesh_cad_surface_reparam,10368,28385090
-mesh_cad_surface_virtual_faces,10368,307143462
+mesh_cad_surface_reparam,10368,27569702
+mesh_cad_surface_virtual_faces,10368,302533482
 mesh_cad_surface_lop_corners,10368,55903862
 mesh_cad_surface_untangle,10368,269339263
 mesh_cad_surface_quads,10368,324544656
@@ -151,7 +151,7 @@ clip,10368,2146402
 silhouette,10368,27362282
 fit_curves,10368,162178
 geodesic,10368,29626983
-parameterize,10368,159370038
+parameterize,10368,143738850
 bake_texture,10368,55886245
 hull,10368,3213015
 delaunay_2d,10368,1440710
