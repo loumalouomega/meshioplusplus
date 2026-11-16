@@ -1,18 +1,23 @@
-Zero-initialise the VL buffers that HDF5's dimension-scale code reads attributes into.
+Make HDF5's dimension-scale code safe on a corrupt DIMENSION_LIST / REFERENCE_LIST attribute.
 
-H5DSiterate_scales (and the five other functions in hl/src/H5DS.c that read the
-DIMENSION_LIST or REFERENCE_LIST attribute) allocate one `hvl_t` per dimension of the
-dataset with malloc and fill them with H5Aread. An attribute that holds fewer entries
-than the dataset has dimensions leaves the rest of the buffer unwritten, and the code
-then reads buf[dim].len and dereferences buf[dim].p from that uninitialised memory
-(found by fuzzing a corrupt UGRID netCDF file through nc_inq_var -> get_attached_info
--> H5DSiterate_scales; ASan's malloc fill shows as 0xbebebebebebebebe). calloc makes an
-unwritten entry empty (len 0, p NULL), which the existing `len > 0` test already skips,
-and gives H5Treclaim on the failure path nothing to free from it.
+H5DSiterate_scales (and the other functions in hl/src/H5DS.c that read one of these
+attributes) allocate one `hvl_t` per dimension of the dataset with malloc and fill them
+with H5Aread, then read buf[dim].len and dereference buf[dim].p. Two corrupt shapes of
+the attribute break that (found by fuzzing a corrupt UGRID netCDF file through
+nc_inq_var -> get_attached_info -> H5DSiterate_scales):
 
-This is a local fix for the instrumented fuzz build, not a backport: it has not been
-reported or fixed upstream as far as the maintainers know (HDF5 1.14.6). Same size, same
-behaviour on every valid file.
+  * an attribute with fewer entries than the dataset has dimensions leaves the rest of
+    the buffer unwritten, and the code loads a pointer from uninitialised memory (ASan's
+    malloc fill shows as 0xbebebebebebebebe). malloc becomes calloc, so such an entry is
+    empty (len 0, p NULL);
+  * an entry the library read with a length but no data (p NULL) is then indexed by the
+    loops that follow. Right after each of the five H5Aread calls into an `hvl_t` array
+    an entry whose p is NULL is made empty (len 0).
+
+Both are the existing "empty list" case, which the callers already handle; a valid file
+never has either shape, so behaviour on valid files is unchanged. This is a local fix
+for the instrumented fuzz build, not a backport, and it has not been reported upstream
+(HDF5 1.14.6).
 
 --- a/hl/src/H5DS.c
 +++ b/hl/src/H5DS.c
@@ -25,7 +30,7 @@ behaviour on every valid file.
          if (buf == NULL)
              goto out;
  
-@@ -358,7 +358,7 @@
+@@ -358,13 +358,17 @@
              goto out;
  
          /* allocate and initialize the VL */
@@ -34,7 +39,17 @@ behaviour on every valid file.
          if (buf == NULL)
              goto out;
  
-@@ -841,7 +841,7 @@
+         /* read */
+         if (H5Aread(aid, tid, buf) < 0)
+             goto out;
++        /* a corrupt attribute can leave a length without data: make such an entry empty */
++        for (int rank_k = 0; rank_k < rank; rank_k++)
++            if (buf[rank_k].p == NULL)
++                buf[rank_k].len = 0;
+ 
+         /* check to avoid inserting duplicates. it is not FAIL, just do nothing */
+         /* iterate all the REFs in this dimension IDX */
+@@ -841,13 +845,17 @@
          goto out;
  
      /* allocate and initialize the VL */
@@ -43,7 +58,17 @@ behaviour on every valid file.
      if (buf == NULL)
          goto out;
  
-@@ -1321,7 +1321,7 @@
+     /* read */
+     if (H5Aread(aid, tid, buf) < 0)
+         goto out;
++    /* a corrupt attribute can leave a length without data: make such an entry empty */
++    for (int rank_k = 0; rank_k < rank; rank_k++)
++        if (buf[rank_k].p == NULL)
++            buf[rank_k].len = 0;
+ 
+     /* reset */
+     if (buf[idx].len > 0) {
+@@ -1321,13 +1329,17 @@
              goto out;
  
          /* allocate and initialize the VL */
@@ -52,7 +77,17 @@ behaviour on every valid file.
          if (buf == NULL)
              goto out;
  
-@@ -1652,7 +1652,7 @@
+         /* read */
+         if (H5Aread(aid, tid, buf) < 0)
+             goto out;
++        /* a corrupt attribute can leave a length without data: make such an entry empty */
++        for (int rank_k = 0; rank_k < rank; rank_k++)
++            if (buf[rank_k].p == NULL)
++                buf[rank_k].len = 0;
+ 
+         /* iterate all the REFs in this dimension IDX */
+         for (i = 0; i < (int)buf[idx].len; i++) {
+@@ -1652,7 +1664,7 @@
              goto out;
  
          /* allocate and initialize the VL */
@@ -61,7 +96,18 @@ behaviour on every valid file.
  
          if (buf == NULL)
              goto out;
-@@ -2387,7 +2387,7 @@
+@@ -1660,6 +1672,10 @@
+         /* read */
+         if (H5Aread(aid, tid, buf) < 0)
+             goto out;
++        /* a corrupt attribute can leave a length without data: make such an entry empty */
++        for (int rank_k = 0; rank_k < rank; rank_k++)
++            if (buf[rank_k].p == NULL)
++                buf[rank_k].len = 0;
+ 
+         if (buf[dim].len > 0) {
+             if (ds_idx != NULL)
+@@ -2387,13 +2403,17 @@
              goto out;
  
          /* allocate and initialize the VL */
@@ -69,4 +115,14 @@ behaviour on every valid file.
 +        buf = (hvl_t *)calloc((size_t)rank, sizeof(hvl_t));
          if (buf == NULL)
              goto out;
+ 
+         /* read */
+         if (H5Aread(aid, tid, buf) < 0)
+             goto out;
++        /* a corrupt attribute can leave a length without data: make such an entry empty */
++        for (int rank_k = 0; rank_k < rank; rank_k++)
++            if (buf[rank_k].p == NULL)
++                buf[rank_k].len = 0;
+ 
+         nscales = (int)buf[idx].len;
  
