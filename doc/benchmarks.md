@@ -1089,7 +1089,7 @@ Two things were tried for the superlinear growth and not kept. A sorted merge in
 | valence cap 72 | 0.17 s | 0.00° | 1.5e9 | 1 |
 | score × (1 + 0.5 × tets around both ends / 24) | 9.2 s | 0.33° | 7.1e3 | 0 |
 
-The cap is 25 times faster and ends in degenerate and, in two of the six configurations, inverted tetrahedra: the collapses it forbids are the ones that were absorbing the slivers. The penalty gives better quality and is 3.5 times slower, and a factor of 2 changed nothing against 0.5. Neither is a better default, so the rule stands as it was; a cap would be an option, a layout change to `DecimateVolumeOptions` ([roadmap](./roadmap.md#performance)). The unchanged rule's time at 16 cells a side (24,576 tets) is 38 s, with 234,410 rejected collapses; 30 cells a side was not run. The meshes are Kuhn cubes: the roadmap's graded Netgen mesh needs Netgen, which was not installed.
+The cap is 25 times faster and ends in degenerate and, in two of the six configurations, inverted tetrahedra: the collapses it forbids are the ones that were absorbing the slivers. The penalty gives better quality and is 3.5 times slower, and a factor of 2 changed nothing against 0.5. Neither is a better default, so the rule stands as it was and roadmap 5.1.4 is closed into the [non-goals](./roadmap.md#non-goals-and-decisions-taken) (a cap would be an option, a layout change to `DecimateVolumeOptions`). The unchanged rule's time at 16 cells a side (24,576 tets) is 38 s, with 234,410 rejected collapses; 30 cells a side was not run. The meshes are Kuhn cubes: the roadmap's graded Netgen mesh needs Netgen, which was not installed.
 
 ### Which byte-level kernels dominate a read (vector kernels, measured)
 
