@@ -1410,11 +1410,6 @@ jobs:
           path: src/single_include/meshioplusplus/meshioplusplus.hpp
 
   test:
-    # The Linux legs run on ubuntu-24.04 but report as "ubuntu-latest": branch protection on
-    # master requires the checks "test (ubuntu-latest, 3.10|3.11|3.12)", and a check that
-    # nothing reports stays "expected" and blocks the pull request for good. Keep the label
-    # until the required checks are renamed in the repository settings.
-    name: test (${{ matrix.os == 'ubuntu-24.04' && 'ubuntu-latest' || matrix.os }}, ${{ matrix.python-version }})
     needs: [lint]
     runs-on: ${{ matrix.os }}
     strategy:
