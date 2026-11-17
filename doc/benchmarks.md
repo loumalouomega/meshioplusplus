@@ -1609,7 +1609,7 @@ Roadmap 5.22.1. `src/cpp/benchmark/bench_containers.cpp` (built with `-DMESHIOPL
 | `std_map` | 0.48 (5) | 7.48 (23) | 33.91 (76) |
 | `std_unordered_map` | 0.20 (5) | 3.73 (23) | 17.73 (76) |
 
-What it says, for the decision of 5.22.3 and not as the decision:
+What it says (the decision taken from it, and from the rows below, is in the [non-goals](./roadmap.md#non-goals-and-decisions-taken)):
 
 - **Id maps.** `std::map` is 15 to 60 times slower than the hash tables at 750,000 ids (5.9 s against 0.1 s), so any reader that keeps one is the first thing to move. For dense ids the dense `id_index_map` is 2.6 times faster than `std::unordered_map` at 750,000 (49 ms against 130 ms) and the flat table 1.1 times; for sparse shuffled ids the flat table and `std::unordered_map` with `reserve` are the same (110 ms and 100 ms) against 180 ms without it, so the reservation is most of the gain there and costs a line.
 - **Edge-pair counts.** The flat table with a packed key is the fastest at 750,000 (214 ms against 374 for `std::unordered_map` and 580 for `std::map`), and `EdgeUseTable`, a sort of every use, is the slowest (613 ms, 293 MB): it pays for keeping the uses of an edge in insertion order, which a count does not need.

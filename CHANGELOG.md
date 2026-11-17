@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Docs:** roadmap 5.22 closed into the [non-goals](doc/roadmap.md#non-goals-and-decisions-taken): the readers' id maps take 1% to 2% of their rows, dense or sparse, and no standard container showed above 5% of a profiled row, so none is replaced. The evidence is the [containers study](doc/benchmarks.md#containers-a-study).
 - **Benchmarks:** `read_gmsh22_sparse`, `read_abaqus`, `read_abaqus_sparse`, `read_nastran` and `read_nastran_sparse` rows in `bench_ops` (roadmap 5.22.2): the same files with ids `7 i + 3` and shuffled lines. A reader's id map takes 1 to 2% of its row, dense or sparse ([benchmarks](doc/benchmarks.md#reader-rows-with-sparse-shuffled-ids)). No library code changes.
 - **Benchmarks:** `meshioplusplus_bench_containers` and `tools/bench_containers.sh` (roadmap 5.22.1): the core's id maps, edge counts, point keys, ordered tables, string tables and flags on the standard containers and on flat candidates, with the first table in [benchmarks](doc/benchmarks.md#containers-a-study). No library code changes.
 - **Performance:** the octree mesher's cut callback takes the middle of an edge that lies in the skin (no crossing, both ends on it) instead of bisecting the winding number 40 times on a plane where it is noise (roadmap 5.17.2, narrowed). The mesh is unchanged (digests equal at tiers S and M); `octree_mesh_tet` falls 13.8% in instructions at tier S ([benchmarks](doc/benchmarks.md#octree-cut-points-on-the-skin)).
