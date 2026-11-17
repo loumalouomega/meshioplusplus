@@ -137,6 +137,7 @@
 #include "meshioplusplus/operations/measure.hpp"
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
@@ -316,12 +317,12 @@ Mesh bench_ops_tri_plate(std::size_t m) {
 // standard library). The mesh read back has the same points and cells.
 
 std::string bench_ops_read_text(const std::string& rPath) {
-    std::ifstream in(rPath, std::ios::binary);
+    auto in = meshioplusplus::detail::make_classic_ifstream(rPath, std::ios::binary);
     return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
 }
 
 void bench_ops_write_text(const std::string& rPath, const std::string& rText) {
-    std::ofstream out(rPath, std::ios::binary);
+    auto out = meshioplusplus::detail::make_classic_ofstream(rPath, std::ios::binary);
     out << rText;
 }
 
