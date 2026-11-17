@@ -13,7 +13,7 @@ flip_normals,10368,205589
 pipeline_transform_chain,10368,105440936
 refine,10368,35902165
 elevate,10368,18164332
-merge,10368,10416966
+merge,10368,10152780
 clean,10368,29831747
 clean_weld,10368,63602047
 compute_sdf,10368,1236022938
@@ -59,6 +59,10 @@ read_vtu_base64,10368,13341775
 read_vtk_binary,10368,1528332
 read_gmsh_ascii,10368,20312898
 read_gmsh22_ascii,10368,36260979
+read_abaqus,10368,44150024
+read_abaqus_sparse,10368,45062532
+read_nastran,10368,146379633
+read_nastran_sparse,10368,145483247
 read_medit,10368,24414138
 write_gmsh,10368,43824912
 write_vtu_base64,10368,86843440
@@ -69,6 +73,7 @@ agglomerate,10368,137626440
 region_adjacency,10368,45813788
 find_interface,10368,46810636
 find_interface_proximity,10368,52289004
+split_interface,10368,135208286
 periodic,10368,383715
 split,10368,9614470
 undo_green,10368,15050453
@@ -105,7 +110,7 @@ remesh,10368,29699583
 remesh_volume,10368,79783463
 octree,10368,286472398
 octree_mesh_castellated,10368,753494823
-octree_mesh_tet,10368,5485381386
+octree_mesh_tet,10368,4722408674
 adapt_volume,10368,23466354268
 octree_mesh_hex,10368,828567933
 octree_mesh_hex_graded,10368,756324870
@@ -189,7 +194,7 @@ data_info,10368,3261052
 data_manage,10368,717568
 data_integrate,10368,100045710
 tensor_invariants,10368,4337299
-clean_ragged,10368,222066115
-merge_ragged,10368,85729197
+clean_ragged,10368,163916831
+merge_ragged,10368,36672603
 constrain_primitives,10368,1538364
 fit_cad_iterate,10368,85689703

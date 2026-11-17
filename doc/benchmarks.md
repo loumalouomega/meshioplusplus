@@ -1508,14 +1508,14 @@ Roadmap 5.21's audit. Almost every `>>` left under `src/cpp/src/formats/` extrac
 
 | Site | Kind | Outcome |
 | --- | --- | --- |
-| `gmsh.cpp`, `gmsh_add_ghost_cells` (`$GhostElements` body) | per-entry loop, one entry per ghost element, on a copied string and a `std::istringstream` | moved to `detail::TextStream` over the section's bytes, with no copy |
+| `gmsh.cpp`, `gmsh_add_ghost_cells` (`$GhostElements` body) | per-entry loop, one entry per ghost element, on a copied string and a `std::istringstream` | left: moving it to `detail::TextStream`, or to the cursor's `IntPrefix`, made `read_gmsh22_ascii` 10% slower (36.4 M to 40.0 M instructions at tier S). Both call `std::from_chars` for integers, and a second caller of that template in `gmsh.cpp` stopped GCC inlining it into `read_elements`, where it had been the only caller (the profile shows the template out of line, 6.4 M, and `read_elements` falling from 13.0 M to 10.2 M); marking the ghost function non-inlinable changed nothing. A ghost list is rare and the section is read once, so it stays on `std::istringstream` |
 | `gmsh.cpp`, MSH 2.2 ASCII elements, sequential fallback | a string, a `TextStream` and a vector per element | left: `gmsh22_parallel_elements` takes every input worth chunking, so the loop only runs below `chunked_parse_worthwhile` or on a line the parallel parse rejects, where the per-line work is its error path |
 | `gmsh.cpp` lines 369, 1979, 2048, 3401; `off.cpp` counts line; `ply.cpp` header | header | left |
 | `off.cpp`, `obj.cpp`, `ply.cpp`, `vtk_read.cpp`, `ip.cpp`, `xdmf.cpp`, `ensight.cpp`, `openfoam.cpp` value and index loops | `TextStream` | already on the cursor's parsers |
 | `openfoam.cpp` `foam_field_class_from` | `std::istream` over the first 4 KiB | header |
 | `ensight.cpp` scratch case file in the series writer | `std::ifstream` over a few lines the writer just wrote | header |
 
-Output is unchanged: the tests of the Gmsh reader pass, and the conversion is the one `TextStream` documents.
+No reader changed. The instruction-count gate caught the one change tried (the ghost list), which is why the table records it as left: the gate, not the reading of the code, found that sharing a `from_chars` instantiation with the hot element loop costs more than the stream saves.
 
 ### Edge uses as sorted runs
 
