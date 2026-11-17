@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Benchmarks:** the CAD mesher's containers profiled at tier S (roadmap 5.19, closed with no code change): `std::_Rb_tree` takes at most 2.5% and the `std::function` refinement callbacks at most 1.9% of `mesh_cad_surface_quads`, `mesh_cad_surface_untangle` and `fit_cad_network` ([benchmarks](doc/benchmarks.md#profiling-the-cad-meshers-containers)).
 - **Refactor:** the boundary-edge count of `thicken` and `hollow` uses `detail::EdgeUseTable` instead of a `std::map` keyed by the vertex pair (roadmap 5.20, closed: every other edge-use count was already on the table). Output is unchanged and the `thicken` row is flat ([benchmarks](doc/benchmarks.md#edge-uses-as-sorted-runs)).
 - **Performance:** the Gmsh ghost-element reader (`$GhostElements`) parses the section in place through `detail::TextStream` instead of copying it into a `std::istringstream`. The rest of roadmap 5.21 was audited with nothing to move: the `>>` sites left in the readers extract from `TextStream`, already on the cursor's parsers ([benchmarks](doc/benchmarks.md#text-readers-still-on-operator-)).
 - **Performance:** `clean` and `merge` stage polygon and polyhedron blocks as flat CSR buffers instead of a vector per row, face and key (roadmap 5.18, [benchmarks](doc/benchmarks.md#csr-staging-in-clean-and-merge)). Output is unchanged (digests equal at tiers S and M); the `clean_ragged` and `merge_ragged` rows fall by about a quarter and a half.

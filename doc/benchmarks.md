@@ -1521,6 +1521,18 @@ Output is unchanged: the tests of the Gmsh reader pass, and the conversion is th
 
 Roadmap 5.20. The operations that count an undirected edge's uses (`boundary_layer`, `tetrahedralize`, `remesh`, `render`, `fit_cad` and the feature-fit helpers) already do so through `detail::EdgeUseTable`, a sorted flat table with no node per edge. The one site left on a `std::map` keyed by a vertex pair for this purpose was the boundary-edge count of `thicken` and `hollow` (`offset_surface.cpp`), now on the table. Output is unchanged (digests of the `thicken` row equal at tiers S and M) and the row is flat: 79.67 M to 79.51 M instructions at tier S (SEQ, callgrind over the whole process), so the map was not what that row spends its time in. The other pair-keyed maps (`segment`, `refine_patches`, `quad_layout`, `mesh_cad`) are not edge-use counts and belong to the container profile of roadmap 5.19.
 
+### Profiling the CAD mesher's containers
+
+Roadmap 5.19's profile: callgrind at tier S (SEQ, NATIVE mesh backend, one run, whole process), summing the functions of each kind.
+
+| Row | Instructions | `std::_Rb_tree` | `std::function` calls | allocator (`malloc`, `free`) | largest functions |
+| --- | --- | --- | --- | --- | --- |
+| `mesh_cad_surface_quads` | 682.6 M | 2.5% | 0.8% | 15.3% | `iga_eval_point` 12.3%, `max_weight_matching` 10.2%, `atan2` 5.5%, `memset` 5.5%, `iga_basis_ders` 5.3% |
+| `mesh_cad_surface_untangle` | 576.2 M | 0.2% | 1.9% | 7.1% | |
+| `fit_cad_network` | 599.4 M | 0.5% | 1.7% | 4.4% | |
+
+The maps are not what these rows spend their time in, so none of them changed and no output moved. The allocator's share is spread over vectors (the callers resolve to the PLT and are not attributed): the rows are dominated by the B-spline evaluation and the matching, which are arithmetic. 5.19 is closed into the [non-goals](./roadmap.md#non-goals-and-decisions-taken) with these numbers; a row where a map shows above 5% reopens it.
+
 ## Landing a performance change
 
 A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).
