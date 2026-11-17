@@ -11,7 +11,8 @@ export CXXFLAGS=${CXXFLAGS:-$CFLAGS}
 JOBS=${JOBS:-4}
 mkdir -p "$PREFIX" "$WORK"
 patch_hash=$(sha256sum "$(dirname "$0")/patches/netcdf-4.9.3-utf8proc-null-guard.patch" | cut -d' ' -f1)
-manifest=$(printf '%s\n' "recipe=4 zlib=1.3.1 hdf5=1.14.6 netcdf=4.9.3 hdf5-no-function-check netcdf-null-guard=$patch_hash" \
+hdf5_patch_hash=$(sha256sum "$(dirname "$0")/patches/hdf5-1.14.6-dimension-scale-zero-init.patch" | cut -d' ' -f1)
+manifest=$(printf '%s\n' "recipe=5 zlib=1.3.1 hdf5=1.14.6 netcdf=4.9.3 hdf5-no-function-check netcdf-null-guard=$patch_hash hdf5-dimension-scale-zero-init=$hdf5_patch_hash" \
     "$($CC --version)" "$($CXX --version)" "$CFLAGS" "$CXXFLAGS")
 if [ -f "$PREFIX/instrumentation.txt" ]; then
     [ "$(cat "$PREFIX/instrumentation.txt")" = "$manifest" ] || {
@@ -61,6 +62,10 @@ fetch_tag netcdf-c-4.9.3.tar.gz 990f46d49525d6ab5dc4249f8684c6deeaf54de6fec63a18
     https://github.com/Unidata/netcdf-c/archive/refs/tags/v4.9.3.tar.gz \
     https://github.com/Unidata/netcdf-c.git v4.9.3 3a6b1debf1557f07b606ce3653e44f0d711203be \
     netcdf-c-4.9.3
+# A local fix for HDF5's dimension-scale code, which dereferences an unwritten VL buffer on a
+# corrupt DIMENSION_LIST (see the patch's header). Applied after every extract, like the next one.
+patch -d "$WORK/hdf5-1.14.6" -N -p1 --no-backup-if-mismatch \
+    < "$(dirname "$0")/patches/hdf5-1.14.6-dimension-scale-zero-init.patch"
 # Backported upstream maintenance fix for the bundled Unicode helper's
 # measuring pass (see tools/fuzz/patches/). Applied after every extract so
 # a reused work directory cannot keep an unpatched tree.

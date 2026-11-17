@@ -1275,3 +1275,19 @@ def test_written_modal_cyclic_pair_expands_to_the_rotor(tmp_path):
         np.testing.assert_allclose(
             rotor.point_data["U"][8 * sector : 8 * sector + 8], expected, atol=1e-12
         )
+
+
+def test_a_component_run_past_the_model_is_refused(engine):
+    """fuzz finding: a component whose id run was closed by a huge negative value was
+    expanded id by id (a 1.8 kB file asked for 2 GB). A component names distinct
+    nodes or elements, so it holds no more ids than the model has
+    (tests/fuzz/regressions/ansys_rst/component-run-past-model-size)."""
+    path = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "fuzz"
+        / "regressions"
+        / "ansys_rst"
+        / "component-run-past-model-size"
+    )
+    with pytest.raises(meshioplusplus.ReadError, match="more ids than the model has"):
+        engine.read(path)
