@@ -467,14 +467,34 @@ void RstPart::ReadModel() {
         detail::AnsysComponent out;
         out.mName = rst_name(comp, 1, 9);
         out.mNodes = kind == 1;
+        // A component names distinct nodes or elements of this model, so it holds no more ids
+        // than the model has. A run closed by a huge negative value is refused before it is
+        // expanded: a 1.8 kB fuzz input asked for 2 GB here.
+        const std::size_t room =
+            static_cast<std::size_t>(std::max<std::int64_t>(out.mNodes ? nnod : nelm, 0));
+        const auto too_many = [&]() {
+            rst_fail("component '" + out.mName + "' names more ids than the model has (" +
+                     std::to_string(room) + ")");
+        };
         // Ids with -last closing a run opened by the value before it.
         for (std::size_t k = 9; k < comp.mValues.size(); ++k) {
             const std::int64_t v = comp.Int(k);
-            if (v > 0)
+            if (v > 0) {
+                if (out.mIds.size() >= room)
+                    too_many();
                 out.mIds.push_back(v);
-            else if (v < 0 && !out.mIds.empty())
-                for (std::int64_t id = out.mIds.back() + 1; id <= -v; ++id)
+            } else if (v < 0 && !out.mIds.empty()) {
+                if (v == std::numeric_limits<std::int64_t>::min() ||
+                    out.mIds.back() == std::numeric_limits<std::int64_t>::max())
+                    too_many();
+                const std::int64_t last = -v;
+                const std::int64_t first = out.mIds.back() + 1;
+                if (last >= first && static_cast<std::uint64_t>(last - first) >=
+                                         room - std::min(room, out.mIds.size()))
+                    too_many();
+                for (std::int64_t id = first; id <= last; ++id)
                     out.mIds.push_back(id);
+            }
         }
         mModel.mComponents.push_back(std::move(out));
     }

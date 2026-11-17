@@ -45,7 +45,7 @@ The file is a sequence of Fortran-style records: an `i32` length in 4-byte words
 - the **geometry**: element types (routine number, key options, node count), nodes (number, coordinates, rotation angles), elements (material, type, real, section, number, nodes) and components;
 - per set, a **solution header** (its DOFs and pointers relative to itself), the **nodal solution**, the **reaction forces** (a table of node and DOF positions and their values) and the **element solution**: for each element a table of pointers, one per kind of record (`EMS ENF ENS ENG EGR EEL EPL ECR ETH EUL ...`), relative to itself.
 
-Integer, `int16`, `float32` and `float64` records are read, dense or bit- and windowed-sparse. zlib-compressed records (written with `/FCOMP,RST,1` or higher) are refused, naming `/FCOMP,RST,0`. A file must be little-endian, as MAPDL writes on every current platform.
+Integer, `int16`, `float32` and `float64` records are read, dense or bit- and windowed-sparse. zlib-compressed records (written with `/FCOMP,RST,1` or higher) are refused, naming `/FCOMP,RST,0`. A component (a `CM` selection of nodes or elements) holds distinct ids, so one that names more ids than the model has is refused, before a `-last` run is expanded (a corrupt file asked the reader for 2 GB). A file must be little-endian, as MAPDL writes on every current platform.
 
 Record pointers are checked against the file's word count before reading a record header, including offsets whose header-length addition would wrap. Invalid pointers raise a read error rather than being accepted as in-file offsets.
 
