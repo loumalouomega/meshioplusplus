@@ -38,6 +38,7 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
 #include "pugixml.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -65,9 +66,7 @@ std::string gii_meta(const pugi::xml_node& Node, const std::string& rKey) {
 }
 
 std::string gii_trim(std::string Text) {
-    const auto b = Text.find_first_not_of(" \t\r\n");
-    const auto e = Text.find_last_not_of(" \t\r\n");
-    return b == std::string::npos ? std::string() : Text.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 /// One `DataArray`'s values, row-major, of its own dtype.

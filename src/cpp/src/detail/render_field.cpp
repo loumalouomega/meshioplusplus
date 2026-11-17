@@ -27,6 +27,7 @@
 
 // Project includes (private, not installed)
 #include "render_field.hpp"
+#include "math_utils.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -50,15 +51,7 @@ double render_scale_forward(RenderScale Scale, double Threshold, double v) {
 }
 
 double render_percentile(std::vector<double>& rValues, double P) {
-    if (rValues.empty())
-        return std::numeric_limits<double>::quiet_NaN();
-    std::sort(rValues.begin(), rValues.end());
-    const double pos =
-        std::min(std::max(P, 0.0), 100.0) / 100.0 * static_cast<double>(rValues.size() - 1);
-    const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
-    const std::size_t hi = std::min(lo + 1, rValues.size() - 1);
-    const double frac = pos - static_cast<double>(lo);
-    return rValues[lo] + frac * (rValues[hi] - rValues[lo]);
+    return MathUtils::PercentileLinear(rValues, P);
 }
 
 namespace {

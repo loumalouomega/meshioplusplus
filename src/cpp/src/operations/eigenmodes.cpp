@@ -34,6 +34,7 @@
 // Project includes (private, not installed)
 #include "../detail/jacobi_eigen.hpp"
 #include "../detail/sparse_solve.hpp"
+#include "../detail/splitmix.hpp"
 #include "../detail/surface_fem.hpp"
 
 namespace meshioplusplus {
@@ -44,10 +45,8 @@ using LapColumn = std::vector<double>;
 
 /// A deterministic value in [-1, 1) for (row, column): splitmix64.
 double lap_hash(std::uint64_t Row, std::uint64_t Col) {
-    std::uint64_t z = Row * 0x9E3779B97F4A7C15ull + Col * 0xD1B54A32D192ED03ull + 1;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-    z ^= z >> 31;
+    const std::uint64_t z =
+        detail::splitmix64_mix(Row * detail::kSplitMix64Gamma + Col * 0xD1B54A32D192ED03ull + 1);
     return static_cast<double>(z >> 11) * (2.0 / 9007199254740992.0) - 1.0;
 }
 

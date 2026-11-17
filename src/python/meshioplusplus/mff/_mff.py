@@ -16,6 +16,7 @@ companion mesh.
 
 import numpy as np
 
+from .._common import fortran_exponent
 from .._files import open_file
 from .._mesh import Mesh
 
@@ -24,7 +25,7 @@ __all__ = ["read", "write"]
 
 def read(filename):
     with open_file(filename, "r") as f:
-        tokens = f.read().replace("D", "E").replace("d", "e").split()
+        tokens = fortran_exponent(f.read()).split()
     if not tokens:
         return Mesh(np.empty((0, 0)), [])
     count = int(tokens[0])

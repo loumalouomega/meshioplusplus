@@ -48,6 +48,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/decimate_shared.hpp"
+#include "../detail/hash_utils.hpp"
 #include "../detail/surface_rings.hpp"
 
 namespace meshioplusplus {
@@ -300,14 +301,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
     // --- phase 6: unique tet edges (6 per tet, dedup by first occurrence) ----
     using DvEdgeKey = std::array<std::int64_t, 2>;
-    struct DvEdgeKeyHash {
-        std::size_t operator()(const DvEdgeKey& rKey) const {
-            std::size_t h = 0;
-            for (std::int64_t v : rKey)
-                h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-            return h;
-        }
-    };
+    using DvEdgeKeyHash = detail::ArrayHash<2>;
     static constexpr int kTetEdgeCorners[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
     std::vector<DvEdgeKey> edges;
     {

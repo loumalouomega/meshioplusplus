@@ -45,6 +45,7 @@
 #include "step_brep.hpp"
 #include "step_stream.hpp"
 #include "math_utils.hpp"
+#include "union_find.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -162,15 +163,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
     std::vector<double> normals = rShell.mNormals;
 
     // Pieces, and the ones wound inwards turned outwards.
-    std::vector<std::size_t> parent(nf);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t X) {
-        while (parent[X] != X) {
-            parent[X] = parent[parent[X]];
-            X = parent[X];
-        }
-        return X;
-    };
+    UnionFind<std::size_t> sets(nf);
+    auto find = [&](std::size_t X) { return sets.Find(X); };
     {
         std::unordered_map<std::uint64_t, std::size_t> owner;
         owner.reserve(nodes.size());
@@ -181,9 +175,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                                  nodes[static_cast<std::size_t>(b + (k + 1) % s)]);
                 auto ins = owner.emplace(key, f);
                 if (!ins.second) {
-                    const std::size_t ra = find(f), rb = find(ins.first->second);
-                    if (ra != rb)
-                        parent[std::max(ra, rb)] = std::min(ra, rb);
+                    sets.Unite(f, ins.first->second);
                 }
             }
         }

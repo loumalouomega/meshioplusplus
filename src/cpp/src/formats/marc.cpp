@@ -60,6 +60,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/keyword_card_view.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -135,20 +136,11 @@ const MarcType* marc_type(std::int64_t Type) {
 constexpr std::size_t kMarcFirstLineNodes = 14;
 
 std::string marc_lower(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 std::string_view marc_trim_view(std::string_view Text) {
-    const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    std::size_t a = 0, b = Text.size();
-    while (a < b && blank(Text[a]))
-        ++a;
-    while (b > a && blank(Text[b - 1]))
-        --b;
-    return Text.substr(a, b - a);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::string marc_trim(std::string_view Text) {
@@ -1469,9 +1461,7 @@ std::string marcw_keyword(const std::vector<std::string>& rWords) {
 }
 
 std::string marcw_lower(std::string Text) {
-    for (char& c : Text)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 /// A set name the reader reads back as one token: blanks, commas and `$`

@@ -719,9 +719,7 @@ std::vector<std::uint8_t> fp_lmeds_inliers(const FpPatch& rP, std::int64_t Type)
             r2[i] = d * d;
         }
         std::vector<double> sorted = r2;
-        std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n / 2),
-                         sorted.end());
-        const double med = sorted[n / 2];
+        const double med = detail::MathUtils::MedianUpper(sorted);
         if (med < best_med) {
             best_med = med;
             std::copy(prm, prm + kFpParams, best);

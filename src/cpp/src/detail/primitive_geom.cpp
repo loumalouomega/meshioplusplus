@@ -330,10 +330,7 @@ PrimitiveFormMetrics primitive_form_metrics(std::int64_t Type, const double* pPa
         gap.back() = angle.front() + 360.0 - angle.back();
         const double largest = *std::max_element(gap.begin(), gap.end());
         std::vector<double> sorted = gap;
-        std::nth_element(sorted.begin(),
-                         sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2),
-                         sorted.end());
-        const double median = sorted[sorted.size() / 2];
+        const double median = MathUtils::MedianUpper(sorted);
         m.mArcDeg = largest <= 2.0 * median ? 360.0 : 360.0 - largest;
     }
     return m;

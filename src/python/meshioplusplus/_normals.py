@@ -166,7 +166,7 @@ def _find(parent, x):
 
 
 def _unite(parent, a, b):
-    """Union with the smaller root winning, as ``SnUnionFind::Unite`` does."""
+    """Union with the smaller root winning, as ``UnionFind::Unite`` does."""
     ra, rb = _find(parent, a), _find(parent, b)
     if ra == rb:
         return

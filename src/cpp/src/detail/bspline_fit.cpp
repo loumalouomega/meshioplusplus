@@ -27,6 +27,7 @@
 
 // Project includes (private, not installed)
 #include "bspline_fit.hpp"
+#include "math_utils.hpp"
 #include "dense_chol.hpp"
 #include "nurbs_eval.hpp"
 
@@ -405,10 +406,7 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
                     const std::size_t b = tr[static_cast<std::size_t>((c + 1) % 3)];
                     lens.push_back(std::hypot((rU[a] - rU[b]) / ext[0], (rV[a] - rV[b]) / ext[1]));
                 }
-            std::nth_element(lens.begin(),
-                             lens.begin() + static_cast<std::ptrdiff_t>(lens.size() / 2),
-                             lens.end());
-            const double h = lens[lens.size() / 2];
+            const double h = MathUtils::MedianUpper(lens);
             const std::size_t reach = static_cast<std::size_t>(std::ceil(h * kG)) + 1;
             std::vector<std::uint8_t> occupied(kG * kG, 0);
             for (std::size_t k = 0; k < smp.mNumData; ++k) {

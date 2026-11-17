@@ -30,11 +30,13 @@
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/text_utils.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -114,17 +116,7 @@ std::vector<double> gltfr_numbers(const JsonValue& rValue, std::size_t Count,
 // ---- the container ------------------------------------------------------- //
 
 bool gltfr_has_suffix_ci(const std::string& rText, const char* pSuffix) {
-    const std::string s = pSuffix;
-    if (rText.size() < s.size())
-        return false;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        char c = rText[rText.size() - s.size() + i];
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-        if (c != s[i])
-            return false;
-    }
-    return true;
+    return meshioplusplus::detail::TextUtils::EndsWithLowered(rText, pSuffix);
 }
 
 std::string gltfr_read_file(const std::string& rPath) {

@@ -31,6 +31,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/code_aster.hpp"
+#include "../detail/text_utils.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -42,6 +43,7 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/fortran_number.hpp"
 
 namespace meshioplusplus {
 
@@ -90,11 +92,7 @@ const CaTypeSpec* ca_spec_by_type(const std::string& rType) {
 }
 
 std::string ca_upper(std::string s) {
-    // ASCII only, like the name sanitiser: no locale may touch bytes above 0x7F.
-    std::transform(s.begin(), s.end(), s.begin(), [](char c) {
-        return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
-    });
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 struct CaToken {
@@ -226,9 +224,7 @@ double ca_number(const CaToken& rToken) {
     if (!ca_is_number(rToken.mText))
         ca_fail("expected a coordinate, found '" + rToken.mText + "'", rToken.mLine);
     std::string text = rToken.mText;
-    for (char& c : text)
-        if (c == 'D' || c == 'd')
-            c = 'E';
+    detail::fortran_exponent_to_e(text);
     const char* end = nullptr;
     return detail::parse_double(text.c_str(), end);
 }

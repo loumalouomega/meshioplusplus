@@ -52,6 +52,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/ghost_names.hpp"
+#include "../detail/hash_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -208,14 +209,7 @@ int mf_geom_of_type(std::string_view Type) {
 
 using MfKey = std::vector<std::int64_t>;  // sorted vertex ids
 
-struct MfKeyHash {
-    std::size_t operator()(const MfKey& rKey) const {
-        std::size_t h = rKey.size();
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>()(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+using MfKeyHash = detail::SizedVectorHash;
 
 MfKey mf_key(std::vector<std::int64_t> v) {
     std::sort(v.begin(), v.end());

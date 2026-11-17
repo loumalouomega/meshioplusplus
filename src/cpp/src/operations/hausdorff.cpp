@@ -38,6 +38,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/hausdorff_samples.hpp"
+#include "../detail/math_utils.hpp"
 #include "../detail/surface_edge_runs.hpp"
 
 namespace meshioplusplus {
@@ -196,13 +197,7 @@ std::vector<double> hausdorff_sample_distances(const Mesh& rA, const Mesh& rB,
 }
 
 double coverage_quantile(std::vector<double> Values, double Coverage) {
-    if (Values.empty())
-        return 0.0;
-    const double want = std::ceil(Coverage * static_cast<double>(Values.size()));
-    std::size_t k = want < 1.0 ? 0 : static_cast<std::size_t>(want) - 1;
-    k = std::min(k, Values.size() - 1);
-    std::nth_element(Values.begin(), Values.begin() + static_cast<std::ptrdiff_t>(k), Values.end());
-    return Values[k];
+    return MathUtils::QuantileNearest(std::move(Values), Coverage);
 }
 
 }  // namespace detail

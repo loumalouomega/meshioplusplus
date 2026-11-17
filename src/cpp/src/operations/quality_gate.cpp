@@ -33,6 +33,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -61,13 +62,7 @@ std::string qg_full_name(const std::string& rMetric) {
 }
 
 std::string qg_trim(const std::string& rS) {
-    std::size_t b = 0;
-    std::size_t e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 double qg_number(const std::string& rText, const std::string& rClause) {

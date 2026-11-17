@@ -49,6 +49,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "pugixml.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -75,12 +76,7 @@ struct VtxSchema {
 };
 
 std::string vtx_trim(std::string S) {
-    const char* kWs = " \t\r\n";
-    const std::size_t b = S.find_first_not_of(kWs);
-    if (b == std::string::npos)
-        return {};
-    const std::size_t e = S.find_last_not_of(kWs);
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 VtxSchema vtx_parse_schema(const std::string& rXml) {

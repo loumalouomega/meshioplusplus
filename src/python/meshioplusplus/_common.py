@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from xml.etree import ElementTree as ET
 
 import numpy as np
@@ -175,3 +176,26 @@ def replace_space(string: str) -> tuple[str, str]:
             break
     assert char is not None
     return string.replace(" ", char), char
+
+
+def fortran_exponent(text: str, lower: str = "e") -> str:
+    """Spell a Fortran double-precision exponent (``1.5D+03``) as a C one.
+
+    ``D`` becomes ``E`` and ``d`` becomes ``lower`` (``"e"``, or ``"E"`` for a
+    caller that then looks for an upper-case exponent letter); ``float`` reads
+    either. The C++ twin is ``detail::fortran_exponent_to_e``.
+    """
+    return text.replace("D", "E").replace("d", lower)
+
+
+def unit_vector(v, zero: str = "keep") -> list:
+    """``v`` divided by its Euclidean norm, as a list of floats.
+
+    The norm is the left-to-right sum of three squares, as the C++ core
+    computes it. A zero vector comes back unchanged (``zero="keep"``) or as
+    zeros (``zero="zeros"``).
+    """
+    ln = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+    if ln > 0.0:
+        return [x / ln for x in v]
+    return list(v) if zero == "keep" else [0.0 for _ in v]

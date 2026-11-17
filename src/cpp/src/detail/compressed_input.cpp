@@ -42,6 +42,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/compressed_input.hpp"
+#include "text_utils.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/zlib_inflate.hpp"
 #include "subprocess.hpp"
@@ -54,10 +55,7 @@ namespace detail {
 namespace {
 
 std::string cmpin_lower(std::string Text) {
-    std::transform(Text.begin(), Text.end(), Text.begin(), [](unsigned char c) {
-        return static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
-    });
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 [[noreturn]] void cmpin_missing(Compression Kind) {

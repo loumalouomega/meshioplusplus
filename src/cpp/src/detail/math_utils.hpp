@@ -40,6 +40,9 @@
 // System includes
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <limits>
+#include <vector>
 
 // Project includes
 #include "meshioplusplus/detail/geometry.hpp"
@@ -171,6 +174,46 @@ struct MathUtils {
         pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
         pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
         return true;
+    }
+
+    ///@}
+
+    ///@name Order statistics
+    ///@{
+
+    /// The median of a non-empty vector: the element at `n / 2`, the upper one
+    /// of an even count. Reorders `rV` (a scratch vector).
+    static double MedianUpper(std::vector<double>& rV) {
+        const std::size_t mid = rV.size() / 2;
+        std::nth_element(rV.begin(), rV.begin() + static_cast<std::ptrdiff_t>(mid), rV.end());
+        return rV[mid];
+    }
+
+    /// The smallest value covering `Coverage` (0 to 1) of the values: the
+    /// element at rank `ceil(Coverage * n) - 1`, no interpolation; 0 when empty.
+    static double QuantileNearest(std::vector<double> Values, double Coverage) {
+        if (Values.empty())
+            return 0.0;
+        const double want = std::ceil(Coverage * static_cast<double>(Values.size()));
+        std::size_t k = want < 1.0 ? 0 : static_cast<std::size_t>(want) - 1;
+        k = std::min(k, Values.size() - 1);
+        std::nth_element(Values.begin(), Values.begin() + static_cast<std::ptrdiff_t>(k),
+                         Values.end());
+        return Values[k];
+    }
+
+    /// The linearly interpolated percentile `P` (0 to 100, clamped) of the
+    /// values; NaN when empty. Sorts `rValues` in place.
+    static double PercentileLinear(std::vector<double>& rValues, double P) {
+        if (rValues.empty())
+            return std::numeric_limits<double>::quiet_NaN();
+        std::sort(rValues.begin(), rValues.end());
+        const double pos =
+            std::min(std::max(P, 0.0), 100.0) / 100.0 * static_cast<double>(rValues.size() - 1);
+        const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
+        const std::size_t hi = std::min(lo + 1, rValues.size() - 1);
+        const double frac = pos - static_cast<double>(lo);
+        return rValues[lo] + frac * (rValues[hi] - rValues[lo]);
     }
 
     ///@}

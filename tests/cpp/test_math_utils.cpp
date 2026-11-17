@@ -217,3 +217,32 @@ TEST(MathUtils, SolveSymmetric3MatchesTheDecimateAndGradientCopies) {
             }
     }
 }
+
+// ---- order statistics (roadmap 6.6) ----------------------------------------
+
+TEST(MathUtils, MedianUpperIsTheElementAtHalfTheCount) {
+    std::vector<double> odd{5.0, 1.0, 3.0};
+    EXPECT_EQ(MathUtils::MedianUpper(odd), 3.0);
+    std::vector<double> even{4.0, 1.0, 3.0, 2.0};
+    EXPECT_EQ(MathUtils::MedianUpper(even), 3.0);  // the upper of 2 and 3
+    std::vector<double> one{7.5};
+    EXPECT_EQ(MathUtils::MedianUpper(one), 7.5);
+}
+
+TEST(MathUtils, QuantileNearestPicksTheCoveringRank) {
+    const std::vector<double> v{9.0, 1.0, 5.0, 3.0, 7.0, 2.0, 8.0, 4.0, 6.0, 10.0};
+    EXPECT_EQ(MathUtils::QuantileNearest(v, 0.5), 5.0);
+    EXPECT_EQ(MathUtils::QuantileNearest(v, 0.95), 10.0);
+    EXPECT_EQ(MathUtils::QuantileNearest(v, 0.0), 1.0);
+    EXPECT_EQ(MathUtils::QuantileNearest(v, 1.0), 10.0);
+    EXPECT_EQ(MathUtils::QuantileNearest({}, 0.5), 0.0);
+}
+
+TEST(MathUtils, PercentileLinearInterpolatesAndClamps) {
+    std::vector<double> v{4.0, 1.0, 3.0, 2.0};
+    EXPECT_DOUBLE_EQ(MathUtils::PercentileLinear(v, 50.0), 2.5);
+    EXPECT_DOUBLE_EQ(MathUtils::PercentileLinear(v, -10.0), 1.0);
+    EXPECT_DOUBLE_EQ(MathUtils::PercentileLinear(v, 250.0), 4.0);
+    std::vector<double> none;
+    EXPECT_TRUE(std::isnan(MathUtils::PercentileLinear(none, 50.0)));
+}

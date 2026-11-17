@@ -63,6 +63,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/ghost_names.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace fs = std::filesystem;
 
@@ -149,20 +150,12 @@ FoamText read_whole(const std::string& rPath) {
 }
 
 std::string openfoam_strip(const std::string& rS) {
-    std::size_t a = rS.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos)
-        return "";
-    std::size_t b = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // `openfoam_strip` over a view: the same " \t\r\n" set, no copy.
 std::string_view foam_trim(std::string_view S) {
-    const std::size_t a = S.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = S.find_last_not_of(" \t\r\n");
-    return S.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // Parse the FoamFile header for format/arch (label/scalar byte widths) from the

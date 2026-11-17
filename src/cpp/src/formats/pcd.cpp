@@ -47,6 +47,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -256,18 +257,11 @@ void pcd_store(NDArray& rColumn, std::size_t index, double value, long long ival
 }
 
 std::string pcd_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 std::string_view pcd_strip(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::vector<std::string_view> pcd_words(std::string_view rS) {

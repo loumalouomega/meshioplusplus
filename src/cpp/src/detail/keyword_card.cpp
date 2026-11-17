@@ -30,6 +30,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "keyword_card_view.hpp"
+#include "text_utils.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -37,13 +38,7 @@ namespace detail {
 namespace {
 
 std::string_view kwc_strip_view(std::string_view Text) {
-    std::size_t b = 0;
-    std::size_t e = Text.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(Text[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(Text[e - 1])))
-        --e;
-    return Text.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string kwc_strip(std::string_view Text) {

@@ -37,7 +37,7 @@ extract_surface_ragged,10368,21936908
 feature_edges_ragged,10368,89890698
 read_ragged_ensight,10368,11598445
 read_ragged_tecplot,10368,138363677
-read_stl,10368,15383054
+read_stl,10368,15014012
 read_stl_binary,10368,2186925
 read_gltf_weld,10368,1813747
 read_wkt,10368,28241837
@@ -50,7 +50,7 @@ read_ugrid,10368,13384050
 read_openfoam,10368,155705439
 read_elmer,10368,30635243
 read_d3plot,10368,17311476
-read_op2,10368,46165644
+read_op2,10368,45419120
 read_rst,10368,74148841
 read_xplt,10368,16767966
 read_vtu_ascii,10368,18990378
@@ -87,7 +87,7 @@ neighbors,10368,38237815
 feature_edges,10368,91371629
 segment,10368,3362185
 fit_primitives,10368,2439173
-fit_cad_adaptive,10368,63173735
+fit_cad_adaptive,10368,61570030
 fit_cad_network,10368,271907085
 render_frame_160x96,10368,31343795
 render_ss4_800x480,10368,830282425
@@ -101,7 +101,7 @@ rectangle,10368,13651935
 uv_sphere,10368,3728096
 icosa_sphere,10368,38929951
 cylinder,10368,12565306
-remesh,10368,31565356
+remesh,10368,29699583
 remesh_volume,10368,79783463
 octree,10368,286472398
 octree_mesh_castellated,10368,753494823
@@ -116,8 +116,8 @@ mesh_cad_surface_curved,10368,264901991
 mesh_cad_surface_sized,10368,297046722
 mesh_cad_surface_given_sizes,10368,100382491
 mesh_cad_surface_metric,10368,254563823
-mesh_cad_surface_reparam,10368,28385090
-mesh_cad_surface_virtual_faces,10368,307143462
+mesh_cad_surface_reparam,10368,27569702
+mesh_cad_surface_virtual_faces,10368,302533482
 mesh_cad_surface_lop_corners,10368,55903862
 mesh_cad_surface_untangle,10368,269339263
 mesh_cad_surface_quads,10368,324544656
@@ -151,7 +151,7 @@ clip,10368,2146402
 silhouette,10368,27362282
 fit_curves,10368,162178
 geodesic,10368,29626983
-parameterize,10368,159370038
+parameterize,10368,143738850
 bake_texture,10368,55886245
 hull,10368,3213015
 delaunay_2d,10368,1440710

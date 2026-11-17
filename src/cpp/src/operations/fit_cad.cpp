@@ -57,6 +57,8 @@
 #include "../detail/quad_layout.hpp"
 #include "../detail/step_brep.hpp"
 #include "../detail/surface_rings.hpp"
+#include "../detail/edge_use_table.hpp"
+#include "../detail/union_find.hpp"
 
 // System includes
 #include <array>
@@ -541,29 +543,22 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
                          (hi[2] - lo[2]) * (hi[2] - lo[2]));
     }
-    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_item;
-    std::vector<std::size_t> parent(rItems.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    const auto find = [&](std::size_t A) {
-        while (parent[A] != A)
-            A = parent[A] = parent[parent[A]];
-        return A;
-    };
+    detail::EdgeUseTable<std::int64_t> edge_item;
+    detail::UnionFind<std::size_t> sets(rItems.size());
+    const auto find = [&](std::size_t A) { return sets.Find(A); };
     for (std::size_t i = 0; i < rItems.size(); ++i)
         for (std::size_t f : rItems[i]) {
             const std::int64_t b = rFc.mStart[f], n = rFc.mStart[f + 1] - b;
             for (std::int64_t k = 0; k < n; ++k) {
                 const std::int64_t a = rFc.mNodes[static_cast<std::size_t>(b + k)];
                 const std::int64_t c = rFc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)];
-                const auto key = std::make_pair(std::min(a, c), std::max(a, c));
-                const auto ins = edge_item.emplace(key, i);
-                if (!ins.second) {
-                    const std::size_t x = find(ins.first->second), y = find(i);
-                    if (x != y)
-                        parent[std::max(x, y)] = std::min(x, y);
-                }
+                edge_item.Add(a, c, static_cast<std::int64_t>(i));
             }
         }
+    edge_item.Build();
+    edge_item.ForEachSharedFace([&](std::int64_t A, std::int64_t B) {
+        sets.Unite(static_cast<std::size_t>(A), static_cast<std::size_t>(B));
+    });
     std::map<std::size_t, std::vector<std::size_t>> regions;
     for (std::size_t i = 0; i < rItems.size(); ++i)
         regions[find(i)].push_back(i);

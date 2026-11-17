@@ -57,6 +57,8 @@
 #include "../detail/keyword_card_view.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/fortran_number.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -295,27 +297,11 @@ void unv_tensor_from_meshio(std::size_t NumComps, double* pValues) {
 // ---------------------------------------------------------------------------
 
 std::string_view unv_strip(std::string_view s) {
-    const std::size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::vector<std::string_view> unv_split(std::string_view s) {
-    std::vector<std::string_view> out;
-    std::size_t i = 0;
-    while (i < s.size()) {
-        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r'))
-            ++i;
-        std::size_t j = i;
-        while (j < s.size() && s[j] != ' ' && s[j] != '\t' && s[j] != '\r')
-            ++j;
-        if (j > i)
-            out.push_back(s.substr(i, j - i));
-        i = j;
-    }
-    return out;
+    return detail::split_blanks(s);
 }
 
 std::int64_t unv_int(std::string_view t) {
@@ -352,9 +338,7 @@ double unv_real(std::string_view t) {
         large.assign(t);
         first = large.data();
     }
-    for (std::size_t i = 0; i < t.size(); ++i)
-        if (first[i] == 'D' || first[i] == 'd')
-            first[i] = 'E';
+    detail::fortran_exponent_to_e(first, t.size());
     const char* end = nullptr;
     const double v = detail::parse_double(first, end);
     if (end == first)

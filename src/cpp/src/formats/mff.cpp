@@ -28,6 +28,7 @@
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/fortran_number.hpp"
 
 namespace meshioplusplus {
 
@@ -39,9 +40,7 @@ Mesh read_mff(const std::string& rPath) {
     std::vector<std::string> toks;
     std::string t;
     while (in >> t) {
-        for (char& c : t)
-            if (c == 'D' || c == 'd')
-                c = 'E';
+        detail::fortran_exponent_to_e(t);
         toks.push_back(t);
     }
 

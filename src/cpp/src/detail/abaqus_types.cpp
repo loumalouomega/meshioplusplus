@@ -25,6 +25,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/abaqus_types.hpp"
+#include "text_utils.hpp"
 #include "meshioplusplus/cell_type.hpp"
 
 namespace meshioplusplus {
@@ -99,7 +100,7 @@ const std::vector<std::pair<std::string, std::string>>& abaqus_type_table() {
 namespace {
 
 bool abq_starts_with(std::string_view Name, std::string_view Prefix) {
-    return Name.substr(0, Prefix.size()) == Prefix;
+    return std::string_view(Name).starts_with(Prefix);
 }
 
 // "S" followed by a digit: S3, S4R, S8R5, S9R5 (not SAX1, SC8R, SPRINGA).

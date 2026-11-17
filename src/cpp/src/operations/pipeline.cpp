@@ -149,6 +149,7 @@
 #include "../detail/ghost_names.hpp"
 
 #include "pipeline_table.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -326,11 +327,7 @@ void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
 }
 
 std::string pipe_trim(const std::string& rText) {
-    std::size_t b = rText.find_first_not_of(" \t");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rText.find_last_not_of(" \t");
-    return rText.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rText, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 /// Cells across every block. The uniform mesh API counts per block only.

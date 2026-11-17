@@ -46,6 +46,7 @@
 #include "../detail/data_plumbing.hpp"
 #include "../detail/simplexify.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/union_find.hpp"
 
 namespace meshioplusplus {
 
@@ -191,14 +192,6 @@ double tp_signed_volume(const double* pXyz, const std::int64_t* pN) {
 }
 
 /// Find-with-path-halving over a small local forest.
-std::size_t tp_find(std::vector<std::size_t>& rParent, std::size_t i) {
-    while (rParent[i] != i) {
-        rParent[i] = rParent[rParent[i]];
-        i = rParent[i];
-    }
-    return i;
-}
-
 /// Build every dual cell (and destined boundary polygon) around vertex @p v.
 TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     TpVertexOut out;
@@ -216,8 +209,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     };
 
     // Components: tets around v joined through faces at v interior to a block.
-    std::vector<std::size_t> parent(ntets);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    detail::UnionFind<std::size_t> sets(ntets);
     for (std::size_t i = 0; i < ntets; ++i) {
         const std::int64_t t = tets[i];
         for (int k = 0; k < 4; ++k) {
@@ -225,10 +217,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
             if (!tp_contains(rCtx.Ring(t, k), v) || !rCtx.Interior(f))
                 continue;
             const std::size_t j = local_of(rCtx.Across(f, t));
-            const std::size_t ri = tp_find(parent, i);
-            const std::size_t rj = tp_find(parent, j);
-            if (ri != rj)
-                parent[std::max(ri, rj)] = std::min(ri, rj);
+            sets.Unite(i, j);
         }
     }
     // Roots are each component's smallest local index, so walking i upward
@@ -236,7 +225,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     std::vector<std::vector<std::size_t>> comps;
     std::vector<std::int64_t> comp_of_root(ntets, -1);
     for (std::size_t i = 0; i < ntets; ++i) {
-        const std::size_t r = tp_find(parent, i);
+        const std::size_t r = sets.Find(i);
         if (comp_of_root[r] < 0) {
             comp_of_root[r] = static_cast<std::int64_t>(comps.size());
             comps.emplace_back();

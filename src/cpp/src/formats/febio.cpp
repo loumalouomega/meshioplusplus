@@ -39,6 +39,7 @@
 
 // External includes
 #include "pugixml.hpp"
+#include "../detail/text_utils.hpp"
 
 // Project includes
 #include "meshioplusplus/formats/febio.hpp"
@@ -96,11 +97,7 @@ constexpr FebLossy kFebLossy[] = {
     {"tet5", 5, "tetra"}, {"tet15", 15, "tetra10"}, {"tet20", 20, nullptr}};
 
 std::string feb_lower(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-    return out;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 // `TET10G4` -> `tet10`: an integration-rule suffix `g<digits>` after the node count.

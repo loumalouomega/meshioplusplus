@@ -50422,6 +50422,123 @@ EdgeProjection edge_project(const TrimTrace& rOther, const EdgeSamples& rMaster,
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/edge_sampler.hpp =====
+// ===== begin src/cpp/src/detail/edge_use_table.hpp =====
+/**
+ * @file detail/edge_use_table.hpp
+ * @brief `EdgeUseTable`: the uses of each undirected edge of a face list,
+ * grouped by edge in `(lo, hi)` order (roadmap 6.2).
+ *
+ * Fed the edges of a surface one `Add(a, b, face)` at a time and `Build()` once,
+ * it answers what a `std::map` keyed by the sorted vertex pair did: how many
+ * faces use an edge (one is a boundary edge, two a manifold one), which faces
+ * and in which direction, and every edge in key order, so a message or a
+ * tie-break that followed the map's order keeps it. The uses of an edge keep
+ * their insertion order, so the first use is the first face that met the edge.
+ *
+ * A sorted flat table: no node per edge, one sort. A **core-private** header
+ * (not installed).
+ */
+
+// System includes
+#include <algorithm>
+#include <cstddef>
+#include <limits>
+#include <vector>
+
+namespace meshioplusplus::detail {
+
+template <class Index>
+class EdgeUseTable {
+public:
+    static constexpr std::size_t kNone = std::numeric_limits<std::size_t>::max();
+
+    /// One use of an edge: the face and whether it walks the edge `lo -> hi`.
+    struct Use {
+        Index mFace;
+        bool mForward;
+    };
+
+    void Reserve(std::size_t NumUses) { mRecords.reserve(NumUses); }
+
+    /// Record face `Face` walking the edge from `A` to `B`.
+    void Add(Index A, Index B, Index Face) {
+        const bool forward = A < B;
+        mRecords.push_back({forward ? A : B, forward ? B : A, Face, forward});
+    }
+
+    /// Group the recorded uses by edge. Call once, after the last `Add`.
+    void Build() {
+        std::stable_sort(mRecords.begin(), mRecords.end(), [](const Record& rA, const Record& rB) {
+            return rA.mLo != rB.mLo ? rA.mLo < rB.mLo : rA.mHi < rB.mHi;
+        });
+        mStart.assign(1, 0);
+        for (std::size_t i = 1; i < mRecords.size(); ++i)
+            if (mRecords[i].mLo != mRecords[i - 1].mLo || mRecords[i].mHi != mRecords[i - 1].mHi)
+                mStart.push_back(i);
+        if (!mRecords.empty())
+            mStart.push_back(mRecords.size());
+        else
+            mStart.clear();
+    }
+
+    /// How many distinct edges there are.
+    std::size_t NumEdges() const { return mStart.empty() ? 0 : mStart.size() - 1; }
+    Index Lo(std::size_t Edge) const { return mRecords[mStart[Edge]].mLo; }
+    Index Hi(std::size_t Edge) const { return mRecords[mStart[Edge]].mHi; }
+
+    /// How many faces use the edge.
+    std::size_t Count(std::size_t Edge) const { return mStart[Edge + 1] - mStart[Edge]; }
+
+    /// The `K`-th use of the edge, in insertion order.
+    Use At(std::size_t Edge, std::size_t K) const {
+        const Record& r = mRecords[mStart[Edge] + K];
+        return {r.mFace, r.mForward};
+    }
+
+    /// The index of the edge `{A, B}`, or `kNone`.
+    std::size_t Find(Index A, Index B) const {
+        const Index lo = A < B ? A : B, hi = A < B ? B : A;
+        std::size_t first = 0, last = NumEdges();
+        while (first < last) {
+            const std::size_t mid = first + (last - first) / 2;
+            const Record& r = mRecords[mStart[mid]];
+            if (r.mLo < lo || (r.mLo == lo && r.mHi < hi))
+                first = mid + 1;
+            else
+                last = mid;
+        }
+        if (first < NumEdges() && mRecords[mStart[first]].mLo == lo &&
+            mRecords[mStart[first]].mHi == hi)
+            return first;
+        return kNone;
+    }
+
+    /// How many faces use the edge `{A, B}`; zero when none does.
+    std::size_t CountOf(Index A, Index B) const {
+        const std::size_t e = Find(A, B);
+        return e == kNone ? 0 : Count(e);
+    }
+
+    /// Call `Join(first_face, face)` for every later use of every edge: the
+    /// faces an edge shares, each joined to the first that met it.
+    template <class Fn>
+    void ForEachSharedFace(Fn&& Join) const {
+        for (std::size_t e = 0; e < NumEdges(); ++e)
+            for (std::size_t k = 1; k < Count(e); ++k)
+                Join(At(e, 0).mFace, At(e, k).mFace);
+    }
+
+private:
+    struct Record {
+        Index mLo, mHi, mFace;
+        bool mForward;
+    };
+    std::vector<Record> mRecords;
+    std::vector<std::size_t> mStart;
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/edge_use_table.hpp =====
 // ===== begin src/cpp/src/detail/slot_runs.hpp =====
 /**
  * @file detail/slot_runs.hpp
@@ -52775,6 +52892,40 @@ CadStepCheck occt_check_step(const std::string& rPath);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/fit_cad_native.hpp =====
+// ===== begin src/cpp/src/detail/fortran_number.hpp =====
+/**
+ * @file detail/fortran_number.hpp
+ * @brief The Fortran double-precision exponent letter (`1.5D+03`), turned into
+ * the one `parse_double` reads, written once (roadmap 6.7).
+ *
+ * Fortran writes `D` (or `d`) where C writes `e`; the text readers of formats
+ * that Fortran solvers wrote each looped over their token to replace it. A
+ * **core-private** header (not installed). `detail/keyword_card.cpp` keeps its
+ * own bounded number, which also reads an exponent written without a letter.
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Replace every `D` or `d` of `[pFirst, pFirst + N)` by `Exponent` (`'E'` or `'e'`).
+MIO_ALWAYS_INLINE void fortran_exponent_to_e(char* pFirst, std::size_t N, char Exponent = 'E') {
+    for (std::size_t i = 0; i < N; ++i)
+        if (pFirst[i] == 'D' || pFirst[i] == 'd')
+            pFirst[i] = Exponent;
+}
+
+/// Replace every `D` or `d` of a number's text by `Exponent`.
+MIO_ALWAYS_INLINE void fortran_exponent_to_e(std::string& rText, char Exponent = 'E') {
+    fortran_exponent_to_e(rText.data(), rText.size(), Exponent);
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/fortran_number.hpp =====
 // ===== begin src/cpp/src/detail/math_utils.hpp =====
 /**
  * @file detail/math_utils.hpp
@@ -52800,6 +52951,9 @@ CadStepCheck occt_check_step(const std::string& rPath);
 // System includes
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <limits>
+#include <vector>
 
 // Project includes
 
@@ -52930,6 +53084,46 @@ struct MathUtils {
         pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
         pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
         return true;
+    }
+
+    ///@}
+
+    ///@name Order statistics
+    ///@{
+
+    /// The median of a non-empty vector: the element at `n / 2`, the upper one
+    /// of an even count. Reorders `rV` (a scratch vector).
+    static double MedianUpper(std::vector<double>& rV) {
+        const std::size_t mid = rV.size() / 2;
+        std::nth_element(rV.begin(), rV.begin() + static_cast<std::ptrdiff_t>(mid), rV.end());
+        return rV[mid];
+    }
+
+    /// The smallest value covering `Coverage` (0 to 1) of the values: the
+    /// element at rank `ceil(Coverage * n) - 1`, no interpolation; 0 when empty.
+    static double QuantileNearest(std::vector<double> Values, double Coverage) {
+        if (Values.empty())
+            return 0.0;
+        const double want = std::ceil(Coverage * static_cast<double>(Values.size()));
+        std::size_t k = want < 1.0 ? 0 : static_cast<std::size_t>(want) - 1;
+        k = std::min(k, Values.size() - 1);
+        std::nth_element(Values.begin(), Values.begin() + static_cast<std::ptrdiff_t>(k),
+                         Values.end());
+        return Values[k];
+    }
+
+    /// The linearly interpolated percentile `P` (0 to 100, clamped) of the
+    /// values; NaN when empty. Sorts `rValues` in place.
+    static double PercentileLinear(std::vector<double>& rValues, double P) {
+        if (rValues.empty())
+            return std::numeric_limits<double>::quiet_NaN();
+        std::sort(rValues.begin(), rValues.end());
+        const double pos =
+            std::min(std::max(P, 0.0), 100.0) / 100.0 * static_cast<double>(rValues.size() - 1);
+        const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
+        const std::size_t hi = std::min(lo + 1, rValues.size() - 1);
+        const double frac = pos - static_cast<double>(lo);
+        return rValues[lo] + frac * (rValues[hi] - rValues[lo]);
     }
 
     ///@}
@@ -53140,6 +53334,66 @@ std::string gzip_compress(std::string_view In, const char* pWhat);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/gzip_deflate.hpp =====
+// ===== begin src/cpp/src/detail/hash_utils.hpp =====
+/**
+ * @file detail/hash_utils.hpp
+ * @brief `HashUtils`: the boost-style hash combiner the key hashes of the core
+ * wrote out by hand, and the key hashes built on it (roadmap 6.3).
+ *
+ * `Combine` is exactly `h ^= v + 0x9e3779b97f4a7c15 + (h << 6) + (h >> 2)`, so
+ * a key hash that switches to it keeps every hash value, and with it the
+ * iteration order of the unordered container it serves. The integer keys go
+ * through `std::hash<std::int64_t>` as before. A **core-private** header (not
+ * installed); the two installed key hashes (`SurfaceEdgeKeyHash`,
+ * `GridKeyHash`) keep their own inline bodies until an ABI bump is due.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// Static hash-combining helpers.
+struct HashUtils {
+    /// `Seed ^ (Value + 0x9e3779b97f4a7c15 + (Seed << 6) + (Seed >> 2))`.
+    template <class T>
+    static MIO_ALWAYS_INLINE T Combine(T Seed, T Value) {
+        return Seed ^ (Value + static_cast<T>(0x9e3779b97f4a7c15ULL) + (Seed << 6) + (Seed >> 2));
+    }
+
+    /// Combines every element of a range, each through `std::hash<std::int64_t>`.
+    template <class Range>
+    static std::size_t Range64(const Range& rKeys, std::size_t Seed) {
+        std::size_t h = Seed;
+        for (const std::int64_t v : rKeys)
+            h = Combine<std::size_t>(h, std::hash<std::int64_t>{}(v));
+        return h;
+    }
+};
+
+/// Hash of a fixed-size integer key, seed 0.
+template <std::size_t N>
+struct ArrayHash {
+    std::size_t operator()(const std::array<std::int64_t, N>& rKey) const {
+        return HashUtils::Range64(rKey, 0);
+    }
+};
+
+/// Hash of a vector key, seed its size.
+struct SizedVectorHash {
+    std::size_t operator()(const std::vector<std::int64_t>& rKey) const {
+        return HashUtils::Range64(rKey, rKey.size());
+    }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/hash_utils.hpp =====
 // ===== begin src/cpp/src/detail/hausdorff_samples.hpp =====
 /**
  * @file detail/hausdorff_samples.hpp
@@ -57473,6 +57727,52 @@ SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/sparse_solve.hpp =====
+// ===== begin src/cpp/src/detail/splitmix.hpp =====
+/**
+ * @file detail/splitmix.hpp
+ * @brief splitmix64 (Steele, Lea and Flood 2014): the finalizer and the
+ * counter-based generator, written once (roadmap 6.4).
+ *
+ * The same sequence on every platform, unlike a standard-library distribution,
+ * so seeded operations (`box_points`, `refine_patches`' RANSAC) stay
+ * reproducible. A **core-private** header (not installed).
+ */
+
+// System includes
+#include <cstdint>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// The golden-ratio increment of splitmix64.
+inline constexpr std::uint64_t kSplitMix64Gamma = 0x9E3779B97F4A7C15ULL;
+
+/// The splitmix64 finalizer: a bijective mix of one 64-bit word.
+MIO_ALWAYS_INLINE std::uint64_t splitmix64_mix(std::uint64_t Z) {
+    Z = (Z ^ (Z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    Z = (Z ^ (Z >> 27)) * 0x94D049BB133111EBULL;
+    return Z ^ (Z >> 31);
+}
+
+/// splitmix64 over a caller-owned state word.
+struct SplitMix64 {
+    std::uint64_t mState;
+
+    /// The next 64-bit value.
+    MIO_ALWAYS_INLINE std::uint64_t Next() {
+        mState += kSplitMix64Gamma;
+        return splitmix64_mix(mState);
+    }
+
+    /// A uniform draw in [0, 1): the top 53 bits, exact in a double.
+    MIO_ALWAYS_INLINE double NextUnit() {
+        return static_cast<double>(Next() >> 11) * (1.0 / 9007199254740992.0);
+    }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/splitmix.hpp =====
 // ===== begin src/cpp/src/detail/staged_block.hpp =====
 /**
  * @file detail/staged_block.hpp
@@ -59114,6 +59414,109 @@ void require_tet_only_blocks(const Mesh& rMesh, const char* pPrefix);
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/tet_scope.hpp =====
+// ===== begin src/cpp/src/detail/text_utils.hpp =====
+/**
+ * @file detail/text_utils.hpp
+ * @brief `TextUtils`: the trim the text readers each wrote out under their own
+ * name, with the whitespace sets they used (roadmap 6.1).
+ *
+ * A reader strips a different set of characters (a keyword deck blanks and
+ * line ends, a column format blanks only), so the set is an argument and the
+ * three that occur are named. Each member does exactly what the copies did and
+ * never calls `<cctype>`, so the result does not depend on the global locale.
+ * A **core-private** header (not installed).
+ */
+
+// System includes
+#include <cstddef>
+#include <string>
+#include <string_view>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+struct TextUtils {
+    /// Space, tab, carriage return and newline: what the keyword decks strip.
+    static constexpr std::string_view kBlanks = " \t\r\n";
+    /// Space and tab only: the fixed-column formats.
+    static constexpr std::string_view kSpaceTab = " \t";
+    /// Space, tab and carriage return, not the newline.
+    static constexpr std::string_view kSpaceTabCr = " \t\r";
+    /// `std::isspace` in the classic locale: also form feed and vertical tab.
+    static constexpr std::string_view kClassicSpace = " \t\n\v\f\r";
+
+    /// `Text` without the characters of `Set` at either end.
+    static MIO_ALWAYS_INLINE std::string_view TrimView(std::string_view Text,
+                                                       std::string_view Set = kBlanks) {
+        const std::size_t b = Text.find_first_not_of(Set);
+        if (b == std::string_view::npos)
+            return {};
+        return Text.substr(b, Text.find_last_not_of(Set) - b + 1);
+    }
+
+    /// `Text` without the characters of `Set` at its start.
+    static MIO_ALWAYS_INLINE std::string_view LeftTrimView(std::string_view Text,
+                                                           std::string_view Set = kBlanks) {
+        const std::size_t b = Text.find_first_not_of(Set);
+        return b == std::string_view::npos ? std::string_view{} : Text.substr(b);
+    }
+
+    /// `Text` without the characters of `Set` at its end.
+    static MIO_ALWAYS_INLINE std::string_view RightTrimView(std::string_view Text,
+                                                            std::string_view Set = kBlanks) {
+        const std::size_t e = Text.find_last_not_of(Set);
+        return e == std::string_view::npos ? std::string_view{} : Text.substr(0, e + 1);
+    }
+
+    /// `C` with an ASCII capital turned into its small letter; no locale.
+    static MIO_ALWAYS_INLINE char LowerChar(char C) {
+        return C >= 'A' && C <= 'Z' ? static_cast<char>(C - 'A' + 'a') : C;
+    }
+
+    /// `C` with an ASCII small letter turned into its capital; no locale.
+    static MIO_ALWAYS_INLINE char UpperChar(char C) {
+        return C >= 'a' && C <= 'z' ? static_cast<char>(C - 'a' + 'A') : C;
+    }
+
+    /// `Text` with its ASCII capitals turned into small letters.
+    static MIO_ALWAYS_INLINE std::string Lower(std::string_view Text) {
+        std::string out(Text);
+        for (char& c : out)
+            c = LowerChar(c);
+        return out;
+    }
+
+    /// `Text` with its ASCII small letters turned into capitals.
+    static MIO_ALWAYS_INLINE std::string Upper(std::string_view Text) {
+        std::string out(Text);
+        for (char& c : out)
+            c = UpperChar(c);
+        return out;
+    }
+
+    /// Whether the end of `Text`, with its capitals lowered, is the lower-case
+    /// `LowerSuffix` (a file extension compared without regard to case).
+    static MIO_ALWAYS_INLINE bool EndsWithLowered(std::string_view Text,
+                                                  std::string_view LowerSuffix) {
+        if (Text.size() < LowerSuffix.size())
+            return false;
+        const std::string_view tail = Text.substr(Text.size() - LowerSuffix.size());
+        for (std::size_t i = 0; i < tail.size(); ++i)
+            if (LowerChar(tail[i]) != LowerSuffix[i])
+                return false;
+        return true;
+    }
+
+    /// `TrimView` as an owned string.
+    static MIO_ALWAYS_INLINE std::string Trim(std::string_view Text,
+                                              std::string_view Set = kBlanks) {
+        return std::string(TrimView(Text, Set));
+    }
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/text_utils.hpp =====
 // ===== begin src/cpp/src/detail/thb_spline.hpp =====
 /**
  * @file detail/thb_spline.hpp
@@ -59461,6 +59864,71 @@ TriTriSegment tri_tri_segment(const double* pA, const double* pB, const double* 
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/tri_tri.hpp =====
+// ===== begin src/cpp/src/detail/union_find.hpp =====
+/**
+ * @file detail/union_find.hpp
+ * @brief `UnionFind<Index>`: disjoint sets with path halving, whose root is
+ * always the smallest index of its set (roadmap 6.2).
+ *
+ * The smaller root wins a join, so the partition, its representatives and any
+ * group numbering derived from them do not depend on the order the joins are
+ * applied in. Serial by design (the union sweeps are a non-goal to
+ * parallelise). A **core-private** header (not installed).
+ */
+
+// System includes
+#include <cstddef>
+#include <numeric>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+template <class Index>
+class UnionFind {
+public:
+    explicit UnionFind(std::size_t N) : mParent(N) {
+        std::iota(mParent.begin(), mParent.end(), Index{0});
+    }
+
+    /// The root of `X`'s set, halving the path on the way.
+    MIO_ALWAYS_INLINE Index Find(Index X) { return FindIn(mParent, X); }
+
+    /// Join the sets of `A` and `B`, the smaller root winning; true when they were apart.
+    MIO_ALWAYS_INLINE bool Unite(Index A, Index B) {
+        A = Find(A);
+        B = Find(B);
+        if (A == B)
+            return false;
+        if (A < B)
+            mParent[static_cast<std::size_t>(B)] = A;
+        else
+            mParent[static_cast<std::size_t>(A)] = B;
+        return true;
+    }
+
+    /// The parent link of `X`: never above `X`, since a root is its set's
+    /// smallest index and path halving only moves links down.
+    Index Parent(std::size_t X) const { return mParent[X]; }
+
+    /// Path-halving find over a caller-owned parent vector, for a union written
+    /// with its own rule beside the same walk.
+    static MIO_ALWAYS_INLINE Index FindIn(std::vector<Index>& rParent, Index X) {
+        while (rParent[static_cast<std::size_t>(X)] != X) {
+            Index& p = rParent[static_cast<std::size_t>(X)];
+            p = rParent[static_cast<std::size_t>(p)];
+            X = p;
+        }
+        return X;
+    }
+
+private:
+    std::vector<Index> mParent;
+};
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/union_find.hpp =====
 // ===== begin src/cpp/src/detail/utf8.hpp =====
 /**
  * @file detail/utf8.hpp
@@ -63107,6 +63575,7 @@ inline Face polygon_from_edges(const std::vector<std::array<std::int64_t, 2>>& r
 #include <array>
 #include <cstddef>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -63117,8 +63586,7 @@ namespace gid_detail {
 
 /// True when @p rS ends with @p rSuffix.
 inline bool gid_has_suffix(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 /**
@@ -78135,7 +78603,7 @@ const std::vector<std::pair<std::string, std::string>>& abaqus_type_table() {
 namespace {
 
 bool abq_starts_with(std::string_view Name, std::string_view Prefix) {
-    return Name.substr(0, Prefix.size()) == Prefix;
+    return std::string_view(Name).starts_with(Prefix);
 }
 
 // "S" followed by a digit: S3, S4R, S8R5, S9R5 (not SAX1, SC8R, SPRINGA).
@@ -81593,10 +82061,7 @@ BsplineFitResult bspline_fit_patch(const std::vector<PatchVec>& rPts,
                     const std::size_t b = tr[static_cast<std::size_t>((c + 1) % 3)];
                     lens.push_back(std::hypot((rU[a] - rU[b]) / ext[0], (rV[a] - rV[b]) / ext[1]));
                 }
-            std::nth_element(lens.begin(),
-                             lens.begin() + static_cast<std::ptrdiff_t>(lens.size() / 2),
-                             lens.end());
-            const double h = lens[lens.size() / 2];
+            const double h = MathUtils::MedianUpper(lens);
             const std::size_t reach = static_cast<std::size_t>(std::ceil(h * kG)) + 1;
             std::vector<std::uint8_t> occupied(kG * kG, 0);
             for (std::size_t k = 0; k < smp.mNumData; ++k) {
@@ -82377,9 +82842,7 @@ BucketTable build_bucket_table(double Cell, const std::vector<GridKey>& rLo,
                     // GridKeyHash's low bits cluster for neighbouring cells;
                     // the splitmix64 finalizer spreads them over the mask.
                     std::uint64_t h = static_cast<std::uint64_t>(hash(key));
-                    h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
-                    h = (h ^ (h >> 27)) * 0x94d049bb133111ebULL;
-                    h ^= h >> 31;
+                    h = splitmix64_mix(h);
                     std::size_t at = static_cast<std::size_t>(h) & mask;
                     for (;; at = (at + 1) & mask) {
                         if (slot[at] == kEmpty) {
@@ -86774,10 +87237,7 @@ namespace detail {
 namespace {
 
 std::string cmpin_lower(std::string Text) {
-    std::transform(Text.begin(), Text.end(), Text.begin(), [](unsigned char c) {
-        return static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
-    });
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 [[noreturn]] void cmpin_missing(Compression Kind) {
@@ -91237,24 +91697,22 @@ struct EmShells {
 
 EmShells em_shells(const TetMeshRegionRequest& rRequest) {
     const std::size_t nt = rRequest.mTriangles.size();
-    std::vector<std::size_t> parent(nt);
-    for (std::size_t t = 0; t < nt; ++t)
-        parent[t] = t;
-    const auto find = [&](std::size_t A) {
-        while (parent[A] != A)
-            A = parent[A] = parent[parent[A]];
-        return A;
-    };
-    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_owner;
-    for (std::size_t t = 0; t < nt; ++t)
-        for (std::size_t k = 0; k < 3; ++k) {
-            std::int64_t a = rRequest.mTriangles[t][k], b = rRequest.mTriangles[t][(k + 1) % 3];
-            if (a > b)
-                std::swap(a, b);
-            const auto [it, fresh] = edge_owner.emplace(std::make_pair(a, b), t);
-            if (!fresh)
-                parent[find(t)] = find(it->second);
-        }
+    // Shells are the triangles joined across shared edges. Only the partition
+    // is read: the shells below are numbered by their lowest triangle, never by
+    // a root, so any union rule gives the same shells.
+    detail::UnionFind<std::size_t> sets(nt);
+    const auto find = [&](std::size_t A) { return sets.Find(A); };
+    {
+        detail::EdgeUseTable<std::int64_t> edges;
+        for (std::size_t t = 0; t < nt; ++t)
+            for (std::size_t k = 0; k < 3; ++k)
+                edges.Add(rRequest.mTriangles[t][k], rRequest.mTriangles[t][(k + 1) % 3],
+                          static_cast<std::int64_t>(t));
+        edges.Build();
+        edges.ForEachSharedFace([&](std::int64_t A, std::int64_t B) {
+            sets.Unite(static_cast<std::size_t>(A), static_cast<std::size_t>(B));
+        });
+    }
     std::map<std::size_t, std::size_t> root_index;
     EmShells out;
     for (std::size_t t = 0; t < nt; ++t) {
@@ -92541,8 +92999,9 @@ void ff_axial(const double* pP, const PatchVec& rX, double& rH, double& rRho) {
 void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris,
                        std::vector<PatchVec>& rNormals, std::vector<std::uint8_t>& rInterior) {
     rNormals.assign(rPts.size(), PatchVec{0.0, 0.0, 0.0});
-    std::map<std::pair<std::size_t, std::size_t>, int> uses;
-    for (const PatchTri& t : rTris) {
+    EdgeUseTable<std::size_t> uses;
+    for (std::size_t ti = 0; ti < rTris.size(); ++ti) {
+        const PatchTri& t = rTris[ti];
         const PatchVec e1 = vec3_sub(rPts[t[1]], rPts[t[0]]);
         const PatchVec e2 = vec3_sub(rPts[t[2]], rPts[t[0]]);
         const PatchVec n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
@@ -92552,9 +93011,10 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
         for (int k = 0; k < 3; ++k) {
             const std::size_t a = t[static_cast<std::size_t>(k)];
             const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            ++uses[{std::min(a, b), std::max(a, b)}];
+            uses.Add(a, b, ti);
         }
     }
+    uses.Build();
     for (PatchVec& n : rNormals) {
         const double len = vec3_norm(n);
         if (len > 0.0)
@@ -92564,9 +93024,9 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
     for (const PatchTri& t : rTris)
         for (std::size_t v : t)
             rInterior[v] = 1;
-    for (const auto& kv : uses)
-        if (kv.second == 1)
-            rInterior[kv.first.first] = rInterior[kv.first.second] = 0;
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1)
+            rInterior[uses.Lo(e)] = rInterior[uses.Hi(e)] = 0;
 }
 
 }  // namespace
@@ -92870,15 +93330,15 @@ void ff_law_basis(bool Periodic, double T0, double T1, std::size_t N, double T, 
 }
 
 // Every edge of a triangle set, counted: an edge used once is a boundary edge.
-std::map<std::pair<std::size_t, std::size_t>, int> ff_edge_uses(
-    const std::vector<PatchTri>& rTris) {
-    std::map<std::pair<std::size_t, std::size_t>, int> uses;
-    for (const PatchTri& t : rTris)
+EdgeUseTable<std::size_t> ff_edge_uses(const std::vector<PatchTri>& rTris) {
+    EdgeUseTable<std::size_t> uses;
+    for (std::size_t ti = 0; ti < rTris.size(); ++ti)
         for (int k = 0; k < 3; ++k) {
-            const std::size_t a = t[static_cast<std::size_t>(k)];
-            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            ++uses[{std::min(a, b), std::max(a, b)}];
+            const std::size_t a = rTris[ti][static_cast<std::size_t>(k)];
+            const std::size_t b = rTris[ti][static_cast<std::size_t>((k + 1) % 3)];
+            uses.Add(a, b, ti);
         }
+    uses.Build();
     return uses;
 }
 
@@ -93118,17 +93578,17 @@ RollingBallFit rolling_ball_fit(const std::vector<PatchVec>& rPts,
     // averaged in bins along that order.
     const auto uses = ff_edge_uses(rTris);
     std::vector<std::uint8_t> on_rail(rPts.size(), 0);
-    for (const auto& kv : uses)
-        if (kv.second == 1)
-            for (std::size_t v : {kv.first.first, kv.first.second})
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1)
+            for (std::size_t v : {uses.Lo(e), uses.Hi(e)})
                 if (!on_rail[v] && dist(rS1, rPts[v]) <= 0.1 * r_med &&
                     dist(rS1, rPts[v]) < dist(rS2, rPts[v]))
                     on_rail[v] = 1;
     std::vector<std::vector<std::size_t>> adj(rPts.size());
-    for (const auto& kv : uses)
-        if (kv.second == 1 && on_rail[kv.first.first] && on_rail[kv.first.second]) {
-            adj[kv.first.first].push_back(kv.first.second);
-            adj[kv.first.second].push_back(kv.first.first);
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+        if (uses.Count(e) == 1 && on_rail[uses.Lo(e)] && on_rail[uses.Hi(e)]) {
+            adj[uses.Lo(e)].push_back(uses.Hi(e));
+            adj[uses.Hi(e)].push_back(uses.Lo(e));
         }
     // The component of the rail edges with the greatest length.
     std::vector<std::int64_t> comp(rPts.size(), -1);
@@ -93956,15 +94416,15 @@ double ff_conic_distance(const PatchVec& rR1, const PatchVec& rA, const PatchVec
 // The boundary edges rKeep selects, chained: the component of greatest
 // length, from one of its ends (or anywhere on a loop).
 bool ff_boundary_chain(const std::vector<PatchVec>& rPts,
-                       const std::map<std::pair<std::size_t, std::size_t>, int>& rUses,
+                       const EdgeUseTable<std::size_t>& rUses,
                        const std::function<bool(std::size_t, std::size_t)>& rKeep,
                        std::vector<std::size_t>& rChain, bool& rClosed) {
     const std::size_t n = rPts.size();
     std::vector<std::vector<std::size_t>> adj(n);
-    for (const auto& kv : rUses)
-        if (kv.second == 1 && rKeep(kv.first.first, kv.first.second)) {
-            adj[kv.first.first].push_back(kv.first.second);
-            adj[kv.first.second].push_back(kv.first.first);
+    for (std::size_t e = 0; e < rUses.NumEdges(); ++e)
+        if (rUses.Count(e) == 1 && rKeep(rUses.Lo(e), rUses.Hi(e))) {
+            adj[rUses.Lo(e)].push_back(rUses.Hi(e));
+            adj[rUses.Hi(e)].push_back(rUses.Lo(e));
         }
     std::vector<std::int64_t> comp(n, -1);
     std::vector<double> comp_len;
@@ -94144,9 +94604,9 @@ SectionBlendFit section_blend_fit(const std::vector<PatchVec>& rPts,
     const auto uses = ff_edge_uses(rTris);
     std::vector<std::uint8_t> on1(rPts.size(), 0), on2(rPts.size(), 0);
     if (!rEdgeSide)
-        for (const auto& kv : uses)
-            if (kv.second == 1)
-                for (std::size_t v : {kv.first.first, kv.first.second}) {
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+            if (uses.Count(e) == 1)
+                for (std::size_t v : {uses.Lo(e), uses.Hi(e)}) {
                     const double d1 = dist(rS1, rPts[v], nullptr), d2 = dist(rS2, rPts[v], nullptr);
                     if (d1 <= Tol && d1 < d2)
                         on1[v] = 1;
@@ -94283,13 +94743,13 @@ VertexBlendBoundary vertex_blend_boundary(
     VertexBlendBoundary out;
     // The directed boundary edges, as the triangles wind them: one loop when
     // each boundary vertex starts exactly one.
-    std::map<std::pair<std::size_t, std::size_t>, int> uses = ff_edge_uses(rTris);
+    const EdgeUseTable<std::size_t> uses = ff_edge_uses(rTris);
     std::map<std::size_t, std::size_t> next;
     for (const PatchTri& t : rTris)
         for (int k = 0; k < 3; ++k) {
             const std::size_t a = t[static_cast<std::size_t>(k)];
             const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            if (uses[{std::min(a, b), std::max(a, b)}] != 1)
+            if (uses.CountOf(a, b) != 1)
                 continue;
             if (!next.emplace(a, b).second)
                 return out;  // two boundary edges leave one vertex: not a disc
@@ -99508,34 +99968,38 @@ std::vector<HfTri> hf_min_area(const std::vector<Vec3>& rP, std::size_t N) {
 void hf_relax(const std::vector<Vec3>& rP, std::vector<HfTri>& rTris) {
     for (int pass = 0; pass < 64; ++pass) {
         bool flipped = false;
-        std::map<std::pair<std::size_t, std::size_t>, std::vector<std::size_t>> uses;
+        EdgeUseTable<std::size_t> uses;
         for (std::size_t t = 0; t < rTris.size(); ++t)
-            for (std::size_t e = 0; e < 3; ++e) {
-                const std::size_t a = rTris[t][e], b = rTris[t][(e + 1) % 3];
-                uses[{std::min(a, b), std::max(a, b)}].push_back(t);
-            }
+            for (std::size_t e = 0; e < 3; ++e)
+                uses.Add(rTris[t][e], rTris[t][(e + 1) % 3], t);
+        uses.Build();
         std::vector<char> touched(rTris.size(), 0);
-        for (const auto& [edge, r_ts] : uses) {
-            if (r_ts.size() != 2 || touched[r_ts[0]] || touched[r_ts[1]])
+        for (std::size_t edge_at = 0; edge_at < uses.NumEdges(); ++edge_at) {
+            if (uses.Count(edge_at) != 2)
                 continue;
-            const HfTri& t1 = rTris[r_ts[0]];
-            const HfTri& t2 = rTris[r_ts[1]];
+            const std::size_t first_tri = uses.At(edge_at, 0).mFace;
+            const std::size_t second_tri = uses.At(edge_at, 1).mFace;
+            if (touched[first_tri] || touched[second_tri])
+                continue;
+            const std::size_t edge_lo = uses.Lo(edge_at), edge_hi = uses.Hi(edge_at);
+            const HfTri& t1 = rTris[first_tri];
+            const HfTri& t2 = rTris[second_tri];
             // t1 = (a, b, c) traverses a -> b; t2 = (b, a, d).
             std::size_t k = 0;
-            while (!(t1[k] != edge.first && t1[k] != edge.second))
+            while (!(t1[k] != edge_lo && t1[k] != edge_hi))
                 ++k;
             const std::size_t c = t1[k], a = t1[(k + 1) % 3], b = t1[(k + 2) % 3];
             std::size_t d = t2[0];
             for (const std::size_t v : t2)
                 if (v != a && v != b)
                     d = v;
-            if (uses.count({std::min(c, d), std::max(c, d)}))
+            if (uses.Find(c, d) != EdgeUseTable<std::size_t>::kNone)
                 continue;
             if (hf_angle(rP[c], rP[a], rP[b]) + hf_angle(rP[d], rP[a], rP[b]) <= kHfPi + 1e-12)
                 continue;
-            rTris[r_ts[0]] = {c, a, d};
-            rTris[r_ts[1]] = {d, b, c};
-            touched[r_ts[0]] = touched[r_ts[1]] = 1;
+            rTris[first_tri] = {c, a, d};
+            rTris[second_tri] = {d, b, c};
+            touched[first_tri] = touched[second_tri] = 1;
             flipped = true;
         }
         if (!flipped)
@@ -100558,13 +101022,7 @@ namespace detail {
 namespace {
 
 std::string_view kwc_strip_view(std::string_view Text) {
-    std::size_t b = 0;
-    std::size_t e = Text.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(Text[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(Text[e - 1])))
-        --e;
-    return Text.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string kwc_strip(std::string_view Text) {
@@ -107467,19 +107925,37 @@ std::vector<std::vector<std::size_t>> param_boundary_loops(const std::vector<Pat
                                                            bool& rOk) {
     rOk = true;
     // Directed edges; a boundary edge is one whose reverse no triangle uses.
-    std::map<std::pair<std::size_t, std::size_t>, int> directed;
-    for (const PatchTri& t : rTris)
-        for (int k = 0; k < 3; ++k)
-            ++directed[{t[static_cast<std::size_t>(k)], t[static_cast<std::size_t>((k + 1) % 3)]}];
-    std::map<std::size_t, std::size_t> next;
-    for (const auto& kv : directed) {
-        if (kv.second > 1)
-            rOk = false;  // an edge used twice the same way: inconsistent or non-manifold
-        if (directed.count({kv.first.second, kv.first.first}))
+    EdgeUseTable<std::size_t> uses;
+    for (std::size_t ti = 0; ti < rTris.size(); ++ti)
+        for (std::size_t k = 0; k < 3; ++k)
+            uses.Add(rTris[ti][k], rTris[ti][(k + 1) % 3], ti);
+    uses.Build();
+    // An undirected edge holds the uses of `lo -> hi` (forward) and `hi -> lo`.
+    std::vector<std::pair<std::size_t, std::size_t>> boundary;
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e) {
+        std::size_t forward = 0, backward = 0;
+        for (std::size_t k = 0; k < uses.Count(e); ++k)
+            (uses.At(e, k).mForward ? forward : backward)++;
+        if (uses.Lo(e) == uses.Hi(e)) {  // a degenerate edge is its own reverse
+            if (uses.Count(e) > 1)
+                rOk = false;
             continue;
-        if (next.count(kv.first.first))
+        }
+        if (forward > 1 || backward > 1)
+            rOk = false;  // an edge used twice the same way: inconsistent or non-manifold
+        if (forward > 0 && backward == 0)
+            boundary.emplace_back(uses.Lo(e), uses.Hi(e));
+        if (backward > 0 && forward == 0)
+            boundary.emplace_back(uses.Hi(e), uses.Lo(e));
+    }
+    // In directed-key order, as the map this replaced visited them: when two
+    // boundary edges leave one vertex, the later one is kept.
+    std::sort(boundary.begin(), boundary.end());
+    std::map<std::size_t, std::size_t> next;
+    for (const auto& r_edge : boundary) {
+        if (next.count(r_edge.first))
             rOk = false;  // a pinched boundary vertex
-        next[kv.first.first] = kv.first.second;
+        next[r_edge.first] = r_edge.second;
     }
     std::vector<std::vector<std::size_t>> loops;
     std::set<std::size_t> done;
@@ -108032,32 +108508,18 @@ void pf_local(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rT
 // their lowest triangle.
 std::vector<std::vector<std::size_t>> pf_components(const std::vector<PatchTri>& rTris,
                                                     const std::vector<std::size_t>& rSubset) {
-    std::vector<std::size_t> parent(rSubset.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t X) {
-        while (parent[X] != X) {
-            parent[X] = parent[parent[X]];
-            X = parent[X];
-        }
-        return X;
-    };
-    std::map<std::pair<std::size_t, std::size_t>, std::size_t> first;
+    UnionFind<std::size_t> sets(rSubset.size());
+    EdgeUseTable<std::size_t> edges;
     for (std::size_t i = 0; i < rSubset.size(); ++i) {
         const PatchTri& t = rTris[rSubset[i]];
-        for (int k = 0; k < 3; ++k) {
-            const std::size_t a = t[static_cast<std::size_t>(k)];
-            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            auto ins = first.emplace(std::make_pair(std::min(a, b), std::max(a, b)), i);
-            if (!ins.second) {
-                const std::size_t ra = find(i), rb = find(ins.first->second);
-                if (ra != rb)
-                    parent[std::max(ra, rb)] = std::min(ra, rb);
-            }
-        }
+        for (int k = 0; k < 3; ++k)
+            edges.Add(t[static_cast<std::size_t>(k)], t[static_cast<std::size_t>((k + 1) % 3)], i);
     }
+    edges.Build();
+    edges.ForEachSharedFace([&](std::size_t A, std::size_t B) { sets.Unite(A, B); });
     std::map<std::size_t, std::vector<std::size_t>> by_root;
     for (std::size_t i = 0; i < rSubset.size(); ++i)
-        by_root[find(i)].push_back(rSubset[i]);
+        by_root[sets.Find(i)].push_back(rSubset[i]);
     std::vector<std::vector<std::size_t>> out;
     for (auto& kv : by_root)
         out.push_back(std::move(kv.second));
@@ -113001,10 +113463,7 @@ PrimitiveFormMetrics primitive_form_metrics(std::int64_t Type, const double* pPa
         gap.back() = angle.front() + 360.0 - angle.back();
         const double largest = *std::max_element(gap.begin(), gap.end());
         std::vector<double> sorted = gap;
-        std::nth_element(sorted.begin(),
-                         sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2),
-                         sorted.end());
-        const double median = sorted[sorted.size() / 2];
+        const double median = MathUtils::MedianUpper(sorted);
         m.mArcDeg = largest <= 2.0 * median ? 360.0 : 360.0 - largest;
     }
     return m;
@@ -113919,16 +114378,12 @@ constexpr const char* kProvenancePrefixes[] = {
 };
 
 bool prov_starts_with(std::string_view s, std::string_view prefix) {
-    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
+    return std::string_view(s).starts_with(prefix);
 }
 
 /// Trims ASCII whitespace from both ends.
 std::string_view prov_trim(std::string_view s) {
-    while (!s.empty() && (s.front() == ' ' || s.front() == '\t' || s.front() == '\r'))
-        s.remove_prefix(1);
-    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r'))
-        s.remove_suffix(1);
-    return s;
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 bool prov_is_provenance_line(std::string_view s) {
@@ -114954,23 +115409,7 @@ std::vector<std::size_t> ql_corners(QlState& rS, const QlPiece& rPiece,
     return chosen;
 }
 
-struct QlUnionFind {
-    std::vector<std::size_t> mParent;
-    explicit QlUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), std::size_t{0});
-    }
-    std::size_t Find(std::size_t A) {
-        while (mParent[A] != A)
-            A = mParent[A] = mParent[mParent[A]];
-        return A;
-    }
-    void Unite(std::size_t A, std::size_t B) {
-        A = Find(A);
-        B = Find(B);
-        if (A != B)
-            mParent[std::max(A, B)] = std::min(A, B);
-    }
-};
+using QlUnionFind = UnionFind<std::size_t>;
 
 // A finished piece: its triangles, its boundary from its first corner, its
 // corners' positions there and, per direction (sides 0 and 2, sides 1 and
@@ -117124,6 +117563,7 @@ const RefineMaskTemplate& refine_mask_template(CellType Type, std::uint16_t Mask
 #include <cstdint>
 #include <map>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -117138,7 +117578,7 @@ constexpr const char* kRfdPrefix = "region:";
 constexpr const char* kRfdMetaPrefix = "region-meta:";
 
 bool rfd_starts_with(const std::string& rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 const char* rfd_kind_name(RegionKind Kind) {
@@ -117976,15 +118416,7 @@ double render_scale_forward(RenderScale Scale, double Threshold, double v) {
 }
 
 double render_percentile(std::vector<double>& rValues, double P) {
-    if (rValues.empty())
-        return std::numeric_limits<double>::quiet_NaN();
-    std::sort(rValues.begin(), rValues.end());
-    const double pos =
-        std::min(std::max(P, 0.0), 100.0) / 100.0 * static_cast<double>(rValues.size() - 1);
-    const std::size_t lo = static_cast<std::size_t>(std::floor(pos));
-    const std::size_t hi = std::min(lo + 1, rValues.size() - 1);
-    const double frac = pos - static_cast<double>(lo);
-    return rValues[lo] + frac * (rValues[hi] - rValues[lo]);
+    return MathUtils::PercentileLinear(rValues, P);
 }
 
 namespace {
@@ -118642,15 +119074,8 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
     std::vector<double> normals = rShell.mNormals;
 
     // Pieces, and the ones wound inwards turned outwards.
-    std::vector<std::size_t> parent(nf);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t X) {
-        while (parent[X] != X) {
-            parent[X] = parent[parent[X]];
-            X = parent[X];
-        }
-        return X;
-    };
+    UnionFind<std::size_t> sets(nf);
+    auto find = [&](std::size_t X) { return sets.Find(X); };
     {
         std::unordered_map<std::uint64_t, std::size_t> owner;
         owner.reserve(nodes.size());
@@ -118661,9 +119086,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                                                  nodes[static_cast<std::size_t>(b + (k + 1) % s)]);
                 auto ins = owner.emplace(key, f);
                 if (!ins.second) {
-                    const std::size_t ra = find(f), rb = find(ins.first->second);
-                    if (ra != rb)
-                        parent[std::max(ra, rb)] = std::min(ra, rb);
+                    sets.Unite(f, ins.first->second);
                 }
             }
         }
@@ -122343,36 +122766,7 @@ bool sn_edge_use_less(const SnEdgeUse& rA, const SnEdgeUse& rB) {
 // Union-find whose root is always the smallest index of its set. That is what
 // makes the partition, and the group numbering derived from it, independent of
 // the order the joins are applied in.
-class SnUnionFind {
-public:
-    explicit SnUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), std::int64_t{0});
-    }
-    std::int64_t Find(std::int64_t X) {
-        while (mParent[static_cast<std::size_t>(X)] != X) {
-            std::int64_t& p = mParent[static_cast<std::size_t>(X)];
-            p = mParent[static_cast<std::size_t>(p)];
-            X = p;
-        }
-        return X;
-    }
-    /// The parent link of @p X: never above @p X, since a root is its set's
-    /// smallest index and path halving only moves links down.
-    std::int64_t Parent(std::size_t X) const { return mParent[X]; }
-    void Unite(std::int64_t A, std::int64_t B) {
-        const std::int64_t ra = Find(A);
-        const std::int64_t rb = Find(B);
-        if (ra == rb)
-            return;
-        if (ra < rb)
-            mParent[static_cast<std::size_t>(rb)] = ra;
-        else
-            mParent[static_cast<std::size_t>(ra)] = rb;
-    }
-
-private:
-    std::vector<std::int64_t> mParent;
-};
+using SnUnionFind = UnionFind<std::int64_t>;
 
 double sn_corner_weight(const TriangleSoup& rSoup, std::size_t Tri, std::size_t Corner, double Len,
                         SdfPseudonormalWeight Weight) {
@@ -122842,9 +123236,7 @@ namespace {
 
 // The median of a non-empty vector (the upper one of an even count).
 double sv_median(std::vector<double> rV) {
-    const std::size_t mid = rV.size() / 2;
-    std::nth_element(rV.begin(), rV.begin() + static_cast<std::ptrdiff_t>(mid), rV.end());
-    return rV[mid];
+    return MathUtils::MedianUpper(rV);
 }
 
 }  // namespace
@@ -124354,27 +124746,6 @@ constexpr double kTetrmPi = 3.14159265358979323846;
 // (detail/cell_faces' tetra table, indexed by the corner it omits).
 constexpr int kTetrmOppositeFace[4][3] = {{1, 2, 3}, {2, 0, 3}, {0, 1, 3}, {0, 2, 1}};
 
-std::int64_t tetrm_find(std::vector<std::int64_t>& rParent, std::int64_t X) {
-    while (rParent[static_cast<std::size_t>(X)] != X) {
-        rParent[static_cast<std::size_t>(X)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(X)])];
-        X = rParent[static_cast<std::size_t>(X)];
-    }
-    return X;
-}
-
-void tetrm_union(std::vector<std::int64_t>& rParent, std::int64_t A, std::int64_t B) {
-    A = tetrm_find(rParent, A);
-    B = tetrm_find(rParent, B);
-    if (A == B)
-        return;
-    // the lower root wins, so the partition's roots do not depend on the order
-    if (A < B)
-        rParent[static_cast<std::size_t>(B)] = A;
-    else
-        rParent[static_cast<std::size_t>(A)] = B;
-}
-
 Vec3 tetrm_unit_normal(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     return vec3_normalize(vec3_cross(vec3_sub(rB, rA), vec3_sub(rC, rA)));
 }
@@ -124731,8 +125102,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
     });
 
     const double cos_feature = std::cos(FeatureAngleDeg * kTetrmPi / 180.0);
-    std::vector<std::int64_t> parent(nf);
-    std::iota(parent.begin(), parent.end(), std::int64_t{0});
+    UnionFind<std::int64_t> patches(nf);
     std::vector<std::array<std::int64_t, 2>> ridge_edges;
     std::vector<std::vector<std::int64_t>> ridge_faces;  // the faces of each ridge edge
     for (std::size_t i = 0; i < erecs.size();) {
@@ -124762,7 +125132,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
                 fs.push_back(erecs[k].mFace);
             ridge_faces.push_back(std::move(fs));
         } else {
-            tetrm_union(parent, erecs[i].mFace, erecs[i + 1].mFace);
+            patches.Unite(erecs[i].mFace, erecs[i + 1].mFace);
         }
         i = j;
     }
@@ -124772,8 +125142,7 @@ TetClassifyReport TetRemeshStore::Classify(double FeatureAngleDeg, double Corner
     std::vector<std::int32_t> patch(nf, -1);
     std::int32_t num_patches = 0;
     for (std::size_t f = 0; f < nf; ++f) {
-        const std::size_t r =
-            static_cast<std::size_t>(tetrm_find(parent, static_cast<std::int64_t>(f)));
+        const std::size_t r = static_cast<std::size_t>(patches.Find(static_cast<std::int64_t>(f)));
         if (patch_of_root[r] < 0)
             patch_of_root[r] = num_patches++;
         patch[f] = patch_of_root[r];
@@ -130613,6 +130982,7 @@ void FileSource::MoveFrom(FileSource&& rOther) noexcept {
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -130644,17 +131014,10 @@ const std::unordered_map<std::string, std::string>& meshio_to_abaqus() {
 }
 
 std::string abaqus_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 std::string_view abaqus_trim_view(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 std::string abaqus_trim(std::string_view rS) {
     return std::string(abaqus_trim_view(rS));
@@ -131343,9 +131706,7 @@ void fil_parse_ascii(std::string_view rText, FilData& rOut) {
             if (pos + 23 > s.size())
                 fail("truncated real item");
             std::string num = s.substr(pos + 1, 22);
-            for (char& c : num)
-                if (c == 'D' || c == 'd')
-                    c = 'E';
+            detail::fortran_exponent_to_e(num);
             // D22.15 with a three-digit exponent drops the letter: 1.0+100.
             if (num.find('E') == std::string::npos) {
                 const std::size_t sign = num.find_last_of("+-");
@@ -132951,8 +133312,7 @@ void filw_ndi_nshr(std::size_t Count, std::int64_t& rNdi, std::int64_t& rNshr) {
 }
 
 bool filw_ends_with(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 std::optional<double> filw_scalar(const Mesh& rMesh, const std::string& rName) {
@@ -133629,9 +133989,7 @@ long long adc_int(const std::string& rTok) {
 
 double adc_real(const std::string& rTok) {
     std::string t = rTok;
-    for (char& c : t)
-        if (c == 'd' || c == 'D')
-            c = 'e';
+    detail::fortran_exponent_to_e(t, 'e');
     const char* end = nullptr;
     const double v = detail::parse_double(t.c_str(), end);
     if (end == t.c_str())
@@ -137989,19 +138347,11 @@ namespace meshioplusplus {
 namespace {
 
 std::string ans_upper(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        if (c >= 'a' && c <= 'z')
-            c = static_cast<char>(c - 'a' + 'A');
-    return out;
+    return meshioplusplus::detail::TextUtils::Upper(Text);
 }
 
 std::string_view ans_strip_view(std::string_view Text) {
-    const std::size_t a = Text.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = Text.find_last_not_of(" \t\r\n");
-    return Text.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::string ans_strip(std::string_view Text) {
@@ -143984,11 +144334,7 @@ const CaTypeSpec* ca_spec_by_type(const std::string& rType) {
 }
 
 std::string ca_upper(std::string s) {
-    // ASCII only, like the name sanitiser: no locale may touch bytes above 0x7F.
-    std::transform(s.begin(), s.end(), s.begin(), [](char c) {
-        return c >= 'a' && c <= 'z' ? static_cast<char>(c - 'a' + 'A') : c;
-    });
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 struct CaToken {
@@ -144120,9 +144466,7 @@ double ca_number(const CaToken& rToken) {
     if (!ca_is_number(rToken.mText))
         ca_fail("expected a coordinate, found '" + rToken.mText + "'", rToken.mLine);
     std::string text = rToken.mText;
-    for (char& c : text)
-        if (c == 'D' || c == 'd')
-            c = 'E';
+    detail::fortran_exponent_to_e(text);
     const char* end = nullptr;
     return detail::parse_double(text.c_str(), end);
 }
@@ -144586,9 +144930,7 @@ double dex_real_token(std::string_view Text) {
         large.assign(Text);
         first = large.data();
     }
-    for (std::size_t i = 0; i < Text.size(); ++i)
-        if (first[i] == 'D' || first[i] == 'd')
-            first[i] = 'E';
+    detail::fortran_exponent_to_e(first, Text.size());
     const char* end = nullptr;
     return detail::parse_double(first, end);
 }
@@ -145435,11 +145777,7 @@ std::string dxf_document(const Mesh& rMesh) {
 // ---- reading -------------------------------------------------------------------
 
 std::string dxf_strip(const std::string& rS) {
-    const std::size_t a = rS.find_first_not_of(" \t\r\n\v\f");
-    if (a == std::string::npos)
-        return {};
-    const std::size_t b = rS.find_last_not_of(" \t\r\n\v\f");
-    return rS.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 double dxf_float(const std::string& rValue, int Code) {
@@ -151372,11 +151710,7 @@ constexpr FebLossy kFebLossy[] = {
     {"tet5", 5, "tetra"}, {"tet15", 15, "tetra10"}, {"tet20", 20, nullptr}};
 
 std::string feb_lower(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-    return out;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 // `TET10G4` -> `tet10`: an integration-rule suffix `g<digits>` after the node count.
@@ -152636,11 +152970,7 @@ const char* fn_topology_name(std::int64_t Code) {
 }
 
 std::string_view fn_trim(std::string_view Text) {
-    const std::size_t b = Text.find_first_not_of(" \t");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = Text.find_last_not_of(" \t");
-    return Text.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 // The comma-separated fields of a record line; a trailing comma adds none.
@@ -154047,11 +154377,7 @@ std::string flac3d_read_str(std::istream& rIn) {
 }
 
 std::string flac3d_trim(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return std::string();
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // The ascii slot is the raw remainder of the header line and may or may not be
@@ -154988,7 +155314,7 @@ bool frd_is_tensor_name(const std::string& rName) {
 }
 
 bool frd_starts_with(std::string_view Line, std::string_view Prefix) {
-    return Line.size() >= Prefix.size() && Line.compare(0, Prefix.size(), Prefix) == 0;
+    return std::string_view(Line).starts_with(Prefix);
 }
 
 /// Columns [Pos, Pos + Len) of @p Line, clipped to its end.
@@ -157894,7 +158220,7 @@ std::vector<std::string_view> gid_split(std::string_view rLine) {
     std::vector<std::string_view> out;
     std::size_t i = 0;
     while (i < rLine.size()) {
-        while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
+        while (i < rLine.size() && detail::text_is_blank(rLine[i]))
             ++i;
         if (i >= rLine.size())
             break;
@@ -157906,7 +158232,7 @@ std::vector<std::string_view> gid_split(std::string_view rLine) {
             i = close + 1;
         } else {
             const std::size_t start = i;
-            while (i < rLine.size() && !std::isspace(static_cast<unsigned char>(rLine[i])))
+            while (i < rLine.size() && !detail::text_is_blank(rLine[i]))
                 ++i;
             out.push_back(rLine.substr(start, i - start));
         }
@@ -157922,7 +158248,7 @@ bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const ch
     // letter -- must not pay for a tokenisation. Peek at the first non-space
     // character before doing any allocation.
     std::size_t i = 0;
-    while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
+    while (i < rLine.size() && detail::text_is_blank(rLine[i]))
         ++i;
     if (i >= rLine.size() || std::tolower(static_cast<unsigned char>(rLine[i])) !=
                                  std::tolower(static_cast<unsigned char>(pFirst[0])))
@@ -159653,9 +159979,7 @@ std::string gii_meta(const pugi::xml_node& Node, const std::string& rKey) {
 }
 
 std::string gii_trim(std::string Text) {
-    const auto b = Text.find_first_not_of(" \t\r\n");
-    const auto e = Text.find_last_not_of(" \t\r\n");
-    return b == std::string::npos ? std::string() : Text.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 /// One `DataArray`'s values, row-major, of its own dtype.
@@ -159990,6 +160314,7 @@ void write_gifti(const std::string& rPath, const Mesh& rMesh) {
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -160015,7 +160340,7 @@ constexpr int kGltfModeLines = 1;
 constexpr int kGltfModeTriangles = 4;
 
 bool gltf_starts_with(const std::string& rText, const char* pPrefix) {
-    return rText.rfind(pPrefix, 0) == 0;
+    return std::string_view(rText).starts_with(pPrefix);
 }
 
 // --------------------------------------------------------------------------- //
@@ -160488,10 +160813,8 @@ struct GltfVertexKey {
 
 struct GltfVertexKeyHash {
     std::size_t operator()(const GltfVertexKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : {rKey.mPoint, rKey.mGroup, rKey.mCell})
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
+        return detail::HashUtils::Range64(
+            std::array<std::int64_t, 3>{rKey.mPoint, rKey.mGroup, rKey.mCell}, 0);
     }
 };
 
@@ -161408,15 +161731,11 @@ GltfRendered gltf_render(const Mesh& rMesh, const GltfWriteOptions& rOpt, bool B
 }
 
 std::string gltf_lower(std::string Text) {
-    for (char& c : Text)
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 bool gltf_has_suffix(const std::string& rText, const char* pSuffix) {
-    const std::string s = pSuffix;
-    return rText.size() >= s.size() && gltf_lower(rText.substr(rText.size() - s.size())) == s;
+    return meshioplusplus::detail::TextUtils::EndsWithLowered(rText, pSuffix);
 }
 
 // The basename of the sidecar, percent-encoded (RFC 3986 unreserved characters
@@ -161541,6 +161860,7 @@ void write_gltf(const std::string& rPath, const Mesh& rMesh, const GltfWriteOpti
 #include <map>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -161614,17 +161934,7 @@ std::vector<double> gltfr_numbers(const JsonValue& rValue, std::size_t Count,
 // ---- the container ------------------------------------------------------- //
 
 bool gltfr_has_suffix_ci(const std::string& rText, const char* pSuffix) {
-    const std::string s = pSuffix;
-    if (rText.size() < s.size())
-        return false;
-    for (std::size_t i = 0; i < s.size(); ++i) {
-        char c = rText[rText.size() - s.size() + i];
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c - 'A' + 'a');
-        if (c != s[i])
-            return false;
-    }
-    return true;
+    return meshioplusplus::detail::TextUtils::EndsWithLowered(rText, pSuffix);
 }
 
 std::string gltfr_read_file(const std::string& rPath) {
@@ -162569,12 +162879,7 @@ const std::vector<int>& meshio_to_gmsh_perm(const std::string& rT) {
 }
 
 std::string gmsh_trim(const std::string& rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct GmshCursor : detail::TextCursor {
@@ -166504,9 +166809,7 @@ namespace meshioplusplus {
 namespace {
 
 std::string ip_strip(const std::string& s) {
-    std::size_t a = s.find_first_not_of(" \t\r");
-    std::size_t b = s.find_last_not_of(" \t\r");
-    return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 }  // namespace
@@ -169047,9 +169350,7 @@ const char* lsd_family_name(LsdFamily Family) {
 }
 
 std::string lsd_upper(std::string Text) {
-    for (char& c : Text)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return Text;
+    return meshioplusplus::detail::TextUtils::Upper(Text);
 }
 
 std::string lsd_strip(std::string_view rText, const char* pChars = " \t\r\n\f\v") {
@@ -169061,7 +169362,7 @@ std::string lsd_strip(std::string_view rText, const char* pChars = " \t\r\n\f\v"
 }
 
 bool lsd_starts_with(std::string_view rText, const char* pPrefix) {
-    return rText.rfind(pPrefix, 0) == 0;
+    return std::string_view(rText).starts_with(pPrefix);
 }
 
 std::vector<std::string_view> lsd_split(std::string_view rText, char Sep) {
@@ -175379,20 +175680,11 @@ const MarcType* marc_type(std::int64_t Type) {
 constexpr std::size_t kMarcFirstLineNodes = 14;
 
 std::string marc_lower(std::string_view Text) {
-    std::string out(Text);
-    for (char& c : out)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 std::string_view marc_trim_view(std::string_view Text) {
-    const auto blank = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; };
-    std::size_t a = 0, b = Text.size();
-    while (a < b && blank(Text[a]))
-        ++a;
-    while (b > a && blank(Text[b - 1]))
-        --b;
-    return Text.substr(a, b - a);
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::string marc_trim(std::string_view Text) {
@@ -176713,9 +177005,7 @@ std::string marcw_keyword(const std::vector<std::string>& rWords) {
 }
 
 std::string marcw_lower(std::string Text) {
-    for (char& c : Text)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 /// A set name the reader reads back as one token: blanks, commas and `$`
@@ -177657,11 +177947,7 @@ namespace {
 // ---------------------------------------------------------------------------
 
 std::string_view mdpa_strip(std::string_view S) {
-    const std::size_t b = S.find_first_not_of(" \t\r\n");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = S.find_last_not_of(" \t\r\n");
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 /// The line with any `//` comment removed, then stripped.
@@ -177676,7 +177962,7 @@ std::vector<std::string_view> mdpa_tokens(std::string_view S) {
 }
 
 bool mdpa_starts_with(std::string_view S, std::string_view Prefix) {
-    return S.size() >= Prefix.size() && S.compare(0, Prefix.size(), Prefix) == 0;
+    return std::string_view(S).starts_with(Prefix);
 }
 
 /// strtoll(…, 10) over the whole token.
@@ -183760,14 +184046,7 @@ int mf_geom_of_type(std::string_view Type) {
 
 using MfKey = std::vector<std::int64_t>;  // sorted vertex ids
 
-struct MfKeyHash {
-    std::size_t operator()(const MfKey& rKey) const {
-        std::size_t h = rKey.size();
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>()(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+using MfKeyHash = detail::SizedVectorHash;
 
 MfKey mf_key(std::vector<std::int64_t> v) {
     std::sort(v.begin(), v.end());
@@ -188835,9 +189114,7 @@ Mesh read_mff(const std::string& rPath) {
     std::vector<std::string> toks;
     std::string t;
     while (in >> t) {
-        for (char& c : t)
-            if (c == 'D' || c == 'd')
-                c = 'E';
+        detail::fortran_exponent_to_e(t);
         toks.push_back(t);
     }
 
@@ -190116,11 +190393,7 @@ bool nas_is_quietly_skipped(const std::string& rKeyword) {
 }
 
 std::string_view nas_strip_view(std::string_view rS) {
-    const std::size_t b = rS.find_first_not_of(" \t");
-    if (b == std::string::npos)
-        return "";
-    const std::size_t e = rS.find_last_not_of(" \t");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 std::string nas_strip(std::string_view rS) {
@@ -193111,12 +193384,11 @@ double nh5w_time_of(const Mesh& rMesh) {
 }
 
 bool nh5w_starts_with(const std::string& rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 bool nh5w_ends_with(const std::string& rS, const std::string& rSuffix) {
-    return rS.size() >= rSuffix.size() &&
-           rS.compare(rS.size() - rSuffix.size(), rSuffix.size(), rSuffix) == 0;
+    return std::string_view(rS).ends_with(rSuffix);
 }
 
 /// Insert or replace a member in a table's ordered members.
@@ -194940,11 +195212,7 @@ std::string op2_text(const std::string& rRaw, int Ws) {
 }
 
 std::string op2_strip(const std::string& rS) {
-    const char* ws = " \t\r\n\v\f";
-    const auto first = rS.find_first_not_of(ws);
-    if (first == std::string::npos)
-        return {};
-    return rS.substr(first, rS.find_last_not_of(ws) - first + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct Op2Table {
@@ -199835,12 +200103,7 @@ std::vector<std::string_view> netgen_split_ws(std::string_view rS) {
 }
 
 std::string_view netgen_strip(std::string_view rS) {
-    std::size_t a = 0, b = rS.size();
-    while (a < b && std::isspace(static_cast<unsigned char>(rS[a])))
-        ++a;
-    while (b > a && std::isspace(static_cast<unsigned char>(rS[b - 1])))
-        --b;
-    return rS.substr(a, b - a);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 // Cursor over the file's lines, with comment/blank handling like the Python
@@ -201069,12 +201332,7 @@ namespace meshioplusplus {
 namespace {
 
 std::string off_strip(const std::string& rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string off_cell_type_from_count(std::size_t n) {
@@ -201352,20 +201610,12 @@ FoamText read_whole(const std::string& rPath) {
 }
 
 std::string openfoam_strip(const std::string& rS) {
-    std::size_t a = rS.find_first_not_of(" \t\r\n");
-    if (a == std::string::npos)
-        return "";
-    std::size_t b = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // `openfoam_strip` over a view: the same " \t\r\n" set, no copy.
 std::string_view foam_trim(std::string_view S) {
-    const std::size_t a = S.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = S.find_last_not_of(" \t\r\n");
-    return S.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // Parse the FoamFile header for format/arch (label/scalar byte widths) from the
@@ -205671,11 +205921,7 @@ struct PatComponent {
 };
 
 std::string pat_trim(std::string_view Text) {
-    const std::size_t b = Text.find_first_not_of(" \t");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = Text.find_last_not_of(" \t");
-    return std::string(Text.substr(b, e - b + 1));
+    return meshioplusplus::detail::TextUtils::Trim(Text, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 // A load or boundary-condition packet (06, 07, 08, 10, 11) as read: its data
@@ -206931,18 +207177,11 @@ void pcd_store(NDArray& rColumn, std::size_t index, double value, long long ival
 }
 
 std::string pcd_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 std::string_view pcd_strip(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::vector<std::string_view> pcd_words(std::string_view rS) {
@@ -207690,6 +207929,7 @@ void write_pcd(const std::string& rPath, const Mesh& rMesh, PcdData data, bool f
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -207752,9 +207992,7 @@ std::vector<std::string_view> permas_split_ws(std::string_view rS) {
 }
 
 std::string permas_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 // "$COOR" -> "COOR", "$ELEMENT TYPE=QUAD4" -> "ELEMENT TYPE=QUAD4" (uppercased).
@@ -207996,9 +208234,7 @@ struct P3dStream {
     double RealAt(std::size_t At, int W, bool Big) const {
         if (mAscii) {
             std::string t = mTokens[At];
-            for (char& c : t)
-                if (c == 'd' || c == 'D')
-                    c = 'e';
+            detail::fortran_exponent_to_e(t, 'e');
             const char* end = nullptr;
             const double v = detail::parse_double(t.c_str(), end);
             if (end != t.c_str() + t.size())
@@ -208549,12 +208785,7 @@ std::string cell_type_from_count(std::size_t n) {
 }
 
 std::string ply_trim(const std::string& rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct VProp {
@@ -209948,11 +210179,7 @@ struct RadLine {
 };
 
 std::string_view rad_trim_view(std::string_view s) {
-    const std::size_t b = s.find_first_not_of(" \t\r");
-    if (b == std::string_view::npos)
-        return {};
-    const std::size_t e = s.find_last_not_of(" \t\r");
-    return s.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kSpaceTabCr);
 }
 
 std::string rad_trim(std::string_view s) {
@@ -209960,9 +210187,7 @@ std::string rad_trim(std::string_view s) {
 }
 
 std::string rad_upper(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 // The deck's lines with `#include` files inlined and comments dropped, up to
@@ -214814,11 +215039,7 @@ std::int64_t step_find(const std::vector<std::int64_t>& rSorted, std::int64_t Ke
 }
 
 std::size_t step_uf_find(std::vector<std::size_t>& rParent, std::size_t X) {
-    while (rParent[X] != X) {
-        rParent[X] = rParent[rParent[X]];
-        X = rParent[X];
-    }
-    return X;
+    return detail::UnionFind<std::size_t>::FindIn(rParent, X);
 }
 
 void step_unit3(const double* pV, double* pOut) {
@@ -215597,7 +215818,7 @@ Mesh build_mesh(std::vector<unsigned char>& rVertBytes, DType dt,
 }
 
 bool stl_starts_with(std::string_view S, std::string_view Prefix) {
-    return S.substr(0, Prefix.size()) == Prefix;
+    return std::string_view(S).starts_with(Prefix);
 }
 
 bool stl_is_comment_line(std::string_view S) {
@@ -216084,11 +216305,7 @@ int meshio_to_su2(const std::string& rT) {
 }
 
 std::string_view su2_strip(std::string_view S) {
-    std::size_t b = S.find_first_not_of(" \t\r\n");
-    if (b == std::string_view::npos)
-        return {};
-    std::size_t e = S.find_last_not_of(" \t\r\n");
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 /// The line's blank-separated tokens, as views into it (detail/text_cursor.hpp).
 std::vector<std::string_view> su2_tokens(std::string_view S) {
@@ -217240,16 +217457,10 @@ namespace {
 thread_local const double* tecplot_series_time = nullptr;
 
 std::string tecplot_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 std::string tecplot_strip(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 /// Data tokens as views into @p Line (appended to @p rOut, cleared first):
 /// blanks and commas separate values, as replacing the commas with blanks
@@ -221766,11 +221977,7 @@ std::vector<std::string_view> tikzr_split_options(std::string_view Text) {
 }
 
 std::string_view tikzr_trim(std::string_view Text) {
-    while (!Text.empty() && detail::text_is_blank(Text.front()))
-        Text.remove_prefix(1);
-    while (!Text.empty() && detail::text_is_blank(Text.back()))
-        Text.remove_suffix(1);
-    return Text;
+    return meshioplusplus::detail::TextUtils::TrimView(Text, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 // `{rgb,255:red,R;green,G;blue,B}` -> {R, G, B}; anything else (gray!30, ...) -> nullopt.
@@ -224289,27 +224496,11 @@ void unv_tensor_from_meshio(std::size_t NumComps, double* pValues) {
 // ---------------------------------------------------------------------------
 
 std::string_view unv_strip(std::string_view s) {
-    const std::size_t a = s.find_first_not_of(" \t\r\n");
-    if (a == std::string_view::npos)
-        return {};
-    const std::size_t b = s.find_last_not_of(" \t\r\n");
-    return s.substr(a, b - a + 1);
+    return meshioplusplus::detail::TextUtils::TrimView(s, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 std::vector<std::string_view> unv_split(std::string_view s) {
-    std::vector<std::string_view> out;
-    std::size_t i = 0;
-    while (i < s.size()) {
-        while (i < s.size() && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r'))
-            ++i;
-        std::size_t j = i;
-        while (j < s.size() && s[j] != ' ' && s[j] != '\t' && s[j] != '\r')
-            ++j;
-        if (j > i)
-            out.push_back(s.substr(i, j - i));
-        i = j;
-    }
-    return out;
+    return detail::split_blanks(s);
 }
 
 std::int64_t unv_int(std::string_view t) {
@@ -224346,9 +224537,7 @@ double unv_real(std::string_view t) {
         large.assign(t);
         first = large.data();
     }
-    for (std::size_t i = 0; i < t.size(); ++i)
-        if (first[i] == 'D' || first[i] == 'd')
-            first[i] = 'E';
+    detail::fortran_exponent_to_e(first, t.size());
     const char* end = nullptr;
     const double v = detail::parse_double(first, end);
     if (end == first)
@@ -226923,9 +227112,7 @@ std::vector<std::string> split(const std::string& rS) {
 }
 
 std::string vtk_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 
 std::vector<std::int64_t> vtk_to_int64(const NDArray& rA) {
@@ -231625,12 +231812,7 @@ struct VtxSchema {
 };
 
 std::string vtx_trim(std::string S) {
-    const char* kWs = " \t\r\n";
-    const std::size_t b = S.find_first_not_of(kWs);
-    if (b == std::string::npos)
-        return {};
-    const std::size_t e = S.find_last_not_of(kWs);
-    return S.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(S, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 VtxSchema vtx_parse_schema(const std::string& rXml) {
@@ -236612,18 +236794,11 @@ bool xyz_is_space(char c) {
 }
 
 std::string_view xyz_strip(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && xyz_is_space(rS[b]))
-        ++b;
-    while (e > b && xyz_is_space(rS[e - 1]))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string xyz_lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Lower(s);
 }
 
 bool xyz_all_digits(std::string_view rS) {
@@ -236633,7 +236808,7 @@ bool xyz_all_digits(std::string_view rS) {
 }
 
 bool xyz_starts_with(std::string_view rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 std::vector<std::string_view> xyz_whitespace_split(std::string_view rS) {
@@ -237305,9 +237480,7 @@ std::string z88_read_text(const std::string& rPath) {
 }
 
 std::string z88_lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Lower(s);
 }
 
 // The file named `rName` (any case) in `rDir`, or an empty path.
@@ -241411,17 +241584,8 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
         }
     }
     std::sort(uses.begin(), uses.end());
-    std::vector<std::int64_t> parent(nf);
-    for (std::size_t f = 0; f < nf; ++f)
-        parent[f] = static_cast<std::int64_t>(f);
-    auto find = [&](std::int64_t x) {
-        while (parent[static_cast<std::size_t>(x)] != x) {
-            parent[static_cast<std::size_t>(x)] =
-                parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(x)])];
-            x = parent[static_cast<std::size_t>(x)];
-        }
-        return x;
-    };
+    detail::UnionFind<std::int64_t> sets(nf);
+    auto find = [&](std::int64_t x) { return sets.Find(x); };
     for (std::size_t i = 0; i < uses.size();) {
         std::size_t j = i + 1;
         while (j < uses.size() && uses[j].mA == uses[i].mA && uses[j].mB == uses[i].mB &&
@@ -241431,10 +241595,7 @@ AggPatches agg_coplanar_patches(const detail::GlobalFaces& rFaces,
             const auto fa = static_cast<std::size_t>(uses[i].mFace);
             const auto fb = static_cast<std::size_t>(uses[i + 1].mFace);
             if (detail::vec3_dot(unit(fa), unit(fb)) >= CosTol) {
-                const std::int64_t ra = find(static_cast<std::int64_t>(fa));
-                const std::int64_t rb = find(static_cast<std::int64_t>(fb));
-                if (ra != rb)
-                    parent[static_cast<std::size_t>(std::max(ra, rb))] = std::min(ra, rb);
+                sets.Unite(static_cast<std::int64_t>(fa), static_cast<std::int64_t>(fb));
             }
         }
         i = j;
@@ -242702,22 +242863,22 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     const auto corners = [&](std::size_t F) { return faces[F][3] >= 0 ? 4 : 3; };
     // Manifold and consistently oriented.
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, std::array<int, 2>> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
         for (std::size_t f = 0; f < nf; ++f)
             for (int i = 0; i < corners(f); ++i) {
                 const std::int64_t a = faces[f][static_cast<std::size_t>(i)];
                 const std::int64_t b = faces[f][static_cast<std::size_t>((i + 1) % corners(f))];
-                auto& r_u = uses[{std::min(a, b), std::max(a, b)}];
-                ++r_u[0];
-                r_u[1] += a < b ? 1 : -1;
+                uses.Add(a, b, static_cast<std::int64_t>(f));
             }
-        for (const auto& [e, r_u] : uses) {
-            if (r_u[0] > 2)
-                bl_fail("edge (" + std::to_string(e.first) + ", " + std::to_string(e.second) +
-                        ") is used by more than two faces");
-            if (r_u[0] == 2 && r_u[1] != 0)
-                bl_fail("the faces at edge (" + std::to_string(e.first) + ", " +
-                        std::to_string(e.second) + ") disagree on its direction (orient them)");
+        uses.Build();
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e) {
+            const std::size_t count = uses.Count(e);
+            const std::string name =
+                "(" + std::to_string(uses.Lo(e)) + ", " + std::to_string(uses.Hi(e)) + ")";
+            if (count > 2)
+                bl_fail("edge " + name + " is used by more than two faces");
+            if (count == 2 && uses.At(e, 0).mForward == uses.At(e, 1).mForward)
+                bl_fail("the faces at edge " + name + " disagree on its direction (orient them)");
         }
     }
     // Each point's most normal normal (Aubry and Löhner 2009), smoothed
@@ -243053,22 +243214,23 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     if (!std::isfinite(result.mMinThickness))
         result.mMinThickness = 0.0;
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
+        std::int64_t cap_face = 0;
         for (const auto* p_cap : {&sweep.mCapTriangles, &sweep.mCapQuads})
             for (const auto& r_c : *p_cap) {
                 const int k = r_c.mNodes[3] >= 0 ? 4 : 3;
                 for (int i = 0; i < k; ++i) {
                     const std::int64_t a = r_c.mNodes[static_cast<std::size_t>(i)];
                     const std::int64_t b = r_c.mNodes[static_cast<std::size_t>((i + 1) % k)];
-                    ++uses[{std::min(a, b), std::max(a, b)}];
+                    uses.Add(a, b, cap_face);
                 }
+                ++cap_face;
             }
-        result.mCapClosed = !uses.empty();
-        for (const auto& [e, n] : uses) {
-            (void)e;
-            if (n != 2)
+        uses.Build();
+        result.mCapClosed = uses.NumEdges() > 0;
+        for (std::size_t e = 0; e < uses.NumEdges(); ++e)
+            if (uses.Count(e) != 2)
                 result.mCapClosed = false;
-        }
     }
     if (result.mNumFrontCrossings > 0)
         log::debug("boundary_layer: {} crossings of the last layer's faces given way to",
@@ -251263,14 +251425,7 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
     // --- phase 6: unique tet edges (6 per tet, dedup by first occurrence) ----
     using DvEdgeKey = std::array<std::int64_t, 2>;
-    struct DvEdgeKeyHash {
-        std::size_t operator()(const DvEdgeKey& rKey) const {
-            std::size_t h = 0;
-            for (std::int64_t v : rKey)
-                h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-            return h;
-        }
-    };
+    using DvEdgeKeyHash = detail::ArrayHash<2>;
     static constexpr int kTetEdgeCorners[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
     std::vector<DvEdgeKey> edges;
     {
@@ -251620,9 +251775,7 @@ const std::vector<DetectShared>& detect_shared_extensions() {
 }
 
 std::string detect_lower(std::string Text) {
-    std::transform(Text.begin(), Text.end(), Text.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 /// The extension candidates of @p rPath and the suffix that named them (longest first,
@@ -252869,10 +253022,8 @@ using LapColumn = std::vector<double>;
 
 /// A deterministic value in [-1, 1) for (row, column): splitmix64.
 double lap_hash(std::uint64_t Row, std::uint64_t Col) {
-    std::uint64_t z = Row * 0x9E3779B97F4A7C15ull + Col * 0xD1B54A32D192ED03ull + 1;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-    z ^= z >> 31;
+    const std::uint64_t z =
+        detail::splitmix64_mix(Row * detail::kSplitMix64Gamma + Col * 0xD1B54A32D192ED03ull + 1);
     return static_cast<double>(z >> 11) * (2.0 / 9007199254740992.0) - 1.0;
 }
 
@@ -255205,29 +255356,22 @@ std::vector<FcnRegionNetwork> fcn_networks(const detail::ClosedFacets& rFc,
         diag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
                          (hi[2] - lo[2]) * (hi[2] - lo[2]));
     }
-    std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> edge_item;
-    std::vector<std::size_t> parent(rItems.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    const auto find = [&](std::size_t A) {
-        while (parent[A] != A)
-            A = parent[A] = parent[parent[A]];
-        return A;
-    };
+    detail::EdgeUseTable<std::int64_t> edge_item;
+    detail::UnionFind<std::size_t> sets(rItems.size());
+    const auto find = [&](std::size_t A) { return sets.Find(A); };
     for (std::size_t i = 0; i < rItems.size(); ++i)
         for (std::size_t f : rItems[i]) {
             const std::int64_t b = rFc.mStart[f], n = rFc.mStart[f + 1] - b;
             for (std::int64_t k = 0; k < n; ++k) {
                 const std::int64_t a = rFc.mNodes[static_cast<std::size_t>(b + k)];
                 const std::int64_t c = rFc.mNodes[static_cast<std::size_t>(b + (k + 1) % n)];
-                const auto key = std::make_pair(std::min(a, c), std::max(a, c));
-                const auto ins = edge_item.emplace(key, i);
-                if (!ins.second) {
-                    const std::size_t x = find(ins.first->second), y = find(i);
-                    if (x != y)
-                        parent[std::max(x, y)] = std::min(x, y);
-                }
+                edge_item.Add(a, c, static_cast<std::int64_t>(i));
             }
         }
+    edge_item.Build();
+    edge_item.ForEachSharedFace([&](std::int64_t A, std::int64_t B) {
+        sets.Unite(static_cast<std::size_t>(A), static_cast<std::size_t>(B));
+    });
     std::map<std::size_t, std::vector<std::size_t>> regions;
     for (std::size_t i = 0; i < rItems.size(); ++i)
         regions[find(i)].push_back(i);
@@ -257050,9 +257194,7 @@ bool fc_fit_run(const FcContext& rC, std::size_t I, std::size_t J, FcFit& rOut) 
     for (std::size_t k = I; k < J; ++k)
         chords.push_back(fc_norm(fc_sub(p[k + 1], p[k])));
     std::vector<double> sorted = chords;
-    std::nth_element(sorted.begin(),
-                     sorted.begin() + static_cast<std::ptrdiff_t>(sorted.size() / 2), sorted.end());
-    const double median = sorted[sorted.size() / 2];
+    const double median = detail::MathUtils::MedianUpper(sorted);
     if (*std::max_element(chords.begin(), chords.end()) > 4.0 * median)
         return false;
     FcFit arc;
@@ -258253,9 +258395,7 @@ std::vector<std::uint8_t> fp_lmeds_inliers(const FpPatch& rP, std::int64_t Type)
             r2[i] = d * d;
         }
         std::vector<double> sorted = r2;
-        std::nth_element(sorted.begin(), sorted.begin() + static_cast<std::ptrdiff_t>(n / 2),
-                         sorted.end());
-        const double med = sorted[n / 2];
+        const double med = detail::MathUtils::MedianUpper(sorted);
         if (med < best_med) {
             best_med = med;
             std::copy(prm, prm + kFpParams, best);
@@ -259021,11 +259161,7 @@ std::vector<std::int64_t> geo_region_points(const Mesh& rMesh, const Region& rR)
 }
 
 std::size_t geo_find(std::vector<std::size_t>& rParent, std::size_t X) {
-    while (rParent[X] != X) {
-        rParent[X] = rParent[rParent[X]];
-        X = rParent[X];
-    }
-    return X;
+    return detail::UnionFind<std::size_t>::FindIn(rParent, X);
 }
 
 // Gauss-Seidel sweeps on @p rA x = @p rB from x = 0, in point order (serial, so
@@ -260196,13 +260332,7 @@ std::vector<double> hausdorff_sample_distances(const Mesh& rA, const Mesh& rB,
 }
 
 double coverage_quantile(std::vector<double> Values, double Coverage) {
-    if (Values.empty())
-        return 0.0;
-    const double want = std::ceil(Coverage * static_cast<double>(Values.size()));
-    std::size_t k = want < 1.0 ? 0 : static_cast<std::size_t>(want) - 1;
-    k = std::min(k, Values.size() - 1);
-    std::nth_element(Values.begin(), Values.begin() + static_cast<std::ptrdiff_t>(k), Values.end());
-    return Values[k];
+    return MathUtils::QuantileNearest(std::move(Values), Coverage);
 }
 
 }  // namespace detail
@@ -260702,17 +260832,8 @@ private:
 /// into triangles, wound outward.
 std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>& rP,
                                                      const std::vector<HullFace>& rFaces) {
-    std::vector<std::int64_t> parent(rFaces.size());
-    for (std::size_t f = 0; f < parent.size(); ++f)
-        parent[f] = static_cast<std::int64_t>(f);
-    const auto find = [&](std::int64_t F) {
-        while (parent[static_cast<std::size_t>(F)] != F) {
-            parent[static_cast<std::size_t>(F)] =
-                parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(F)])];
-            F = parent[static_cast<std::size_t>(F)];
-        }
-        return F;
-    };
+    detail::UnionFind<std::int64_t> sets(rFaces.size());
+    const auto find = [&](std::int64_t F) { return sets.Find(F); };
     for (std::size_t f = 0; f < rFaces.size(); ++f) {
         const HullFace& face = rFaces[f];
         if (!face.mAlive)
@@ -260727,8 +260848,7 @@ std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>&
                                  rP[static_cast<std::size_t>(face.mV[1])].data(),
                                  rP[static_cast<std::size_t>(face.mV[2])].data(),
                                  rP[static_cast<std::size_t>(opposite)].data()) == 0.0) {
-                const std::int64_t a = find(static_cast<std::int64_t>(f)), b = find(face.mN[e]);
-                parent[static_cast<std::size_t>(std::max(a, b))] = std::min(a, b);
+                sets.Unite(static_cast<std::int64_t>(f), face.mN[e]);
             }
         }
     }
@@ -266134,29 +266254,7 @@ std::vector<std::size_t> mcad_chain(const BrepLoop& rLoop) {
     return order;
 }
 
-class McadUnionFind {
-public:
-    explicit McadUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), 0);
-    }
-    std::size_t Find(std::size_t X) {
-        while (mParent[X] != X) {
-            mParent[X] = mParent[mParent[X]];
-            X = mParent[X];
-        }
-        return X;
-    }
-    // The smaller root wins, so the classes do not depend on the union order.
-    void Join(std::size_t A, std::size_t B) {
-        A = Find(A);
-        B = Find(B);
-        if (A != B)
-            mParent[std::max(A, B)] = std::min(A, B);
-    }
-
-private:
-    std::vector<std::size_t> mParent;
-};
+using McadUnionFind = detail::UnionFind<std::size_t>;
 
 /// A uniform hash grid of 3-D points and segments, for the spacing test.
 class McadGrid {
@@ -269763,23 +269861,23 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             continue;
         for (const auto& r_loop : r_f.mLoops)
             for (std::size_t k = 0; k < r_loop.size(); ++k)
-                corners.Join(slot(r_loop[k], 1), slot(r_loop[(k + 1) % r_loop.size()], 0));
+                corners.Unite(slot(r_loop[k], 1), slot(r_loop[(k + 1) % r_loop.size()], 0));
     }
     for (McadEdge& r_e : edges) {
         const std::size_t m = r_e.mMaster;
         const detail::TrimTrace& r_m = *traces[m];
         const bool degenerate = !(r_m.Length() > tol);
         if (degenerate)
-            corners.Join(slot(m, 0), slot(m, 1));
+            corners.Unite(slot(m, 0), slot(m, 1));
         for (const std::size_t o : r_e.mUses) {
             if (o == m)
                 continue;
             uses[o].mSame =
                 degenerate || detail::edge_same_direction(r_m, *traces[o], uses[o].mStartLength);
-            corners.Join(slot(m, 0), slot(o, uses[o].mSame ? 0 : 1));
-            corners.Join(slot(m, 1), slot(o, uses[o].mSame ? 1 : 0));
+            corners.Unite(slot(m, 0), slot(o, uses[o].mSame ? 0 : 1));
+            corners.Unite(slot(m, 1), slot(o, uses[o].mSame ? 1 : 0));
             if (degenerate)
-                corners.Join(slot(o, 0), slot(o, 1));
+                corners.Unite(slot(o, 0), slot(o, 1));
         }
     }
     // An embedded edge has no loop to close it: a closed one is one corner,
@@ -269792,7 +269890,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             if (!live(u))
                 continue;
             if (closed_3d(u))
-                corners.Join(slot(u, 0), slot(u, 1));
+                corners.Unite(slot(u, 0), slot(u, 1));
             for (int end = 0; end < 2; ++end) {
                 const Vec3 p = end_point(u, end);
                 bool joined = false;
@@ -269800,7 +269898,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     for (const std::size_t l : r_loop)
                         for (int k = 0; k < 2 && !joined; ++k)
                             if (detail::vec3_norm(detail::vec3_sub(end_point(l, k), p)) <= tol) {
-                                corners.Join(slot(u, end), slot(l, k));
+                                corners.Unite(slot(u, end), slot(l, k));
                                 joined = true;
                             }
             }
@@ -272665,8 +272763,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             for (const auto& r_c : r_cells)
                 for (const std::int64_t p : r_c)
                     along.push_back(field.At(point_of(p)));
-            std::nth_element(along.begin(), along.begin() + along.size() / 2, along.end());
-            const double finest = along[along.size() / 2];
+            const double finest = detail::MathUtils::MedianUpper(along);
             for (const std::int64_t f : faces)
                 if (f >= 0 && static_cast<std::size_t>(f) < nf &&
                     std::isfinite(face_size[static_cast<std::size_t>(f)]) &&
@@ -280642,15 +280739,8 @@ ParameterizeResult parameterize(const Mesh& rMesh, const ParameterizeOptions& rO
     }
 
     // --- the edge-connected pieces, in order of their lowest triangle ---
-    std::vector<std::size_t> parent(tris.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t x) {
-        while (parent[x] != x) {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        return x;
-    };
+    detail::UnionFind<std::size_t> sets(tris.size());
+    auto find = [&](std::size_t x) { return sets.Find(x); };
     {
         std::vector<std::array<std::int64_t, 3>> edges;  // lo, hi, triangle
         edges.reserve(3 * tris.size());
@@ -280662,10 +280752,8 @@ ParameterizeResult parameterize(const Mesh& rMesh, const ParameterizeOptions& rO
         std::sort(edges.begin(), edges.end());
         for (std::size_t i = 1; i < edges.size(); ++i)
             if (edges[i][0] == edges[i - 1][0] && edges[i][1] == edges[i - 1][1]) {
-                const std::size_t ra = find(static_cast<std::size_t>(edges[i][2]));
-                const std::size_t rb = find(static_cast<std::size_t>(edges[i - 1][2]));
-                if (ra != rb)
-                    parent[std::max(ra, rb)] = std::min(ra, rb);
+                sets.Unite(static_cast<std::size_t>(edges[i][2]),
+                           static_cast<std::size_t>(edges[i - 1][2]));
             }
     }
     std::vector<PrmPiece> queue;
@@ -281789,11 +281877,7 @@ void pipe_vec3(const PipelineStep& rStep, const char* pKey, double* pOut) {
 }
 
 std::string pipe_trim(const std::string& rText) {
-    std::size_t b = rText.find_first_not_of(" \t");
-    if (b == std::string::npos)
-        return "";
-    std::size_t e = rText.find_last_not_of(" \t");
-    return rText.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rText, meshioplusplus::detail::TextUtils::kSpaceTab);
 }
 
 /// Cells across every block. The uniform mesh API counts per block only.
@@ -288356,17 +288440,12 @@ Mesh helix(double Radius, double Pitch, double Turns, std::int64_t N,
 
 namespace {
 
-std::uint64_t prim_splitmix(std::uint64_t& rState) {
-    rState += 0x9E3779B97F4A7C15ULL;
-    std::uint64_t z = rState;
-    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
-    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
-    return z ^ (z >> 31);
-}
-
 // A uniform draw in [0, 1): the top 53 bits, exact in a double.
 double prim_draw(std::uint64_t& rState) {
-    return static_cast<double>(prim_splitmix(rState) >> 11) * (1.0 / 9007199254740992.0);
+    detail::SplitMix64 rng{rState};
+    const double u = rng.NextUnit();
+    rState = rng.mState;
+    return u;
 }
 
 Mesh prim_vertices(PrimSoup& rSoup) {
@@ -290842,13 +290921,7 @@ std::string qg_full_name(const std::string& rMetric) {
 }
 
 std::string qg_trim(const std::string& rS) {
-    std::size_t b = 0;
-    std::size_t e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 double qg_number(const std::string& rText, const std::string& rClause) {
@@ -291087,15 +291160,6 @@ void rcs_dilate(std::vector<std::int64_t>& rIds, const std::array<std::int64_t, 
 }
 
 /// Union-find root with path halving.
-std::int64_t rcs_find(std::vector<std::int64_t>& rParent, std::int64_t I) {
-    while (rParent[static_cast<std::size_t>(I)] != I) {
-        rParent[static_cast<std::size_t>(I)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(I)])];
-        I = rParent[static_cast<std::size_t>(I)];
-    }
-    return I;
-}
-
 }  // namespace
 
 ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
@@ -291222,9 +291286,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
                  nn.end());
         if (nn.empty())
             rcs_fail("the samples all coincide");
-        const auto mid = nn.begin() + static_cast<std::ptrdiff_t>(nn.size() / 2);
-        std::nth_element(nn.begin(), mid, nn.end());
-        result.mSpacing = *mid;
+        result.mSpacing = detail::MathUtils::MedianUpper(nn);
     }
     const double h = rOptions.mCellSize > 0.0   ? rOptions.mCellSize
                      : rOptions.mResolution > 0 ? extent / static_cast<double>(rOptions.mResolution)
@@ -291488,16 +291550,12 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         detail::set_mesh_length_unit(out, unit);
 
     // Edge-connected pieces.
-    std::vector<std::int64_t> parent(final_pts.size());
-    std::iota(parent.begin(), parent.end(), std::int64_t{0});
+    detail::UnionFind<std::int64_t> sets(final_pts.size());
     for (const auto& t : tris)
-        for (std::size_t e = 1; e < 3; ++e) {
-            const std::int64_t a = rcs_find(parent, t[0]), b = rcs_find(parent, t[e]);
-            if (a != b)
-                parent[static_cast<std::size_t>(std::max(a, b))] = std::min(a, b);
-        }
+        for (std::size_t e = 1; e < 3; ++e)
+            sets.Unite(t[0], t[e]);
     for (std::size_t i = 0; i < final_pts.size(); ++i)
-        if (rcs_find(parent, static_cast<std::int64_t>(i)) == static_cast<std::int64_t>(i))
+        if (sets.Find(static_cast<std::int64_t>(i)) == static_cast<std::int64_t>(i))
             ++result.mNumComponents;
     result.mNumTriangles = static_cast<std::int64_t>(tris.size());
     result.mMesh = std::move(out);
@@ -291542,14 +291600,7 @@ namespace {
 // the coordinate pass needs no side table.
 using RefineNodeKey = std::array<std::int64_t, 4>;
 
-struct RefineNodeKeyHash {
-    std::size_t operator()(const RefineNodeKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t v : rKey)
-            h ^= std::hash<std::int64_t>{}(v) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
-    }
-};
+using RefineNodeKeyHash = detail::ArrayHash<4>;
 
 RefineNodeKey refine_edge_key(std::int64_t a, std::int64_t b) {
     return a < b ? RefineNodeKey{-1, -1, a, b} : RefineNodeKey{-1, -1, b, a};
@@ -292869,15 +292920,7 @@ constexpr double kRpEnergySlack = 1e-12;
 
 // splitmix64 (Steele, Lea and Flood 2014): the same sequence on every
 // platform, unlike a standard-library distribution.
-struct RpRng {
-    std::uint64_t mState;
-    std::uint64_t Next() {
-        std::uint64_t z = (mState += 0x9e3779b97f4a7c15ull);
-        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-        return z ^ (z >> 31);
-    }
-};
+using RpRng = detail::SplitMix64;
 
 // The surface as faces: rings, geometry, smooth neighbours and paired edges.
 struct RpSurface {
@@ -294401,9 +294444,7 @@ RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<RegVec>& rSource,
             const RegVec d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
             d2s[i] = detail::vec3_dot(d, d);
         }
-        const std::size_t mid = d2s.size() / 2;
-        std::nth_element(d2s.begin(), d2s.begin() + static_cast<std::ptrdiff_t>(mid), d2s.end());
-        const double med = std::sqrt(d2s[mid]);
+        const double med = std::sqrt(detail::MathUtils::MedianUpper(d2s));
         // A floor keeps the exact pairs of a perfect fit (median zero).
         const double cut = std::max(Trim * med, 1e-300);
         cut2 = std::min(cut2, cut * cut);
@@ -295600,8 +295641,8 @@ std::vector<std::int64_t> remesh_unique_edges(const detail::NodeAdjacency& rAdj,
 /// NOT shared with `decimate.cpp`'s own `decim_build_edges`, whose header
 /// comment already scopes that helper to decimate's two current callers
 /// only ("stays private to decimate.cpp ... neither concept applies" to the
-/// other one). `std::map` (not a hash map) is deliberate: it costs nothing
-/// here and gives a canonical, deterministic edge-visitation order for free.
+/// other one). It counts with `detail::EdgeUseTable`, which visits the edges in
+/// `(lo, hi)` order, the canonical deterministic order a `std::map` gave.
 struct RemeshBoundaryInfo {
     std::vector<std::uint8_t> mIsBoundaryVertex;                        ///< size NumPoints.
     std::vector<std::pair<std::int64_t, std::int64_t>> mBoundaryEdges;  ///< lo < hi, sorted.
@@ -295610,22 +295651,20 @@ struct RemeshBoundaryInfo {
 RemeshBoundaryInfo remesh_boundary_info(const RemeshSurface& rS) {
     RemeshBoundaryInfo info;
     info.mIsBoundaryVertex.assign(rS.mNumPoints, 0);
-    std::map<std::pair<std::int64_t, std::int64_t>, int> use_count;
+    detail::EdgeUseTable<std::int64_t> uses;
+    uses.Reserve(rS.mNumFaces * 3);
     for (std::size_t f = 0; f < rS.mNumFaces; ++f) {
         const std::int64_t v[3] = {rS.mCorners[f * 3], rS.mCorners[f * 3 + 1],
                                    rS.mCorners[f * 3 + 2]};
-        for (int k = 0; k < 3; ++k) {
-            std::int64_t a = v[k], b = v[(k + 1) % 3];
-            if (a > b)
-                std::swap(a, b);
-            ++use_count[{a, b}];
-        }
+        for (int k = 0; k < 3; ++k)
+            uses.Add(v[k], v[(k + 1) % 3], static_cast<std::int64_t>(f));
     }
-    for (const auto& [edge, count] : use_count) {
-        if (count == 1) {
-            info.mBoundaryEdges.push_back(edge);
-            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.first)] = 1;
-            info.mIsBoundaryVertex[static_cast<std::size_t>(edge.second)] = 1;
+    uses.Build();
+    for (std::size_t e = 0; e < uses.NumEdges(); ++e) {
+        if (uses.Count(e) == 1) {
+            info.mBoundaryEdges.push_back({uses.Lo(e), uses.Hi(e)});
+            info.mIsBoundaryVertex[static_cast<std::size_t>(uses.Lo(e))] = 1;
+            info.mIsBoundaryVertex[static_cast<std::size_t>(uses.Hi(e))] = 1;
         }
     }
     return info;
@@ -296884,10 +296923,7 @@ struct RvolPosKey {
 };
 struct RvolPosKeyHash {
     std::size_t operator()(const RvolPosKey& rKey) const {
-        std::size_t h = 0;
-        for (std::int64_t b : rKey.mBits)
-            h ^= std::hash<std::int64_t>{}(b) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
-        return h;
+        return detail::HashUtils::Range64(rKey.mBits, 0);
     }
 };
 RvolPosKey rvol_pos_key(const Vec3& rP) {
@@ -299006,19 +299042,20 @@ std::shared_ptr<const RndPrepared> rnd_prepare(const Mesh& rMesh, const RenderOp
     std::vector<std::int64_t> cap_nodes;
     {
         const std::size_t first = g.mSkinFaces.mIds.size();
-        std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
+        detail::EdgeUseTable<std::int64_t> uses;
         for (std::size_t f = first; f < num_faces; ++f) {
             const std::int64_t lo = f_start[f];
             const std::int64_t n = f_start[f + 1] - lo;
             for (std::int64_t k = 0; k < n; ++k) {
                 const std::int64_t a = f_nodes[static_cast<std::size_t>(lo + k)];
                 const std::int64_t b = f_nodes[static_cast<std::size_t>(lo + (k + 1) % n)];
-                ++uses[{std::min(a, b), std::max(a, b)}];
+                uses.Add(a, b, static_cast<std::int64_t>(f));
             }
         }
-        const bool closed =
-            !uses.empty() && std::all_of(uses.begin(), uses.end(),
-                                         [](const auto& rUse) { return rUse.second == 2; });
+        uses.Build();
+        bool closed = uses.NumEdges() > 0;
+        for (std::size_t e = 0; closed && e < uses.NumEdges(); ++e)
+            closed = uses.Count(e) == 2;
         if (closed) {
             cap_start.push_back(0);
             for (std::size_t f = first; f < num_faces; ++f) {
@@ -302065,12 +302102,7 @@ RepairStar repair_build_star(const std::vector<RepairTri>& rTris, std::size_t n)
 }
 
 std::int64_t repair_uf_find(std::vector<std::int64_t>& rParent, std::int64_t i) {
-    while (rParent[static_cast<std::size_t>(i)] != i) {
-        rParent[static_cast<std::size_t>(i)] =
-            rParent[static_cast<std::size_t>(rParent[static_cast<std::size_t>(i)])];
-        i = rParent[static_cast<std::size_t>(i)];
-    }
-    return i;
+    return detail::UnionFind<std::int64_t>::FindIn(rParent, i);
 }
 
 /// Splits bowties in place. Returns the number of vertices split; appends the
@@ -307722,6 +307754,7 @@ std::int64_t smooth_odt_pass(std::vector<double>& rXyz,
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -307733,8 +307766,7 @@ namespace {
 
 // Whether `hay` starts with `needle`.
 bool sniff_starts_with(const std::string& rHay, const char* pNeedle) {
-    const std::string needle(pNeedle);
-    return rHay.size() >= needle.size() && rHay.compare(0, needle.size(), needle) == 0;
+    return std::string_view(rHay).starts_with(pNeedle);
 }
 
 // Whether `hay` contains `needle`.
@@ -311613,14 +311645,6 @@ double tp_signed_volume(const double* pXyz, const std::int64_t* pN) {
 }
 
 /// Find-with-path-halving over a small local forest.
-std::size_t tp_find(std::vector<std::size_t>& rParent, std::size_t i) {
-    while (rParent[i] != i) {
-        rParent[i] = rParent[rParent[i]];
-        i = rParent[i];
-    }
-    return i;
-}
-
 /// Build every dual cell (and destined boundary polygon) around vertex @p v.
 TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     TpVertexOut out;
@@ -311638,8 +311662,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     };
 
     // Components: tets around v joined through faces at v interior to a block.
-    std::vector<std::size_t> parent(ntets);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
+    detail::UnionFind<std::size_t> sets(ntets);
     for (std::size_t i = 0; i < ntets; ++i) {
         const std::int64_t t = tets[i];
         for (int k = 0; k < 4; ++k) {
@@ -311647,10 +311670,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
             if (!tp_contains(rCtx.Ring(t, k), v) || !rCtx.Interior(f))
                 continue;
             const std::size_t j = local_of(rCtx.Across(f, t));
-            const std::size_t ri = tp_find(parent, i);
-            const std::size_t rj = tp_find(parent, j);
-            if (ri != rj)
-                parent[std::max(ri, rj)] = std::min(ri, rj);
+            sets.Unite(i, j);
         }
     }
     // Roots are each component's smallest local index, so walking i upward
@@ -311658,7 +311678,7 @@ TpVertexOut tp_build_vertex(const TpContext& rCtx, std::int64_t v) {
     std::vector<std::vector<std::size_t>> comps;
     std::vector<std::int64_t> comp_of_root(ntets, -1);
     for (std::size_t i = 0; i < ntets; ++i) {
-        const std::size_t r = tp_find(parent, i);
+        const std::size_t r = sets.Find(i);
         if (comp_of_root[r] < 0) {
             comp_of_root[r] = static_cast<std::int64_t>(comps.size());
             comps.emplace_back();
@@ -312674,25 +312694,17 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     const std::size_t nt = tris.size();
     // Shells: the triangles connected across edges, in the order of their
     // first triangle.
-    std::vector<std::size_t> parent(nt);
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    const auto find = [&](std::size_t A) {
-        while (parent[A] != A)
-            A = parent[A] = parent[parent[A]];
-        return A;
-    };
+    detail::UnionFind<std::size_t> sets(nt);
+    const auto find = [&](std::size_t A) { return sets.Find(A); };
     {
-        std::map<std::pair<std::int64_t, std::int64_t>, std::size_t> first;
+        detail::EdgeUseTable<std::int64_t> edges;
         for (std::size_t t = 0; t < nt; ++t)
-            for (std::size_t k = 0; k < 3; ++k) {
-                const auto key = std::minmax(tris[t][k], tris[t][(k + 1) % 3]);
-                const auto [it, fresh] = first.emplace(key, t);
-                if (!fresh) {
-                    const std::size_t a = find(it->second), b = find(t);
-                    if (a != b)
-                        parent[std::max(a, b)] = std::min(a, b);
-                }
-            }
+            for (std::size_t k = 0; k < 3; ++k)
+                edges.Add(tris[t][k], tris[t][(k + 1) % 3], static_cast<std::int64_t>(t));
+        edges.Build();
+        edges.ForEachSharedFace([&](std::int64_t A, std::int64_t B) {
+            sets.Unite(static_cast<std::size_t>(A), static_cast<std::size_t>(B));
+        });
     }
     std::vector<std::int64_t> shell_of(nt, -1);
     std::vector<std::vector<std::size_t>> shells;

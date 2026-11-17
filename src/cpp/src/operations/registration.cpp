@@ -29,6 +29,7 @@
 // Project includes
 #include "meshioplusplus/operations/registration.hpp"
 #include "../detail/bounding_box_utils.hpp"
+#include "../detail/math_utils.hpp"
 #include "../detail/jacobi_eigen.hpp"
 #include "../detail/lsq_fit.hpp"
 #include "../detail/point_knn.hpp"
@@ -238,9 +239,7 @@ RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<RegVec>& rSource,
             const RegVec d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
             d2s[i] = detail::vec3_dot(d, d);
         }
-        const std::size_t mid = d2s.size() / 2;
-        std::nth_element(d2s.begin(), d2s.begin() + static_cast<std::ptrdiff_t>(mid), d2s.end());
-        const double med = std::sqrt(d2s[mid]);
+        const double med = std::sqrt(detail::MathUtils::MedianUpper(d2s));
         // A floor keeps the exact pairs of a perfect fit (median zero).
         const double cut = std::max(Trim * med, 1e-300);
         cut2 = std::min(cut2, cut * cut);

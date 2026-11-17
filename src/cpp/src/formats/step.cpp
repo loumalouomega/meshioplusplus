@@ -42,6 +42,7 @@
 #include "../detail/crease_edges.hpp"
 #include "../detail/step_brep.hpp"
 #include "../detail/step_stream.hpp"
+#include "../detail/union_find.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -54,11 +55,7 @@ std::int64_t step_find(const std::vector<std::int64_t>& rSorted, std::int64_t Ke
 }
 
 std::size_t step_uf_find(std::vector<std::size_t>& rParent, std::size_t X) {
-    while (rParent[X] != X) {
-        rParent[X] = rParent[rParent[X]];
-        X = rParent[X];
-    }
-    return X;
+    return detail::UnionFind<std::size_t>::FindIn(rParent, X);
 }
 
 void step_unit3(const double* pV, double* pOut) {

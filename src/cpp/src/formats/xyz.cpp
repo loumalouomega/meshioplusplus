@@ -40,6 +40,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -54,18 +55,11 @@ bool xyz_is_space(char c) {
 }
 
 std::string_view xyz_strip(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && xyz_is_space(rS[b]))
-        ++b;
-    while (e > b && xyz_is_space(rS[e - 1]))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string xyz_lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Lower(s);
 }
 
 bool xyz_all_digits(std::string_view rS) {
@@ -75,7 +69,7 @@ bool xyz_all_digits(std::string_view rS) {
 }
 
 bool xyz_starts_with(std::string_view rS, const char* pPrefix) {
-    return rS.rfind(pPrefix, 0) == 0;
+    return std::string_view(rS).starts_with(pPrefix);
 }
 
 std::vector<std::string_view> xyz_whitespace_split(std::string_view rS) {

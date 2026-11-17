@@ -26,6 +26,8 @@
 #include "patch_flatten.hpp"
 #include "lsq_fit.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
+#include "edge_use_table.hpp"
+#include "union_find.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -70,32 +72,18 @@ void pf_local(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rT
 // their lowest triangle.
 std::vector<std::vector<std::size_t>> pf_components(const std::vector<PatchTri>& rTris,
                                                     const std::vector<std::size_t>& rSubset) {
-    std::vector<std::size_t> parent(rSubset.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t X) {
-        while (parent[X] != X) {
-            parent[X] = parent[parent[X]];
-            X = parent[X];
-        }
-        return X;
-    };
-    std::map<std::pair<std::size_t, std::size_t>, std::size_t> first;
+    UnionFind<std::size_t> sets(rSubset.size());
+    EdgeUseTable<std::size_t> edges;
     for (std::size_t i = 0; i < rSubset.size(); ++i) {
         const PatchTri& t = rTris[rSubset[i]];
-        for (int k = 0; k < 3; ++k) {
-            const std::size_t a = t[static_cast<std::size_t>(k)];
-            const std::size_t b = t[static_cast<std::size_t>((k + 1) % 3)];
-            auto ins = first.emplace(std::make_pair(std::min(a, b), std::max(a, b)), i);
-            if (!ins.second) {
-                const std::size_t ra = find(i), rb = find(ins.first->second);
-                if (ra != rb)
-                    parent[std::max(ra, rb)] = std::min(ra, rb);
-            }
-        }
+        for (int k = 0; k < 3; ++k)
+            edges.Add(t[static_cast<std::size_t>(k)], t[static_cast<std::size_t>((k + 1) % 3)], i);
     }
+    edges.Build();
+    edges.ForEachSharedFace([&](std::size_t A, std::size_t B) { sets.Unite(A, B); });
     std::map<std::size_t, std::vector<std::size_t>> by_root;
     for (std::size_t i = 0; i < rSubset.size(); ++i)
-        by_root[find(i)].push_back(rSubset[i]);
+        by_root[sets.Find(i)].push_back(rSubset[i]);
     std::vector<std::vector<std::size_t>> out;
     for (auto& kv : by_root)
         out.push_back(std::move(kv.second));

@@ -66,6 +66,7 @@
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/ghost_names.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -114,12 +115,7 @@ const std::vector<int>& meshio_to_gmsh_perm(const std::string& rT) {
 }
 
 std::string gmsh_trim(const std::string& rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct GmshCursor : detail::TextCursor {

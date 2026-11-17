@@ -43,6 +43,8 @@
 
 // Project includes
 #include "../detail/cdt2d.hpp"
+#include "../detail/union_find.hpp"
+#include "../detail/math_utils.hpp"
 #include "../detail/curved_triangle.hpp"
 #include "../detail/curved_quad.hpp"
 #include "../detail/curved_untangle.hpp"
@@ -199,29 +201,7 @@ std::vector<std::size_t> mcad_chain(const BrepLoop& rLoop) {
     return order;
 }
 
-class McadUnionFind {
-public:
-    explicit McadUnionFind(std::size_t N) : mParent(N) {
-        std::iota(mParent.begin(), mParent.end(), 0);
-    }
-    std::size_t Find(std::size_t X) {
-        while (mParent[X] != X) {
-            mParent[X] = mParent[mParent[X]];
-            X = mParent[X];
-        }
-        return X;
-    }
-    // The smaller root wins, so the classes do not depend on the union order.
-    void Join(std::size_t A, std::size_t B) {
-        A = Find(A);
-        B = Find(B);
-        if (A != B)
-            mParent[std::max(A, B)] = std::min(A, B);
-    }
-
-private:
-    std::vector<std::size_t> mParent;
-};
+using McadUnionFind = detail::UnionFind<std::size_t>;
 
 /// A uniform hash grid of 3-D points and segments, for the spacing test.
 class McadGrid {
@@ -3828,23 +3808,23 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             continue;
         for (const auto& r_loop : r_f.mLoops)
             for (std::size_t k = 0; k < r_loop.size(); ++k)
-                corners.Join(slot(r_loop[k], 1), slot(r_loop[(k + 1) % r_loop.size()], 0));
+                corners.Unite(slot(r_loop[k], 1), slot(r_loop[(k + 1) % r_loop.size()], 0));
     }
     for (McadEdge& r_e : edges) {
         const std::size_t m = r_e.mMaster;
         const detail::TrimTrace& r_m = *traces[m];
         const bool degenerate = !(r_m.Length() > tol);
         if (degenerate)
-            corners.Join(slot(m, 0), slot(m, 1));
+            corners.Unite(slot(m, 0), slot(m, 1));
         for (const std::size_t o : r_e.mUses) {
             if (o == m)
                 continue;
             uses[o].mSame =
                 degenerate || detail::edge_same_direction(r_m, *traces[o], uses[o].mStartLength);
-            corners.Join(slot(m, 0), slot(o, uses[o].mSame ? 0 : 1));
-            corners.Join(slot(m, 1), slot(o, uses[o].mSame ? 1 : 0));
+            corners.Unite(slot(m, 0), slot(o, uses[o].mSame ? 0 : 1));
+            corners.Unite(slot(m, 1), slot(o, uses[o].mSame ? 1 : 0));
             if (degenerate)
-                corners.Join(slot(o, 0), slot(o, 1));
+                corners.Unite(slot(o, 0), slot(o, 1));
         }
     }
     // An embedded edge has no loop to close it: a closed one is one corner,
@@ -3857,7 +3837,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             if (!live(u))
                 continue;
             if (closed_3d(u))
-                corners.Join(slot(u, 0), slot(u, 1));
+                corners.Unite(slot(u, 0), slot(u, 1));
             for (int end = 0; end < 2; ++end) {
                 const Vec3 p = end_point(u, end);
                 bool joined = false;
@@ -3865,7 +3845,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     for (const std::size_t l : r_loop)
                         for (int k = 0; k < 2 && !joined; ++k)
                             if (detail::vec3_norm(detail::vec3_sub(end_point(l, k), p)) <= tol) {
-                                corners.Join(slot(u, end), slot(l, k));
+                                corners.Unite(slot(u, end), slot(l, k));
                                 joined = true;
                             }
             }
@@ -6730,8 +6710,7 @@ MeshCadSurfaceResult mesh_cad_surface(const BrepInfo& rBrep, const MeshCadSurfac
             for (const auto& r_c : r_cells)
                 for (const std::int64_t p : r_c)
                     along.push_back(field.At(point_of(p)));
-            std::nth_element(along.begin(), along.begin() + along.size() / 2, along.end());
-            const double finest = along[along.size() / 2];
+            const double finest = detail::MathUtils::MedianUpper(along);
             for (const std::int64_t f : faces)
                 if (f >= 0 && static_cast<std::size_t>(f) < nf &&
                     std::isfinite(face_size[static_cast<std::size_t>(f)]) &&

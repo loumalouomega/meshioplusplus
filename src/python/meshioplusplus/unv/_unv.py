@@ -17,7 +17,7 @@ import struct
 import numpy as np
 
 from .. import _provenance
-from .._common import warn
+from .._common import fortran_exponent, warn
 from .._exceptions import ReadError, WriteError
 from .._files import open_file
 from .._mesh import CellBlock, Mesh
@@ -223,7 +223,7 @@ def _ints_free(tokens):
 
 def _real(tok):
     try:
-        return float(tok.replace("D", "E").replace("d", "e"))
+        return float(fortran_exponent(tok))
     except ValueError:
         raise ReadError(f"UNV: expected a real number, got '{tok}'") from None
 

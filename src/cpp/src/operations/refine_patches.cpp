@@ -43,6 +43,7 @@
 #include "../detail/lsq_fit.hpp"
 #include "../detail/patch_output.hpp"
 #include "../detail/primitive_geom.hpp"
+#include "../detail/splitmix.hpp"
 #include "../detail/surface_rings.hpp"
 #include "../detail/math_utils.hpp"
 
@@ -62,15 +63,7 @@ constexpr double kRpEnergySlack = 1e-12;
 
 // splitmix64 (Steele, Lea and Flood 2014): the same sequence on every
 // platform, unlike a standard-library distribution.
-struct RpRng {
-    std::uint64_t mState;
-    std::uint64_t Next() {
-        std::uint64_t z = (mState += 0x9e3779b97f4a7c15ull);
-        z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
-        z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
-        return z ^ (z >> 31);
-    }
-};
+using RpRng = detail::SplitMix64;
 
 // The surface as faces: rings, geometry, smooth neighbours and paired edges.
 struct RpSurface {

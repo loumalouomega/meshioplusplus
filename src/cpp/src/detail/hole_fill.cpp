@@ -24,6 +24,7 @@
 
 // Project includes
 #include "hole_fill.hpp"
+#include "edge_use_table.hpp"
 #include "sparse_solve.hpp"
 
 namespace meshioplusplus::detail {
@@ -88,34 +89,38 @@ std::vector<HfTri> hf_min_area(const std::vector<Vec3>& rP, std::size_t N) {
 void hf_relax(const std::vector<Vec3>& rP, std::vector<HfTri>& rTris) {
     for (int pass = 0; pass < 64; ++pass) {
         bool flipped = false;
-        std::map<std::pair<std::size_t, std::size_t>, std::vector<std::size_t>> uses;
+        EdgeUseTable<std::size_t> uses;
         for (std::size_t t = 0; t < rTris.size(); ++t)
-            for (std::size_t e = 0; e < 3; ++e) {
-                const std::size_t a = rTris[t][e], b = rTris[t][(e + 1) % 3];
-                uses[{std::min(a, b), std::max(a, b)}].push_back(t);
-            }
+            for (std::size_t e = 0; e < 3; ++e)
+                uses.Add(rTris[t][e], rTris[t][(e + 1) % 3], t);
+        uses.Build();
         std::vector<char> touched(rTris.size(), 0);
-        for (const auto& [edge, r_ts] : uses) {
-            if (r_ts.size() != 2 || touched[r_ts[0]] || touched[r_ts[1]])
+        for (std::size_t edge_at = 0; edge_at < uses.NumEdges(); ++edge_at) {
+            if (uses.Count(edge_at) != 2)
                 continue;
-            const HfTri& t1 = rTris[r_ts[0]];
-            const HfTri& t2 = rTris[r_ts[1]];
+            const std::size_t first_tri = uses.At(edge_at, 0).mFace;
+            const std::size_t second_tri = uses.At(edge_at, 1).mFace;
+            if (touched[first_tri] || touched[second_tri])
+                continue;
+            const std::size_t edge_lo = uses.Lo(edge_at), edge_hi = uses.Hi(edge_at);
+            const HfTri& t1 = rTris[first_tri];
+            const HfTri& t2 = rTris[second_tri];
             // t1 = (a, b, c) traverses a -> b; t2 = (b, a, d).
             std::size_t k = 0;
-            while (!(t1[k] != edge.first && t1[k] != edge.second))
+            while (!(t1[k] != edge_lo && t1[k] != edge_hi))
                 ++k;
             const std::size_t c = t1[k], a = t1[(k + 1) % 3], b = t1[(k + 2) % 3];
             std::size_t d = t2[0];
             for (const std::size_t v : t2)
                 if (v != a && v != b)
                     d = v;
-            if (uses.count({std::min(c, d), std::max(c, d)}))
+            if (uses.Find(c, d) != EdgeUseTable<std::size_t>::kNone)
                 continue;
             if (hf_angle(rP[c], rP[a], rP[b]) + hf_angle(rP[d], rP[a], rP[b]) <= kHfPi + 1e-12)
                 continue;
-            rTris[r_ts[0]] = {c, a, d};
-            rTris[r_ts[1]] = {d, b, c};
-            touched[r_ts[0]] = touched[r_ts[1]] = 1;
+            rTris[first_tri] = {c, a, d};
+            rTris[second_tri] = {d, b, c};
+            touched[first_tri] = touched[second_tri] = 1;
             flipped = true;
         }
         if (!flipped)

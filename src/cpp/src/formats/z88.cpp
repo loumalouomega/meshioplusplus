@@ -48,6 +48,7 @@
 #include "meshioplusplus/region.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -181,9 +182,7 @@ std::string z88_read_text(const std::string& rPath) {
 }
 
 std::string z88_lower(std::string s) {
-    for (char& c : s)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Lower(s);
 }
 
 // The file named `rName` (any case) in `rDir`, or an empty path.

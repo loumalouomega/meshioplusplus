@@ -37,18 +37,14 @@
 #include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
 std::string off_strip(const std::string& rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 std::string off_cell_type_from_count(std::size_t n) {

@@ -32,6 +32,7 @@
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/read_options.hpp"
 #include "meshioplusplus/registry.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -54,9 +55,7 @@ const std::vector<DetectShared>& detect_shared_extensions() {
 }
 
 std::string detect_lower(std::string Text) {
-    std::transform(Text.begin(), Text.end(), Text.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return Text;
+    return meshioplusplus::detail::TextUtils::Lower(Text);
 }
 
 /// The extension candidates of @p rPath and the suffix that named them (longest first,

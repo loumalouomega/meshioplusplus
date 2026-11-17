@@ -24,6 +24,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -46,6 +47,7 @@
 #include "../detail/typed_view.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/open_source.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -72,17 +74,10 @@ const std::unordered_map<std::string, std::string>& meshio_to_abaqus() {
 }
 
 std::string abaqus_upper(std::string s) {
-    for (auto& c : s)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return s;
+    return meshioplusplus::detail::TextUtils::Upper(s);
 }
 std::string_view abaqus_trim_view(std::string_view rS) {
-    std::size_t b = 0, e = rS.size();
-    while (b < e && std::isspace(static_cast<unsigned char>(rS[b])))
-        ++b;
-    while (e > b && std::isspace(static_cast<unsigned char>(rS[e - 1])))
-        --e;
-    return rS.substr(b, e - b);
+    return meshioplusplus::detail::TextUtils::TrimView(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 std::string abaqus_trim(std::string_view rS) {
     return std::string(abaqus_trim_view(rS));

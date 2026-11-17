@@ -34,6 +34,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/frd.hpp"
+#include "../detail/text_utils.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/node_order.hpp"
 #include "meshioplusplus/detail/sym3_eigen.hpp"
@@ -91,7 +92,7 @@ bool frd_is_tensor_name(const std::string& rName) {
 }
 
 bool frd_starts_with(std::string_view Line, std::string_view Prefix) {
-    return Line.size() >= Prefix.size() && Line.compare(0, Prefix.size(), Prefix) == 0;
+    return std::string_view(Line).starts_with(Prefix);
 }
 
 /// Columns [Pos, Pos + Len) of @p Line, clipped to its end.

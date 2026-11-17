@@ -43,6 +43,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -190,11 +191,7 @@ std::string flac3d_read_str(std::istream& rIn) {
 }
 
 std::string flac3d_trim(const std::string& rS) {
-    std::size_t b = rS.find_first_not_of(" \t\r\n");
-    if (b == std::string::npos)
-        return std::string();
-    std::size_t e = rS.find_last_not_of(" \t\r\n");
-    return rS.substr(b, e - b + 1);
+    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kBlanks);
 }
 
 // The ascii slot is the raw remainder of the header line and may or may not be

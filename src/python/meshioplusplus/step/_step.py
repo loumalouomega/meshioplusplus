@@ -12,6 +12,7 @@ import math
 
 import numpy as np
 
+from .._common import unit_vector
 from .._exceptions import WriteError
 from .._files import is_buffer
 from .._units import length_unit
@@ -46,8 +47,7 @@ def _basename(path):
 
 
 def _unit(v):
-    ln = math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
-    return [x / ln if ln > 0.0 else 0.0 for x in v]
+    return unit_vector(v, zero="zeros")
 
 
 def _ring_normal(xyz, ring):

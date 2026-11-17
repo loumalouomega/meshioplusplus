@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -41,6 +42,7 @@
 #include "meshioplusplus/formats/radioss_th.hpp"
 #include "meshioplusplus/formats/lsdyna_d3plot.hpp"
 #include "meshioplusplus/formats/z88.hpp"
+#include "../detail/text_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -48,8 +50,7 @@ namespace {
 
 // Whether `hay` starts with `needle`.
 bool sniff_starts_with(const std::string& rHay, const char* pNeedle) {
-    const std::string needle(pNeedle);
-    return rHay.size() >= needle.size() && rHay.compare(0, needle.size(), needle) == 0;
+    return std::string_view(rHay).starts_with(pNeedle);
 }
 
 // Whether `hay` contains `needle`.

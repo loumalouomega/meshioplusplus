@@ -18,7 +18,7 @@ import struct
 
 import numpy as np
 
-from .._common import num_nodes_per_cell, warn
+from .._common import fortran_exponent, num_nodes_per_cell, warn
 from .._exceptions import ReadError
 from .._files import open_file
 from .._fortran_records import fortran_records, sniff_fortran_records
@@ -402,7 +402,7 @@ def _parse_ascii(text, out):
             num = s[pos + 1 : pos + 23]
             if len(num) != 22:
                 fail("truncated real item")
-            num = num.replace("D", "E").replace("d", "E")
+            num = fortran_exponent(num, "E")
             if "E" not in num:
                 k = max(num.rfind("+"), num.rfind("-"))
                 if k > 2:

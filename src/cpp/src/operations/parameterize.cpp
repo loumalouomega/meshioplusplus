@@ -44,6 +44,7 @@
 #include "../detail/cut_graph.hpp"
 #include "../detail/param_disc.hpp"
 #include "../detail/patch_flatten.hpp"
+#include "../detail/union_find.hpp"
 
 namespace meshioplusplus {
 
@@ -327,15 +328,8 @@ ParameterizeResult parameterize(const Mesh& rMesh, const ParameterizeOptions& rO
     }
 
     // --- the edge-connected pieces, in order of their lowest triangle ---
-    std::vector<std::size_t> parent(tris.size());
-    std::iota(parent.begin(), parent.end(), std::size_t{0});
-    auto find = [&](std::size_t x) {
-        while (parent[x] != x) {
-            parent[x] = parent[parent[x]];
-            x = parent[x];
-        }
-        return x;
-    };
+    detail::UnionFind<std::size_t> sets(tris.size());
+    auto find = [&](std::size_t x) { return sets.Find(x); };
     {
         std::vector<std::array<std::int64_t, 3>> edges;  // lo, hi, triangle
         edges.reserve(3 * tris.size());
@@ -347,10 +341,8 @@ ParameterizeResult parameterize(const Mesh& rMesh, const ParameterizeOptions& rO
         std::sort(edges.begin(), edges.end());
         for (std::size_t i = 1; i < edges.size(); ++i)
             if (edges[i][0] == edges[i - 1][0] && edges[i][1] == edges[i - 1][1]) {
-                const std::size_t ra = find(static_cast<std::size_t>(edges[i][2]));
-                const std::size_t rb = find(static_cast<std::size_t>(edges[i - 1][2]));
-                if (ra != rb)
-                    parent[std::max(ra, rb)] = std::min(ra, rb);
+                sets.Unite(static_cast<std::size_t>(edges[i][2]),
+                           static_cast<std::size_t>(edges[i - 1][2]));
             }
     }
     std::vector<PrmPiece> queue;

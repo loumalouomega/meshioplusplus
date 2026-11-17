@@ -39,6 +39,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/lsdyna.hpp"
+#include "../detail/text_utils.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
@@ -163,9 +164,7 @@ const char* lsd_family_name(LsdFamily Family) {
 }
 
 std::string lsd_upper(std::string Text) {
-    for (char& c : Text)
-        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-    return Text;
+    return meshioplusplus::detail::TextUtils::Upper(Text);
 }
 
 std::string lsd_strip(std::string_view rText, const char* pChars = " \t\r\n\f\v") {
@@ -177,7 +176,7 @@ std::string lsd_strip(std::string_view rText, const char* pChars = " \t\r\n\f\v"
 }
 
 bool lsd_starts_with(std::string_view rText, const char* pPrefix) {
-    return rText.rfind(pPrefix, 0) == 0;
+    return std::string_view(rText).starts_with(pPrefix);
 }
 
 std::vector<std::string_view> lsd_split(std::string_view rText, char Sep) {

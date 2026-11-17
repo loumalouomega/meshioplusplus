@@ -205,7 +205,7 @@ std::vector<std::string_view> gid_split(std::string_view rLine) {
     std::vector<std::string_view> out;
     std::size_t i = 0;
     while (i < rLine.size()) {
-        while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
+        while (i < rLine.size() && detail::text_is_blank(rLine[i]))
             ++i;
         if (i >= rLine.size())
             break;
@@ -217,7 +217,7 @@ std::vector<std::string_view> gid_split(std::string_view rLine) {
             i = close + 1;
         } else {
             const std::size_t start = i;
-            while (i < rLine.size() && !std::isspace(static_cast<unsigned char>(rLine[i])))
+            while (i < rLine.size() && !detail::text_is_blank(rLine[i]))
                 ++i;
             out.push_back(rLine.substr(start, i - start));
         }
@@ -233,7 +233,7 @@ bool gid_line_starts_with(const std::string& rLine, const char* pFirst, const ch
     // letter -- must not pay for a tokenisation. Peek at the first non-space
     // character before doing any allocation.
     std::size_t i = 0;
-    while (i < rLine.size() && std::isspace(static_cast<unsigned char>(rLine[i])))
+    while (i < rLine.size() && detail::text_is_blank(rLine[i]))
         ++i;
     if (i >= rLine.size() || std::tolower(static_cast<unsigned char>(rLine[i])) !=
                                  std::tolower(static_cast<unsigned char>(pFirst[0])))
