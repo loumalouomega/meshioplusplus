@@ -196,15 +196,23 @@ def _name(words):
     return raw.split(b"\x00")[0].decode("latin-1").strip(_BLANKS)
 
 
-def _ranges(values):
-    """Ids with ``-last`` closing a run opened by the value before it."""
+def _ranges(values, room):
+    """Ids with ``-last`` closing a run opened by the value before it. A component
+    names distinct nodes or elements of the model, so it holds no more ids than
+    ``room``; a run closed by a huge negative value is refused before it is expanded
+    (fuzz: a 1.8 kB file asked for 2 GB)."""
     ids = []
     for v in values:
         v = int(v)
         if v > 0:
             ids.append(v)
         elif v < 0 and ids:
-            ids.extend(range(ids[-1] + 1, -v + 1))
+            first, last = ids[-1] + 1, -v
+            if last >= first and last - first >= room - len(ids):
+                _fail(f"a component names more ids than the model has ({room})")
+            ids.extend(range(first, last + 1))
+        if len(ids) > room:
+            _fail(f"a component names more ids than the model has ({room})")
     return ids
 
 
@@ -380,8 +388,13 @@ class _Results:
             table = table.astype(np.int64)
             if len(table) < 9 or int(table[0]) not in (1, 2):
                 continue
+            is_nodes = int(table[0]) == 1
             components.append(
-                (_name(table[1:9]), int(table[0]) == 1, _ranges(table[9:]))
+                (
+                    _name(table[1:9]),
+                    is_nodes,
+                    _ranges(table[9:], max(nnod if is_nodes else nelm, 0)),
+                )
             )
 
         return {
