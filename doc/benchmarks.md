@@ -1618,7 +1618,15 @@ What it says, for the decision of 5.22.3 and not as the decision:
 - **`std::vector<bool>`** is twice as slow as `std::vector<std::uint8_t>` to set and test, and takes the same space at these sizes (the 62 MB is the input).
 - **Small string tables** (twelve entries): `std::unordered_map` is the fastest, ahead of the sorted array, so the cell-type tables are left alone.
 
-Not done: 5.22.2's rows. The harness's own writers number points and elements from 1 in file order (`gmsh.cpp`, `nastran.cpp` `GRID` and `abaqus.cpp`), so the reader rows reach only the dense path; rows with sparse and shuffled ids need inputs rewritten by hand and are listed in [roadmap 5.22](./roadmap.md#container-study).
+The reader rows that decide whether any of this matters for the readers' id maps are in [reader rows with sparse, shuffled ids](#reader-rows-with-sparse-shuffled-ids): they take 1 to 2% of those rows.
+
+### Reader rows with sparse, shuffled ids
+
+Roadmap 5.22.2. The harness's writers number points and elements 1..n in file order, so the readers' maps from a file id to an index never left their easy case. `read_gmsh22_sparse`, `read_abaqus_sparse` and `read_nastran_sparse` (`bench_ops.cpp`) write the same file as `read_gmsh22_ascii`, `read_abaqus` and `read_nastran` and rewrite it before the timed read: every point and element id `i` becomes `7 i + 3` and the point lines and element lines are permuted (a seeded Fisher-Yates, so the file is the same on every standard library; Nastran's `GRID*` line and its continuation move together and its 8- and 16-character fields keep their width). The setup reads both files and fails the row unless they have the same point and cell counts. The digests differ from the dense rows' because the point order differs, and are stable between invocations.
+
+Tier S, instructions of the row alone (Cachegrind with the row's run bracketed, as the gate does): `read_gmsh22_ascii` 40.0 M and `read_gmsh22_sparse` 41.1 M (+2.5%), `read_abaqus` 44.1 M and `read_abaqus_sparse` 45.1 M (+2.1%), `read_nastran` 145.6 M and `read_nastran_sparse` 144.6 M (−0.7%). Tier M, wall time, median of three runs, SEQ: 63 ms and 60 ms (Gmsh), 77 ms and 71 ms (Abaqus), 278 ms and 281 ms (Nastran). A hash table (`_Hashtable`) takes 0.9% of the Gmsh process, 2.4% of the Abaqus and 1.3% of the Nastran one (callgrind over the whole process, setup included), a `std::map` 0% to 1.2%, and the allocator 16% to 23%, behind the parse and the vectors rather than the maps.
+
+So the id map is not what these readers spend their time on, dense or sparse: a container that is 2 to 3 times faster on the microbenchmark above can recover at most the 1 to 2% the map takes. The new rows are not in `benchmark/instructions_S.csv` (the gate reports them as new rows; they are recorded on CI's toolchain).
 
 ## Landing a performance change
 
