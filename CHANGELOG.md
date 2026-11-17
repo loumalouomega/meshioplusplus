@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Tests:** `SplitInterface.SeparatesAFanThatTouchesOnlyAtAPoint` pins `split_interface`'s fan rule on a mesh the benchmark does not reach: cells that meet only at a point are split apart even when no selected facet touches them, and the cohesive and plain splits agree on the duplicate count. The expected values were taken from the code before the flat-table rewrite.
+- **Docs:** `AGENTS.md` now says a PR description covers the whole branch (the commit log and diffstat against the base, grouped by theme, with what was and was not verified), not only the first or last commit.
 - **Docs:** roadmap 5.1.4 closed into the [non-goals](doc/roadmap.md#non-goals-and-decisions-taken): `decimate_volume`'s growing star is documented ([decimate_volume](doc/decimate_volume.md#cost-on-large-meshes)) and the rule is kept, because the valence cap and the star-size penalty measured no better overall.
 - **Docs:** roadmap 5.22 closed into the [non-goals](doc/roadmap.md#non-goals-and-decisions-taken): the readers' id maps take 1% to 2% of their rows, dense or sparse, and no standard container showed above 5% of a profiled row, so none is replaced. The evidence is the [containers study](doc/benchmarks.md#containers-a-study).
 - **Benchmarks:** `read_gmsh22_sparse`, `read_abaqus`, `read_abaqus_sparse`, `read_nastran` and `read_nastran_sparse` rows in `bench_ops` (roadmap 5.22.2): the same files with ids `7 i + 3` and shuffled lines. A reader's id map takes 1 to 2% of its row, dense or sparse ([benchmarks](doc/benchmarks.md#reader-rows-with-sparse-shuffled-ids)). No library code changes.
