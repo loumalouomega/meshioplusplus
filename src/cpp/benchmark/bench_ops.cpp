@@ -1193,6 +1193,11 @@ int main(int argc, char** argv) {
                 if (pD) {
                     pD->U64(static_cast<std::uint64_t>(r.mNumDuplicatedPoints));
                     pD->U64(static_cast<std::uint64_t>(r.mNumCohesiveCells));
+                    // The plain split, without cohesive cells, on the same cut.
+                    mio::SplitInterfaceOptions plain;
+                    auto q = mio::split_interface(cut_mesh, mio::RegionSelector{"cut"}, plain);
+                    of(pD, q.mMesh);
+                    pD->U64(static_cast<std::uint64_t>(q.mNumDuplicatedPoints));
                 }
             });
         }

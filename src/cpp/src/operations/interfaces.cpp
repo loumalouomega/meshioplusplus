@@ -1385,41 +1385,92 @@ std::size_t if_facet_corner_count(CellType Type, std::size_t NumNodes) {
     return corners > 0 ? static_cast<std::size_t>(corners) : NumNodes;
 }
 
+// One facet of one cell: its full node list (corners first) lives at
+// `mFullStart` of the table's flat buffer.
 struct SplitFacetOwner {
-    RaFacet mFacet;
-    std::vector<std::int64_t> mFullNodes;
+    std::int64_t mCell = 0;
+    std::int64_t mFacet = 0;
+    std::size_t mFullStart = 0;
+    std::size_t mFullLen = 0;
     CellType mType = CellType::Custom;
 };
 
-using SplitFacetMap = std::map<std::vector<std::int64_t>, std::vector<SplitFacetOwner>>;
+// Every facet of every 2-D and 3-D cell, grouped by its sorted corner ids in
+// lexicographic key order (what a `std::map` keyed by the sorted corners
+// iterated in), the owners of a group ascending in (cell, facet) with one
+// owner per cell (roadmap 5.18). Flat: one key buffer, one node buffer, one
+// owner array.
+struct SplitFacetTable {
+    std::vector<std::int64_t> mKeys;    // sorted corner ids, group after group
+    std::vector<std::size_t> mKeyAt;    // group g's key: mKeys[mKeyAt[g] .. mKeyAt[g + 1])
+    std::vector<std::size_t> mOwnerAt;  // group g's owners: mOwners[mOwnerAt[g] .. mOwnerAt[g + 1])
+    std::vector<SplitFacetOwner> mOwners;
+    std::vector<std::int64_t> mFull;  // every owner's full nodes
 
-std::vector<std::vector<std::int64_t>> if_mesh_cell_nodes(const Mesh& rMesh) {
-    std::vector<std::vector<std::int64_t>> cells;
+    std::size_t NumGroups() const { return mOwnerAt.empty() ? 0 : mOwnerAt.size() - 1; }
+
+    /// The group whose key is @p rKey, or `NumGroups()`.
+    std::size_t Find(const std::vector<std::int64_t>& rKey) const {
+        std::size_t first = 0, last = NumGroups();
+        while (first < last) {
+            const std::size_t mid = first + (last - first) / 2;
+            if (std::lexicographical_compare(
+                    mKeys.begin() + static_cast<std::ptrdiff_t>(mKeyAt[mid]),
+                    mKeys.begin() + static_cast<std::ptrdiff_t>(mKeyAt[mid + 1]), rKey.begin(),
+                    rKey.end()))
+                first = mid + 1;
+            else
+                last = mid;
+        }
+        if (first < NumGroups() &&
+            std::equal(rKey.begin(), rKey.end(),
+                       mKeys.begin() + static_cast<std::ptrdiff_t>(mKeyAt[first]),
+                       mKeys.begin() + static_cast<std::ptrdiff_t>(mKeyAt[first + 1])))
+            return first;
+        return NumGroups();
+    }
+};
+
+// A cell's nodes, in stored order: cell c's are `mNodes[mStart[c] .. mStart[c + 1])`.
+struct SplitCellNodes {
+    std::vector<std::size_t> mStart{0};
+    std::vector<std::int64_t> mNodes;
+    std::size_t NumCells() const { return mStart.size() - 1; }
+};
+
+SplitCellNodes if_mesh_cell_nodes(const Mesh& rMesh) {
+    SplitCellNodes cells;
     for (const auto cb : rMesh.CellRange()) {
         if (cb.IsPolyhedron())
             throw std::invalid_argument(
                 "meshio++: split_interface: polyhedron cells are not supported");
         for (std::size_t row = 0; row < cb.NumCells(); ++row) {
-            std::vector<std::int64_t> nodes;
             if (cb.IsRagged()) {
                 const std::int64_t* p = cb.Row(row);
-                nodes.assign(p, p + cb.RowSize(row));
+                cells.mNodes.insert(cells.mNodes.end(), p, p + cb.RowSize(row));
             } else {
                 const std::size_t width = cb.NodesPerCell();
                 const NDArray& conn = cb.Conn();
-                nodes.reserve(width);
                 for (std::size_t k = 0; k < width; ++k)
-                    nodes.push_back(detail::read_int(conn, row * width + k));
+                    cells.mNodes.push_back(detail::read_int(conn, row * width + k));
             }
-            cells.push_back(std::move(nodes));
+            cells.mStart.push_back(cells.mNodes.size());
         }
     }
     return cells;
 }
 
-SplitFacetMap if_split_facets(const Mesh& rMesh) {
-    SplitFacetMap facets;
+SplitFacetTable if_split_facets(const Mesh& rMesh) {
+    // The records first: key and full nodes appended to flat buffers.
+    struct Record {
+        std::size_t mKeyStart, mKeyLen;
+        SplitFacetOwner mOwner;
+    };
+    std::vector<Record> records;
+    std::vector<std::int64_t> keys;
+    SplitFacetTable table;
     const auto bases = detail::block_bases(rMesh);
+    std::vector<std::int64_t> full_nodes;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         const auto cb = rMesh.Cells(b);
         const std::string type_name(cb.Type());
@@ -1434,50 +1485,96 @@ SplitFacetMap if_split_facets(const Mesh& rMesh) {
                 for (std::size_t edge = 0; edge < n; ++edge) {
                     const std::int64_t a = detail::read_int(cb.Conn(), row * n + edge);
                     const std::int64_t c = detail::read_int(cb.Conn(), row * n + (edge + 1) % n);
-                    const std::int64_t low = std::min(a, c), high = std::max(a, c);
-                    facets[{low, high}].push_back(
-                        SplitFacetOwner{RaFacet{{a, c}, cell, static_cast<std::int64_t>(edge)},
-                                        {a, c},
-                                        CellType::Line});
+                    SplitFacetOwner owner{cell, static_cast<std::int64_t>(edge), table.mFull.size(),
+                                          2, CellType::Line};
+                    table.mFull.push_back(a);
+                    table.mFull.push_back(c);
+                    records.push_back({keys.size(), 2, owner});
+                    keys.push_back(std::min(a, c));
+                    keys.push_back(std::max(a, c));
                 }
                 continue;
             }
             const std::size_t facet_limit = cb.IsRagged() ? cb.RowSize(row) : 64;
             for (std::size_t f = 0; f < facet_limit; ++f) {
                 CellType facet_type = CellType::Custom;
-                std::vector<std::int64_t> full_nodes;
                 if (!detail::facet_nodes(rMesh, cell, static_cast<std::int64_t>(f), facet_type,
                                          full_nodes))
                     break;
                 const std::size_t corners = if_facet_corner_count(facet_type, full_nodes.size());
                 if (corners < 2 || corners > full_nodes.size())
                     continue;
-                std::vector<std::int64_t> corner_nodes(full_nodes.begin(),
-                                                       full_nodes.begin() + corners);
-                std::vector<std::int64_t> key = corner_nodes;
-                std::sort(key.begin(), key.end());
-                if (std::adjacent_find(key.begin(), key.end()) != key.end())
+                const std::size_t key_at = keys.size();
+                keys.insert(keys.end(), full_nodes.begin(),
+                            full_nodes.begin() + static_cast<std::ptrdiff_t>(corners));
+                std::sort(keys.begin() + static_cast<std::ptrdiff_t>(key_at), keys.end());
+                if (std::adjacent_find(keys.begin() + static_cast<std::ptrdiff_t>(key_at),
+                                       keys.end()) != keys.end()) {
+                    keys.resize(key_at);
                     continue;
-                facets[key].push_back(SplitFacetOwner{
-                    RaFacet{std::move(corner_nodes), cell, static_cast<std::int64_t>(f)},
-                    std::move(full_nodes), facet_type});
+                }
+                records.push_back(
+                    {key_at, corners,
+                     SplitFacetOwner{cell, static_cast<std::int64_t>(f), table.mFull.size(),
+                                     full_nodes.size(), facet_type}});
+                table.mFull.insert(table.mFull.end(), full_nodes.begin(), full_nodes.end());
             }
         }
     }
-    for (auto& [key, owners] : facets) {
-        (void)key;
-        std::sort(owners.begin(), owners.end(),
-                  [](const SplitFacetOwner& rA, const SplitFacetOwner& rB) {
-                      return std::tie(rA.mFacet.mCell, rA.mFacet.mFacet) <
-                             std::tie(rB.mFacet.mCell, rB.mFacet.mFacet);
-                  });
-        owners.erase(std::unique(owners.begin(), owners.end(),
-                                 [](const SplitFacetOwner& rA, const SplitFacetOwner& rB) {
-                                     return rA.mFacet.mCell == rB.mFacet.mCell;
-                                 }),
-                     owners.end());
+    // Group by key (lexicographic), the owners of a key by (cell, facet), one
+    // owner per cell (the first by facet), as the map and its per-key sort did.
+    std::vector<std::size_t> order(records.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+        order[i] = i;
+    const auto key_less = [&](const Record& rA, const Record& rB) {
+        return std::lexicographical_compare(
+            keys.begin() + static_cast<std::ptrdiff_t>(rA.mKeyStart),
+            keys.begin() + static_cast<std::ptrdiff_t>(rA.mKeyStart + rA.mKeyLen),
+            keys.begin() + static_cast<std::ptrdiff_t>(rB.mKeyStart),
+            keys.begin() + static_cast<std::ptrdiff_t>(rB.mKeyStart + rB.mKeyLen));
+    };
+    const auto same_key = [&](const Record& rA, const Record& rB) {
+        return rA.mKeyLen == rB.mKeyLen &&
+               std::equal(keys.begin() + static_cast<std::ptrdiff_t>(rA.mKeyStart),
+                          keys.begin() + static_cast<std::ptrdiff_t>(rA.mKeyStart + rA.mKeyLen),
+                          keys.begin() + static_cast<std::ptrdiff_t>(rB.mKeyStart));
+    };
+    std::sort(order.begin(), order.end(), [&](std::size_t A, std::size_t B) {
+        const Record& r_a = records[A];
+        const Record& r_b = records[B];
+        if (key_less(r_a, r_b))
+            return true;
+        if (key_less(r_b, r_a))
+            return false;
+        return std::tie(r_a.mOwner.mCell, r_a.mOwner.mFacet) <
+               std::tie(r_b.mOwner.mCell, r_b.mOwner.mFacet);
+    });
+    table.mKeyAt.assign(1, 0);
+    table.mOwnerAt.assign(1, 0);
+    const Record* previous = nullptr;
+    for (const std::size_t i : order) {
+        const Record& r = records[i];
+        const bool new_group = previous == nullptr || !same_key(*previous, r);
+        if (new_group) {
+            if (previous != nullptr) {
+                table.mKeyAt.push_back(table.mKeys.size());
+                table.mOwnerAt.push_back(table.mOwners.size());
+            }
+            table.mKeys.insert(table.mKeys.end(),
+                               keys.begin() + static_cast<std::ptrdiff_t>(r.mKeyStart),
+                               keys.begin() + static_cast<std::ptrdiff_t>(r.mKeyStart + r.mKeyLen));
+        } else if (table.mOwners.back().mCell == r.mOwner.mCell) {
+            previous = &r;
+            continue;  // one owner per cell
+        }
+        table.mOwners.push_back(r.mOwner);
+        previous = &r;
     }
-    return facets;
+    if (previous != nullptr) {
+        table.mKeyAt.push_back(table.mKeys.size());
+        table.mOwnerAt.push_back(table.mOwners.size());
+    }
+    return table;
 }
 
 struct CohesiveCell {
@@ -1522,18 +1619,19 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
         throw std::invalid_argument(
             "meshio++: split_interface: Side region entries must have shape (n, 2)");
 
-    const std::vector<std::vector<std::int64_t>> cell_nodes = if_mesh_cell_nodes(rMesh);
-    const SplitFacetMap facets = if_split_facets(rMesh);
+    const SplitCellNodes cell_nodes = if_mesh_cell_nodes(rMesh);
+    const SplitFacetTable facets = if_split_facets(rMesh);
     if (side_region.mEntries.Shape()[0] == 0)
         throw std::invalid_argument("meshio++: split_interface: Side region is empty");
     const auto bases = detail::block_bases(rMesh);
+    const std::size_t num_cells = cell_nodes.NumCells();
     std::vector<std::pair<std::int64_t, std::int64_t>> selected_entries;
-    std::set<std::vector<std::int64_t>> cut_keys;
-    std::set<std::int64_t> seed_cells;
+    std::vector<std::uint8_t> cut_group(facets.NumGroups(), 0);
+    std::vector<std::uint8_t> is_seed(num_cells, 0);
     for (std::size_t i = 0; i < side_region.mEntries.Shape()[0]; ++i) {
         const std::int64_t cell = detail::read_int(side_region.mEntries, 2 * i);
         const std::int64_t facet = detail::read_int(side_region.mEntries, 2 * i + 1);
-        if (cell < 0 || static_cast<std::size_t>(cell) >= cell_nodes.size())
+        if (cell < 0 || static_cast<std::size_t>(cell) >= num_cells)
             throw std::invalid_argument(
                 "meshio++: split_interface: Side region has an invalid cell id");
         CellType facet_type = CellType::Custom;
@@ -1544,116 +1642,154 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
         const std::size_t corners = if_facet_corner_count(facet_type, full_nodes.size());
         std::vector<std::int64_t> key(full_nodes.begin(), full_nodes.begin() + corners);
         std::sort(key.begin(), key.end());
-        if (!facets.count(key))
+        const std::size_t group = facets.Find(key);
+        if (group == facets.NumGroups())
             throw std::invalid_argument(
                 "meshio++: split_interface: selected facet has no mesh incidence");
         selected_entries.push_back({cell, facet});
-        cut_keys.insert(key);
-        seed_cells.insert(cell);
+        cut_group[group] = 1;
+        is_seed[static_cast<std::size_t>(cell)] = 1;
     }
     std::sort(selected_entries.begin(), selected_entries.end());
     selected_entries.erase(std::unique(selected_entries.begin(), selected_entries.end()),
                            selected_entries.end());
 
+    // The cells around each point, ascending, a cell once per point.
     const std::size_t num_points = rMesh.NumPoints();
-    std::vector<std::vector<std::int64_t>> incident_cells(num_points);
-    for (std::size_t cell = 0; cell < cell_nodes.size(); ++cell)
-        for (std::int64_t node : cell_nodes[cell]) {
-            if (node < 0 || static_cast<std::size_t>(node) >= num_points)
-                throw std::invalid_argument(
-                    "meshio++: split_interface: input connectivity has an invalid point id");
-            incident_cells[static_cast<std::size_t>(node)].push_back(
-                static_cast<std::int64_t>(cell));
-        }
-    std::vector<std::map<std::int64_t, std::set<std::int64_t>>> node_graph(num_points);
-    for (std::size_t point = 0; point < num_points; ++point)
-        for (std::int64_t cell : incident_cells[point])
-            node_graph[point][cell];
-    for (const auto& [key, owners] : facets) {
-        if (owners.size() < 2 || cut_keys.count(key))
-            continue;
-        for (std::size_t i = 0; i < owners.size(); ++i)
-            for (std::size_t j = i + 1; j < owners.size(); ++j) {
-                const auto& a = owners[i];
-                const auto& b = owners[j];
-                std::set<std::int64_t> nodes_b(b.mFullNodes.begin(), b.mFullNodes.end());
-                std::vector<std::int64_t> common;
-                for (std::int64_t node : a.mFullNodes)
-                    if (nodes_b.count(node))
-                        common.push_back(node);
-                for (std::int64_t node : common) {
-                    auto& graph = node_graph[static_cast<std::size_t>(node)];
-                    graph[a.mFacet.mCell].insert(b.mFacet.mCell);
-                    graph[b.mFacet.mCell].insert(a.mFacet.mCell);
+    std::vector<std::size_t> inc_start(num_points + 1, 0);
+    std::vector<std::int64_t> inc;
+    {
+        std::vector<std::int64_t> last(num_points, -1);
+        for (int pass = 0; pass < 2; ++pass) {
+            std::fill(last.begin(), last.end(), std::int64_t{-1});
+            std::vector<std::size_t> fill(inc_start.begin(), inc_start.end() - 1);
+            for (std::size_t cell = 0; cell < num_cells; ++cell)
+                for (std::size_t k = cell_nodes.mStart[cell]; k < cell_nodes.mStart[cell + 1];
+                     ++k) {
+                    const std::int64_t node = cell_nodes.mNodes[k];
+                    if (node < 0 || static_cast<std::size_t>(node) >= num_points)
+                        throw std::invalid_argument(
+                            "meshio++: split_interface: input connectivity has an invalid point "
+                            "id");
+                    const auto p = static_cast<std::size_t>(node);
+                    if (last[p] == static_cast<std::int64_t>(cell))
+                        continue;
+                    last[p] = static_cast<std::int64_t>(cell);
+                    if (pass == 0)
+                        ++inc_start[p + 1];
+                    else
+                        inc[fill[p]++] = static_cast<std::int64_t>(cell);
                 }
+            if (pass == 0) {
+                for (std::size_t p = 0; p < num_points; ++p)
+                    inc_start[p + 1] += inc_start[p];
+                inc.resize(inc_start[num_points]);
             }
+        }
+    }
+    // Position of `cell` among the cells around `point`, or `inc.size()`.
+    const auto inc_pos = [&](std::size_t Point, std::int64_t Cell) {
+        const auto first = inc.begin() + static_cast<std::ptrdiff_t>(inc_start[Point]);
+        const auto last = inc.begin() + static_cast<std::ptrdiff_t>(inc_start[Point + 1]);
+        const auto it = std::lower_bound(first, last, Cell);
+        return it != last && *it == Cell ? static_cast<std::size_t>(it - inc.begin()) : inc.size();
+    };
+    // The local dual graph of every point as a union-find over those
+    // positions: two cells sharing an uncut facet are joined at each node
+    // their facets share.
+    std::vector<std::size_t> parent(inc.size());
+    for (std::size_t i = 0; i < parent.size(); ++i)
+        parent[i] = i;
+    const auto find_root = [&](std::size_t I) {
+        while (parent[I] != I) {
+            parent[I] = parent[parent[I]];
+            I = parent[I];
+        }
+        return I;
+    };
+    {
+        std::vector<std::int64_t> nodes_b;
+        for (std::size_t g = 0; g < facets.NumGroups(); ++g) {
+            const std::size_t first = facets.mOwnerAt[g], last = facets.mOwnerAt[g + 1];
+            if (last - first < 2 || cut_group[g])
+                continue;
+            for (std::size_t i = first; i < last; ++i)
+                for (std::size_t j = i + 1; j < last; ++j) {
+                    const SplitFacetOwner& a = facets.mOwners[i];
+                    const SplitFacetOwner& b = facets.mOwners[j];
+                    nodes_b.assign(facets.mFull.begin() + static_cast<std::ptrdiff_t>(b.mFullStart),
+                                   facets.mFull.begin() +
+                                       static_cast<std::ptrdiff_t>(b.mFullStart + b.mFullLen));
+                    std::sort(nodes_b.begin(), nodes_b.end());
+                    for (std::size_t k = 0; k < a.mFullLen; ++k) {
+                        const std::int64_t node = facets.mFull[a.mFullStart + k];
+                        if (!std::binary_search(nodes_b.begin(), nodes_b.end(), node))
+                            continue;
+                        const auto point = static_cast<std::size_t>(node);
+                        const std::size_t pa = inc_pos(point, a.mCell);
+                        const std::size_t pb = inc_pos(point, b.mCell);
+                        if (pa == inc.size() || pb == inc.size())
+                            continue;
+                        const std::size_t ra = find_root(pa), rb = find_root(pb);
+                        if (ra != rb)
+                            parent[std::max(ra, rb)] = std::min(ra, rb);
+                    }
+                }
+        }
     }
 
     // For every original point, label connected incident-cell fans after the
-    // selected facets are removed from the local dual graph.
-    std::vector<std::map<std::int64_t, std::size_t>> component_for_cell(num_points);
-    std::vector<std::size_t> keeper_component(num_points, 0);
-    std::vector<std::map<std::size_t, std::int64_t>> duplicate_for_component(num_points);
+    // selected facets are removed from the local dual graph. The components
+    // are numbered by their smallest cell; the one holding most selected
+    // cells (the first on a tie, the first when none) keeps the point, the
+    // others get duplicates in point then component order.
+    std::vector<std::int64_t> remap_to(inc.size());
+    std::vector<std::uint8_t> has_duplicate(num_points, 0);
     std::vector<std::pair<std::int64_t, std::size_t>> duplicate_sources;
-    for (std::size_t point = 0; point < num_points; ++point) {
-        auto& graph = node_graph[point];
-        std::set<std::int64_t> unseen;
-        for (const auto& [cell, neighbours] : graph) {
-            (void)neighbours;
-            unseen.insert(cell);
-        }
-        std::vector<std::vector<std::int64_t>> components;
-        while (!unseen.empty()) {
-            const std::int64_t seed = *unseen.begin();
-            unseen.erase(unseen.begin());
-            std::vector<std::int64_t> stack{seed}, component;
-            while (!stack.empty()) {
-                const std::int64_t cell = stack.back();
-                stack.pop_back();
-                component.push_back(cell);
-                for (std::int64_t neighbour : graph[cell])
-                    if (unseen.erase(neighbour))
-                        stack.push_back(neighbour);
+    {
+        std::vector<std::size_t> component_of_root, seeds;
+        for (std::size_t point = 0; point < num_points; ++point) {
+            const std::size_t begin = inc_start[point], end = inc_start[point + 1];
+            if (begin == end)
+                continue;
+            component_of_root.assign(end - begin, end - begin);  // by root offset
+            seeds.clear();
+            std::vector<std::size_t> comp(end - begin);
+            std::size_t ncomp = 0;
+            for (std::size_t pos = begin; pos < end; ++pos) {
+                const std::size_t root = find_root(pos) - begin;
+                if (component_of_root[root] == end - begin) {
+                    component_of_root[root] = ncomp++;
+                    seeds.push_back(0);
+                }
+                comp[pos - begin] = component_of_root[root];
+                if (is_seed[static_cast<std::size_t>(inc[pos])])
+                    ++seeds[comp[pos - begin]];
             }
-            std::sort(component.begin(), component.end());
-            components.push_back(std::move(component));
+            std::size_t keeper = 0, best_seed_count = 0;
+            for (std::size_t ci = 0; ci < ncomp; ++ci)
+                if (seeds[ci] > best_seed_count) {
+                    best_seed_count = seeds[ci];
+                    keeper = ci;
+                }
+            std::vector<std::int64_t> new_id(ncomp, static_cast<std::int64_t>(point));
+            for (std::size_t ci = 0; ci < ncomp; ++ci)
+                if (ci != keeper) {
+                    new_id[ci] = static_cast<std::int64_t>(num_points + duplicate_sources.size());
+                    duplicate_sources.push_back({static_cast<std::int64_t>(point), ci});
+                    has_duplicate[point] = 1;
+                }
+            for (std::size_t pos = begin; pos < end; ++pos)
+                remap_to[pos] = new_id[comp[pos - begin]];
         }
-        std::sort(components.begin(), components.end(),
-                  [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
-        if (components.empty())
-            continue;
-        std::size_t keeper = 0;
-        std::size_t best_seed_count = 0;
-        for (std::size_t ci = 0; ci < components.size(); ++ci) {
-            std::size_t seed_count = 0;
-            for (std::int64_t cell : components[ci])
-                if (seed_cells.count(cell))
-                    ++seed_count;
-            if (seed_count > best_seed_count) {
-                best_seed_count = seed_count;
-                keeper = ci;
-            }
-        }
-        keeper_component[point] = keeper;
-        for (std::size_t ci = 0; ci < components.size(); ++ci)
-            for (std::int64_t cell : components[ci])
-                component_for_cell[point][cell] = ci;
-        for (std::size_t ci = 0; ci < components.size(); ++ci)
-            if (ci != keeper) {
-                const std::int64_t new_id =
-                    static_cast<std::int64_t>(num_points + duplicate_sources.size());
-                duplicate_for_component[point][ci] = new_id;
-                duplicate_sources.push_back({static_cast<std::int64_t>(point), ci});
-            }
     }
 
     auto remap_node = [&](std::int64_t Node, std::int64_t Cell) {
         const std::size_t p = static_cast<std::size_t>(Node);
-        const auto comp = component_for_cell[p].find(Cell);
-        if (comp == component_for_cell[p].end())
+        if (!has_duplicate[p])
             return Node;
-        const auto copy = duplicate_for_component[p].find(comp->second);
-        return copy == duplicate_for_component[p].end() ? Node : copy->second;
+        const std::size_t pos = inc_pos(p, Cell);
+        return pos == inc.size() ? Node : remap_to[pos];
     };
 
     std::vector<CohesiveCell> cohesive;
@@ -1670,12 +1806,13 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
                 selected_nodes.begin() +
                     if_facet_corner_count(selected_type, selected_nodes.size()));
             std::sort(key.begin(), key.end());
-            const auto& owners = facets.at(key);
-            for (const SplitFacetOwner& other : owners) {
-                if (other.mFacet.mCell == cell)
+            const std::size_t group = facets.Find(key);
+            for (std::size_t oi = facets.mOwnerAt[group]; oi < facets.mOwnerAt[group + 1]; ++oi) {
+                const SplitFacetOwner& other = facets.mOwners[oi];
+                if (other.mCell == cell)
                     continue;
                 auto owner_a = std::make_pair(cell, local_facet);
-                auto owner_b = std::make_pair(other.mFacet.mCell, other.mFacet.mFacet);
+                auto owner_b = std::make_pair(other.mCell, other.mFacet);
                 if (owner_b < owner_a)
                     std::swap(owner_a, owner_b);
                 if (!cohesive_interfaces.insert({owner_a, owner_b}).second)
@@ -1688,10 +1825,11 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
                         "quad facets");
                 std::vector<std::int64_t> a(selected_nodes.begin(),
                                             selected_nodes.begin() + corners);
+                const auto other_full =
+                    facets.mFull.begin() + static_cast<std::ptrdiff_t>(other.mFullStart);
                 std::vector<std::int64_t> other_corners(
-                    other.mFullNodes.begin(),
-                    other.mFullNodes.begin() +
-                        if_facet_corner_count(other.mType, other.mFullNodes.size()));
+                    other_full, other_full + static_cast<std::ptrdiff_t>(if_facet_corner_count(
+                                                 other.mType, other.mFullLen)));
                 if (other_corners.size() != corners)
                     throw std::invalid_argument(
                         "meshio++: split_interface: matched facet arities differ");
@@ -1708,7 +1846,7 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
                 for (std::int64_t& node : a)
                     node = remap_node(node, cell);
                 for (std::int64_t& node : b)
-                    node = remap_node(node, other.mFacet.mCell);
+                    node = remap_node(node, other.mCell);
                 const std::string type = corners == 2   ? "line"
                                          : corners == 3 ? "wedge"
                                                         : "hexahedron";
