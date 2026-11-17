@@ -1547,6 +1547,79 @@ Roadmap 5.17.2. The `StuffCut` callback of `octree_mesh_stuffed_lattice` (`octre
 
 `octree_mesh_tet` falls from 11.04 G to 9.52 G instructions at tier S (−13.8%, whole process) with the digest unchanged (`a68e84c5009cd938`); at tier M the digests of `octree_mesh_tet`, `octree_mesh_hex`, `octree_mesh_hex_graded` and `octree_mesh_castellated` are unchanged and the wall time is within the noise of one run (4.08 s against 3.93 s), so the gain is where the skin is a larger share of the cells. `tetrahedralize_octree` (8.19 G) and the octree goldens do not move.
 
+### Containers: a study
+
+Roadmap 5.22.1. `src/cpp/benchmark/bench_containers.cpp` (built with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON` as `meshioplusplus_bench_containers`; `tools/bench_containers.sh BINARY [OUT.csv]` runs each workload and container in a process of its own) times the core's workloads on the standard container and on the candidates, with a checksum the containers of a workload must share: the script fails on a mismatch. GCC 13.3, `-O3`, Release, a 2.1 GHz Xeon, 4 cores, one thread, a warmup and the median of five runs. The resident-set column is the process's peak, which includes the workload's input (about 5 MB at n = 10,000, 21 to 23 MB at 160,000 and 62 to 76 MB at 750,000 before any container), so only the differences between rows of one workload mean something. Clang is installed here but MSVC and Emscripten are not, so those columns of 5.22.1 were not run, and `ankerl::unordered_dense` is not measured (no vendored copy, and no download was assumed): `flat_map` is the weld's open-addressing table made generic (linear probing, one array, a load factor of at most one half), `id_index_map` a vector indexed by `id - min` when the ids are dense and that table otherwise.
+
+**`edge_count`** — uses counted per undirected edge of a triangulated grid of n points. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `edge_use_table` | 1.45 (7) | 52.73 (67) | 612.84 (293) |
+| `flat_map_packed` | 0.90 (7) | 42.39 (55) | 213.97 (166) |
+| `std_map_pair` | 2.89 (6) | 94.18 (40) | 580.01 (176) |
+| `std_unordered_map_packed` | 2.42 (5) | 48.37 (34) | 374.27 (129) |
+
+**`flags`** — a flag per entry, a random half set, all tested. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `vector_bool` | 0.02 (5) | 0.37 (23) | 1.61 (62) |
+| `vector_uint8` | 0.01 (5) | 0.15 (23) | 0.79 (62) |
+
+**`idmap_dense`** — a reader's id to index, ids 1..n in file order, build then 8n lookups. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `flat_map` | 0.53 (5) | 13.36 (27) | 113.74 (103) |
+| `id_index_map` | 0.19 (5) | 6.62 (28) | 49.34 (109) |
+| `std_map` | 11.43 (5) | 711.40 (24) | 5880.23 (101) |
+| `std_unordered_map` | 0.85 (5) | 23.53 (21) | 129.85 (94) |
+| `std_unordered_map_reserved` | 0.80 (5) | 23.68 (21) | 102.39 (84) |
+
+**`idmap_sparse`** — the same with ids `7i + 3` shuffled. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `flat_map` | 0.55 (5) | 14.74 (27) | 109.63 (121) |
+| `id_index_map` | 0.66 (5) | 14.63 (27) | 116.83 (121) |
+| `std_map` | 13.24 (5) | 489.95 (25) | 6836.55 (101) |
+| `std_unordered_map` | 0.97 (5) | 21.07 (21) | 179.61 (94) |
+| `std_unordered_map_reserved` | 0.53 (5) | 14.99 (21) | 99.89 (84) |
+
+**`ordered_iteration`** — n unique keys inserted in random order, then walked in key order. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `sorted_vector` | 0.64 (5) | 11.50 (23) | 60.88 (62) |
+| `std_map` | 2.31 (5) | 85.59 (24) | 741.21 (80) |
+
+**`point_key`** — the weld's 3-integer grid cell, first-seen numbering. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `flat_map` | 0.34 (5) | 8.97 (36) | 87.06 (108) |
+| `std_unordered_map` | 0.66 (5) | 19.92 (23) | 181.75 (77) |
+
+**`string_key`** — the twelve cell-type names, n lookups. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `sorted_array` | 0.36 (5) | 5.56 (23) | 28.34 (76) |
+| `std_map` | 0.48 (5) | 7.48 (23) | 33.91 (76) |
+| `std_unordered_map` | 0.20 (5) | 3.73 (23) | 17.73 (76) |
+
+What it says, for the decision of 5.22.3 and not as the decision:
+
+- **Id maps.** `std::map` is 15 to 60 times slower than the hash tables at 750,000 ids (5.9 s against 0.1 s), so any reader that keeps one is the first thing to move. For dense ids the dense `id_index_map` is 2.6 times faster than `std::unordered_map` at 750,000 (49 ms against 130 ms) and the flat table 1.1 times; for sparse shuffled ids the flat table and `std::unordered_map` with `reserve` are the same (110 ms and 100 ms) against 180 ms without it, so the reservation is most of the gain there and costs a line.
+- **Edge-pair counts.** The flat table with a packed key is the fastest at 750,000 (214 ms against 374 for `std::unordered_map` and 580 for `std::map`), and `EdgeUseTable`, a sort of every use, is the slowest (613 ms, 293 MB): it pays for keeping the uses of an edge in insertion order, which a count does not need.
+- **Point keys** (the weld's table): the flat table is twice as fast as `std::unordered_map` (87 ms against 182).
+- **Build once, then iterate in order:** a sorted vector is 12 times faster than `std::map` (61 ms against 741) and uses 18 MB less.
+- **`std::vector<bool>`** is twice as slow as `std::vector<std::uint8_t>` to set and test, and takes the same space at these sizes (the 62 MB is the input).
+- **Small string tables** (twelve entries): `std::unordered_map` is the fastest, ahead of the sorted array, so the cell-type tables are left alone.
+
+Not done: 5.22.2's rows. The harness's own writers number points and elements from 1 in file order (`gmsh.cpp`, `nastran.cpp` `GRID` and `abaqus.cpp`), so the reader rows reach only the dense path; rows with sparse and shuffled ids need inputs rewritten by hand and are listed in [roadmap 5.22](./roadmap.md#container-study).
+
 ## Landing a performance change
 
 A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).
