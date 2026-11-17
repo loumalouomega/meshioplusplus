@@ -1502,6 +1502,21 @@ Roadmap 5.18's first slice. `clean` staged a polyhedron block as a vector per fa
 
 Measured (SEQ, NATIVE mesh backend, callgrind over the whole process, so the harness setup and the warmup run are included and only the differences compare): `clean_ragged` 481 M to 364 M, `merge_ragged` 213 M to 111 M, with `clean` (97.7 M to 97.9 M) and `merge` (58.8 M to 58.1 M) unchanged. At tier M, `clean_ragged` takes 0.25 s where it took 0.51 s (one run). The digests of `clean`, `clean_weld`, `merge`, `clean_ragged` and `merge_ragged` at tiers S and M equal those of the code before. `benchmark/instructions_S.csv` is not re-recorded here: it is recorded on CI's toolchain, and the two ragged rows only fall below it.
 
+### Text readers still on `operator>>`
+
+Roadmap 5.21's audit. Almost every `>>` left under `src/cpp/src/formats/` extracts from `detail::TextStream` (`detail/text_cursor.hpp`), which is the cursor's own parser behind a stream interface: the same values and fail state as `std::istringstream` in the classic locale, with no stream and no locale. Those sites are already on the cursor and were left as they are. What was left to find was a real `std::istream`, or a string, stream and vector built per row.
+
+| Site | Kind | Outcome |
+| --- | --- | --- |
+| `gmsh.cpp`, `gmsh_add_ghost_cells` (`$GhostElements` body) | per-entry loop, one entry per ghost element, on a copied string and a `std::istringstream` | moved to `detail::TextStream` over the section's bytes, with no copy |
+| `gmsh.cpp`, MSH 2.2 ASCII elements, sequential fallback | a string, a `TextStream` and a vector per element | left: `gmsh22_parallel_elements` takes every input worth chunking, so the loop only runs below `chunked_parse_worthwhile` or on a line the parallel parse rejects, where the per-line work is its error path |
+| `gmsh.cpp` lines 369, 1979, 2048, 3401; `off.cpp` counts line; `ply.cpp` header | header | left |
+| `off.cpp`, `obj.cpp`, `ply.cpp`, `vtk_read.cpp`, `ip.cpp`, `xdmf.cpp`, `ensight.cpp`, `openfoam.cpp` value and index loops | `TextStream` | already on the cursor's parsers |
+| `openfoam.cpp` `foam_field_class_from` | `std::istream` over the first 4 KiB | header |
+| `ensight.cpp` scratch case file in the series writer | `std::ifstream` over a few lines the writer just wrote | header |
+
+Output is unchanged: the tests of the Gmsh reader pass, and the conversion is the one `TextStream` documents.
+
 ## Landing a performance change
 
 A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).

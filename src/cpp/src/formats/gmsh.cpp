@@ -115,7 +115,8 @@ const std::vector<int>& meshio_to_gmsh_perm(const std::string& rT) {
 }
 
 std::string gmsh_trim(const std::string& rS) {
-    return meshioplusplus::detail::TextUtils::Trim(rS, meshioplusplus::detail::TextUtils::kClassicSpace);
+    return meshioplusplus::detail::TextUtils::Trim(
+        rS, meshioplusplus::detail::TextUtils::kClassicSpace);
 }
 
 struct GmshCursor : detail::TextCursor {
@@ -432,8 +433,11 @@ void gmsh_add_ghost_cells(Mesh& rMesh, const Blocks& rBlocks, const ReadOptions&
         !rOpts.WantsArray(detail::kPartitionGhost))
         return;
     const NDArray& section = rMesh.FieldData(key);
-    const std::string body(reinterpret_cast<const char*>(section.Data()), section.Size());
-    auto in = detail::make_classic_istringstream(body);
+    // Read in place through the view-backed stream: a ghost list has an
+    // entry per ghost element, so the old copy and `istringstream` per
+    // section cost a pass and a locale-aware parse per value (roadmap 5.21).
+    detail::TextStream in(
+        std::string_view(reinterpret_cast<const char*>(section.Data()), section.Size()));
     std::int64_t count = 0;
     if (!(in >> count) || count < 0)
         return;

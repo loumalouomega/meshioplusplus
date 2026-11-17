@@ -832,12 +832,6 @@ The [sequence driver](./sequences.md) already keeps one mesh alive at a time (tw
 
 The speed half of 6.2, landing with it: the sites it lists count an undirected edge's uses in a `std::map` keyed by a pair, one tree node per edge, in operations that otherwise run on flat arrays. `detail/slot_runs.hpp` already builds the facet and edge table by sorting, in parallel. Probe: the rows of the operations `EdgeUseTable` serves (`boundary_layer`, `tetrahedralize`, `remesh`, and the `fit_cad` and `mesh_cad_surface_*` rows) fall or stay inside the gate, digests unchanged. **S**
 
-### 5.21 Text paths still on stream extraction {#stream-extraction}
-
-- **State today.** The readers moved to `detail/text_cursor.hpp` batch by batch ([benchmarks](./benchmarks.md#the-stl-ascii-reader-on-the-text-cursor) and the sections after it). What is left of `operator>>` under `src/cpp/src/formats/`: `gmsh.cpp` (eight sites; the MSH 2.2 ASCII elements, when `gmsh22_parallel_elements` declines, build a `std::string`, a `detail::TextStream` and a vector per element, lines 965 to 973), `off.cpp`, `ensight.cpp` and `openfoam.cpp` (three each), `ply.cpp`, `obj.cpp`, `vtk_read.cpp`, `xdmf.cpp` and `ip.cpp` (two each).
-- **Steps.** *Verify first* which of them sit in a per-row loop and which only read a header: a header is left alone. For a per-row loop, name the input that takes it (for Gmsh, what makes the parallel parse decline) and add a row with that input before changing it; then the cursor's token readers in place of the stream, as the earlier batches did.
-- **Done when.** Each site is listed in [benchmarks](./benchmarks.md) as a header or as a loop with its row, and the loops are on the cursor. **S, verify first**
-
 ### 5.22 Containers that outperform the standard ones: a study {#container-study}
 
 Whether flat maps and other purpose-built containers should replace the standard library's node-based ones in the core, decided by measurement on the core's own workloads and once for all of it, so that 5.19 and 5.20 do not each pick a table. **M, measure first**
