@@ -1517,6 +1517,10 @@ Roadmap 5.21's audit. Almost every `>>` left under `src/cpp/src/formats/` extrac
 
 Output is unchanged: the tests of the Gmsh reader pass, and the conversion is the one `TextStream` documents.
 
+### Edge uses as sorted runs
+
+Roadmap 5.20. The operations that count an undirected edge's uses (`boundary_layer`, `tetrahedralize`, `remesh`, `render`, `fit_cad` and the feature-fit helpers) already do so through `detail::EdgeUseTable`, a sorted flat table with no node per edge. The one site left on a `std::map` keyed by a vertex pair for this purpose was the boundary-edge count of `thicken` and `hollow` (`offset_surface.cpp`), now on the table. Output is unchanged (digests of the `thicken` row equal at tiers S and M) and the row is flat: 79.67 M to 79.51 M instructions at tier S (SEQ, callgrind over the whole process), so the map was not what that row spends its time in. The other pair-keyed maps (`segment`, `refine_patches`, `quad_layout`, `mesh_cad`) are not edge-use counts and belong to the container profile of roadmap 5.19.
+
 ## Landing a performance change
 
 A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).

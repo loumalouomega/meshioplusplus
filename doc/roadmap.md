@@ -828,10 +828,6 @@ The [sequence driver](./sequences.md) already keeps one mesh alive at a time (tw
 - **Steps.** *Verify first*, with a profile of `mesh_cad_surface_quads` and `fit_cad_network`: the share of the allocator and of `std::_Rb_tree` under the maps, and of the indirect calls. Where a map is built once and then only read, a sorted vector of pairs searched with `std::lower_bound` iterates in the same order (`EdgeUseTable`, shared since §6, for the edge-keyed ones); where the order is never read, `std::unordered_map` with [`HashUtils`](./common_utilities.md)'s key hash. The callbacks become template parameters of the refinement loop, or a non-owning function reference, only if the profile shows the indirection.
 - **Done when.** The profile is recorded, and either the rows fall with the `fit_cad` goldens and the digests unchanged, or the containers are shown to be outside the hot path and the item closes into the non-goals. **M, verify first**
 
-### 5.20 Edge uses as sorted runs {#edge-use-runs}
-
-The speed half of 6.2, landing with it: the sites it lists count an undirected edge's uses in a `std::map` keyed by a pair, one tree node per edge, in operations that otherwise run on flat arrays. `detail/slot_runs.hpp` already builds the facet and edge table by sorting, in parallel. Probe: the rows of the operations `EdgeUseTable` serves (`boundary_layer`, `tetrahedralize`, `remesh`, and the `fit_cad` and `mesh_cad_surface_*` rows) fall or stay inside the gate, digests unchanged. **S**
-
 ### 5.22 Containers that outperform the standard ones: a study {#container-study}
 
 Whether flat maps and other purpose-built containers should replace the standard library's node-based ones in the core, decided by measurement on the core's own workloads and once for all of it, so that 5.19 and 5.20 do not each pick a table. **M, measure first**
