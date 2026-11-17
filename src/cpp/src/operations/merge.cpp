@@ -347,13 +347,13 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
 
     // --- build each output block's remapped connectivity + source ids -------
     struct BuiltBlock {
-        NDArray conn;                                                   // rectangular
+        NDArray conn;  // rectangular
         // Ragged blocks (roadmap 5.18), one CSR per block: cell p's nodes are
         // `pflat[pnode[p] .. pnode[p+1])`, its rows (polygon: one; polyhedron:
         // its faces) `prow[pcell[p] .. pcell[p+1])` into `pflat`.
         std::vector<std::int64_t> pflat;
         std::vector<std::uint64_t> prow, pcell, pnode;
-        std::vector<std::int64_t> source_ids;                           // pre-dedup, size pre_count
+        std::vector<std::int64_t> source_ids;    // pre-dedup, size pre_count
         std::vector<std::int64_t> finalpos;      // pre-local -> final-local or -1
         std::vector<std::int64_t> final_to_pre;  // final-local -> kept pre-local
         std::size_t final_count = 0;
@@ -463,9 +463,9 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                 std::int64_t* key = keys.data() + offset[p];
                 std::int64_t* out_k = key;
                 if (ob.poly || ob.ragged) {
-                    out_k = std::copy(bb.pflat.begin() + static_cast<std::ptrdiff_t>(bb.pnode[p]),
-                                      bb.pflat.begin() + static_cast<std::ptrdiff_t>(bb.pnode[p + 1]),
-                                      out_k);
+                    out_k = std::copy(
+                        bb.pflat.begin() + static_cast<std::ptrdiff_t>(bb.pnode[p]),
+                        bb.pflat.begin() + static_cast<std::ptrdiff_t>(bb.pnode[p + 1]), out_k);
                 } else {
                     out_k = std::copy(rect + p * ob.npc, rect + (p + 1) * ob.npc, out_k);
                 }
@@ -511,8 +511,10 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
                 nnodes[f] = bb.pnode[p + 1] - bb.pnode[p];
             });
             std::vector<std::uint64_t> face_at(fc + 1), node_at(fc + 1);
-            face_at[fc] = parallel_exclusive_scan(nfaces.data(), fc, face_at.data(), std::uint64_t{0});
-            node_at[fc] = parallel_exclusive_scan(nnodes.data(), fc, node_at.data(), std::uint64_t{0});
+            face_at[fc] =
+                parallel_exclusive_scan(nfaces.data(), fc, face_at.data(), std::uint64_t{0});
+            node_at[fc] =
+                parallel_exclusive_scan(nnodes.data(), fc, node_at.data(), std::uint64_t{0});
             std::vector<std::int64_t> flat(node_at[fc]);
             std::vector<std::int64_t> rows(face_at[fc] + 1, static_cast<std::int64_t>(node_at[fc]));
             std::vector<std::int64_t> faces(ob.poly ? fc + 1 : 0, 0);
@@ -529,8 +531,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             });
             if (ob.poly) {
                 faces[fc] = static_cast<std::int64_t>(face_at[fc]);
-                out.AddPolyhedronBlock(ob.type, std::move(flat), std::move(rows),
-                                       std::move(faces));
+                out.AddPolyhedronBlock(ob.type, std::move(flat), std::move(rows), std::move(faces));
             } else {
                 out.AddPolygonBlock(ob.type, std::move(flat), std::move(rows));
             }

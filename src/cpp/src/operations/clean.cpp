@@ -118,7 +118,8 @@ struct CleanStaged {
     std::vector<std::uint64_t> mNode;  // cells + 1, each cell's first node in mFlat
 };
 
-CleanStaged clean_stage_ragged(const Mesh::CellView& rCells, const std::vector<std::int64_t>& rRep) {
+CleanStaged clean_stage_ragged(const Mesh::CellView& rCells,
+                               const std::vector<std::int64_t>& rRep) {
     CleanStaged st;
     const std::size_t nc = rCells.NumCells();
     const bool poly = rCells.IsPolyhedron();
@@ -194,11 +195,11 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
         std::string type;
         int kind;  // 0 rect, 1 polygon, 2 polyhedron
         std::size_t npc = 0;
-        std::vector<std::int64_t> rect_conn;                        // kind 0, flat (kept*npc)
-        std::vector<std::int64_t> poly_flat;                        // kinds 1 and 2: CSR nodes
-        std::vector<std::int64_t> poly_rows{0};                     // row (face) offsets
-        std::vector<std::int64_t> poly_faces{0};                    // kind 2: cell offsets
-        std::vector<std::int64_t> kept_cells;                       // old local indices kept
+        std::vector<std::int64_t> rect_conn;      // kind 0, flat (kept*npc)
+        std::vector<std::int64_t> poly_flat;      // kinds 1 and 2: CSR nodes
+        std::vector<std::int64_t> poly_rows{0};   // row (face) offsets
+        std::vector<std::int64_t> poly_faces{0};  // kind 2: cell offsets
+        std::vector<std::int64_t> kept_cells;     // old local indices kept
     };
     std::vector<BlockOut> blocks;
     std::vector<char> rep_used(static_cast<std::size_t>(W), 0);
@@ -392,8 +393,8 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     static thread_local std::vector<Vec3> coords;
                     coords.resize(sz);
                     for (std::size_t k = 0; k < sz; ++k)
-                        coords[k] = detail::read_point(points, dim,
-                                                       rep_source[static_cast<std::size_t>(row[k])]);
+                        coords[k] = detail::read_point(
+                            points, dim, rep_source[static_cast<std::size_t>(row[k])]);
                     if (!(detail::polygon_area(coords.data(), coords.size()) > eps)) {
                         degenerate[c] = 1;
                         return;
