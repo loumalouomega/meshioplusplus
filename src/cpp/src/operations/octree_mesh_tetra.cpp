@@ -153,7 +153,7 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rS, const OctreeMeshOptions& r
             // (coplanar with its triangles, which the segment test skips), so
             // every point of it is on the interface. Take the middle, where
             // bisection would chase the noise of the winding number on the
-            // plane with 40 evaluations of it (roadmap 5.17.2).
+            // plane with 40 evaluations of it (benchmarks: "Octree cut points on the skin").
             if (hits.empty()) {
                 const std::vector<Vec3> ends{a, b};
                 const auto closest = query_closest_points(rS.mQuery, ends);
