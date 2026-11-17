@@ -1533,6 +1533,10 @@ Roadmap 5.19's profile: callgrind at tier S (SEQ, NATIVE mesh backend, one run, 
 
 The maps are not what these rows spend their time in, so none of them changed and no output moved. The allocator's share is spread over vectors (the callers resolve to the PLT and are not attributed): the rows are dominated by the B-spline evaluation and the matching, which are arithmetic. 5.19 is closed into the [non-goals](./roadmap.md#non-goals-and-decisions-taken) with these numbers; a row where a map shows above 5% reopens it.
 
+### Profiling `split_interface`
+
+Roadmap 5.18's remainder. The row `split_interface` (the upper half's facets on the planar interface of `with_halves`, split with cohesive cells; tier S: 10,368 tetrahedra) was added to `bench_ops.cpp`; its digest is `3f8feba30edede79`. Callgrind (SEQ, one run, whole process): 829 M instructions, of which `split_interface` takes 89% inclusive, `if_split_facets` 31%, the allocator (`malloc`, `free` and their consolidation) about 40%, `facet_nodes` 4.7% and `_Rb_tree_insert_and_rebalance` 3.3%. `if_mesh_cell_nodes`, the per-cell vector copy the roadmap listed, is inlined and is one small allocation per cell, about 10,000 in all: under 0.5% of the row, so it is not changed. The cost is the facet map and the point graph; [roadmap 5.18](./roadmap.md#ragged-clean-merge) is rewritten around them. `benchmark/instructions_S.csv` has no row for it yet: it is recorded on CI's toolchain with the change that moves it.
+
 ## Landing a performance change
 
 A performance change starts from a measured or code-verified slowdown in a path a user hits, with the shape of the fix named, and shows its before and after on the harness: `benchmark/bench.py` for I/O, `tools/bench_ops.sh` for operations, `benchmark/viewer_surface.mjs` for the browser viewer's render path. The [Clang-Tidy performance audit](#clang-tidy-performance-audit) finds candidates; its findings are advisory and must pass the same gates. The roadmap's performance section closed in October 2026; what was measured and not taken is recorded with its [non-goals](./roadmap.md#non-goals-and-decisions-taken).

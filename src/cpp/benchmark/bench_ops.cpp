@@ -1174,6 +1174,28 @@ int main(int argc, char** argv) {
                 pD->Array(r.mSideB.mEntries);
             }
         });
+        // The upper half's facets on the planar interface, as a Side region,
+        // split with cohesive cells (roadmap 5.18: the staging of
+        // `split_interface`).
+        {
+            mio::FindInterfaceOptions fo;
+            fo.mMode = mio::InterfaceMode::Proximity;
+            auto found = mio::find_interface(with_halves, mio::RegionSelector{"lower"},
+                                             mio::RegionSelector{"upper"}, fo);
+            Mesh cut_mesh = bench_ops_moved(with_halves, [](std::size_t, double*) {});
+            found.mSideA.mName = "cut";
+            cut_mesh.AddRegion(std::move(found.mSideA));
+            row("split_interface", [&](MeshDigest* pD) {
+                mio::SplitInterfaceOptions o;
+                o.mAddCohesive = true;
+                auto r = mio::split_interface(cut_mesh, mio::RegionSelector{"cut"}, o);
+                of(pD, r.mMesh);
+                if (pD) {
+                    pD->U64(static_cast<std::uint64_t>(r.mNumDuplicatedPoints));
+                    pD->U64(static_cast<std::uint64_t>(r.mNumCohesiveCells));
+                }
+            });
+        }
         // The cube's x = 0 and x = 1 faces as Point regions, matched by the
         // unit translation (roadmap 5.1.2): (n+1)^2 node pairs.
         const Mesh with_faces = [&] {
