@@ -91590,8 +91590,7 @@ void em_run(const std::string& rName, const std::vector<std::string>& rArgv,
  * points the mesher added. `mBoundaryPreserved` holds when every request
  * point came back and the tetrahedra's boundary is the request's triangles.
  */
-TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
-                                const std::vector<Vec3>& rOut,
+TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest, const std::vector<Vec3>& rOut,
                                 const std::vector<std::array<std::int64_t, 4>>& rTets) {
     const std::size_t n_in = rRequest.mPoints.size();
     const double diag =
@@ -103863,8 +103862,7 @@ std::array<Expansion, 3> mb_normal(const Vec3& rA, const Vec3& rB, const Vec3& r
 
 /// The edge `pq` meets the plane of `abc` (the caller has checked that `p`
 /// and `q` lie strictly on opposite sides).
-MbPoint mb_lpi(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB,
-               const Vec3& rC) {
+MbPoint mb_lpi(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     const std::array<Expansion, 3> n = mb_normal(rA, rB, rC);
     Expansion dp, dq;
     for (std::size_t k = 0; k < 3; ++k) {
@@ -104168,8 +104166,8 @@ private:
 
 /// Whether the segment pq crosses triangle abc properly (exact); `rDegenerate`
 /// is set when it touches an edge, a vertex or the plane at an end.
-bool mb_ray_crosses(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB,
-                    const Vec3& rC, bool& rDegenerate) {
+bool mb_ray_crosses(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB, const Vec3& rC,
+                    bool& rDegenerate) {
     const int s1 = mb_sign(orient3d(rA.data(), rB.data(), rC.data(), rP.data()));
     const int s2 = mb_sign(orient3d(rA.data(), rB.data(), rC.data(), rQ.data()));
     if (s1 == s2 && s1 != 0)
@@ -104242,7 +104240,7 @@ bool mb_inside(const Vec3& rP, const MbSurface& rS, const Vec3& rLo, const Vec3&
 /// The pieces of one surface after the arrangement, and their patches.
 struct MbPieces {
     std::vector<MbTri> mT;             ///< global point ids
-    std::vector<Vec3> mNormal;        ///< the parent triangle's normal, rounded
+    std::vector<Vec3> mNormal;         ///< the parent triangle's normal, rounded
     std::vector<std::int64_t> mPatch;  ///< patch of each piece
     std::int64_t mNumPatches = 0;
 };
@@ -104713,8 +104711,7 @@ std::array<double, 2> mcr_eigen(const Vec3& rSu, const Vec3& rSv, double L11, do
 
 /// `J D`, the surface's derivative along the disc from its derivative along
 /// the parameters and `D = d(u, v)/d(p, q)`.
-std::array<Vec3, 2> mcr_chain(const Vec3& rSu, const Vec3& rSv,
-                               const std::array<double, 4>& rD) {
+std::array<Vec3, 2> mcr_chain(const Vec3& rSu, const Vec3& rSv, const std::array<double, 4>& rD) {
     std::array<Vec3, 2> out{};
     for (std::size_t i = 0; i < 3; ++i) {
         out[0][i] = rSu[i] * rD[0] + rSv[i] * rD[2];
@@ -246817,8 +246814,8 @@ struct CoordFrame {
 
 // The coordinates of position @p rP, and the local basis (rows) there; true
 // when the radial direction was undefined and e1 stood in.
-bool coord_local(const CoordFrame& rF, CoordinateSystem System, const Vec3& rP,
-                 Vec3& rCoords, std::array<Vec3, 3>& rBasis) {
+bool coord_local(const CoordFrame& rF, CoordinateSystem System, const Vec3& rP, Vec3& rCoords,
+                 std::array<Vec3, 3>& rBasis) {
     const Vec3 d{rP[0] - rF.mOrigin[0], rP[1] - rF.mOrigin[1], rP[2] - rF.mOrigin[2]};
     const double z = detail::vec3_dot(d, rF.mAxis);
     const Vec3 rho{d[0] - z * rF.mAxis[0], d[1] - z * rF.mAxis[1], d[2] - z * rF.mAxis[2]};
@@ -246839,17 +246836,16 @@ bool coord_local(const CoordFrame& rF, CoordinateSystem System, const Vec3& rP,
     const double polar = at_centre ? 0.0 : std::atan2(r_cyl, z);
     const double c = std::cos(polar), s = std::sin(polar);
     const Vec3 e_r{s * e_rho[0] + c * rF.mAxis[0], s * e_rho[1] + c * rF.mAxis[1],
-                       s * e_rho[2] + c * rF.mAxis[2]};
+                   s * e_rho[2] + c * rF.mAxis[2]};
     const Vec3 e_theta{c * e_rho[0] - s * rF.mAxis[0], c * e_rho[1] - s * rF.mAxis[1],
-                           c * e_rho[2] - s * rF.mAxis[2]};
+                       c * e_rho[2] - s * rF.mAxis[2]};
     rCoords = {r, polar, angle};
     rBasis = {e_r, e_theta, e_phi};
     return on_axis || at_centre;
 }
 
 // v' = R v (forward) or R^T v (inverse), R's rows the basis.
-void coord_vector(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn,
-                  double* pOut) {
+void coord_vector(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn, double* pOut) {
     for (std::size_t i = 0; i < 3; ++i) {
         double acc = 0.0;
         for (std::size_t k = 0; k < 3; ++k)
@@ -246859,8 +246855,7 @@ void coord_vector(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn
 }
 
 // T' = R T R^T (forward) or R^T T R (inverse), row-major 3x3.
-void coord_tensor(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn,
-                  double* pOut) {
+void coord_tensor(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn, double* pOut) {
     const auto m = [&](std::size_t i, std::size_t k) { return Inverse ? rB[k][i] : rB[i][k]; };
     double tmp[9];
     for (std::size_t i = 0; i < 3; ++i)
@@ -246930,12 +246925,10 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
     frame.mAxis = coord_unit(rOptions.mAxis);
     frame.mOrigin = rOptions.mOrigin;
     // e1: the reference projected off the axis, or x / y when it lies along it.
-    for (const Vec3& candidate :
-         {rOptions.mReference, Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0}}) {
+    for (const Vec3& candidate : {rOptions.mReference, Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0}}) {
         const double along = detail::vec3_dot(candidate, frame.mAxis);
-        const Vec3 off{candidate[0] - along * frame.mAxis[0],
-                           candidate[1] - along * frame.mAxis[1],
-                           candidate[2] - along * frame.mAxis[2]};
+        const Vec3 off{candidate[0] - along * frame.mAxis[0], candidate[1] - along * frame.mAxis[1],
+                       candidate[2] - along * frame.mAxis[2]};
         const double len = std::sqrt(detail::vec3_dot(off, off));
         const double clen = std::sqrt(detail::vec3_dot(candidate, candidate));
         if (len > 1e-9 * clen) {
@@ -247016,7 +247009,7 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
             for (const auto cb : rMesh.CellRange()) {
                 const std::size_t count = cb.NumCells();
                 const std::vector<Vec3> slice(positions.begin() + base,
-                                                  positions.begin() + base + count);
+                                              positions.begin() + base + count);
                 blocks.push_back(
                     coord_convert_array(rMesh.CellData(name, block), name, slice, frame, rOptions));
                 base += count;
@@ -259392,8 +259385,7 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         const Vec3& p0 = xyz[t.mNodes[0]];
         const Vec3& p1 = xyz[t.mNodes[1]];
         const Vec3& p2 = xyz[t.mNodes[2]];
-        const Vec3 normal =
-            detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
+        const Vec3 normal = detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
         const double area2 = t.mDoubleArea;
         Vec3 unit_n{normal[0] / area2, normal[1] / area2, normal[2] / area2};
         // grad u = sum_i u_i (N x e_i) / (2 A), e_i the edge opposite corner i,
@@ -260984,8 +260976,8 @@ std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<Vec3>& rP
         const double* b = rP[static_cast<std::size_t>(first.mV[1])].data();
         const double* c = rP[static_cast<std::size_t>(first.mV[2])].data();
         const Vec3 n{(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
-                        (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
-                        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])};
+                     (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+                     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])};
         std::size_t k = 0;
         for (std::size_t j = 1; j < 3; ++j)
             if (std::abs(n[j]) > std::abs(n[k]))
@@ -264732,8 +264724,8 @@ namespace meshioplusplus {
 
 namespace {
 
-using detail::Vec3;
 using detail::JsonValue;
+using detail::Vec3;
 
 constexpr const char* kMsPrefix = "meshio++: measure: ";
 constexpr double kMsPi = 3.14159265358979323846;
@@ -274187,7 +274179,7 @@ double mph_simplex_measure(const std::vector<Vec3>& rXyz, const std::int64_t* pN
         return det > 0.0 ? 0.5 * std::sqrt(det) : 0.0;
     }
     const Vec3 x{e[1][1] * e[2][2] - e[1][2] * e[2][1], e[1][2] * e[2][0] - e[1][0] * e[2][2],
-                   e[1][0] * e[2][1] - e[1][1] * e[2][0]};
+                 e[1][0] * e[2][1] - e[1][1] * e[2][0]};
     return std::abs(detail::vec3_dot(e[0], x)) / 6.0;
 }
 
@@ -286459,7 +286451,7 @@ bool ptn_fit(const std::vector<Vec3>& rP, std::size_t Self, const std::int64_t* 
     const Vec3 r1{t[3], t[1] - l[0], t[4]};
     const Vec3 r2{t[5], t[4], t[2] - l[0]};
     const std::array<Vec3, 3> cand{detail::vec3_cross(r0, r1), detail::vec3_cross(r0, r2),
-                                     detail::vec3_cross(r1, r2)};
+                                   detail::vec3_cross(r1, r2)};
     std::size_t best = 0;
     for (std::size_t j = 1; j < 3; ++j)
         if (detail::vec3_dot(cand[j], cand[j]) > detail::vec3_dot(cand[best], cand[best]))
@@ -286550,7 +286542,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
     if (rOptions.mOrientation == NormalOrientation::Viewpoint) {
         for (std::size_t i = 0; i < n; ++i) {
             const Vec3 to{rOptions.mViewpoint[0] - p[i][0], rOptions.mViewpoint[1] - p[i][1],
-                            rOptions.mViewpoint[2] - p[i][2]};
+                          rOptions.mViewpoint[2] - p[i][2]};
             if (ok[i] && detail::vec3_dot(normal[i], to) < 0.0)
                 normal[i] = {-normal[i][0], -normal[i][1], -normal[i][2]};
         }
@@ -291627,9 +291619,8 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
     const auto node_pos = [&](std::int64_t V) {
         const std::int64_t i = V % ndims[0], j = (V / ndims[0]) % ndims[1],
                            k = V / (ndims[0] * ndims[1]);
-        return Vec3{origin[0] + static_cast<double>(i) * h,
-                      origin[1] + static_cast<double>(j) * h,
-                      origin[2] + static_cast<double>(k) * h};
+        return Vec3{origin[0] + static_cast<double>(i) * h, origin[1] + static_cast<double>(j) * h,
+                    origin[2] + static_cast<double>(k) * h};
     };
 
     // The field at each node, or undefined.
@@ -294830,9 +294821,9 @@ void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, Vec3& rT) {
     std::array<double, 6> g{};
     for (std::size_t i = 0; i < rPairs.mP.size(); ++i) {
         const Vec3 p{(rPairs.mP[i][0] - c[0]) / scale, (rPairs.mP[i][1] - c[1]) / scale,
-                       (rPairs.mP[i][2] - c[2]) / scale};
+                     (rPairs.mP[i][2] - c[2]) / scale};
         const Vec3 q{(rPairs.mQ[i][0] - c[0]) / scale, (rPairs.mQ[i][1] - c[1]) / scale,
-                       (rPairs.mQ[i][2] - c[2]) / scale};
+                     (rPairs.mQ[i][2] - c[2]) / scale};
         const Vec3& nn = rPairs.mN[i];
         const Vec3 x = detail::vec3_cross(p, nn);
         const std::array<double, 6> row{x[0], x[1], x[2], nn[0], nn[1], nn[2]};
@@ -295035,7 +295026,7 @@ double reg_trimmed_rms(const RegPairs& rPairs, double Keep) {
     std::vector<double> d2(rPairs.mP.size());
     for (std::size_t i = 0; i < d2.size(); ++i) {
         const Vec3 d{rPairs.mQ[i][0] - rPairs.mP[i][0], rPairs.mQ[i][1] - rPairs.mP[i][1],
-                       rPairs.mQ[i][2] - rPairs.mP[i][2]};
+                     rPairs.mQ[i][2] - rPairs.mP[i][2]};
         d2[i] = detail::vec3_dot(d, d);
     }
     if (d2.empty())
@@ -295398,8 +295389,7 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     result.mChosenCandidate = static_cast<std::int64_t>(best);
     // Fine: from the chosen candidate on the larger sample, then twice more
     // from the plane it gives, so the recovered plane is its own fixed point.
-    const std::vector<Vec3> fine =
-        reg_stride(pts, static_cast<std::size_t>(rOptions.mMaxSamples));
+    const std::vector<Vec3> fine = reg_stride(pts, static_cast<std::size_t>(rOptions.mMaxSamples));
     set.mTolerance = 1e-12;
     Plane cur = cands[best];
     for (int round = 0; round < 3; ++round) {
@@ -295414,7 +295404,7 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     std::size_t within = 0;
     for (std::size_t i = 0; i < meas.mP.size(); ++i) {
         const Vec3 d{meas.mQ[i][0] - meas.mP[i][0], meas.mQ[i][1] - meas.mP[i][1],
-                       meas.mQ[i][2] - meas.mP[i][2]};
+                     meas.mQ[i][2] - meas.mP[i][2]};
         within += detail::vec3_dot(d, d) <= result.mTolerance * result.mTolerance ? 1 : 0;
     }
     result.mRms =
@@ -313153,7 +313143,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         for (const auto& r_t : tris)
             for (std::size_t k = 0; k < 3; ++k) {
                 const Vec3 e = detail::vec3_sub(x[static_cast<std::size_t>(r_t[(k + 1) % 3])],
-                                                 x[static_cast<std::size_t>(r_t[k])]);
+                                                x[static_cast<std::size_t>(r_t[k])]);
                 edge_sum += std::sqrt(detail::vec3_dot(e, e));
             }
         const double mean_edge = edge_sum / (3.0 * static_cast<double>(nt));

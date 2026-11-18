@@ -411,8 +411,8 @@ std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<Vec3>& rP
         const double* b = rP[static_cast<std::size_t>(first.mV[1])].data();
         const double* c = rP[static_cast<std::size_t>(first.mV[2])].data();
         const Vec3 n{(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
-                        (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
-                        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])};
+                     (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+                     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])};
         std::size_t k = 0;
         for (std::size_t j = 1; j < 3; ++j)
             if (std::abs(n[j]) > std::abs(n[k]))

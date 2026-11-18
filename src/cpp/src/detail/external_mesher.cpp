@@ -119,8 +119,7 @@ void em_run(const std::string& rName, const std::vector<std::string>& rArgv,
  * points the mesher added. `mBoundaryPreserved` holds when every request
  * point came back and the tetrahedra's boundary is the request's triangles.
  */
-TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
-                                const std::vector<Vec3>& rOut,
+TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest, const std::vector<Vec3>& rOut,
                                 const std::vector<std::array<std::int64_t, 4>>& rTets) {
     const std::size_t n_in = rRequest.mPoints.size();
     const double diag =

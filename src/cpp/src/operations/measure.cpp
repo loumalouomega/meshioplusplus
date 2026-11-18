@@ -48,8 +48,8 @@ namespace meshioplusplus {
 
 namespace {
 
-using detail::Vec3;
 using detail::JsonValue;
+using detail::Vec3;
 
 constexpr const char* kMsPrefix = "meshio++: measure: ";
 constexpr double kMsPi = 3.14159265358979323846;

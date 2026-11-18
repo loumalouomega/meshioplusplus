@@ -436,7 +436,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         for (const auto& r_t : tris)
             for (std::size_t k = 0; k < 3; ++k) {
                 const Vec3 e = detail::vec3_sub(x[static_cast<std::size_t>(r_t[(k + 1) % 3])],
-                                                 x[static_cast<std::size_t>(r_t[k])]);
+                                                x[static_cast<std::size_t>(r_t[k])]);
                 edge_sum += std::sqrt(detail::vec3_dot(e, e));
             }
         const double mean_edge = edge_sum / (3.0 * static_cast<double>(nt));

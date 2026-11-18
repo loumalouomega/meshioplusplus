@@ -94,7 +94,7 @@ bool ptn_fit(const std::vector<Vec3>& rP, std::size_t Self, const std::int64_t* 
     const Vec3 r1{t[3], t[1] - l[0], t[4]};
     const Vec3 r2{t[5], t[4], t[2] - l[0]};
     const std::array<Vec3, 3> cand{detail::vec3_cross(r0, r1), detail::vec3_cross(r0, r2),
-                                     detail::vec3_cross(r1, r2)};
+                                   detail::vec3_cross(r1, r2)};
     std::size_t best = 0;
     for (std::size_t j = 1; j < 3; ++j)
         if (detail::vec3_dot(cand[j], cand[j]) > detail::vec3_dot(cand[best], cand[best]))
@@ -185,7 +185,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
     if (rOptions.mOrientation == NormalOrientation::Viewpoint) {
         for (std::size_t i = 0; i < n; ++i) {
             const Vec3 to{rOptions.mViewpoint[0] - p[i][0], rOptions.mViewpoint[1] - p[i][1],
-                            rOptions.mViewpoint[2] - p[i][2]};
+                          rOptions.mViewpoint[2] - p[i][2]};
             if (ok[i] && detail::vec3_dot(normal[i], to) < 0.0)
                 normal[i] = {-normal[i][0], -normal[i][1], -normal[i][2]};
         }

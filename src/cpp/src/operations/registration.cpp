@@ -344,9 +344,9 @@ void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, Vec3& rT) {
     std::array<double, 6> g{};
     for (std::size_t i = 0; i < rPairs.mP.size(); ++i) {
         const Vec3 p{(rPairs.mP[i][0] - c[0]) / scale, (rPairs.mP[i][1] - c[1]) / scale,
-                       (rPairs.mP[i][2] - c[2]) / scale};
+                     (rPairs.mP[i][2] - c[2]) / scale};
         const Vec3 q{(rPairs.mQ[i][0] - c[0]) / scale, (rPairs.mQ[i][1] - c[1]) / scale,
-                       (rPairs.mQ[i][2] - c[2]) / scale};
+                     (rPairs.mQ[i][2] - c[2]) / scale};
         const Vec3& nn = rPairs.mN[i];
         const Vec3 x = detail::vec3_cross(p, nn);
         const std::array<double, 6> row{x[0], x[1], x[2], nn[0], nn[1], nn[2]};
@@ -549,7 +549,7 @@ double reg_trimmed_rms(const RegPairs& rPairs, double Keep) {
     std::vector<double> d2(rPairs.mP.size());
     for (std::size_t i = 0; i < d2.size(); ++i) {
         const Vec3 d{rPairs.mQ[i][0] - rPairs.mP[i][0], rPairs.mQ[i][1] - rPairs.mP[i][1],
-                       rPairs.mQ[i][2] - rPairs.mP[i][2]};
+                     rPairs.mQ[i][2] - rPairs.mP[i][2]};
         d2[i] = detail::vec3_dot(d, d);
     }
     if (d2.empty())
@@ -912,8 +912,7 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     result.mChosenCandidate = static_cast<std::int64_t>(best);
     // Fine: from the chosen candidate on the larger sample, then twice more
     // from the plane it gives, so the recovered plane is its own fixed point.
-    const std::vector<Vec3> fine =
-        reg_stride(pts, static_cast<std::size_t>(rOptions.mMaxSamples));
+    const std::vector<Vec3> fine = reg_stride(pts, static_cast<std::size_t>(rOptions.mMaxSamples));
     set.mTolerance = 1e-12;
     Plane cur = cands[best];
     for (int round = 0; round < 3; ++round) {
@@ -928,7 +927,7 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     std::size_t within = 0;
     for (std::size_t i = 0; i < meas.mP.size(); ++i) {
         const Vec3 d{meas.mQ[i][0] - meas.mP[i][0], meas.mQ[i][1] - meas.mP[i][1],
-                       meas.mQ[i][2] - meas.mP[i][2]};
+                     meas.mQ[i][2] - meas.mP[i][2]};
         within += detail::vec3_dot(d, d) <= result.mTolerance * result.mTolerance ? 1 : 0;
     }
     result.mRms =

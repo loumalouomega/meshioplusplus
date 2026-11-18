@@ -133,8 +133,7 @@ std::array<Expansion, 3> mb_normal(const Vec3& rA, const Vec3& rB, const Vec3& r
 
 /// The edge `pq` meets the plane of `abc` (the caller has checked that `p`
 /// and `q` lie strictly on opposite sides).
-MbPoint mb_lpi(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB,
-               const Vec3& rC) {
+MbPoint mb_lpi(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     const std::array<Expansion, 3> n = mb_normal(rA, rB, rC);
     Expansion dp, dq;
     for (std::size_t k = 0; k < 3; ++k) {
@@ -438,8 +437,8 @@ private:
 
 /// Whether the segment pq crosses triangle abc properly (exact); `rDegenerate`
 /// is set when it touches an edge, a vertex or the plane at an end.
-bool mb_ray_crosses(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB,
-                    const Vec3& rC, bool& rDegenerate) {
+bool mb_ray_crosses(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB, const Vec3& rC,
+                    bool& rDegenerate) {
     const int s1 = mb_sign(orient3d(rA.data(), rB.data(), rC.data(), rP.data()));
     const int s2 = mb_sign(orient3d(rA.data(), rB.data(), rC.data(), rQ.data()));
     if (s1 == s2 && s1 != 0)
@@ -512,7 +511,7 @@ bool mb_inside(const Vec3& rP, const MbSurface& rS, const Vec3& rLo, const Vec3&
 /// The pieces of one surface after the arrangement, and their patches.
 struct MbPieces {
     std::vector<MbTri> mT;             ///< global point ids
-    std::vector<Vec3> mNormal;        ///< the parent triangle's normal, rounded
+    std::vector<Vec3> mNormal;         ///< the parent triangle's normal, rounded
     std::vector<std::int64_t> mPatch;  ///< patch of each piece
     std::int64_t mNumPatches = 0;
 };

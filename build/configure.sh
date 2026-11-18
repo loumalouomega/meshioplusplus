@@ -45,6 +45,8 @@ DO_BUILD="no"
 PYTHON_EXE=""
 TBB_DIR=""
 SANITIZE=""
+WARNINGS="OFF"
+WARNINGS_AS_ERRORS="OFF"
 FUZZERS="OFF"
 
 usage() {
@@ -94,6 +96,8 @@ Usage: $0 [options]
                                   semicolon-separated; default MESHIO,NATIVE,KRATOS;
                                   implies --install-cpp)
   --cli                           build the native command-line binary (meshioplusplus)
+  --warnings                      compile meshio++'s own sources with -Wall -Wextra
+  --warnings-as-errors            the same, with -Werror (implies --warnings)
   --sanitize <LIST>               build the core, tests and C API with sanitizers
                                   (comma-separated, e.g. address,undefined; GCC/Clang;
                                   implies no Python extension; tree cpp-<type>-san)
@@ -138,6 +142,8 @@ while [ $# -gt 0 ]; do
         --install-cpp) INSTALL_CPP="ON"; shift ;;
         --cpp-backends) CPP_BACKENDS=$(echo "$2" | tr '[:lower:],' '[:upper:];'); INSTALL_CPP="ON"; shift 2 ;;
         --cli) CLI="ON"; shift ;;
+        --warnings) WARNINGS="ON"; shift ;;
+        --warnings-as-errors) WARNINGS="ON"; WARNINGS_AS_ERRORS="ON"; shift ;;
         --sanitize) SANITIZE=$(echo "$2" | tr ',' ';'); shift 2 ;;
         --fuzzers) FUZZERS="ON"; shift ;;
         --build) DO_BUILD="yes"; shift ;;
@@ -210,6 +216,8 @@ set -- \
     -DMESHIOPLUSPLUS_BUILD_CLI="$CLI" \
     -DMESHIOPLUSPLUS_BUILD_FORTRAN="$FORTRAN" \
     -DMESHIOPLUSPLUS_SANITIZE="$SANITIZE" \
+    -DMESHIOPLUSPLUS_WARNINGS="$WARNINGS" \
+    -DMESHIOPLUSPLUS_WARNINGS_AS_ERRORS="$WARNINGS_AS_ERRORS" \
     -DMESHIOPLUSPLUS_BUILD_FUZZERS="$FUZZERS" \
     -DPython_EXECUTABLE="$PYTHON_EXE"
 

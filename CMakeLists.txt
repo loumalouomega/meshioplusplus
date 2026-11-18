@@ -868,6 +868,72 @@ if(MESHIOPLUSPLUS_COVERAGE)
 endif()
 
 # --------------------------------------------------------------------------
+# Compiler warnings for meshio++'s own sources (roadmap 3.6). Off by default.
+# The flags are applied PRIVATE, per target, at the end of this file: unlike
+# the coverage and sanitizer flags above they must never reach the exported
+# INTERFACE_COMPILE_OPTIONS of the installed targets, or they would turn on in
+# every consumer's build. Vendored code (pugixml, gidpost) is compiled with
+# -w, and the third-party include directories are SYSTEM ones.
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_WARNINGS "Compile meshio++'s own sources with -Wall -Wextra (/W4 on MSVC)" OFF)
+option(MESHIOPLUSPLUS_WARNINGS_AS_ERRORS "Make those warnings errors (needs MESHIOPLUSPLUS_WARNINGS)" OFF)
+if(MESHIOPLUSPLUS_WARNINGS_AS_ERRORS AND NOT MESHIOPLUSPLUS_WARNINGS)
+  message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_WARNINGS_AS_ERRORS needs MESHIOPLUSPLUS_WARNINGS=ON")
+endif()
+
+function(meshioplusplus_target_warnings target)
+  if(NOT MESHIOPLUSPLUS_WARNINGS OR NOT TARGET ${target})
+    return()
+  endif()
+  get_target_property(_type ${target} TYPE)
+  if(_type STREQUAL "INTERFACE_LIBRARY")
+    return()
+  endif()
+  if(MSVC)
+    set(_flags /W4)
+    if(MESHIOPLUSPLUS_WARNINGS_AS_ERRORS)
+      list(APPEND _flags /WX)
+    endif()
+  else()
+    set(_flags -Wall -Wextra)
+    if(MESHIOPLUSPLUS_WARNINGS_AS_ERRORS)
+      list(APPEND _flags -Werror)
+    endif()
+  endif()
+  # Only C and C++ sources: the Fortran module has its own compiler flags.
+  target_compile_options(${target} PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:${_flags}>" "$<$<COMPILE_LANGUAGE:C>:${_flags}>")
+endfunction()
+
+# --------------------------------------------------------------------------
+# Hardened standard library (roadmap 3.9.3): turns an out-of-range operator[],
+# front() of an empty container and the like into an abort. libstdc++ takes
+# _GLIBCXX_ASSERTIONS; libc++ takes the extensive hardening mode. PRIVATE and
+# per target, like the warnings above: a consumer's own standard-library
+# configuration is not ours to change (and a mismatch of these macros between
+# translation units is an ODR hazard for the inline code in installed headers).
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_HARDENED_STL "Build meshio++'s own sources with standard-library assertions" OFF)
+
+function(meshioplusplus_target_hardened_stl target)
+  if(NOT MESHIOPLUSPLUS_HARDENED_STL OR NOT TARGET ${target})
+    return()
+  endif()
+  get_target_property(_type ${target} TYPE)
+  if(_type STREQUAL "INTERFACE_LIBRARY")
+    return()
+  endif()
+  if(MSVC)
+    return()  # MSVC's checked iterators are a Debug-configuration default
+  endif()
+  # The library is chosen by the compiler's -stdlib, so both macros are defined:
+  # each standard library ignores the other's.
+  target_compile_definitions(${target} PRIVATE
+    "$<$<COMPILE_LANGUAGE:CXX>:_GLIBCXX_ASSERTIONS>"
+    "$<$<COMPILE_LANGUAGE:CXX>:_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_EXTENSIVE>")
+endfunction()
+
+# --------------------------------------------------------------------------
 # Sanitizers for the cpp-sanitize CI job and local triage (doc/fuzzing.md).
 # A ;-list such as "address;undefined". Applied PUBLIC like the coverage
 # flags, so the GoogleTest binary, the C API objects and the fuzz/replay
@@ -2343,4 +2409,36 @@ if(MESHIOPLUSPLUS_BUILD_CLI)
   endif()
   include(GNUInstallDirs)
   install(TARGETS meshioplusplus_cli RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
+
+# --------------------------------------------------------------------------
+# Warnings (MESHIOPLUSPLUS_WARNINGS): every first-party target that exists, with
+# the vendored sources exempted. Last in the file so every target is defined.
+# --------------------------------------------------------------------------
+if(MESHIOPLUSPLUS_WARNINGS)
+  set(_mio_vendored_sources ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/pugixml/pugixml.cpp
+                            ${_mio_gidpost_sources})
+  if(_mio_vendored_sources AND NOT MSVC)
+    set_source_files_properties(${_mio_vendored_sources} PROPERTIES COMPILE_OPTIONS -w)
+  elseif(_mio_vendored_sources)
+    set_source_files_properties(${_mio_vendored_sources} PROPERTIES COMPILE_OPTIONS /w)
+  endif()
+  foreach(_mio_t
+      meshioplusplus_core_obj meshioplusplus_core_meshio meshioplusplus_core_native
+      meshioplusplus_core_kratos _core meshioplusplus_c_obj meshioplusplus
+      meshioplusplus_cli meshioplusplus_tests meshioplusplus_bench
+      meshioplusplus_bench_ops meshioplusplus_bench_containers)
+    meshioplusplus_target_warnings(${_mio_t})
+  endforeach()
+endif()
+
+# Hardened standard library (MESHIOPLUSPLUS_HARDENED_STL), on the same targets.
+if(MESHIOPLUSPLUS_HARDENED_STL)
+  foreach(_mio_t
+      meshioplusplus_core_obj meshioplusplus_core_meshio meshioplusplus_core_native
+      meshioplusplus_core_kratos _core meshioplusplus_c_obj meshioplusplus
+      meshioplusplus_cli meshioplusplus_tests meshioplusplus_bench
+      meshioplusplus_bench_ops meshioplusplus_bench_containers)
+    meshioplusplus_target_hardened_stl(${_mio_t})
+  endforeach()
 endif()

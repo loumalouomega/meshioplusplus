@@ -56,8 +56,8 @@ struct CoordFrame {
 
 // The coordinates of position @p rP, and the local basis (rows) there; true
 // when the radial direction was undefined and e1 stood in.
-bool coord_local(const CoordFrame& rF, CoordinateSystem System, const Vec3& rP,
-                 Vec3& rCoords, std::array<Vec3, 3>& rBasis) {
+bool coord_local(const CoordFrame& rF, CoordinateSystem System, const Vec3& rP, Vec3& rCoords,
+                 std::array<Vec3, 3>& rBasis) {
     const Vec3 d{rP[0] - rF.mOrigin[0], rP[1] - rF.mOrigin[1], rP[2] - rF.mOrigin[2]};
     const double z = detail::vec3_dot(d, rF.mAxis);
     const Vec3 rho{d[0] - z * rF.mAxis[0], d[1] - z * rF.mAxis[1], d[2] - z * rF.mAxis[2]};
@@ -78,17 +78,16 @@ bool coord_local(const CoordFrame& rF, CoordinateSystem System, const Vec3& rP,
     const double polar = at_centre ? 0.0 : std::atan2(r_cyl, z);
     const double c = std::cos(polar), s = std::sin(polar);
     const Vec3 e_r{s * e_rho[0] + c * rF.mAxis[0], s * e_rho[1] + c * rF.mAxis[1],
-                       s * e_rho[2] + c * rF.mAxis[2]};
+                   s * e_rho[2] + c * rF.mAxis[2]};
     const Vec3 e_theta{c * e_rho[0] - s * rF.mAxis[0], c * e_rho[1] - s * rF.mAxis[1],
-                           c * e_rho[2] - s * rF.mAxis[2]};
+                       c * e_rho[2] - s * rF.mAxis[2]};
     rCoords = {r, polar, angle};
     rBasis = {e_r, e_theta, e_phi};
     return on_axis || at_centre;
 }
 
 // v' = R v (forward) or R^T v (inverse), R's rows the basis.
-void coord_vector(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn,
-                  double* pOut) {
+void coord_vector(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn, double* pOut) {
     for (std::size_t i = 0; i < 3; ++i) {
         double acc = 0.0;
         for (std::size_t k = 0; k < 3; ++k)
@@ -98,8 +97,7 @@ void coord_vector(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn
 }
 
 // T' = R T R^T (forward) or R^T T R (inverse), row-major 3x3.
-void coord_tensor(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn,
-                  double* pOut) {
+void coord_tensor(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn, double* pOut) {
     const auto m = [&](std::size_t i, std::size_t k) { return Inverse ? rB[k][i] : rB[i][k]; };
     double tmp[9];
     for (std::size_t i = 0; i < 3; ++i)
@@ -169,12 +167,10 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
     frame.mAxis = coord_unit(rOptions.mAxis);
     frame.mOrigin = rOptions.mOrigin;
     // e1: the reference projected off the axis, or x / y when it lies along it.
-    for (const Vec3& candidate :
-         {rOptions.mReference, Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0}}) {
+    for (const Vec3& candidate : {rOptions.mReference, Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0}}) {
         const double along = detail::vec3_dot(candidate, frame.mAxis);
-        const Vec3 off{candidate[0] - along * frame.mAxis[0],
-                           candidate[1] - along * frame.mAxis[1],
-                           candidate[2] - along * frame.mAxis[2]};
+        const Vec3 off{candidate[0] - along * frame.mAxis[0], candidate[1] - along * frame.mAxis[1],
+                       candidate[2] - along * frame.mAxis[2]};
         const double len = std::sqrt(detail::vec3_dot(off, off));
         const double clen = std::sqrt(detail::vec3_dot(candidate, candidate));
         if (len > 1e-9 * clen) {
@@ -255,7 +251,7 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
             for (const auto cb : rMesh.CellRange()) {
                 const std::size_t count = cb.NumCells();
                 const std::vector<Vec3> slice(positions.begin() + base,
-                                                  positions.begin() + base + count);
+                                              positions.begin() + base + count);
                 blocks.push_back(
                     coord_convert_array(rMesh.CellData(name, block), name, slice, frame, rOptions));
                 base += count;

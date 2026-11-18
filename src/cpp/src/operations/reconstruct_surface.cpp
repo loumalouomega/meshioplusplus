@@ -267,9 +267,8 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
     const auto node_pos = [&](std::int64_t V) {
         const std::int64_t i = V % ndims[0], j = (V / ndims[0]) % ndims[1],
                            k = V / (ndims[0] * ndims[1]);
-        return Vec3{origin[0] + static_cast<double>(i) * h,
-                      origin[1] + static_cast<double>(j) * h,
-                      origin[2] + static_cast<double>(k) * h};
+        return Vec3{origin[0] + static_cast<double>(i) * h, origin[1] + static_cast<double>(j) * h,
+                    origin[2] + static_cast<double>(k) * h};
     };
 
     // The field at each node, or undefined.

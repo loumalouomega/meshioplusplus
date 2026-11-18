@@ -214,8 +214,7 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         const Vec3& p0 = xyz[t.mNodes[0]];
         const Vec3& p1 = xyz[t.mNodes[1]];
         const Vec3& p2 = xyz[t.mNodes[2]];
-        const Vec3 normal =
-            detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
+        const Vec3 normal = detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
         const double area2 = t.mDoubleArea;
         Vec3 unit_n{normal[0] / area2, normal[1] / area2, normal[2] / area2};
         // grad u = sum_i u_i (N x e_i) / (2 A), e_i the edge opposite corner i,

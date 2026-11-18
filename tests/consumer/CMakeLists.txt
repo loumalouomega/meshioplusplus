@@ -49,6 +49,20 @@ else()
   set(_core_target meshioplusplus::core)
 endif()
 
+# The installed target must not carry meshio++'s own warning flags: they are
+# applied PRIVATE (MESHIOPLUSPLUS_WARNINGS, roadmap 3.6), so they must not turn
+# up in a consumer's build whatever the install was configured with.
+get_target_property(_mio_iface_opts ${_core_target} INTERFACE_COMPILE_OPTIONS)
+if(_mio_iface_opts)
+  foreach(_opt IN LISTS _mio_iface_opts)
+    if(_opt MATCHES "^(-W|/W|-w$|/w$)")
+      message(FATAL_ERROR
+        "meshio++ consumer: ${_core_target} exports the warning option '${_opt}' "
+        "in INTERFACE_COMPILE_OPTIONS; warning flags must stay PRIVATE")
+    endif()
+  endforeach()
+endif()
+
 message(STATUS "meshio++ consumer: linking ${_core_target}")
 message(STATUS "meshio++ consumer: default backend  ${MESHIOPLUSPLUS_MESH_BACKEND}")
 message(STATUS "meshio++ consumer: parallel backend ${MESHIOPLUSPLUS_PARALLEL_BACKEND}")

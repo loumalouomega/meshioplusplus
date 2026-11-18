@@ -177,7 +177,7 @@ double mph_simplex_measure(const std::vector<Vec3>& rXyz, const std::int64_t* pN
         return det > 0.0 ? 0.5 * std::sqrt(det) : 0.0;
     }
     const Vec3 x{e[1][1] * e[2][2] - e[1][2] * e[2][1], e[1][2] * e[2][0] - e[1][0] * e[2][2],
-                   e[1][0] * e[2][1] - e[1][1] * e[2][0]};
+                 e[1][0] * e[2][1] - e[1][1] * e[2][0]};
     return std::abs(detail::vec3_dot(e[0], x)) / 6.0;
 }
 

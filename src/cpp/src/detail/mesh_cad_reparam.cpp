@@ -73,8 +73,7 @@ std::array<double, 2> mcr_eigen(const Vec3& rSu, const Vec3& rSv, double L11, do
 
 /// `J D`, the surface's derivative along the disc from its derivative along
 /// the parameters and `D = d(u, v)/d(p, q)`.
-std::array<Vec3, 2> mcr_chain(const Vec3& rSu, const Vec3& rSv,
-                               const std::array<double, 4>& rD) {
+std::array<Vec3, 2> mcr_chain(const Vec3& rSu, const Vec3& rSv, const std::array<double, 4>& rD) {
     std::array<Vec3, 2> out{};
     for (std::size_t i = 0; i < 3; ++i) {
         out[0][i] = rSu[i] * rD[0] + rSv[i] * rD[2];
