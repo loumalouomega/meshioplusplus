@@ -447,6 +447,11 @@ jobs:
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.pkgs }} zlib1g-dev libbz2-dev pkg-config ninja-build
+      # Clang before 17 cannot parse libstdc++ 14's <ranges>/<format>, and Clang
+      # picks the newest GCC install it finds: leave it libstdc++ 13 only.
+      - name: Keep Clang on libstdc++ 13
+        if: startsWith(matrix.cc, 'clang')
+        run: sudo apt-get remove -y libstdc++-14-dev g++-14 gcc-14 || true
       - name: Configure
         env:
           CC: ${{ matrix.cc }}

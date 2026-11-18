@@ -72,7 +72,10 @@ def _is_float(ds, name):
 def _first(values):
     """A member's values, reduced to the first entry per row for an array member."""
     a = np.asarray(values, dtype=np.float64)
-    return a.reshape(a.shape[0], -1)[:, 0] if a.ndim > 1 else a
+    if a.ndim <= 1:
+        return a
+    # an explicit width: reshape(n, -1) is ambiguous for zero rows
+    return a.reshape(a.shape[0], max(1, int(np.prod(a.shape[1:]))))[:, 0]
 
 
 class _File:

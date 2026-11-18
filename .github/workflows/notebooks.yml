@@ -20,7 +20,7 @@ jobs:
   execute:
     name: Execute example/python notebooks
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -48,11 +48,59 @@ jobs:
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
-          sudo apt-get install -y libgl1 libglx-mesa0 libosmesa6 xvfb
-      - name: Install meshio++ and the notebook tools
+          # Rendering, plus what the optional-backend notebooks need: OpenCASCADE
+          # (step, fit_cad), TBB and HDF5 (CutCells), the build tools.
+          sudo apt-get install -y libgl1 libglx-mesa0 libosmesa6 xvfb \
+            libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
+            libocct-data-exchange-dev libtbb-dev libhdf5-dev zlib1g-dev pkg-config
+      - name: Install build tools
+        run: python -m pip install --upgrade pip pybind11 cmake ninja numpy
+      # CutCells (66_cut_level_set) and QuadriFlow (65_remesh_quads): built from the
+      # commits pinned in build/deps-pins.sh, as the cutcells and netgen jobs of
+      # ci.yml do, and cached.
+      - name: Read the dependency pins
+        id: pins
         run: |
-          python -m pip install --upgrade pip
-          pip install ".[all]" jupyter nbconvert ipykernel matplotlib pyvista trimesh pandas pyarrow scipy
+          . build/deps-pins.sh
+          echo "cutcells=$CUTCELLS_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "quadriflow=$QUADRIFLOW_COMMIT" >> "$GITHUB_OUTPUT"
+      - name: Cache CutCells
+        id: cc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/cutcells-install
+          key: cutcells-${{ steps.pins.outputs.cutcells }}-${{ runner.os }}
+      - name: Build CutCells from source
+        if: steps.cc-cache.outputs.cache-hit != 'true'
+        run: build/build-cutcells.sh "$HOME/cutcells-install" --work /tmp/cutcells-work
+      - name: Cache QuadriFlow
+        id: qf-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/quadriflow-bin
+          key: quadriflow-${{ steps.pins.outputs.quadriflow }}-${{ runner.os }}
+      - name: Build QuadriFlow from source
+        if: steps.qf-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/hjwdzh/QuadriFlow.git /tmp/qf-src
+          git -C /tmp/qf-src checkout "${{ steps.pins.outputs.quadriflow }}"
+          # QuadriFlow's pinned CMakeLists asks for CMake < 3.5, which CMake 4 refuses.
+          cmake -S /tmp/qf-src -B /tmp/qf-build -DCMAKE_BUILD_TYPE=Release -DBUILD_FREE_LICENSE=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build /tmp/qf-build -j
+          mkdir -p ~/quadriflow-bin
+          cp /tmp/qf-build/quadriflow ~/quadriflow-bin/
+      - name: Put QuadriFlow on PATH
+        run: echo "$HOME/quadriflow-bin" >> "$GITHUB_PATH"
+      - name: Install meshio++ (with OpenCASCADE and CutCells) and the notebook tools
+        env:
+          CMAKE_ARGS: >-
+            -DMESHIOPLUSPLUS_WITH_OCCT=ON
+            -DMESHIOPLUSPLUS_WITH_CUTCELLS=ON
+            -DCUTCELLS_ROOT=/home/runner/cutcells-install
+        run: |
+          pip install ".[all]" adios2 jupyter nbconvert ipykernel matplotlib pyvista trimesh pandas pyarrow scipy
+          python -c "from meshioplusplus import _core; assert _core.__has_cutcells__"
       - name: Execute every notebook
         if: steps.lfs.outputs.available != 'false'
         env:

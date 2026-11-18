@@ -41,7 +41,13 @@ def test_fetched_fixtures_match_their_hash():
         data = (REPO / row["path"]).read_bytes()
         if data.startswith(b"version https://git-lfs.github.com/spec/v1"):
             continue  # not fetched; the manifest holds the pointer's oid
-        assert hashlib.sha256(data).hexdigest() == row["sha256"], row["path"]
+        # A Windows checkout may convert text fixtures to CRLF: the manifest holds
+        # the hash of the LF bytes the repository stores.
+        digests = {
+            hashlib.sha256(data).hexdigest(),
+            hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest(),
+        }
+        assert row["sha256"] in digests, row["path"]
 
 
 def test_documented_directories_point_at_an_existing_readme():

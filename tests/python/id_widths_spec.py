@@ -42,6 +42,10 @@ import numpy as np
 BIG = 2**31 + 5
 _TIMEOUT_S = 30
 
+# Formats whose writer needs an optional library (or build option): not pinned when
+# the library is present, because CI legs differ in what they have installed.
+LIBRARY_FORMATS = frozenset({"gid", "szplt", "step", "usd", "vtx", "zarr"})
+
 EXPECTED_IDS = {
     "abaqus": {"cell": "dropped", "point": "dropped"},
     "abaqus_fil": {"cell": "exact int64", "point": "exact int64"},
@@ -161,6 +165,11 @@ def _alarm(*_):
     raise _Timeout()
 
 
+def _needs_a_build(message):
+    """True for a refusal that only says this build lacks an optional library."""
+    return "needs a build with -D" in message or "-DMESHIOPLUSPLUS_WITH_" in message
+
+
 def names_the_format(fmt, message):
     """True when an error message names the format.
 
@@ -251,8 +260,11 @@ def observe(fmt, keys=None):
             want_cells[offsets[i] : offsets[i + 1]].copy()
             for i in range(len(mesh.cells))
         ]
-    old = signal.signal(signal.SIGALRM, _alarm)
-    signal.alarm(_TIMEOUT_S)
+    # SIGALRM does not exist on Windows: there the probe runs without a timeout.
+    use_alarm = hasattr(signal, "SIGALRM")
+    if use_alarm:
+        old = signal.signal(signal.SIGALRM, _alarm)
+        signal.alarm(_TIMEOUT_S)
     try:
         with tempfile.TemporaryDirectory() as tmp, warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -264,11 +276,14 @@ def observe(fmt, keys=None):
                 # an optional library (or the OpenCASCADE backend) is missing
                 return {"error": "not observed"}
             except Exception as exc:  # noqa: BLE001 - every refusal is classified
+                if _needs_a_build(str(exc)):
+                    return {"error": "not observed"}
                 named = names_the_format(fmt, str(exc))
                 return {"error": f"{type(exc).__name__}", "named": named}
     finally:
-        signal.alarm(0)
-        signal.signal(signal.SIGALRM, old)
+        if use_alarm:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, old)
     cells = None
     if ckey and ckey in back.cell_data:
         cells = np.concatenate(

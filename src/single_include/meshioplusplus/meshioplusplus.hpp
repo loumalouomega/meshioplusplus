@@ -164084,7 +164084,10 @@ void gmsh_add_element_node_data(Mesh& rMesh,
             }
             NDArray blk(DType::Float64, {b.mCount, block_width});
             double* bp = blk.As<double>();
-            const double* src = raw.mData.As<double>();
+            // Through a plain reference: GCC 11 reads `raw.mData.As<double>()` on a
+            // captured structured binding as a comparison (roadmap 3.15.4).
+            const NDArray& raw_data = raw.mData;
+            const double* src = raw_data.As<double>();
             for (std::size_t r = 0; r < b.mCount; ++r)
                 std::copy(src + (offset + r) * width, src + (offset + r) * width + block_width,
                           bp + r * block_width);

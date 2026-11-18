@@ -10,6 +10,8 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Fix:** the Python Nastran HDF5 writer no longer fails with `cannot reshape array of size 0 into shape (0,newaxis)` when a per-cell result exists for some cell blocks only (NumPy cannot infer `-1` for zero rows); found by the notebook job (`37_parity_tier_closed`). `30_xdmf_series_regions.ipynb` named a kernel that exists only on the maintainer's machine and now uses `python3`.
+- **Portability:** `gmsh.cpp` reads the element-node data through a plain `const NDArray&`, which GCC 11 needs (the new compiler matrix found it).
 - **Portability:** `octree` marks the leaves to split with `std::atomic<char>` instead of `std::atomic_ref<char>`, which libc++ only has from version 19 (found by the new hardened libc++ CI leg); the result is unchanged (roadmap 3.9.3).
 - **Fix:** the Radioss animation writers refuse an id outside the 32-bit range of the file format instead of wrapping it, and both libMesh writers refuse a `libmesh:id` that would need a node table over `max(10,000,000, 4 x points)` rows instead of allocating it (a value of `2**31 + 5` was a `MemoryError`), in the native and Python engines (roadmap 3.19).
 - **Warnings:** writing an integer array holding values above `2**24` to a format that stores it as single-precision floats or a few digits of text (`cae`, `ensight`, `frd`, `gid`, `gltf`, `marc_t19`, `radioss_anim`, `xplt`) warns once per array, in both engines. [Integer widths](doc/id_widths.md) now also covers the node and element id arrays.

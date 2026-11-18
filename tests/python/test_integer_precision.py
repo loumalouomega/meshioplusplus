@@ -33,6 +33,10 @@ def _write(fmt, mesh, tmp_path):
         cs.round_trip(fmt, mesh, tmp_path)
     except ImportError:
         pytest.skip("an optional library is not installed")
+    except mio.WriteError as exc:
+        if "needs a build with" in str(exc):
+            pytest.skip(str(exc)[:80])
+        raise
 
 
 @pytest.mark.parametrize("fmt", FORMATS)
