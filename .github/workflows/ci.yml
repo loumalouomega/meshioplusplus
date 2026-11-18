@@ -424,7 +424,6 @@ jobs:
           - { cc: gcc-12, cxx: g++-12, pkgs: "gcc-12 g++-12" }
           - { cc: gcc-13, cxx: g++-13, pkgs: "gcc-13 g++-13" }
           - { cc: gcc-14, cxx: g++-14, pkgs: "gcc-14 g++-14" }
-          - { cc: clang-15, cxx: clang++-15, pkgs: "clang-15 libstdc++-13-dev" }
           - { cc: clang-16, cxx: clang++-16, pkgs: "clang-16 libstdc++-13-dev" }
           - { cc: clang-17, cxx: clang++-17, pkgs: "clang-17 libstdc++-13-dev" }
           - { cc: clang-18, cxx: clang++-18, pkgs: "clang-18 libstdc++-13-dev" }
@@ -447,11 +446,15 @@ jobs:
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y ${{ matrix.pkgs }} zlib1g-dev libbz2-dev pkg-config ninja-build
-      # Clang before 17 cannot parse libstdc++ 14's <ranges>/<format>, and Clang
-      # picks the newest GCC install it finds: leave it libstdc++ 13 only.
-      - name: Keep Clang on libstdc++ 13
+      # Clang picks the newest GCC install it finds (14 on this image), and
+      # Clang 16 and 17 cannot parse libstdc++ 14's <ranges>/<format>: point it at
+      # GCC 13. Clang 15 has no --gcc-install-dir, so it is not in the matrix
+      # (it needs a container image with an older libstdc++).
+      - name: Point Clang at libstdc++ 13
         if: startsWith(matrix.cc, 'clang')
-        run: sudo apt-get remove -y libstdc++-14-dev g++-14 gcc-14 || true
+        run: |
+          echo "CXXFLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13" >> "$GITHUB_ENV"
+          echo "LDFLAGS=--gcc-install-dir=/usr/lib/gcc/x86_64-linux-gnu/13" >> "$GITHUB_ENV"
       - name: Configure
         env:
           CC: ${{ matrix.cc }}
