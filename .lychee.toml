@@ -22,3 +22,9 @@ accept = ["200..=204", "403", "429"]
 # VitePress links pages without their extension (`/geodesic`, `./roadmap#anchor`):
 # try the file with these extensions before reporting it missing.
 fallback_extensions = ["md"]
+
+# VitePress serves doc/public/ at the site root, so `/images/x.png` is
+# doc/public/images/x.png; offline, lychee resolves it against doc/.
+remap = [
+  "^file://(.*)/doc/(images|diagrams|viewer|benchmarks)/(.*)$ file://$1/doc/public/$2/$3",
+]
