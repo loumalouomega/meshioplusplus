@@ -266,7 +266,10 @@ def observe(fmt, keys=None):
         old = signal.signal(signal.SIGALRM, _alarm)
         signal.alarm(_TIMEOUT_S)
     try:
-        with tempfile.TemporaryDirectory() as tmp, warnings.catch_warnings():
+        # A format that memory-maps its output (pmsh) keeps the file open in `back`
+        # while the directory is removed, which Windows refuses.
+        scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+        with scratch as tmp, warnings.catch_warnings():
             warnings.simplefilter("ignore")
             try:
                 back = cs.round_trip(fmt, mesh, pathlib.Path(tmp))
