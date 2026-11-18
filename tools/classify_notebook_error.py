@@ -19,7 +19,9 @@ _ERROR_LINE = re.compile(r"^(?:[A-Za-z_][\w.]*)(?:Error|Exception|Exit): ?.*$")
 _MISSING = re.compile(
     r"this build has no|needs the OpenCASCADE|is not installed|"
     r"ModuleNotFoundError|ImportError|needs [A-Za-z+ ]+, which is not|"
-    r"-DMESHIOPLUSPLUS_WITH_",
+    r"-DMESHIOPLUSPLUS_WITH_|"
+    # an external tool the operation drives (QuadriFlow, Instant Meshes, ...)
+    r"no [\w ]+ is installed|install \S+ .* on PATH",
     re.I,
 )
 
@@ -27,13 +29,18 @@ _MISSING = re.compile(
 def last_error(text: str) -> str:
     """The last ``SomeError: message`` line of an nbconvert log, or ``""``."""
     found = ""
+    runner = ""  # nbclient's own errors (a timeout, a dead kernel): the fallback
     for line in _ANSI.sub("", text).splitlines():
         line = line.strip()
         # nbconvert prefixes log lines with a timestamp in CI; keep what follows it.
         line = re.sub(r"^\d{4}-\d\d-\d\dT[\d:.]+Z ", "", line)
-        if _ERROR_LINE.match(line) and "nbclient.exceptions" not in line:
+        if not _ERROR_LINE.match(line):
+            continue
+        if "nbclient.exceptions" in line:
+            runner = line
+        else:
             found = line
-    return found
+    return found or runner
 
 
 def classify(text: str) -> tuple[str, str]:
