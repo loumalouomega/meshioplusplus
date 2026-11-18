@@ -11,7 +11,7 @@
 [![GitHub stars](https://img.shields.io/github/stars/loumalouomega/meshioplusplus.svg?style=flat-square&logo=github&label=Stars&logoColor=white)](https://github.com/loumalouomega/meshioplusplus) [![PyPi downloads](https://img.shields.io/pypi/dm/meshioplusplus.svg?style=flat-square)](https://pypistats.org/packages/meshioplusplus)
 [![GitHub release date](https://img.shields.io/github/release-date/loumalouomega/meshioplusplus?style=flat-square&label=release)](https://github.com/loumalouomega/meshioplusplus/releases/latest) [![Commits since latest release](https://img.shields.io/github/commits-since/loumalouomega/meshioplusplus/latest?style=flat-square&label=commits%20since)](https://github.com/loumalouomega/meshioplusplus/compare/v16.22.0...master) [![GitHub last commit](https://img.shields.io/github/last-commit/loumalouomega/meshioplusplus?style=flat-square&label=latest%20commit)](https://github.com/loumalouomega/meshioplusplus/commit/master)
 
-[![gh-actions](https://img.shields.io/github/actions/workflow/status/loumalouomega/meshioplusplus/ci.yml?branch=master&style=flat-square)](https://github.com/loumalouomega/meshioplusplus/actions?query=workflow%3Aci) [![codecov](https://img.shields.io/codecov/c/github/loumalouomega/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/loumalouomega/meshioplusplus) [![Quality gate](https://sonarcloud.io/api/project_badges/measure?project=loumalouomega_meshioplusplus&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=loumalouomega_meshioplusplus) [![Duplicated lines](https://sonarcloud.io/api/project_badges/measure?project=loumalouomega_meshioplusplus&metric=duplicated_lines_density)](https://sonarcloud.io/component_measures?id=loumalouomega_meshioplusplus&metric=duplicated_lines_density) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black)
+[![gh-actions](https://img.shields.io/github/actions/workflow/status/loumalouomega/meshioplusplus/ci.yml?branch=master&style=flat-square)](https://github.com/loumalouomega/meshioplusplus/actions?query=workflow%3Aci) [![codecov](https://img.shields.io/codecov/c/github/loumalouomega/meshioplusplus.svg?style=flat-square)](https://app.codecov.io/gh/loumalouomega/meshioplusplus) [![Quality gate](https://sonarcloud.io/api/project_badges/measure?project=loumalouomega_meshioplusplus&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=loumalouomega_meshioplusplus) [![Duplicated lines](https://sonarcloud.io/api/project_badges/measure?project=loumalouomega_meshioplusplus&metric=duplicated_lines_density)](https://sonarcloud.io/component_measures?id=loumalouomega_meshioplusplus&metric=duplicated_lines_density) [![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg?style=flat-square)](https://github.com/psf/black) [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/loumalouomega/meshioplusplus/badge)](https://scorecard.dev/viewer/?uri=github.com/loumalouomega/meshioplusplus)
 
 [c++-image]: https://img.shields.io/badge/C++-20-blue.svg?style=flat&logo=c%2B%2B
 [c++standard]: https://isocpp.org/std/the-standard
@@ -1693,6 +1693,10 @@ ctest --test-dir build --output-on-failure
 ```
 
 `ctest` picks up the GoogleTest cases (via `gtest_discover_tests`) plus a `python_suite` entry that runs `pytest tests/python/` — the latter is only added when `meshioplusplus`/`pytest` are importable by the Python CMake found, so a tree built without the editable install still runs the C++ suite alone.
+
+### Security
+
+meshio++ parses files from sources you may not control. Report a vulnerability privately through GitHub's security advisories, as described in [`SECURITY.md`](SECURITY.md); the readers are fuzzed continuously ([fuzzing](doc/fuzzing.md)).
 
 ### License
 

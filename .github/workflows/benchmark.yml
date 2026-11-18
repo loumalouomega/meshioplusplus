@@ -29,10 +29,10 @@ jobs:
     name: Read/write, every format
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -68,7 +68,7 @@ jobs:
               print(f"| {r['size']} | {r['format']} | {r['input']} | {r['cells']} | "
                     f"{float(r['write_s']) * 1e3:.1f} | {float(r['read_s']) * 1e3:.1f} |")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: bench-formats
           path: |
@@ -79,7 +79,7 @@ jobs:
     name: Operations, per parallel backend
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
       - name: Install native libraries
@@ -118,7 +118,7 @@ jobs:
           for r in rows:
               print(f"| {r['backend']} | {r['threads']} | {r['op']} | {r['cells']} | {r['median_s']} |")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: bench-operations
           path: |
@@ -133,8 +133,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: bench-*
           path: incoming

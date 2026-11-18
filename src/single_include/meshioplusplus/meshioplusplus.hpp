@@ -1,6 +1,7 @@
 // meshio++ -- single-header, header-only amalgamation of the C++ core.
 //
 //  License: MIT (meshio++ default license: LICENSE). Bundles pugixml (MIT).
+//  SPDX-License-Identifier: MIT
 //  Main authors: Vicente Mataix Ferrandiz
 //
 //  *** GENERATED FILE -- DO NOT EDIT BY HAND. ***

@@ -12,22 +12,26 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Least privilege (roadmap 3.14.3): a job that needs more says so itself.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # The ABI staleness gate below diffs the installed headers against the
           # previous release tag, so it needs tags and history. Without this it
           # degrades to a no-op that passes vacuously -- exactly the kind of
           # silently-inert check this whole change exists to stop shipping.
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: pre-commit/action@v3.0.1
-      - uses: actions/setup-node@v4
+      - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
       # Needs neither a TeX install nor a build: it regenerates the icon module
@@ -71,11 +75,11 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: cpp-tests-${{ matrix.mesh }}-${{ matrix.parallel }}
           max-size: 300M
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -85,7 +89,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -95,7 +99,7 @@ jobs:
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -254,11 +258,11 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: cpp-sanitize
           max-size: 300M
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -266,7 +270,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -319,11 +323,11 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: determinism
           max-size: 300M
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -335,7 +339,7 @@ jobs:
           sudo apt-get install -y libtbb-dev ninja-build
       - name: Digests agree across backends and thread counts
         run: tools/bench_ops.sh determinism.csv "SEQ OPENMP TBB" "1 4" -- --hash --tier S --runs 1
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: determinism
@@ -360,11 +364,11 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: instructions
           max-size: 300M
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -380,7 +384,7 @@ jobs:
         run: |
           python3 tools/bench_instructions.py --check benchmark/instructions_S.csv \
             --jobs 4 --out instructions.csv --summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: always()
         with:
           name: instructions
@@ -407,11 +411,11 @@ jobs:
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: cpp-install-${{ matrix.name }}
           max-size: 300M
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install dependencies
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
@@ -638,7 +642,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -646,7 +650,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -656,7 +660,7 @@ jobs:
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -675,7 +679,7 @@ jobs:
         run: python -m pip install --upgrade pip pybind11 cmake ninja pytest
       - name: Cache the KaHIP install
         id: kahip-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/kahip-install
           key: kahip-v3.25-${{ runner.os }}
@@ -748,12 +752,12 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -772,7 +776,7 @@ jobs:
           echo "commit=$CUTCELLS_COMMIT" >> "$GITHUB_OUTPUT"
       - name: Cache the CutCells install
         id: cc-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/cutcells-install
           key: cutcells-${{ steps.ccpin.outputs.commit }}-${{ runner.os }}
@@ -818,7 +822,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -828,14 +832,14 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -853,7 +857,7 @@ jobs:
           echo "commit=$QUADRIFLOW_COMMIT" >> "$GITHUB_OUTPUT"
       - name: Cache the QuadriFlow build
         id: qf-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/quadriflow-bin
           key: quadriflow-${{ steps.qfpin.outputs.commit }}-${{ runner.os }}
@@ -905,7 +909,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -913,14 +917,14 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -938,7 +942,7 @@ jobs:
           echo "commit=$CGNS_COMMIT" >> "$GITHUB_OUTPUT"
       - name: Cache the CGNS install
         id: cgns-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/cgns-install
           key: cgns-${{ steps.pin.outputs.version }}-${{ steps.pin.outputs.commit }}-${{ runner.os }}
@@ -992,7 +996,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -1002,14 +1006,14 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -1021,7 +1025,7 @@ jobs:
         run: python -m pip install --upgrade pip pybind11 cmake ninja pytest
       - name: Cache MMG
         id: mmg-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/mmg-install
           key: mmg-${{ runner.os }}-${{ hashFiles('build/build-mmg.sh') }}
@@ -1072,12 +1076,12 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -1140,12 +1144,12 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install build tools
@@ -1158,7 +1162,7 @@ jobs:
           python -m pip install --upgrade pip pybind11 cmake ninja pytest
       - name: Cache OpenCASCADE 7.9
         id: occt79-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: occt79
           key: occt-ci-7.9-${{ hashFiles('build/occt-recipe.sh', 'build/build-occt.sh', 'build/patches/OCCT-*.patch') }}
@@ -1202,7 +1206,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -1234,12 +1238,12 @@ jobs:
     env:
       SU2_TECIO_COMMIT: bc15466602a687d6fb796d5df7a12ce3fde0949a
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -1254,7 +1258,7 @@ jobs:
         run: python -m pip install --upgrade pip pybind11 cmake ninja pytest
       - name: Cache the TecIO build
         id: tecio-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/tecio
           key: tecio-su2-${{ env.SU2_TECIO_COMMIT }}-${{ runner.os }}
@@ -1320,7 +1324,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -1328,7 +1332,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -1338,7 +1342,7 @@ jobs:
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install native libraries
@@ -1357,7 +1361,7 @@ jobs:
         run: python -m pip install --upgrade pip cmake ninja
       - name: Cache the Kokkos install
         id: kokkos-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/kokkos-install
           key: kokkos-4.5.01-pic-${{ runner.os }}
@@ -1408,8 +1412,8 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install clang-tidy + native libraries
@@ -1439,8 +1443,8 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Regenerate + smoke-compile the single header
@@ -1449,7 +1453,7 @@ jobs:
         run: |
           git diff --exit-code src/single_include/ \
             || { echo '::error::src/single_include/ is out of date -- run ./tools/amalgamate.sh and commit.'; exit 1; }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: meshioplusplus-single-header
           path: src/single_include/meshioplusplus/meshioplusplus.hpp
@@ -1463,7 +1467,7 @@ jobs:
         os: [ubuntu-24.04, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -1477,7 +1481,7 @@ jobs:
         shell: bash
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -1489,7 +1493,7 @@ jobs:
         shell: bash
         run: bash tools/fetch-lfs.sh
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python-version }}
 
@@ -1591,7 +1595,7 @@ jobs:
     env:
       CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -1601,7 +1605,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -1614,7 +1618,7 @@ jobs:
         id: lfs
         run: bash tools/fetch-lfs.sh
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -1661,7 +1665,7 @@ jobs:
       # so re-runs reuse objects. compiler-check=content keeps hits valid across
       # runner image updates.
       - name: Set up ccache
-        uses: hendrikmuhs/ccache-action@v1.2
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
           key: coverage-${{ runner.os }}
           max-size: 500M
@@ -1752,7 +1756,7 @@ jobs:
         run: python tools/lcov_to_sonar.py cpp-coverage.info cpp-coverage-sonar.xml --root "$PWD"
       - name: Keep the coverage reports for SonarCloud
         if: steps.lfs.outputs.available != 'false'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: coverage-reports
           path: |
@@ -1775,7 +1779,7 @@ jobs:
 
       - name: Upload Python coverage
         if: ${{ env.CODECOV_TOKEN != '' && steps.lfs.outputs.available != 'false' }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
@@ -1784,7 +1788,7 @@ jobs:
 
       - name: Upload C++ coverage
         if: ${{ env.CODECOV_TOKEN != '' && steps.lfs.outputs.available != 'false' }}
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./cpp-coverage.info
@@ -1805,8 +1809,8 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -1862,13 +1866,13 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
       # has failed whole runs by answering "unable to handle this request due to load".
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -1918,7 +1922,7 @@ jobs:
       run:
         shell: bash -el {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       # Submodules: vendored Eigen (MED transpose) and nlohmann/json (the
@@ -1928,7 +1932,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -1942,7 +1946,7 @@ jobs:
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgl1 libglx-mesa0 libegl1 xvfb
-      - uses: mamba-org/setup-micromamba@v2
+      - uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2
         with:
           environment-name: pv
           # hdf5=1.14: conda-forge paraview 6.1.1 links libhdf5.so.310 but does
@@ -1984,15 +1988,15 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
 
@@ -2022,11 +2026,11 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -2056,7 +2060,7 @@ jobs:
         # The server supports both SDK majors (FastMCP in 1.x, MCPServer in 2.x).
         sdk: ["mcp>=1.2,<2", "mcp>=2,<3"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -2068,7 +2072,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -2078,7 +2082,7 @@ jobs:
         id: lfs
         run: bash tools/fetch-lfs.sh
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
 
@@ -2112,13 +2116,13 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
       # has failed whole runs by answering "unable to handle this request due to load".
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
@@ -2159,7 +2163,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Emscripten
         uses: ./.github/actions/setup-emsdk
@@ -2169,7 +2173,7 @@ jobs:
       - name: Build the meshio++ WASM package
         run: ./build/configure-wasm.sh --build
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -2294,7 +2298,7 @@ jobs:
           npx playwright test offline.spec.mjs
           VIEWER_OFFLINE_PAGE=/tmp/offline-quality.html npx playwright test offline.spec.mjs
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: failure()
         with:
           name: playwright-report
@@ -2310,8 +2314,8 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Build a wheel and check its contents
@@ -2344,13 +2348,13 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
       # has failed whole runs by answering "unable to handle this request due to load".
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.11"
 
@@ -2409,7 +2413,7 @@ jobs:
       matrix:
         series: ["5.13", "6.0"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
       - name: Find the series' Linux tarball and its Python
@@ -2423,7 +2427,7 @@ jobs:
           echo "python=$python" >> "$GITHUB_OUTPUT"
           echo "tag=${python/./}" >> "$GITHUB_OUTPUT"
           echo "ParaView ${{ matrix.series }}: $tarball (Python $python)"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ steps.pv.outputs.python }}
       - name: Install a GL runtime
@@ -2470,7 +2474,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -2478,7 +2482,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -2489,7 +2493,7 @@ jobs:
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install the GL/X11 stack Polyscope needs
@@ -2567,7 +2571,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
@@ -2577,7 +2581,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -2587,10 +2591,10 @@ jobs:
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@4c0cb0fce8556fdb04a90347310e5db8b1f98fb9 # v2
         with:
           version: "1"
       - name: Install native libraries
@@ -2668,7 +2672,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -2676,7 +2680,7 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
@@ -2686,10 +2690,10 @@ jobs:
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
-      - uses: r-lib/actions/setup-r@v2
+      - uses: r-lib/actions/setup-r@f9a764fea8d5c63df6ef9a5c7795bf7deb5d7e05 # v2
         with:
           use-public-rspm: true
       # testthat is the package's only dependency (no Imports at all), so it is
@@ -2774,7 +2778,7 @@ jobs:
     needs: [lint]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           lfs: false
       - name: Initialise submodules
@@ -2782,14 +2786,14 @@ jobs:
       - name: Compute the Git LFS cache key
         run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
       - name: Restore the Git LFS object cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .git/lfs
           key: lfs-${{ hashFiles('.lfs-assets-id') }}
       - name: Fetch Git LFS content
         id: lfs
         run: bash tools/fetch-lfs.sh
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - name: Install Octave and native libraries

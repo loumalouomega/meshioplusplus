@@ -1,6 +1,6 @@
 # Fuzzing and sanitizers
 
-meshio++ parses files from untrusted sources by design: its readers are reachable from the C ABI, the browser build and an MCP server. Two tools keep them honest: an **ASan + UBSan** build of the C++ test suite, run on every pull request, and a **libFuzzer** harness over every native reader, run on a schedule, whose findings become regression inputs that every pull request replays.
+meshio++ parses files from untrusted sources by design: its readers are reachable from the C ABI, the browser build and an MCP server. Report a vulnerability privately, as described in [SECURITY.md](https://github.com/loumalouomega/meshioplusplus/blob/master/SECURITY.md). Two tools keep them honest: an **ASan + UBSan** build of the C++ test suite, run on every pull request, and a **libFuzzer** harness over every native reader, run on a schedule, whose findings become regression inputs that every pull request replays.
 
 ## The contract under test
 

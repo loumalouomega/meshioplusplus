@@ -1,0 +1,52 @@
+name: scorecard
+
+# OpenSSF Scorecard (roadmap 3.14.4): scores the repository's own practices
+# (pinned actions, token permissions, dependency updates, a security policy,
+# fuzzing) weekly and on every push to master, and publishes the result for the
+# badge in README.md. Results also land in the Security tab as code scanning
+# alerts, which is where a regression of 3.14.1 to 3.14.3 shows up.
+
+on:
+  branch_protection_rule:
+  schedule:
+    - cron: "41 4 * * 3"  # weekly, Wednesday 04:41 UTC
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-24.04
+    permissions:
+      # Upload the results to the Security tab.
+      security-events: write
+      # Publish them (the badge) through GitHub's OIDC token.
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Run the analysis
+        uses: ossf/scorecard-action@62b2cac7ed8198b15735ed49ab1e5cf35480ba46 # v2.4.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      - name: Keep the SARIF file
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 14
+
+      - name: Upload to code scanning
+        uses: github/codeql-action/upload-sarif@9418214df1f2c4b8128c770156c409013b07d6b9 # v3
+        with:
+          sarif_file: results.sarif
