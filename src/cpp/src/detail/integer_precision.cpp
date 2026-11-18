@@ -41,10 +41,9 @@ struct IpKinds {
 // src/python/meshioplusplus/_helpers.py; test_integer_precision.py compares them.
 const std::map<std::string, IpKinds>& ip_formats() {
     static const std::map<std::string, IpKinds> m = {
-        {"cae", {false, true}},          {"ensight", {true, true}},
-        {"frd", {true, false}},          {"gid", {true, true}},
-        {"gltf", {true, false}},         {"marc_t19", {true, true}},
-        {"radioss_anim", {true, true}},  {"xplt", {true, true}},
+        {"cae", {false, true}},         {"ensight", {true, true}}, {"frd", {true, false}},
+        {"gid", {true, true}},          {"gltf", {true, false}},   {"marc_t19", {true, true}},
+        {"radioss_anim", {true, true}}, {"xplt", {true, true}},
     };
     return m;
 }
@@ -62,8 +61,9 @@ bool ip_inexact(const NDArray& rA) {
 }
 
 void ip_warn(const std::string& rFormat, const std::string& rName) {
-    log::warn("{}: the integer array '{}' is stored as floating point, so values above {} are rounded",
-              rFormat, rName, kExactFloatInteger);
+    log::warn(
+        "{}: the integer array '{}' is stored as floating point, so values above {} are rounded",
+        rFormat, rName, kExactFloatInteger);
 }
 
 }  // namespace

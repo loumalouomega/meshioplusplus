@@ -100196,10 +100196,9 @@ struct IpKinds {
 // src/python/meshioplusplus/_helpers.py; test_integer_precision.py compares them.
 const std::map<std::string, IpKinds>& ip_formats() {
     static const std::map<std::string, IpKinds> m = {
-        {"cae", {false, true}},          {"ensight", {true, true}},
-        {"frd", {true, false}},          {"gid", {true, true}},
-        {"gltf", {true, false}},         {"marc_t19", {true, true}},
-        {"radioss_anim", {true, true}},  {"xplt", {true, true}},
+        {"cae", {false, true}},         {"ensight", {true, true}}, {"frd", {true, false}},
+        {"gid", {true, true}},          {"gltf", {true, false}},   {"marc_t19", {true, true}},
+        {"radioss_anim", {true, true}}, {"xplt", {true, true}},
     };
     return m;
 }
@@ -100217,8 +100216,9 @@ bool ip_inexact(const NDArray& rA) {
 }
 
 void ip_warn(const std::string& rFormat, const std::string& rName) {
-    log::warn("{}: the integer array '{}' is stored as floating point, so values above {} are rounded",
-              rFormat, rName, kExactFloatInteger);
+    log::warn(
+        "{}: the integer array '{}' is stored as floating point, so values above {} are rounded",
+        rFormat, rName, kExactFloatInteger);
 }
 
 }  // namespace
@@ -168775,7 +168775,8 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
             // The nodes are written as a table of `max_node_id` rows, a NaN row for
             // each unused id, so a stray large id would ask for a table of that many
             // rows (roadmap 3.19).
-            const std::int64_t budget = std::max<std::int64_t>(10000000, 4 * static_cast<std::int64_t>(np));
+            const std::int64_t budget =
+                std::max<std::int64_t>(10000000, 4 * static_cast<std::int64_t>(np));
             if (max_node_id > budget)
                 throw WriteError("meshio++: libmesh: node id " + std::to_string(max_node_id - 1) +
                                  " would need a table of " + std::to_string(max_node_id) +
