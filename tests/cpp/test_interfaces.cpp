@@ -186,14 +186,9 @@ TEST(FindInterface, SignedGapFollowsTheChosenMasterSide) {
 TEST(FindInterface, ProximityMasterBReportsEveryFinerFacet) {
     // A has one coarse triangle on z = 0; B tiles the same triangle with four smaller ones.
     Mesh a = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
-    Mesh b = mt::make_mesh({{0, 0, 0},
-                            {1, 0, 0},
-                            {0, 1, 0},
-                            {0.5, 0, 0},
-                            {0.5, 0.5, 0},
-                            {0, 0.5, 0},
-                            {0.3, 0.3, -1}},
-                           "tetra", {{0, 5, 3, 6}, {3, 4, 1, 6}, {5, 2, 4, 6}, {3, 5, 4, 6}});
+    Mesh b = mt::make_mesh(
+        {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0.5, 0, 0}, {0.5, 0.5, 0}, {0, 0.5, 0}, {0.3, 0.3, -1}},
+        "tetra", {{0, 5, 3, 6}, {3, 4, 1, 6}, {5, 2, 4, 6}, {3, 5, 4, 6}});
     a.AddRegion(cell_region("part", {0}));
     b.AddRegion(cell_region("part", {0, 1, 2, 3}));
     RegionSelector part;
@@ -282,6 +277,35 @@ TEST(SplitInterface, DuplicatesOnlyTheOppositePointFanAndAddsWedge) {
     EXPECT_EQ(result.mMesh.Cells(1).Type(), "wedge");
     EXPECT_EQ(result.mMesh.PointData("temperature").Size(), 8u);
     EXPECT_EQ(result.mMesh.PointData("temperature").As<double>()[7], 2.0);
+}
+
+// Roadmap 5.18: the fans around a point are the connected components of its
+// cells under the uncut shared facets, so a third tetrahedron touching the
+// first two only at one point is split away from it even though no selected
+// facet reaches it; the selected cell keeps the point.
+TEST(SplitInterface, SeparatesAFanThatTouchesOnlyAtAPoint) {
+    Mesh mesh = mt::make_mesh({{0, 0, 0},
+                               {1, 0, 0},
+                               {0, 1, 0},
+                               {0, 0, 1},
+                               {0, 0, -1},
+                               {-1, -1, -1},
+                               {-1, -2, -1},
+                               {-2, -1, -1}},
+                              "tetra", {{0, 1, 2, 3}, {0, 2, 1, 4}, {0, 5, 6, 7}});
+    mesh.AddRegion(side_region("cut", {{0, 3}}));
+    RegionSelector cut;
+    cut.mName = "cut";
+    SplitInterfaceOptions options;
+    options.mAddCohesive = true;
+    const SplitInterfaceResult result = split_interface(mesh, cut, options);
+    EXPECT_EQ(result.mNumDuplicatedPoints, 4);
+    EXPECT_EQ(result.mNumCohesiveCells, 1);
+    EXPECT_EQ(result.mMesh.NumPoints(), 12u);
+    SplitInterfaceOptions plain;
+    const SplitInterfaceResult uncohesive = split_interface(mesh, cut, plain);
+    EXPECT_EQ(uncohesive.mNumDuplicatedPoints, 4);
+    EXPECT_EQ(uncohesive.mNumCohesiveCells, 0);
 }
 
 TEST(SplitInterface, EncodesTheSecondTwoDimensionalCohesiveTraceAsCellData) {

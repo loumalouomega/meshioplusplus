@@ -22,7 +22,6 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -30,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/offset_surface.hpp"
+#include "../detail/edge_use_table.hpp"
 #include "../detail/math_utils.hpp"
 #include "../detail/offset_normals.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
@@ -173,22 +173,23 @@ void ofs_shell(const Mesh& rMesh, const OfsSurface& rS, const std::vector<double
             }
         }
     // The boundary edges, in their face's direction, in face order.
-    std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
-    for (const OfsFace& r_f : rS.mFaces) {
+    detail::EdgeUseTable<std::int64_t> uses;
+    uses.Reserve(rS.mFaces.size() * 4);
+    for (std::size_t fi = 0; fi < rS.mFaces.size(); ++fi) {
+        const OfsFace& r_f = rS.mFaces[fi];
         const int k = r_f[3] >= 0 ? 4 : 3;
-        for (int i = 0; i < k; ++i) {
-            const std::int64_t a = r_f[static_cast<std::size_t>(i)];
-            const std::int64_t b = r_f[static_cast<std::size_t>((i + 1) % k)];
-            ++uses[{std::min(a, b), std::max(a, b)}];
-        }
+        for (int i = 0; i < k; ++i)
+            uses.Add(r_f[static_cast<std::size_t>(i)], r_f[static_cast<std::size_t>((i + 1) % k)],
+                     static_cast<std::int64_t>(fi));
     }
+    uses.Build();
     std::int64_t num_boundary = 0;
     for (const OfsFace& r_f : rS.mFaces) {
         const int k = r_f[3] >= 0 ? 4 : 3;
         for (int i = 0; i < k; ++i) {
             const std::int64_t a = r_f[static_cast<std::size_t>(i)];
             const std::int64_t b = r_f[static_cast<std::size_t>((i + 1) % k)];
-            if (uses[{std::min(a, b), std::max(a, b)}] != 1)
+            if (uses.CountOf(a, b) != 1)
                 continue;
             ++num_boundary;
             if (Rim) {

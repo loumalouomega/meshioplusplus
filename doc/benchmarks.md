@@ -1089,7 +1089,7 @@ Two things were tried for the superlinear growth and not kept. A sorted merge in
 | valence cap 72 | 0.17 s | 0.00° | 1.5e9 | 1 |
 | score × (1 + 0.5 × tets around both ends / 24) | 9.2 s | 0.33° | 7.1e3 | 0 |
 
-The cap is 25 times faster and ends in degenerate and, in two of the six configurations, inverted tetrahedra: the collapses it forbids are the ones that were absorbing the slivers. The penalty gives better quality and is 3.5 times slower, and a factor of 2 changed nothing against 0.5. Neither is a better default, so the rule stands as it was; a cap would be an option, a layout change to `DecimateVolumeOptions` ([roadmap](./roadmap.md#performance)). The unchanged rule's time at 16 cells a side (24,576 tets) is 38 s, with 234,410 rejected collapses; 30 cells a side was not run. The meshes are Kuhn cubes: the roadmap's graded Netgen mesh needs Netgen, which was not installed.
+The cap is 25 times faster and ends in degenerate and, in two of the six configurations, inverted tetrahedra: the collapses it forbids are the ones that were absorbing the slivers. The penalty gives better quality and is 3.5 times slower, and a factor of 2 changed nothing against 0.5. Neither is a better default, so the rule stands as it was and roadmap 5.1.4 is closed into the [non-goals](./roadmap.md#non-goals-and-decisions-taken) (a cap would be an option, a layout change to `DecimateVolumeOptions`). The unchanged rule's time at 16 cells a side (24,576 tets) is 38 s, with 234,410 rejected collapses; 30 cells a side was not run. The meshes are Kuhn cubes: the roadmap's graded Netgen mesh needs Netgen, which was not installed.
 
 ### Which byte-level kernels dominate a read (vector kernels, measured)
 
@@ -1275,7 +1275,7 @@ Roadmap 5.1.5. Forty-six rows were added to `meshioplusplus_bench_ops` for the o
 - **Point sets:** `hull` (the jittered cube's points), `delaunay_2d` (its bottom face), `point_normals` and `reconstruct_surface` (the surface's points, with no cells), and `registration` (point-to-point ICP of the shifted surface onto the surface, from the identity) and `register_landmarks` (the same points as landmarks).
 - **Volume:** `untangle` and `check_tetrahedra` (the cube with every 50th interior point pushed 1.5 lattice steps along a diagonal), `morph` (a smooth displacement field), `check_conformity` (the green-closed refinement of `undo_green`), `tessellate` (the quadratic cube, one level), `select` (a box) and `edit_regions` (union, intersection and difference of two overlapping boxes).
 - **Fields and data:** `estimate_error` (the Zienkiewicz-Zhu indicator of the smooth field, a tenth of the cells marked), `error_size` (sizes for half its global error), `metric` (`prepare_metric` on a graded diagonal metric with a gradation of 1.3), `colorize`, `coordinates` (cylindrical components of a rotating velocity), `blend` (the cube and its jittered twin, points included), `iga_sample` (the CAD box refined to the tier's lattice and elevated once), `stats`, `check_quality`, and the data operations `data_calc`, `data_condition`, `data_info`, `data_manage`, `data_integrate` and `tensor_invariants`.
-- **Ragged:** `clean_ragged` and `merge_ragged` (welded onto itself) on the polyhedron and polygon blocks of `reorder_ragged`, the rows [roadmap 5.18](./roadmap.md#ragged-clean-merge) is measured on.
+- **Ragged:** `clean_ragged` and `merge_ragged` (welded onto itself) on the polyhedron and polygon blocks of `reorder_ragged`, the rows [CSR staging in `clean` and `merge`](#csr-staging-in-clean-and-merge) is measured on.
 
 `cut` and `cut_quadrature` run only in a build with CutCells (`MESHIOPLUSPLUS_WITH_CUTCELLS`), as `tetrahedralize` runs only with Netgen; the gate's SEQ build has neither, so neither is gated. Five operations have no row. `remesh_quads` runs an external `quadriflow` or Instant Meshes executable as a subprocess, whose output the harness cannot pin. MMG's `adapt`, `mesh_domain`, `move` and `discretize_levelset` (and `metric_from_hessian` beside them) need the MMG add-on. `profile_solid` needs a CAD provider. `hollow` is `thicken` inward with its own default, the same path and the same digest. The sequence driver reads and writes files, so its cost is the formats' rows. Format detection (`detect_format`, `sniff_format`) is not an operation.
 
@@ -1495,6 +1495,140 @@ The gate sees instructions, not time: a change that trades instructions for memo
 **Added rows.** The 46 rows of [rows for every operation](#rows-for-every-operation) were added to the baseline from the same toolchain, with every existing row left as recorded. That run found every existing row inside the tolerance except `read_op2`, 1.6% below its count, which this change does not touch.
 
 **Re-recorded rows.** `octree_mesh_tet` (6,530,414,807 → 6,660,462,454, +2.0%) and `tetrahedralize_octree` (4,655,032,021 → 4,768,363,405, +2.4%) moved on purpose: the volume fix of `octree_mesh` ([octree_mesh](octree_mesh.md#the-tetrahedral-output)) is new work (collapse, cap, sliver and untangle passes, and a count of overlapping pairs) that every tetrahedral output now pays. The first version cost +6.5% and +7.8%; skipping the passes a mesh does not need, evaluating the optimiser's volume guard once per tetrahedron and sweep, and taking the longest edge from squared lengths brought it down without changing the output (the octree goldens pass unchanged). The rest is the passes' own scans and the sort behind the overlap count.
+
+### CSR staging in `clean` and `merge`
+
+Roadmap 5.18's first slice. `clean` staged a polyhedron block as a vector per face inside a vector per cell plus a key vector per cell, and a polygon block as a vector per row; `merge` did the same for its output blocks. Both now count in parallel, take a prefix sum, and fill one flat node buffer with offsets (`CleanStaged` in `clean.cpp`, `BuiltBlock::pflat`/`prow`/`pcell`/`pnode` in `merge.cpp`), and `clean_later_duplicates` takes the keys as one buffer with starts and lengths. The blocks reach the mesh through the CSR `AddPolygonBlock` and `AddPolyhedronBlock`.
+
+Measured (SEQ, NATIVE mesh backend, callgrind over the whole process, so the harness setup and the warmup run are included and only the differences compare): `clean_ragged` 481 M to 364 M, `merge_ragged` 213 M to 111 M, with `clean` (97.7 M to 97.9 M) and `merge` (58.8 M to 58.1 M) unchanged. At tier M, `clean_ragged` takes 0.25 s where it took 0.51 s (one run). The digests of `clean`, `clean_weld`, `merge`, `clean_ragged` and `merge_ragged` at tiers S and M equal those of the code before. `benchmark/instructions_S.csv` is not re-recorded here: it is recorded on CI's toolchain, and the two ragged rows only fall below it.
+
+### Text readers still on `operator>>`
+
+Roadmap 5.21's audit. Almost every `>>` left under `src/cpp/src/formats/` extracts from `detail::TextStream` (`detail/text_cursor.hpp`), which is the cursor's own parser behind a stream interface: the same values and fail state as `std::istringstream` in the classic locale, with no stream and no locale. Those sites are already on the cursor and were left as they are. What was left to find was a real `std::istream`, or a string, stream and vector built per row.
+
+| Site | Kind | Outcome |
+| --- | --- | --- |
+| `gmsh.cpp`, `gmsh_add_ghost_cells` (`$GhostElements` body) | per-entry loop, one entry per ghost element, on a copied string and a `std::istringstream` | left: moving it to `detail::TextStream`, or to the cursor's `IntPrefix`, made `read_gmsh22_ascii` 10% slower (36.4 M to 40.0 M instructions at tier S). Both call `std::from_chars` for integers, and a second caller of that template in `gmsh.cpp` stopped GCC inlining it into `read_elements`, where it had been the only caller (the profile shows the template out of line, 6.4 M, and `read_elements` falling from 13.0 M to 10.2 M); marking the ghost function non-inlinable changed nothing. A ghost list is rare and the section is read once, so it stays on `std::istringstream` |
+| `gmsh.cpp`, MSH 2.2 ASCII elements, sequential fallback | a string, a `TextStream` and a vector per element | left: `gmsh22_parallel_elements` takes every input worth chunking, so the loop only runs below `chunked_parse_worthwhile` or on a line the parallel parse rejects, where the per-line work is its error path |
+| `gmsh.cpp` lines 369, 1979, 2048, 3401; `off.cpp` counts line; `ply.cpp` header | header | left |
+| `off.cpp`, `obj.cpp`, `ply.cpp`, `vtk_read.cpp`, `ip.cpp`, `xdmf.cpp`, `ensight.cpp`, `openfoam.cpp` value and index loops | `TextStream` | already on the cursor's parsers |
+| `openfoam.cpp` `foam_field_class_from` | `std::istream` over the first 4 KiB | header |
+| `ensight.cpp` scratch case file in the series writer | `std::ifstream` over a few lines the writer just wrote | header |
+
+No reader changed. The instruction-count gate caught the one change tried (the ghost list), which is why the table records it as left: the gate, not the reading of the code, found that sharing a `from_chars` instantiation with the hot element loop costs more than the stream saves.
+
+### Edge uses as sorted runs
+
+Roadmap 5.20. The operations that count an undirected edge's uses (`boundary_layer`, `tetrahedralize`, `remesh`, `render`, `fit_cad` and the feature-fit helpers) already do so through `detail::EdgeUseTable`, a sorted flat table with no node per edge. The one site left on a `std::map` keyed by a vertex pair for this purpose was the boundary-edge count of `thicken` and `hollow` (`offset_surface.cpp`), now on the table. Output is unchanged (digests of the `thicken` row equal at tiers S and M) and the row is flat: 79.67 M to 79.51 M instructions at tier S (SEQ, callgrind over the whole process), so the map was not what that row spends its time in. The other pair-keyed maps (`segment`, `refine_patches`, `quad_layout`, `mesh_cad`) are not edge-use counts and belong to the container profile of roadmap 5.19.
+
+### Profiling the CAD mesher's containers
+
+Roadmap 5.19's profile: callgrind at tier S (SEQ, NATIVE mesh backend, one run, whole process), summing the functions of each kind.
+
+| Row | Instructions | `std::_Rb_tree` | `std::function` calls | allocator (`malloc`, `free`) | largest functions |
+| --- | --- | --- | --- | --- | --- |
+| `mesh_cad_surface_quads` | 682.6 M | 2.5% | 0.8% | 15.3% | `iga_eval_point` 12.3%, `max_weight_matching` 10.2%, `atan2` 5.5%, `memset` 5.5%, `iga_basis_ders` 5.3% |
+| `mesh_cad_surface_untangle` | 576.2 M | 0.2% | 1.9% | 7.1% | |
+| `fit_cad_network` | 599.4 M | 0.5% | 1.7% | 4.4% | |
+
+The maps are not what these rows spend their time in, so none of them changed and no output moved. The allocator's share is spread over vectors (the callers resolve to the PLT and are not attributed): the rows are dominated by the B-spline evaluation and the matching, which are arithmetic. 5.19 is closed into the [non-goals](./roadmap.md#non-goals-and-decisions-taken) with these numbers; a row where a map shows above 5% reopens it.
+
+### `split_interface` on flat tables
+
+Roadmap 5.18's remainder. The row `split_interface` (the upper half's facets on the planar interface of `with_halves`, split with cohesive cells and then plainly; tier S: 10,368 tetrahedra) was added to `bench_ops.cpp`. Before the change, callgrind (SEQ, one run, whole process) read 829 M instructions: `split_interface` 89% inclusive, `if_split_facets` 31%, the allocator about 40%. The per-cell vector copy the item had named was under 0.5% of it; the cost was a `std::map` from each facet's sorted corners to a vector of owners, each owner with its own node vector, a `std::map` of `std::set`s per point for the dual graph, and two more maps per point for the component and the duplicate of each cell.
+
+Now `if_split_facets` fills one key buffer, one node buffer and one owner array, sorts the records by key (the order the map iterated in) and then by cell and facet, and keeps one owner per cell per key; `Find` is a binary search over the groups. The dual graph is a union-find over the cells around each point (a CSR built once, ascending, a cell once per point), the components are numbered by their smallest cell, and the keeper and the duplicates are chosen in the order they were. A point with no duplicate returns at once from `remap_node`.
+
+Tier S: 829 M to 333 M instructions (−60%); wall time 0.042 s to 0.015 s at tier S and 1.1 s to 0.37 s at tier M (SEQ, one run). The digests (the cohesive and the plain split) are unchanged at both tiers (`ee930186094bf29b`, `380fc09595077539`), and `SplitInterface.SeparatesAFanThatTouchesOnlyAtAPoint` pins the case the benchmark does not reach (cells that meet only at a point are split even when no selected facet touches them) on the old and the new code alike. `benchmark/instructions_S.csv` has no row for it yet: it is recorded on CI's toolchain.
+
+### Octree cut points on the skin
+
+Roadmap 5.17.2. The `StuffCut` callback of `octree_mesh_stuffed_lattice` (`octree_mesh_tetra.cpp`) takes the first skin crossing from the inside end that brings the winding number to the threshold, and bisects on the winding number (40 `fast_winding` evaluations) when none does. Counted at tier S on `octree_mesh_tet` (one run, warmup included): 6,346 calls, 126 reaching the bisection (2%), 112 of them with no crossing at all; `tetrahedralize_octree` never reaches it in 11,260 calls. The 112 are lattice edges of one twelfth of the box's side lying inside a face of the box, between two vertices that were snapped onto the skin but kept winding numbers of about 1 and 0: the edge is coplanar with the skin's triangles, which `tri_bvh_segment_hits` skips (`det` under 1e-300), and the bisection chases the noise of the winding number on the plane. Every point of such an edge is on the skin, so the callback now takes its middle when it has no crossing and both ends are within the on-skin distance of the skin (two closest-point queries in place of up to 40 winding numbers).
+
+`octree_mesh_tet` falls from 11.04 G to 9.52 G instructions at tier S (−13.8%, whole process) with the digest unchanged (`a68e84c5009cd938`); at tier M the digests of `octree_mesh_tet`, `octree_mesh_hex`, `octree_mesh_hex_graded` and `octree_mesh_castellated` are unchanged and the wall time is within the noise of one run (4.08 s against 3.93 s), so the gain is where the skin is a larger share of the cells. `tetrahedralize_octree` (8.19 G) and the octree goldens do not move.
+
+What is left is 14 calls of 6,346 (7 distinct edges, the warmup repeating each): every one has a single crossing at `t` of zero, the start vertex itself on the skin, and a stored winding number there that is not an integer (1.5002 and 1.249, where a vertex on a crease takes a fraction of a turn). It is neither a pair of crossings cancelled by the merge of `tri_bvh_segment_hits` nor a rounding of the threshold, the two things the probe was written to tell apart: the winding number along such an edge varies continuously from a fraction to zero, which is what the bisection solves. They are about 2% of the row (the in-skin edges were 89% of the 16% share), so the bisection stays and roadmap 5.17.2 is closed.
+
+### Containers: a study
+
+Roadmap 5.22.1. `src/cpp/benchmark/bench_containers.cpp` (built with `-DMESHIOPLUSPLUS_BUILD_BENCHMARKS=ON` as `meshioplusplus_bench_containers`; `tools/bench_containers.sh BINARY [OUT.csv]` runs each workload and container in a process of its own) times the core's workloads on the standard container and on the candidates, with a checksum the containers of a workload must share: the script fails on a mismatch. GCC 13.3, `-O3`, Release, a 2.1 GHz Xeon, 4 cores, one thread, a warmup and the median of five runs. The resident-set column is the process's peak, which includes the workload's input (about 5 MB at n = 10,000, 21 to 23 MB at 160,000 and 62 to 76 MB at 750,000 before any container), so only the differences between rows of one workload mean something. Clang is installed here but MSVC and Emscripten are not, so those columns of 5.22.1 were not run, and `ankerl::unordered_dense` is not measured (no vendored copy, and no download was assumed): `flat_map` is the weld's open-addressing table made generic (linear probing, one array, a load factor of at most one half), `id_index_map` a vector indexed by `id - min` when the ids are dense and that table otherwise.
+
+**`edge_count`** — uses counted per undirected edge of a triangulated grid of n points. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `edge_use_table` | 1.45 (7) | 52.73 (67) | 612.84 (293) |
+| `flat_map_packed` | 0.90 (7) | 42.39 (55) | 213.97 (166) |
+| `std_map_pair` | 2.89 (6) | 94.18 (40) | 580.01 (176) |
+| `std_unordered_map_packed` | 2.42 (5) | 48.37 (34) | 374.27 (129) |
+
+**`flags`** — a flag per entry, a random half set, all tested. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `vector_bool` | 0.02 (5) | 0.37 (23) | 1.61 (62) |
+| `vector_uint8` | 0.01 (5) | 0.15 (23) | 0.79 (62) |
+
+**`idmap_dense`** — a reader's id to index, ids 1..n in file order, build then 8n lookups. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `flat_map` | 0.53 (5) | 13.36 (27) | 113.74 (103) |
+| `id_index_map` | 0.19 (5) | 6.62 (28) | 49.34 (109) |
+| `std_map` | 11.43 (5) | 711.40 (24) | 5880.23 (101) |
+| `std_unordered_map` | 0.85 (5) | 23.53 (21) | 129.85 (94) |
+| `std_unordered_map_reserved` | 0.80 (5) | 23.68 (21) | 102.39 (84) |
+
+**`idmap_sparse`** — the same with ids `7i + 3` shuffled. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `flat_map` | 0.55 (5) | 14.74 (27) | 109.63 (121) |
+| `id_index_map` | 0.66 (5) | 14.63 (27) | 116.83 (121) |
+| `std_map` | 13.24 (5) | 489.95 (25) | 6836.55 (101) |
+| `std_unordered_map` | 0.97 (5) | 21.07 (21) | 179.61 (94) |
+| `std_unordered_map_reserved` | 0.53 (5) | 14.99 (21) | 99.89 (84) |
+
+**`ordered_iteration`** — n unique keys inserted in random order, then walked in key order. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `sorted_vector` | 0.64 (5) | 11.50 (23) | 60.88 (62) |
+| `std_map` | 2.31 (5) | 85.59 (24) | 741.21 (80) |
+
+**`point_key`** — the weld's 3-integer grid cell, first-seen numbering. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `flat_map` | 0.34 (5) | 8.97 (36) | 87.06 (108) |
+| `std_unordered_map` | 0.66 (5) | 19.92 (23) | 181.75 (77) |
+
+**`string_key`** — the twelve cell-type names, n lookups. Median milliseconds (peak resident MB) at n = 10,000 / 160,000 / 750,000.
+
+| Container | 10,000 | 160,000 | 750,000 |
+| --- | --- | --- | --- |
+| `sorted_array` | 0.36 (5) | 5.56 (23) | 28.34 (76) |
+| `std_map` | 0.48 (5) | 7.48 (23) | 33.91 (76) |
+| `std_unordered_map` | 0.20 (5) | 3.73 (23) | 17.73 (76) |
+
+What it says (the decision taken from it, and from the rows below, is in the [non-goals](./roadmap.md#non-goals-and-decisions-taken)):
+
+- **Id maps.** `std::map` is 15 to 60 times slower than the hash tables at 750,000 ids (5.9 s against 0.1 s), so any reader that keeps one is the first thing to move. For dense ids the dense `id_index_map` is 2.6 times faster than `std::unordered_map` at 750,000 (49 ms against 130 ms) and the flat table 1.1 times; for sparse shuffled ids the flat table and `std::unordered_map` with `reserve` are the same (110 ms and 100 ms) against 180 ms without it, so the reservation is most of the gain there and costs a line.
+- **Edge-pair counts.** The flat table with a packed key is the fastest at 750,000 (214 ms against 374 for `std::unordered_map` and 580 for `std::map`), and `EdgeUseTable`, a sort of every use, is the slowest (613 ms, 293 MB): it pays for keeping the uses of an edge in insertion order, which a count does not need.
+- **Point keys** (the weld's table): the flat table is twice as fast as `std::unordered_map` (87 ms against 182).
+- **Build once, then iterate in order:** a sorted vector is 12 times faster than `std::map` (61 ms against 741) and uses 18 MB less.
+- **`std::vector<bool>`** is twice as slow as `std::vector<std::uint8_t>` to set and test, and takes the same space at these sizes (the 62 MB is the input).
+- **Small string tables** (twelve entries): `std::unordered_map` is the fastest, ahead of the sorted array, so the cell-type tables are left alone.
+
+The reader rows that decide whether any of this matters for the readers' id maps are in [reader rows with sparse, shuffled ids](#reader-rows-with-sparse-shuffled-ids): they take 1 to 2% of those rows.
+
+### Reader rows with sparse, shuffled ids
+
+Roadmap 5.22.2. The harness's writers number points and elements 1..n in file order, so the readers' maps from a file id to an index never left their easy case. `read_gmsh22_sparse`, `read_abaqus_sparse` and `read_nastran_sparse` (`bench_ops.cpp`) write the same file as `read_gmsh22_ascii`, `read_abaqus` and `read_nastran` and rewrite it before the timed read: every point and element id `i` becomes `7 i + 3` and the point lines and element lines are permuted (a seeded Fisher-Yates, so the file is the same on every standard library; Nastran's `GRID*` line and its continuation move together and its 8- and 16-character fields keep their width). The setup reads both files and fails the row unless they have the same point and cell counts. The digests differ from the dense rows' because the point order differs, and are stable between invocations.
+
+Tier S, instructions of the row alone (Cachegrind with the row's run bracketed, as the gate does): `read_gmsh22_ascii` 40.0 M and `read_gmsh22_sparse` 41.1 M (+2.5%), `read_abaqus` 44.1 M and `read_abaqus_sparse` 45.1 M (+2.1%), `read_nastran` 145.6 M and `read_nastran_sparse` 144.6 M (−0.7%). Tier M, wall time, median of three runs, SEQ: 63 ms and 60 ms (Gmsh), 77 ms and 71 ms (Abaqus), 278 ms and 281 ms (Nastran). A hash table (`_Hashtable`) takes 0.9% of the Gmsh process, 2.4% of the Abaqus and 1.3% of the Nastran one (callgrind over the whole process, setup included), a `std::map` 0% to 1.2%, and the allocator 16% to 23%, behind the parse and the vectors rather than the maps.
+
+So the id map is not what these readers spend their time on, dense or sparse: a container that is 2 to 3 times faster on the microbenchmark above can recover at most the 1 to 2% the map takes. The new rows are not in `benchmark/instructions_S.csv` (the gate reports them as new rows; they are recorded on CI's toolchain).
 
 ## Landing a performance change
 

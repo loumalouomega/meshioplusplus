@@ -243954,16 +243954,19 @@ std::int64_t clean_build_weld_map(const NDArray& rPts, std::size_t n, std::size_
     return static_cast<std::int64_t>(rRepSource.size());
 }
 
-// Keep-first duplicate flags per cell: the non-degenerate cells' keys
-// (`rKeys`, empty when duplicates are kept) grouped by the sort-based table
+// Keep-first duplicate flags per cell: the non-degenerate cells' keys (cell
+// c's is `rKeys[rKeyStart[c] .. rKeyStart[c] + rKeyLen[c])`; `rKeyStart` is
+// empty when duplicates are kept) grouped by the sort-based table
 // (detail/slot_runs.hpp), every member of a run but its first flagged. The
 // same cells a serial sweep through a hash set of keys drops.
-std::vector<std::uint8_t> clean_later_duplicates(
-    const std::vector<std::vector<std::int64_t>>& rKeys,
-    const std::vector<std::uint8_t>& rDegenerate, std::size_t NumIds) {
+std::vector<std::uint8_t> clean_later_duplicates(const std::vector<std::int64_t>& rKeys,
+                                                 const std::vector<std::uint64_t>& rKeyStart,
+                                                 const std::vector<std::uint64_t>& rKeyLen,
+                                                 const std::vector<std::uint8_t>& rDegenerate,
+                                                 std::size_t NumIds) {
     const std::size_t nc = rDegenerate.size();
     std::vector<std::uint8_t> duplicate(nc, 0);
-    if (rKeys.empty())
+    if (rKeyStart.empty())
         return duplicate;
     std::vector<std::uint64_t> live;
     live.reserve(nc);
@@ -243972,17 +243975,74 @@ std::vector<std::uint8_t> clean_later_duplicates(
             live.push_back(c);
     const std::size_t nl = live.size();
     std::vector<std::uint64_t> length(nl);
-    parallel_for_bw(nl, [&](std::size_t j) { length[j] = rKeys[live[j]].size(); });
+    parallel_for_bw(nl, [&](std::size_t j) { length[j] = rKeyLen[live[j]]; });
     std::vector<std::uint64_t> offset(nl + 1);
     offset[nl] = parallel_exclusive_scan(length.data(), nl, offset.data(), std::uint64_t{0});
     std::vector<std::int64_t> values(offset[nl]);
     parallel_for(nl, [&](std::size_t j) {
-        std::copy(rKeys[live[j]].begin(), rKeys[live[j]].end(), values.begin() + offset[j]);
+        const std::int64_t* src = rKeys.data() + rKeyStart[live[j]];
+        std::copy(src, src + length[j], values.begin() + offset[j]);
     });
     const detail::SlotRuns runs = detail::group_int_rows(values, offset, NumIds);
     const std::vector<std::uint8_t> later = detail::later_duplicates(runs, nl);
     parallel_for_bw(nl, [&](std::size_t j) { duplicate[live[j]] = later[j]; });
     return duplicate;
+}
+
+// Welded ragged staging (roadmap 5.18): the cells' welded node ids in one
+// flat buffer, `mRow` the per-row (polygon, or polyhedron face) offsets into
+// it and, for a polyhedron block, `mCell` each cell's first row. A cell's
+// slice is written by one task only.
+struct CleanStaged {
+    std::vector<std::int64_t> mFlat;
+    std::vector<std::uint64_t> mRow;   // rows + 1
+    std::vector<std::uint64_t> mCell;  // cells + 1 (polyhedra), else empty
+    std::vector<std::uint64_t> mNode;  // cells + 1, each cell's first node in mFlat
+};
+
+CleanStaged clean_stage_ragged(const Mesh::CellView& rCells,
+                               const std::vector<std::int64_t>& rRep) {
+    CleanStaged st;
+    const std::size_t nc = rCells.NumCells();
+    const bool poly = rCells.IsPolyhedron();
+    std::vector<std::uint64_t> nfaces(nc), nnodes(nc);
+    parallel_for_bw(nc, [&](std::size_t c) {
+        if (poly) {
+            std::uint64_t total = 0;
+            const std::size_t nf = rCells.NumFaces(c);
+            for (std::size_t f = 0; f < nf; ++f)
+                total += rCells.Face(c, f).second;
+            nfaces[c] = nf;
+            nnodes[c] = total;
+        } else {
+            nfaces[c] = 1;
+            nnodes[c] = rCells.RowSize(c);
+        }
+    });
+    st.mNode.resize(nc + 1);
+    st.mNode[nc] = parallel_exclusive_scan(nnodes.data(), nc, st.mNode.data(), std::uint64_t{0});
+    st.mCell.resize(nc + 1);
+    st.mCell[nc] = parallel_exclusive_scan(nfaces.data(), nc, st.mCell.data(), std::uint64_t{0});
+    st.mFlat.resize(st.mNode[nc]);
+    st.mRow.resize(st.mCell[nc] + 1);
+    st.mRow[st.mCell[nc]] = st.mNode[nc];
+    parallel_for(nc, [&](std::size_t c) {
+        std::uint64_t pos = st.mNode[c];
+        if (poly) {
+            for (std::size_t f = 0; f < nfaces[c]; ++f) {
+                const auto face = rCells.Face(c, f);
+                st.mRow[st.mCell[c] + f] = pos;
+                for (std::size_t k = 0; k < face.second; ++k)
+                    st.mFlat[pos++] = rRep[static_cast<std::size_t>(face.first[k])];
+            }
+        } else {
+            st.mRow[c] = pos;
+            const std::int64_t* row = rCells.Row(c);
+            for (std::size_t k = 0; k < nnodes[c]; ++k)
+                st.mFlat[pos++] = rRep[static_cast<std::size_t>(row[k])];
+        }
+    });
+    return st;
 }
 
 }  // namespace
@@ -244017,10 +244077,11 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
         std::string type;
         int kind;  // 0 rect, 1 polygon, 2 polyhedron
         std::size_t npc = 0;
-        std::vector<std::int64_t> rect_conn;                        // kind 0, flat (kept*npc)
-        std::vector<std::vector<std::int64_t>> poly_rows;           // kind 1
-        std::vector<std::vector<std::vector<std::int64_t>>> polyh;  // kind 2
-        std::vector<std::int64_t> kept_cells;                       // old local indices kept
+        std::vector<std::int64_t> rect_conn;      // kind 0, flat (kept*npc)
+        std::vector<std::int64_t> poly_flat;      // kinds 1 and 2: CSR nodes
+        std::vector<std::int64_t> poly_rows{0};   // row (face) offsets
+        std::vector<std::int64_t> poly_faces{0};  // kind 2: cell offsets
+        std::vector<std::int64_t> kept_cells;     // old local indices kept
     };
     std::vector<BlockOut> blocks;
     std::vector<char> rep_used(static_cast<std::size_t>(W), 0);
@@ -244051,22 +244112,34 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
             // Phase A (parallel): each cell's welded faces, its degenerate
             // test and its duplicate key -- the smallest id, the face count,
             // then every face's length and sorted distinct ids, faces sorted.
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(nc);
+            const CleanStaged st = clean_stage_ragged(cb, weld_rep);
             std::vector<std::uint8_t> degenerate(nc, 0);
-            std::vector<std::vector<std::int64_t>> keys(rOpts.drop_duplicate_cells ? nc : 0);
+            // A key is at most 2 + faces + nodes long (distinct ids only
+            // shrink it); cell c's starts at its first node plus two words
+            // and one per face before it.
+            std::vector<std::uint64_t> key_start, key_len;
+            std::vector<std::int64_t> key_flat;
+            if (rOpts.drop_duplicate_cells) {
+                key_start.resize(nc);
+                key_len.assign(nc, 0);
+                for (std::size_t c = 0; c < nc; ++c)
+                    key_start[c] = st.mNode[c] + st.mCell[c] + 2 * c;
+                key_flat.resize(st.mNode[nc] + st.mCell[nc] + 2 * nc);
+            }
             parallel_for(nc, [&](std::size_t c) {
-                std::vector<std::vector<std::int64_t>>& cell = cells[c];
-                cell.resize(cb.NumFaces(c));
+                const std::uint64_t f0 = st.mCell[c], f1 = st.mCell[c + 1];
+                const auto face_begin = [&](std::uint64_t f) {
+                    return st.mFlat.begin() + static_cast<std::ptrdiff_t>(st.mRow[f]);
+                };
+                const auto face_end = [&](std::uint64_t f) {
+                    return st.mFlat.begin() + static_cast<std::ptrdiff_t>(st.mRow[f + 1]);
+                };
                 bool degen = false;
-                for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
-                    auto face = cb.Face(c, f);
-                    cell[f].reserve(face.second);
-                    for (std::size_t k = 0; k < face.second; ++k)
-                        cell[f].push_back(weld_rep[static_cast<std::size_t>(face.first[k])]);
-                    if (rOpts.drop_degenerate) {
+                if (rOpts.drop_degenerate) {
+                    for (std::uint64_t f = f0; f < f1; ++f) {
                         // Per-thread scratch: a sorted copy to count distinct nodes.
                         static thread_local std::vector<std::int64_t> u;
-                        u.assign(cell[f].begin(), cell[f].end());
+                        u.assign(face_begin(f), face_end(f));
                         std::sort(u.begin(), u.end());
                         if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) <
                             3)
@@ -244078,8 +244151,9 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     detail::CellRings rings;
                     std::vector<Vec3> coords;
                     rings.mFaceStart.push_back(0);
-                    for (const std::vector<std::int64_t>& face : cell) {
-                        for (std::int64_t id : face) {
+                    for (std::uint64_t f = f0; f < f1; ++f) {
+                        for (auto it = face_begin(f); it != face_end(f); ++it) {
+                            const std::int64_t id = *it;
                             std::uint32_t local = 0;
                             while (local < rings.mNodes.size() && rings.mNodes[local] != id)
                                 ++local;
@@ -244106,26 +244180,53 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                 degenerate[c] = degen ? 1 : 0;
                 if (degen || !rOpts.drop_duplicate_cells)
                     return;
-                std::vector<std::vector<std::int64_t>> faces(cell);
+                // Duplicate key: the smallest id, the face count, then every
+                // face's length and sorted distinct ids, the faces sorted.
+                // Per-thread scratch: the sorted faces back to back, and
+                // their order.
+                static thread_local std::vector<std::int64_t> sorted;
+                static thread_local std::vector<std::uint64_t> first, last, order;
+                sorted.clear();
+                first.clear();
+                last.clear();
                 std::int64_t smallest = std::numeric_limits<std::int64_t>::max();
-                for (std::vector<std::int64_t>& face : faces) {
-                    std::sort(face.begin(), face.end());
-                    face.erase(std::unique(face.begin(), face.end()), face.end());
-                    if (!face.empty())
-                        smallest = std::min(smallest, face.front());
+                for (std::uint64_t f = f0; f < f1; ++f) {
+                    const std::size_t begin = sorted.size();
+                    sorted.insert(sorted.end(), face_begin(f), face_end(f));
+                    std::sort(sorted.begin() + static_cast<std::ptrdiff_t>(begin), sorted.end());
+                    sorted.erase(std::unique(sorted.begin() + static_cast<std::ptrdiff_t>(begin),
+                                             sorted.end()),
+                                 sorted.end());
+                    first.push_back(begin);
+                    last.push_back(sorted.size());
+                    if (sorted.size() > begin)
+                        smallest = std::min(smallest, sorted[begin]);
                 }
-                std::sort(faces.begin(), faces.end());
-                std::vector<std::int64_t>& key = keys[c];
-                key.push_back(smallest);
-                key.push_back(static_cast<std::int64_t>(faces.size()));
-                for (const std::vector<std::int64_t>& face : faces) {
-                    key.push_back(static_cast<std::int64_t>(face.size()));
-                    key.insert(key.end(), face.begin(), face.end());
+                order.resize(f1 - f0);
+                for (std::size_t i = 0; i < order.size(); ++i)
+                    order[i] = i;
+                const auto face_less = [&](std::uint64_t x, std::uint64_t y) {
+                    return std::lexicographical_compare(
+                        sorted.begin() + static_cast<std::ptrdiff_t>(first[x]),
+                        sorted.begin() + static_cast<std::ptrdiff_t>(last[x]),
+                        sorted.begin() + static_cast<std::ptrdiff_t>(first[y]),
+                        sorted.begin() + static_cast<std::ptrdiff_t>(last[y]));
+                };
+                std::sort(order.begin(), order.end(), face_less);
+                std::int64_t* key = key_flat.data() + key_start[c];
+                std::int64_t* out_k = key;
+                *out_k++ = smallest;
+                *out_k++ = static_cast<std::int64_t>(order.size());
+                for (const std::uint64_t i : order) {
+                    *out_k++ = static_cast<std::int64_t>(last[i] - first[i]);
+                    out_k = std::copy(sorted.begin() + static_cast<std::ptrdiff_t>(first[i]),
+                                      sorted.begin() + static_cast<std::ptrdiff_t>(last[i]), out_k);
                 }
+                key_len[c] = static_cast<std::uint64_t>(out_k - key);
             });
             // Phase B: keep-first duplicates among the non-degenerate cells.
-            const std::vector<std::uint8_t> duplicate =
-                clean_later_duplicates(keys, degenerate, static_cast<std::size_t>(W));
+            const std::vector<std::uint8_t> duplicate = clean_later_duplicates(
+                key_flat, key_start, key_len, degenerate, static_cast<std::size_t>(W));
             // Phase C (serial, stored order): counts and the kept cells.
             for (std::size_t c = 0; c < nc; ++c) {
                 if (degenerate[c]) {
@@ -244136,35 +244237,44 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     ++res.mCellsDroppedDuplicate;
                     continue;
                 }
-                for (const std::vector<std::int64_t>& face : cells[c])
-                    for (std::int64_t r : face)
-                        rep_used[static_cast<std::size_t>(r)] = 1;
-                bo.polyh.push_back(std::move(cells[c]));
+                for (std::uint64_t f = st.mCell[c]; f < st.mCell[c + 1]; ++f) {
+                    for (std::uint64_t i = st.mRow[f]; i < st.mRow[f + 1]; ++i) {
+                        rep_used[static_cast<std::size_t>(st.mFlat[i])] = 1;
+                        bo.poly_flat.push_back(st.mFlat[i]);
+                    }
+                    bo.poly_rows.push_back(static_cast<std::int64_t>(bo.poly_flat.size()));
+                }
+                bo.poly_faces.push_back(static_cast<std::int64_t>(bo.poly_rows.size() - 1));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
         } else if (cb.IsRagged()) {
             bo.kind = 1;
             // Phase A (parallel): welded rows, the degenerate test and the
             // duplicate key (the sorted row).
-            std::vector<std::vector<std::int64_t>> rows(nc);
+            const CleanStaged st = clean_stage_ragged(cb, weld_rep);
             std::vector<std::uint8_t> degenerate(nc, 0);
-            std::vector<std::vector<std::int64_t>> keys(rOpts.drop_duplicate_cells ? nc : 0);
+            // The key is the sorted row, as long as the row.
+            std::vector<std::uint64_t> key_start, key_len;
+            std::vector<std::int64_t> key_flat;
+            if (rOpts.drop_duplicate_cells) {
+                key_start.assign(st.mNode.begin(), st.mNode.end() - 1);
+                key_len.assign(nc, 0);
+                key_flat.resize(st.mNode[nc]);
+            }
             parallel_for(nc, [&](std::size_t c) {
-                std::vector<std::int64_t>& row = rows[c];
-                row.resize(cb.RowSize(c));
-                for (std::size_t k = 0; k < cb.RowSize(c); ++k)
-                    row[k] = weld_rep[static_cast<std::size_t>(cb.Row(c)[k])];
+                const std::int64_t* row = st.mFlat.data() + st.mNode[c];
+                const std::size_t sz = st.mNode[c + 1] - st.mNode[c];
                 if (rOpts.drop_degenerate) {
                     static thread_local std::vector<std::int64_t> u;
-                    u.assign(row.begin(), row.end());
+                    u.assign(row, row + sz);
                     std::sort(u.begin(), u.end());
                     if (static_cast<std::size_t>(std::unique(u.begin(), u.end()) - u.begin()) < 3) {
                         degenerate[c] = 1;  // fewer than three distinct nodes is not a polygon
                         return;
                     }
                     static thread_local std::vector<Vec3> coords;
-                    coords.resize(row.size());
-                    for (std::size_t k = 0; k < row.size(); ++k)
+                    coords.resize(sz);
+                    for (std::size_t k = 0; k < sz; ++k)
                         coords[k] = detail::read_point(
                             points, dim, rep_source[static_cast<std::size_t>(row[k])]);
                     if (!(detail::polygon_area(coords.data(), coords.size()) > eps)) {
@@ -244173,12 +244283,14 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     }
                 }
                 if (rOpts.drop_duplicate_cells) {
-                    keys[c] = row;
-                    std::sort(keys[c].begin(), keys[c].end());
+                    std::int64_t* key = key_flat.data() + key_start[c];
+                    std::copy(row, row + sz, key);
+                    std::sort(key, key + sz);
+                    key_len[c] = sz;
                 }
             });
-            const std::vector<std::uint8_t> duplicate =
-                clean_later_duplicates(keys, degenerate, static_cast<std::size_t>(W));
+            const std::vector<std::uint8_t> duplicate = clean_later_duplicates(
+                key_flat, key_start, key_len, degenerate, static_cast<std::size_t>(W));
             for (std::size_t c = 0; c < nc; ++c) {
                 if (degenerate[c]) {
                     ++res.mCellsDroppedDegenerate;
@@ -244188,9 +244300,11 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                     ++res.mCellsDroppedDuplicate;
                     continue;
                 }
-                for (std::int64_t r : rows[c])
-                    rep_used[static_cast<std::size_t>(r)] = 1;
-                bo.poly_rows.push_back(std::move(rows[c]));
+                for (std::uint64_t i = st.mNode[c]; i < st.mNode[c + 1]; ++i) {
+                    rep_used[static_cast<std::size_t>(st.mFlat[i])] = 1;
+                    bo.poly_flat.push_back(st.mFlat[i]);
+                }
+                bo.poly_rows.push_back(static_cast<std::int64_t>(bo.poly_flat.size()));
                 bo.kept_cells.push_back(static_cast<std::int64_t>(c));
             }
         } else {
@@ -244342,19 +244456,15 @@ CleanResult clean(const Mesh& rMesh, const CleanOptions& rOpts) {
                 cd[i] = new_point[static_cast<std::size_t>(bo.rect_conn[i])];
             });
             out.AddCellBlock(bo.type, std::move(conn));
-        } else if (bo.kind == 1) {
-            parallel_for_bw(bo.poly_rows.size(), [&](std::size_t r) {
-                for (std::int64_t& v : bo.poly_rows[r])
-                    v = new_point[static_cast<std::size_t>(v)];
-            });
-            out.AddPolygonBlock(bo.type, std::move(bo.poly_rows));
         } else {
-            parallel_for_bw(bo.polyh.size(), [&](std::size_t ci) {
-                for (auto& face : bo.polyh[ci])
-                    for (std::int64_t& v : face)
-                        v = new_point[static_cast<std::size_t>(v)];
+            parallel_for_bw(bo.poly_flat.size(), [&](std::size_t i) {
+                bo.poly_flat[i] = new_point[static_cast<std::size_t>(bo.poly_flat[i])];
             });
-            out.AddPolyhedronBlock(bo.type, std::move(bo.polyh));
+            if (bo.kind == 1)
+                out.AddPolygonBlock(bo.type, std::move(bo.poly_flat), std::move(bo.poly_rows));
+            else
+                out.AddPolyhedronBlock(bo.type, std::move(bo.poly_flat), std::move(bo.poly_rows),
+                                       std::move(bo.poly_faces));
         }
         ++bi;
     }
@@ -263100,41 +263210,92 @@ std::size_t if_facet_corner_count(CellType Type, std::size_t NumNodes) {
     return corners > 0 ? static_cast<std::size_t>(corners) : NumNodes;
 }
 
+// One facet of one cell: its full node list (corners first) lives at
+// `mFullStart` of the table's flat buffer.
 struct SplitFacetOwner {
-    RaFacet mFacet;
-    std::vector<std::int64_t> mFullNodes;
+    std::int64_t mCell = 0;
+    std::int64_t mFacet = 0;
+    std::size_t mFullStart = 0;
+    std::size_t mFullLen = 0;
     CellType mType = CellType::Custom;
 };
 
-using SplitFacetMap = std::map<std::vector<std::int64_t>, std::vector<SplitFacetOwner>>;
+// Every facet of every 2-D and 3-D cell, grouped by its sorted corner ids in
+// lexicographic key order (what a `std::map` keyed by the sorted corners
+// iterated in), the owners of a group ascending in (cell, facet) with one
+// owner per cell (roadmap 5.18). Flat: one key buffer, one node buffer, one
+// owner array.
+struct SplitFacetTable {
+    std::vector<std::int64_t> mKeys;    // sorted corner ids, group after group
+    std::vector<std::size_t> mKeyAt;    // group g's key: mKeys[mKeyAt[g] .. mKeyAt[g + 1])
+    std::vector<std::size_t> mOwnerAt;  // group g's owners: mOwners[mOwnerAt[g] .. mOwnerAt[g + 1])
+    std::vector<SplitFacetOwner> mOwners;
+    std::vector<std::int64_t> mFull;  // every owner's full nodes
 
-std::vector<std::vector<std::int64_t>> if_mesh_cell_nodes(const Mesh& rMesh) {
-    std::vector<std::vector<std::int64_t>> cells;
+    std::size_t NumGroups() const { return mOwnerAt.empty() ? 0 : mOwnerAt.size() - 1; }
+
+    /// The group whose key is @p rKey, or `NumGroups()`.
+    std::size_t Find(const std::vector<std::int64_t>& rKey) const {
+        std::size_t first = 0, last = NumGroups();
+        while (first < last) {
+            const std::size_t mid = first + (last - first) / 2;
+            if (std::lexicographical_compare(
+                    mKeys.begin() + static_cast<std::ptrdiff_t>(mKeyAt[mid]),
+                    mKeys.begin() + static_cast<std::ptrdiff_t>(mKeyAt[mid + 1]), rKey.begin(),
+                    rKey.end()))
+                first = mid + 1;
+            else
+                last = mid;
+        }
+        if (first < NumGroups() &&
+            std::equal(rKey.begin(), rKey.end(),
+                       mKeys.begin() + static_cast<std::ptrdiff_t>(mKeyAt[first]),
+                       mKeys.begin() + static_cast<std::ptrdiff_t>(mKeyAt[first + 1])))
+            return first;
+        return NumGroups();
+    }
+};
+
+// A cell's nodes, in stored order: cell c's are `mNodes[mStart[c] .. mStart[c + 1])`.
+struct SplitCellNodes {
+    std::vector<std::size_t> mStart{0};
+    std::vector<std::int64_t> mNodes;
+    std::size_t NumCells() const { return mStart.size() - 1; }
+};
+
+SplitCellNodes if_mesh_cell_nodes(const Mesh& rMesh) {
+    SplitCellNodes cells;
     for (const auto cb : rMesh.CellRange()) {
         if (cb.IsPolyhedron())
             throw std::invalid_argument(
                 "meshio++: split_interface: polyhedron cells are not supported");
         for (std::size_t row = 0; row < cb.NumCells(); ++row) {
-            std::vector<std::int64_t> nodes;
             if (cb.IsRagged()) {
                 const std::int64_t* p = cb.Row(row);
-                nodes.assign(p, p + cb.RowSize(row));
+                cells.mNodes.insert(cells.mNodes.end(), p, p + cb.RowSize(row));
             } else {
                 const std::size_t width = cb.NodesPerCell();
                 const NDArray& conn = cb.Conn();
-                nodes.reserve(width);
                 for (std::size_t k = 0; k < width; ++k)
-                    nodes.push_back(detail::read_int(conn, row * width + k));
+                    cells.mNodes.push_back(detail::read_int(conn, row * width + k));
             }
-            cells.push_back(std::move(nodes));
+            cells.mStart.push_back(cells.mNodes.size());
         }
     }
     return cells;
 }
 
-SplitFacetMap if_split_facets(const Mesh& rMesh) {
-    SplitFacetMap facets;
+SplitFacetTable if_split_facets(const Mesh& rMesh) {
+    // The records first: key and full nodes appended to flat buffers.
+    struct Record {
+        std::size_t mKeyStart, mKeyLen;
+        SplitFacetOwner mOwner;
+    };
+    std::vector<Record> records;
+    std::vector<std::int64_t> keys;
+    SplitFacetTable table;
     const auto bases = detail::block_bases(rMesh);
+    std::vector<std::int64_t> full_nodes;
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
         const auto cb = rMesh.Cells(b);
         const std::string type_name(cb.Type());
@@ -263149,50 +263310,96 @@ SplitFacetMap if_split_facets(const Mesh& rMesh) {
                 for (std::size_t edge = 0; edge < n; ++edge) {
                     const std::int64_t a = detail::read_int(cb.Conn(), row * n + edge);
                     const std::int64_t c = detail::read_int(cb.Conn(), row * n + (edge + 1) % n);
-                    const std::int64_t low = std::min(a, c), high = std::max(a, c);
-                    facets[{low, high}].push_back(
-                        SplitFacetOwner{RaFacet{{a, c}, cell, static_cast<std::int64_t>(edge)},
-                                        {a, c},
-                                        CellType::Line});
+                    SplitFacetOwner owner{cell, static_cast<std::int64_t>(edge), table.mFull.size(),
+                                          2, CellType::Line};
+                    table.mFull.push_back(a);
+                    table.mFull.push_back(c);
+                    records.push_back({keys.size(), 2, owner});
+                    keys.push_back(std::min(a, c));
+                    keys.push_back(std::max(a, c));
                 }
                 continue;
             }
             const std::size_t facet_limit = cb.IsRagged() ? cb.RowSize(row) : 64;
             for (std::size_t f = 0; f < facet_limit; ++f) {
                 CellType facet_type = CellType::Custom;
-                std::vector<std::int64_t> full_nodes;
                 if (!detail::facet_nodes(rMesh, cell, static_cast<std::int64_t>(f), facet_type,
                                          full_nodes))
                     break;
                 const std::size_t corners = if_facet_corner_count(facet_type, full_nodes.size());
                 if (corners < 2 || corners > full_nodes.size())
                     continue;
-                std::vector<std::int64_t> corner_nodes(full_nodes.begin(),
-                                                       full_nodes.begin() + corners);
-                std::vector<std::int64_t> key = corner_nodes;
-                std::sort(key.begin(), key.end());
-                if (std::adjacent_find(key.begin(), key.end()) != key.end())
+                const std::size_t key_at = keys.size();
+                keys.insert(keys.end(), full_nodes.begin(),
+                            full_nodes.begin() + static_cast<std::ptrdiff_t>(corners));
+                std::sort(keys.begin() + static_cast<std::ptrdiff_t>(key_at), keys.end());
+                if (std::adjacent_find(keys.begin() + static_cast<std::ptrdiff_t>(key_at),
+                                       keys.end()) != keys.end()) {
+                    keys.resize(key_at);
                     continue;
-                facets[key].push_back(SplitFacetOwner{
-                    RaFacet{std::move(corner_nodes), cell, static_cast<std::int64_t>(f)},
-                    std::move(full_nodes), facet_type});
+                }
+                records.push_back(
+                    {key_at, corners,
+                     SplitFacetOwner{cell, static_cast<std::int64_t>(f), table.mFull.size(),
+                                     full_nodes.size(), facet_type}});
+                table.mFull.insert(table.mFull.end(), full_nodes.begin(), full_nodes.end());
             }
         }
     }
-    for (auto& [key, owners] : facets) {
-        (void)key;
-        std::sort(owners.begin(), owners.end(),
-                  [](const SplitFacetOwner& rA, const SplitFacetOwner& rB) {
-                      return std::tie(rA.mFacet.mCell, rA.mFacet.mFacet) <
-                             std::tie(rB.mFacet.mCell, rB.mFacet.mFacet);
-                  });
-        owners.erase(std::unique(owners.begin(), owners.end(),
-                                 [](const SplitFacetOwner& rA, const SplitFacetOwner& rB) {
-                                     return rA.mFacet.mCell == rB.mFacet.mCell;
-                                 }),
-                     owners.end());
+    // Group by key (lexicographic), the owners of a key by (cell, facet), one
+    // owner per cell (the first by facet), as the map and its per-key sort did.
+    std::vector<std::size_t> order(records.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+        order[i] = i;
+    const auto key_less = [&](const Record& rA, const Record& rB) {
+        return std::lexicographical_compare(
+            keys.begin() + static_cast<std::ptrdiff_t>(rA.mKeyStart),
+            keys.begin() + static_cast<std::ptrdiff_t>(rA.mKeyStart + rA.mKeyLen),
+            keys.begin() + static_cast<std::ptrdiff_t>(rB.mKeyStart),
+            keys.begin() + static_cast<std::ptrdiff_t>(rB.mKeyStart + rB.mKeyLen));
+    };
+    const auto same_key = [&](const Record& rA, const Record& rB) {
+        return rA.mKeyLen == rB.mKeyLen &&
+               std::equal(keys.begin() + static_cast<std::ptrdiff_t>(rA.mKeyStart),
+                          keys.begin() + static_cast<std::ptrdiff_t>(rA.mKeyStart + rA.mKeyLen),
+                          keys.begin() + static_cast<std::ptrdiff_t>(rB.mKeyStart));
+    };
+    std::sort(order.begin(), order.end(), [&](std::size_t A, std::size_t B) {
+        const Record& r_a = records[A];
+        const Record& r_b = records[B];
+        if (key_less(r_a, r_b))
+            return true;
+        if (key_less(r_b, r_a))
+            return false;
+        return std::tie(r_a.mOwner.mCell, r_a.mOwner.mFacet) <
+               std::tie(r_b.mOwner.mCell, r_b.mOwner.mFacet);
+    });
+    table.mKeyAt.assign(1, 0);
+    table.mOwnerAt.assign(1, 0);
+    const Record* previous = nullptr;
+    for (const std::size_t i : order) {
+        const Record& r = records[i];
+        const bool new_group = previous == nullptr || !same_key(*previous, r);
+        if (new_group) {
+            if (previous != nullptr) {
+                table.mKeyAt.push_back(table.mKeys.size());
+                table.mOwnerAt.push_back(table.mOwners.size());
+            }
+            table.mKeys.insert(table.mKeys.end(),
+                               keys.begin() + static_cast<std::ptrdiff_t>(r.mKeyStart),
+                               keys.begin() + static_cast<std::ptrdiff_t>(r.mKeyStart + r.mKeyLen));
+        } else if (table.mOwners.back().mCell == r.mOwner.mCell) {
+            previous = &r;
+            continue;  // one owner per cell
+        }
+        table.mOwners.push_back(r.mOwner);
+        previous = &r;
     }
-    return facets;
+    if (previous != nullptr) {
+        table.mKeyAt.push_back(table.mKeys.size());
+        table.mOwnerAt.push_back(table.mOwners.size());
+    }
+    return table;
 }
 
 struct CohesiveCell {
@@ -263237,18 +263444,19 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
         throw std::invalid_argument(
             "meshio++: split_interface: Side region entries must have shape (n, 2)");
 
-    const std::vector<std::vector<std::int64_t>> cell_nodes = if_mesh_cell_nodes(rMesh);
-    const SplitFacetMap facets = if_split_facets(rMesh);
+    const SplitCellNodes cell_nodes = if_mesh_cell_nodes(rMesh);
+    const SplitFacetTable facets = if_split_facets(rMesh);
     if (side_region.mEntries.Shape()[0] == 0)
         throw std::invalid_argument("meshio++: split_interface: Side region is empty");
     const auto bases = detail::block_bases(rMesh);
+    const std::size_t num_cells = cell_nodes.NumCells();
     std::vector<std::pair<std::int64_t, std::int64_t>> selected_entries;
-    std::set<std::vector<std::int64_t>> cut_keys;
-    std::set<std::int64_t> seed_cells;
+    std::vector<std::uint8_t> cut_group(facets.NumGroups(), 0);
+    std::vector<std::uint8_t> is_seed(num_cells, 0);
     for (std::size_t i = 0; i < side_region.mEntries.Shape()[0]; ++i) {
         const std::int64_t cell = detail::read_int(side_region.mEntries, 2 * i);
         const std::int64_t facet = detail::read_int(side_region.mEntries, 2 * i + 1);
-        if (cell < 0 || static_cast<std::size_t>(cell) >= cell_nodes.size())
+        if (cell < 0 || static_cast<std::size_t>(cell) >= num_cells)
             throw std::invalid_argument(
                 "meshio++: split_interface: Side region has an invalid cell id");
         CellType facet_type = CellType::Custom;
@@ -263259,116 +263467,154 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
         const std::size_t corners = if_facet_corner_count(facet_type, full_nodes.size());
         std::vector<std::int64_t> key(full_nodes.begin(), full_nodes.begin() + corners);
         std::sort(key.begin(), key.end());
-        if (!facets.count(key))
+        const std::size_t group = facets.Find(key);
+        if (group == facets.NumGroups())
             throw std::invalid_argument(
                 "meshio++: split_interface: selected facet has no mesh incidence");
         selected_entries.push_back({cell, facet});
-        cut_keys.insert(key);
-        seed_cells.insert(cell);
+        cut_group[group] = 1;
+        is_seed[static_cast<std::size_t>(cell)] = 1;
     }
     std::sort(selected_entries.begin(), selected_entries.end());
     selected_entries.erase(std::unique(selected_entries.begin(), selected_entries.end()),
                            selected_entries.end());
 
+    // The cells around each point, ascending, a cell once per point.
     const std::size_t num_points = rMesh.NumPoints();
-    std::vector<std::vector<std::int64_t>> incident_cells(num_points);
-    for (std::size_t cell = 0; cell < cell_nodes.size(); ++cell)
-        for (std::int64_t node : cell_nodes[cell]) {
-            if (node < 0 || static_cast<std::size_t>(node) >= num_points)
-                throw std::invalid_argument(
-                    "meshio++: split_interface: input connectivity has an invalid point id");
-            incident_cells[static_cast<std::size_t>(node)].push_back(
-                static_cast<std::int64_t>(cell));
-        }
-    std::vector<std::map<std::int64_t, std::set<std::int64_t>>> node_graph(num_points);
-    for (std::size_t point = 0; point < num_points; ++point)
-        for (std::int64_t cell : incident_cells[point])
-            node_graph[point][cell];
-    for (const auto& [key, owners] : facets) {
-        if (owners.size() < 2 || cut_keys.count(key))
-            continue;
-        for (std::size_t i = 0; i < owners.size(); ++i)
-            for (std::size_t j = i + 1; j < owners.size(); ++j) {
-                const auto& a = owners[i];
-                const auto& b = owners[j];
-                std::set<std::int64_t> nodes_b(b.mFullNodes.begin(), b.mFullNodes.end());
-                std::vector<std::int64_t> common;
-                for (std::int64_t node : a.mFullNodes)
-                    if (nodes_b.count(node))
-                        common.push_back(node);
-                for (std::int64_t node : common) {
-                    auto& graph = node_graph[static_cast<std::size_t>(node)];
-                    graph[a.mFacet.mCell].insert(b.mFacet.mCell);
-                    graph[b.mFacet.mCell].insert(a.mFacet.mCell);
+    std::vector<std::size_t> inc_start(num_points + 1, 0);
+    std::vector<std::int64_t> inc;
+    {
+        std::vector<std::int64_t> last(num_points, -1);
+        for (int pass = 0; pass < 2; ++pass) {
+            std::fill(last.begin(), last.end(), std::int64_t{-1});
+            std::vector<std::size_t> fill(inc_start.begin(), inc_start.end() - 1);
+            for (std::size_t cell = 0; cell < num_cells; ++cell)
+                for (std::size_t k = cell_nodes.mStart[cell]; k < cell_nodes.mStart[cell + 1];
+                     ++k) {
+                    const std::int64_t node = cell_nodes.mNodes[k];
+                    if (node < 0 || static_cast<std::size_t>(node) >= num_points)
+                        throw std::invalid_argument(
+                            "meshio++: split_interface: input connectivity has an invalid point "
+                            "id");
+                    const auto p = static_cast<std::size_t>(node);
+                    if (last[p] == static_cast<std::int64_t>(cell))
+                        continue;
+                    last[p] = static_cast<std::int64_t>(cell);
+                    if (pass == 0)
+                        ++inc_start[p + 1];
+                    else
+                        inc[fill[p]++] = static_cast<std::int64_t>(cell);
                 }
+            if (pass == 0) {
+                for (std::size_t p = 0; p < num_points; ++p)
+                    inc_start[p + 1] += inc_start[p];
+                inc.resize(inc_start[num_points]);
             }
+        }
+    }
+    // Position of `cell` among the cells around `point`, or `inc.size()`.
+    const auto inc_pos = [&](std::size_t Point, std::int64_t Cell) {
+        const auto first = inc.begin() + static_cast<std::ptrdiff_t>(inc_start[Point]);
+        const auto last = inc.begin() + static_cast<std::ptrdiff_t>(inc_start[Point + 1]);
+        const auto it = std::lower_bound(first, last, Cell);
+        return it != last && *it == Cell ? static_cast<std::size_t>(it - inc.begin()) : inc.size();
+    };
+    // The local dual graph of every point as a union-find over those
+    // positions: two cells sharing an uncut facet are joined at each node
+    // their facets share.
+    std::vector<std::size_t> parent(inc.size());
+    for (std::size_t i = 0; i < parent.size(); ++i)
+        parent[i] = i;
+    const auto find_root = [&](std::size_t I) {
+        while (parent[I] != I) {
+            parent[I] = parent[parent[I]];
+            I = parent[I];
+        }
+        return I;
+    };
+    {
+        std::vector<std::int64_t> nodes_b;
+        for (std::size_t g = 0; g < facets.NumGroups(); ++g) {
+            const std::size_t first = facets.mOwnerAt[g], last = facets.mOwnerAt[g + 1];
+            if (last - first < 2 || cut_group[g])
+                continue;
+            for (std::size_t i = first; i < last; ++i)
+                for (std::size_t j = i + 1; j < last; ++j) {
+                    const SplitFacetOwner& a = facets.mOwners[i];
+                    const SplitFacetOwner& b = facets.mOwners[j];
+                    nodes_b.assign(facets.mFull.begin() + static_cast<std::ptrdiff_t>(b.mFullStart),
+                                   facets.mFull.begin() +
+                                       static_cast<std::ptrdiff_t>(b.mFullStart + b.mFullLen));
+                    std::sort(nodes_b.begin(), nodes_b.end());
+                    for (std::size_t k = 0; k < a.mFullLen; ++k) {
+                        const std::int64_t node = facets.mFull[a.mFullStart + k];
+                        if (!std::binary_search(nodes_b.begin(), nodes_b.end(), node))
+                            continue;
+                        const auto point = static_cast<std::size_t>(node);
+                        const std::size_t pa = inc_pos(point, a.mCell);
+                        const std::size_t pb = inc_pos(point, b.mCell);
+                        if (pa == inc.size() || pb == inc.size())
+                            continue;
+                        const std::size_t ra = find_root(pa), rb = find_root(pb);
+                        if (ra != rb)
+                            parent[std::max(ra, rb)] = std::min(ra, rb);
+                    }
+                }
+        }
     }
 
     // For every original point, label connected incident-cell fans after the
-    // selected facets are removed from the local dual graph.
-    std::vector<std::map<std::int64_t, std::size_t>> component_for_cell(num_points);
-    std::vector<std::size_t> keeper_component(num_points, 0);
-    std::vector<std::map<std::size_t, std::int64_t>> duplicate_for_component(num_points);
+    // selected facets are removed from the local dual graph. The components
+    // are numbered by their smallest cell; the one holding most selected
+    // cells (the first on a tie, the first when none) keeps the point, the
+    // others get duplicates in point then component order.
+    std::vector<std::int64_t> remap_to(inc.size());
+    std::vector<std::uint8_t> has_duplicate(num_points, 0);
     std::vector<std::pair<std::int64_t, std::size_t>> duplicate_sources;
-    for (std::size_t point = 0; point < num_points; ++point) {
-        auto& graph = node_graph[point];
-        std::set<std::int64_t> unseen;
-        for (const auto& [cell, neighbours] : graph) {
-            (void)neighbours;
-            unseen.insert(cell);
-        }
-        std::vector<std::vector<std::int64_t>> components;
-        while (!unseen.empty()) {
-            const std::int64_t seed = *unseen.begin();
-            unseen.erase(unseen.begin());
-            std::vector<std::int64_t> stack{seed}, component;
-            while (!stack.empty()) {
-                const std::int64_t cell = stack.back();
-                stack.pop_back();
-                component.push_back(cell);
-                for (std::int64_t neighbour : graph[cell])
-                    if (unseen.erase(neighbour))
-                        stack.push_back(neighbour);
+    {
+        std::vector<std::size_t> component_of_root, seeds;
+        for (std::size_t point = 0; point < num_points; ++point) {
+            const std::size_t begin = inc_start[point], end = inc_start[point + 1];
+            if (begin == end)
+                continue;
+            component_of_root.assign(end - begin, end - begin);  // by root offset
+            seeds.clear();
+            std::vector<std::size_t> comp(end - begin);
+            std::size_t ncomp = 0;
+            for (std::size_t pos = begin; pos < end; ++pos) {
+                const std::size_t root = find_root(pos) - begin;
+                if (component_of_root[root] == end - begin) {
+                    component_of_root[root] = ncomp++;
+                    seeds.push_back(0);
+                }
+                comp[pos - begin] = component_of_root[root];
+                if (is_seed[static_cast<std::size_t>(inc[pos])])
+                    ++seeds[comp[pos - begin]];
             }
-            std::sort(component.begin(), component.end());
-            components.push_back(std::move(component));
+            std::size_t keeper = 0, best_seed_count = 0;
+            for (std::size_t ci = 0; ci < ncomp; ++ci)
+                if (seeds[ci] > best_seed_count) {
+                    best_seed_count = seeds[ci];
+                    keeper = ci;
+                }
+            std::vector<std::int64_t> new_id(ncomp, static_cast<std::int64_t>(point));
+            for (std::size_t ci = 0; ci < ncomp; ++ci)
+                if (ci != keeper) {
+                    new_id[ci] = static_cast<std::int64_t>(num_points + duplicate_sources.size());
+                    duplicate_sources.push_back({static_cast<std::int64_t>(point), ci});
+                    has_duplicate[point] = 1;
+                }
+            for (std::size_t pos = begin; pos < end; ++pos)
+                remap_to[pos] = new_id[comp[pos - begin]];
         }
-        std::sort(components.begin(), components.end(),
-                  [](const auto& rA, const auto& rB) { return rA.front() < rB.front(); });
-        if (components.empty())
-            continue;
-        std::size_t keeper = 0;
-        std::size_t best_seed_count = 0;
-        for (std::size_t ci = 0; ci < components.size(); ++ci) {
-            std::size_t seed_count = 0;
-            for (std::int64_t cell : components[ci])
-                if (seed_cells.count(cell))
-                    ++seed_count;
-            if (seed_count > best_seed_count) {
-                best_seed_count = seed_count;
-                keeper = ci;
-            }
-        }
-        keeper_component[point] = keeper;
-        for (std::size_t ci = 0; ci < components.size(); ++ci)
-            for (std::int64_t cell : components[ci])
-                component_for_cell[point][cell] = ci;
-        for (std::size_t ci = 0; ci < components.size(); ++ci)
-            if (ci != keeper) {
-                const std::int64_t new_id =
-                    static_cast<std::int64_t>(num_points + duplicate_sources.size());
-                duplicate_for_component[point][ci] = new_id;
-                duplicate_sources.push_back({static_cast<std::int64_t>(point), ci});
-            }
     }
 
     auto remap_node = [&](std::int64_t Node, std::int64_t Cell) {
         const std::size_t p = static_cast<std::size_t>(Node);
-        const auto comp = component_for_cell[p].find(Cell);
-        if (comp == component_for_cell[p].end())
+        if (!has_duplicate[p])
             return Node;
-        const auto copy = duplicate_for_component[p].find(comp->second);
-        return copy == duplicate_for_component[p].end() ? Node : copy->second;
+        const std::size_t pos = inc_pos(p, Cell);
+        return pos == inc.size() ? Node : remap_to[pos];
     };
 
     std::vector<CohesiveCell> cohesive;
@@ -263385,12 +263631,13 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
                 selected_nodes.begin() +
                     if_facet_corner_count(selected_type, selected_nodes.size()));
             std::sort(key.begin(), key.end());
-            const auto& owners = facets.at(key);
-            for (const SplitFacetOwner& other : owners) {
-                if (other.mFacet.mCell == cell)
+            const std::size_t group = facets.Find(key);
+            for (std::size_t oi = facets.mOwnerAt[group]; oi < facets.mOwnerAt[group + 1]; ++oi) {
+                const SplitFacetOwner& other = facets.mOwners[oi];
+                if (other.mCell == cell)
                     continue;
                 auto owner_a = std::make_pair(cell, local_facet);
-                auto owner_b = std::make_pair(other.mFacet.mCell, other.mFacet.mFacet);
+                auto owner_b = std::make_pair(other.mCell, other.mFacet);
                 if (owner_b < owner_a)
                     std::swap(owner_a, owner_b);
                 if (!cohesive_interfaces.insert({owner_a, owner_b}).second)
@@ -263403,10 +263650,11 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
                         "quad facets");
                 std::vector<std::int64_t> a(selected_nodes.begin(),
                                             selected_nodes.begin() + corners);
+                const auto other_full =
+                    facets.mFull.begin() + static_cast<std::ptrdiff_t>(other.mFullStart);
                 std::vector<std::int64_t> other_corners(
-                    other.mFullNodes.begin(),
-                    other.mFullNodes.begin() +
-                        if_facet_corner_count(other.mType, other.mFullNodes.size()));
+                    other_full, other_full + static_cast<std::ptrdiff_t>(if_facet_corner_count(
+                                                 other.mType, other.mFullLen)));
                 if (other_corners.size() != corners)
                     throw std::invalid_argument(
                         "meshio++: split_interface: matched facet arities differ");
@@ -263423,7 +263671,7 @@ SplitInterfaceResult split_interface(const Mesh& rMesh, const RegionSelector& rS
                 for (std::int64_t& node : a)
                     node = remap_node(node, cell);
                 for (std::int64_t& node : b)
-                    node = remap_node(node, other.mFacet.mCell);
+                    node = remap_node(node, other.mCell);
                 const std::string type = corners == 2   ? "line"
                                          : corners == 3 ? "wedge"
                                                         : "hexahedron";
@@ -265755,10 +266003,13 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
 
     // --- build each output block's remapped connectivity + source ids -------
     struct BuiltBlock {
-        NDArray conn;                                                   // rectangular
-        std::vector<std::vector<std::int64_t>> polyrows;                // 1-level ragged
-        std::vector<std::vector<std::vector<std::int64_t>>> polycells;  // 2-level ragged
-        std::vector<std::int64_t> source_ids;                           // pre-dedup, size pre_count
+        NDArray conn;  // rectangular
+        // Ragged blocks (roadmap 5.18), one CSR per block: cell p's nodes are
+        // `pflat[pnode[p] .. pnode[p+1])`, its rows (polygon: one; polyhedron:
+        // its faces) `prow[pcell[p] .. pcell[p+1])` into `pflat`.
+        std::vector<std::int64_t> pflat;
+        std::vector<std::uint64_t> prow, pcell, pnode;
+        std::vector<std::int64_t> source_ids;    // pre-dedup, size pre_count
         std::vector<std::int64_t> finalpos;      // pre-local -> final-local or -1
         std::vector<std::int64_t> final_to_pre;  // final-local -> kept pre-local
         std::size_t final_count = 0;
@@ -265776,34 +266027,54 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             return new_index(poff[mesh] + static_cast<std::size_t>(local));
         };
 
-        if (ob.poly) {
-            bb.polycells.resize(ob.pre_count);
+        if (ob.poly || ob.ragged) {
+            const std::size_t pc = ob.pre_count;
+            std::vector<std::uint64_t> nfaces(pc), nnodes(pc);
             for (const Contribution& con : ob.contribs) {
                 Mesh::CellView cv = rMeshes[con.mesh]->Cells(con.in_block);
                 parallel_for_bw(con.ncells, [&](std::size_t c) {
                     const std::size_t p = con.start + c;
                     bb.source_ids[p] = static_cast<std::int64_t>(con.mesh);
-                    bb.polycells[p].resize(cv.NumFaces(c));
-                    for (std::size_t f = 0; f < cv.NumFaces(c); ++f) {
-                        auto face = cv.Face(c, f);
-                        bb.polycells[p][f].reserve(face.second);
-                        for (std::size_t k = 0; k < face.second; ++k)
-                            bb.polycells[p][f].push_back(remap_node(con.mesh, face.first[k]));
+                    if (ob.poly) {
+                        std::uint64_t total = 0;
+                        const std::size_t nf = cv.NumFaces(c);
+                        for (std::size_t f = 0; f < nf; ++f)
+                            total += cv.Face(c, f).second;
+                        nfaces[p] = nf;
+                        nnodes[p] = total;
+                    } else {
+                        nfaces[p] = 1;
+                        nnodes[p] = cv.RowSize(c);
                     }
                 });
             }
-        } else if (ob.ragged) {
-            bb.polyrows.resize(ob.pre_count);
+            bb.pnode.resize(pc + 1);
+            bb.pnode[pc] =
+                parallel_exclusive_scan(nnodes.data(), pc, bb.pnode.data(), std::uint64_t{0});
+            bb.pcell.resize(pc + 1);
+            bb.pcell[pc] =
+                parallel_exclusive_scan(nfaces.data(), pc, bb.pcell.data(), std::uint64_t{0});
+            bb.pflat.resize(bb.pnode[pc]);
+            bb.prow.resize(bb.pcell[pc] + 1);
+            bb.prow[bb.pcell[pc]] = bb.pnode[pc];
             for (const Contribution& con : ob.contribs) {
                 Mesh::CellView cv = rMeshes[con.mesh]->Cells(con.in_block);
                 parallel_for_bw(con.ncells, [&](std::size_t c) {
                     const std::size_t p = con.start + c;
-                    bb.source_ids[p] = static_cast<std::int64_t>(con.mesh);
-                    const std::int64_t* row = cv.Row(c);
-                    const std::size_t sz = cv.RowSize(c);
-                    bb.polyrows[p].reserve(sz);
-                    for (std::size_t k = 0; k < sz; ++k)
-                        bb.polyrows[p].push_back(remap_node(con.mesh, row[k]));
+                    std::uint64_t pos = bb.pnode[p];
+                    if (ob.poly) {
+                        for (std::size_t f = 0; f < nfaces[p]; ++f) {
+                            auto face = cv.Face(c, f);
+                            bb.prow[bb.pcell[p] + f] = pos;
+                            for (std::size_t k = 0; k < face.second; ++k)
+                                bb.pflat[pos++] = remap_node(con.mesh, face.first[k]);
+                        }
+                    } else {
+                        bb.prow[p] = pos;
+                        const std::int64_t* row = cv.Row(c);
+                        for (std::size_t k = 0; k < nnodes[p]; ++k)
+                            bb.pflat[pos++] = remap_node(con.mesh, row[k]);
+                    }
                 });
             }
         } else {
@@ -265838,14 +266109,7 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             const std::int64_t* rect = ob.poly || ob.ragged ? nullptr : bb.conn.As<std::int64_t>();
             std::vector<std::uint64_t> length(pc);
             parallel_for_bw(pc, [&](std::size_t p) {
-                std::size_t len = 0;
-                if (ob.poly) {
-                    for (const auto& face : bb.polycells[p])
-                        len += face.size();
-                } else {
-                    len = ob.ragged ? bb.polyrows[p].size() : ob.npc;
-                }
-                length[p] = len;
+                length[p] = ob.poly || ob.ragged ? bb.pnode[p + 1] - bb.pnode[p] : ob.npc;
             });
             std::vector<std::uint64_t> offset(pc + 1);
             offset[pc] =
@@ -265854,11 +266118,10 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
             parallel_for(pc, [&](std::size_t p) {
                 std::int64_t* key = keys.data() + offset[p];
                 std::int64_t* out_k = key;
-                if (ob.poly) {
-                    for (const auto& face : bb.polycells[p])
-                        out_k = std::copy(face.begin(), face.end(), out_k);
-                } else if (ob.ragged) {
-                    out_k = std::copy(bb.polyrows[p].begin(), bb.polyrows[p].end(), out_k);
+                if (ob.poly || ob.ragged) {
+                    out_k = std::copy(
+                        bb.pflat.begin() + static_cast<std::ptrdiff_t>(bb.pnode[p]),
+                        bb.pflat.begin() + static_cast<std::ptrdiff_t>(bb.pnode[p + 1]), out_k);
                 } else {
                     out_k = std::copy(rect + p * ob.npc, rect + (p + 1) * ob.npc, out_k);
                 }
@@ -265894,18 +266157,40 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
         const OutBlock& ob = blocks[oi];
         BuiltBlock& bb = built[oi];
         const std::size_t fc = bb.final_count;
-        if (ob.poly) {
-            std::vector<std::vector<std::vector<std::int64_t>>> cells(fc);
+        if (ob.poly || ob.ragged) {
+            // Gather the kept cells' CSR rows in final order: a count pass,
+            // a scan, a copy pass.
+            std::vector<std::uint64_t> nfaces(fc), nnodes(fc);
             parallel_for_bw(fc, [&](std::size_t f) {
-                cells[f] = std::move(bb.polycells[static_cast<std::size_t>(bb.final_to_pre[f])]);
+                const std::size_t p = static_cast<std::size_t>(bb.final_to_pre[f]);
+                nfaces[f] = bb.pcell[p + 1] - bb.pcell[p];
+                nnodes[f] = bb.pnode[p + 1] - bb.pnode[p];
             });
-            out.AddPolyhedronBlock(ob.type, std::move(cells));
-        } else if (ob.ragged) {
-            std::vector<std::vector<std::int64_t>> rows(fc);
+            std::vector<std::uint64_t> face_at(fc + 1), node_at(fc + 1);
+            face_at[fc] =
+                parallel_exclusive_scan(nfaces.data(), fc, face_at.data(), std::uint64_t{0});
+            node_at[fc] =
+                parallel_exclusive_scan(nnodes.data(), fc, node_at.data(), std::uint64_t{0});
+            std::vector<std::int64_t> flat(node_at[fc]);
+            std::vector<std::int64_t> rows(face_at[fc] + 1, static_cast<std::int64_t>(node_at[fc]));
+            std::vector<std::int64_t> faces(ob.poly ? fc + 1 : 0, 0);
             parallel_for_bw(fc, [&](std::size_t f) {
-                rows[f] = std::move(bb.polyrows[static_cast<std::size_t>(bb.final_to_pre[f])]);
+                const std::size_t p = static_cast<std::size_t>(bb.final_to_pre[f]);
+                std::copy(bb.pflat.begin() + static_cast<std::ptrdiff_t>(bb.pnode[p]),
+                          bb.pflat.begin() + static_cast<std::ptrdiff_t>(bb.pnode[p + 1]),
+                          flat.begin() + static_cast<std::ptrdiff_t>(node_at[f]));
+                for (std::uint64_t r = 0; r < nfaces[f]; ++r)
+                    rows[face_at[f] + r] = static_cast<std::int64_t>(
+                        node_at[f] + (bb.prow[bb.pcell[p] + r] - bb.pnode[p]));
+                if (ob.poly)
+                    faces[f] = static_cast<std::int64_t>(face_at[f]);
             });
-            out.AddPolygonBlock(ob.type, std::move(rows));
+            if (ob.poly) {
+                faces[fc] = static_cast<std::int64_t>(face_at[fc]);
+                out.AddPolyhedronBlock(ob.type, std::move(flat), std::move(rows), std::move(faces));
+            } else {
+                out.AddPolygonBlock(ob.type, std::move(flat), std::move(rows));
+            }
         } else {
             NDArray conn = NDArray::Uninit(DType::Int64, {fc, ob.npc});
             std::int64_t* dst = conn.As<std::int64_t>();
@@ -278857,6 +279142,17 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rS, const OctreeMeshOptions& r
                 if (wa <= thr)
                     return vec3_add(a, vec3_scale(ab, h.mT));
             }
+            // Both ends on the skin and no crossing: the edge lies in the skin
+            // (coplanar with its triangles, which the segment test skips), so
+            // every point of it is on the interface. Take the middle, where
+            // bisection would chase the noise of the winding number on the
+            // plane with 40 evaluations of it (benchmarks: "Octree cut points on the skin").
+            if (hits.empty()) {
+                const std::vector<Vec3> ends{a, b};
+                const auto closest = query_closest_points(rS.mQuery, ends);
+                if (closest[0].mDistance <= rS.mOnSkin && closest[1].mDistance <= rS.mOnSkin)
+                    return vec3_add(a, vec3_scale(ab, 0.5));
+            }
             double lo = 0.0, hi = 1.0;
             for (int it = 0; it < 40 && (hi - lo) * vec3_norm(ab) > step; ++it) {
                 const double mid = 0.5 * (lo + hi);
@@ -278998,8 +279294,7 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
                 // The point of the tetrahedron which is not on the face.
                 Index opposite = -1;
                 for (const Index v : rTets.mTets[t])
-                    if (v != faces[i].first[0] && v != faces[i].first[1] &&
-                        v != faces[i].first[2])
+                    if (v != faces[i].first[0] && v != faces[i].first[1] && v != faces[i].first[2])
                         opposite = v;
                 for (const Index v : faces[i].first)
                     incident[v].push_back(triangles.size());
@@ -279137,8 +279432,8 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
                     if (current == a || is_chain(current) || lc == link.end() ||
                         lc->second.size() != 2)
                         break;
-                    const auto& next = lc->second[0].first == previous ? lc->second[1]
-                                                                       : lc->second[0];
+                    const auto& next =
+                        lc->second[0].first == previous ? lc->second[1] : lc->second[0];
                     previous = current;
                     current = next.first;
                     tri = next.second;
@@ -279538,9 +279833,8 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
                 // by P keeps the orientation.
                 const Index p = static_cast<Index>(rTets.mPoints.size());
                 std::vector<std::pair<std::size_t, std::array<std::array<Index, 4>, 2>>> splits;
-                for (const auto& [e0, e1] :
-                     {std::pair<Index, Index>{tet[i], tet[j]},
-                      std::pair<Index, Index>{tet[k], tet[l]}})
+                for (const auto& [e0, e1] : {std::pair<Index, Index>{tet[i], tet[j]},
+                                             std::pair<Index, Index>{tet[k], tet[l]}})
                     for (const std::size_t other : shell(e0, e1)) {
                         if (other == t)
                             continue;
@@ -279556,8 +279850,8 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
                 bool splittable = true;
                 for (const auto& [other, children] : splits)
                     for (const auto& r_child : children)
-                        splittable = splittable &&
-                                     (!considered(other) || volume_and_tolerance(r_child).first > 0.0);
+                        splittable = splittable && (!considered(other) ||
+                                                    volume_and_tolerance(r_child).first > 0.0);
                 if (!splittable) {
                     rTets.mPoints.pop_back();
                     continue;
@@ -279861,7 +280155,6 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <map>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -280005,22 +280298,23 @@ void ofs_shell(const Mesh& rMesh, const OfsSurface& rS, const std::vector<double
             }
         }
     // The boundary edges, in their face's direction, in face order.
-    std::map<std::pair<std::int64_t, std::int64_t>, int> uses;
-    for (const OfsFace& r_f : rS.mFaces) {
+    detail::EdgeUseTable<std::int64_t> uses;
+    uses.Reserve(rS.mFaces.size() * 4);
+    for (std::size_t fi = 0; fi < rS.mFaces.size(); ++fi) {
+        const OfsFace& r_f = rS.mFaces[fi];
         const int k = r_f[3] >= 0 ? 4 : 3;
-        for (int i = 0; i < k; ++i) {
-            const std::int64_t a = r_f[static_cast<std::size_t>(i)];
-            const std::int64_t b = r_f[static_cast<std::size_t>((i + 1) % k)];
-            ++uses[{std::min(a, b), std::max(a, b)}];
-        }
+        for (int i = 0; i < k; ++i)
+            uses.Add(r_f[static_cast<std::size_t>(i)], r_f[static_cast<std::size_t>((i + 1) % k)],
+                     static_cast<std::int64_t>(fi));
     }
+    uses.Build();
     std::int64_t num_boundary = 0;
     for (const OfsFace& r_f : rS.mFaces) {
         const int k = r_f[3] >= 0 ? 4 : 3;
         for (int i = 0; i < k; ++i) {
             const std::int64_t a = r_f[static_cast<std::size_t>(i)];
             const std::int64_t b = r_f[static_cast<std::size_t>((i + 1) % k)];
-            if (uses[{std::min(a, b), std::max(a, b)}] != 1)
+            if (uses.CountOf(a, b) != 1)
                 continue;
             ++num_boundary;
             if (Rim) {

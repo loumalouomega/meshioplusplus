@@ -85,6 +85,12 @@ Tet-only, so simpler than the general 3D case: a tet's *other* incident cells ar
 
 **Boundary-touching collapses additionally run `decimate`'s own** ring/shared-face link condition and normal-flip check, over the mesh's own outer skin — so the boundary surface cannot tear, pinch or fold independently of the interior guards above.
 
+## Cost on large meshes
+
+The greedy order collapses onto one survivor again and again, so its star (the tetrahedra around it) grows and every later attempt on it walks the whole star: on a box of 16 cells a side (24,576 tetrahedra) one vertex ends with 696 tetrahedra around it against 24 in the input, 234,410 collapses are rejected for 12,290 tetrahedra removed, and the run takes 38 s. The time therefore grows faster than the cell count, and the benchmark row runs at its smallest tier only.
+
+Two ways of bounding the star were measured at 14 cells a side (16,464 tetrahedra) and neither is shipped: a cap on the survivor's valence is up to 25 times faster (0.10 s against 2.7 s) but forbids the collapses that were absorbing the slivers, ending in degenerate tetrahedra (aspect ratio 7.4e5, least dihedral 0.10°) and, at a cap of 72, an inverted one; a penalty on the star's size gives a better least dihedral (0.33° against 0.06°) but takes 9.2 s. The rule is as it was, and [the figures](/benchmarks#cell-volumes-without-rebuilding-the-rings-and-what-bounds-decimate_volumes-star) and the decision are recorded with the [roadmap's non-goals](/roadmap#non-goals-and-decisions-taken).
+
 ## Determinism
 
 Setup is parallel with a fixed floating-point order, matching `decimate`'s own; the greedy loop is **serial**, driven by a priority queue with lazy version-stamped deletion. **This operation is C++-core only, with no numpy fallback at all** — like [`subdivide`](/subdivide)/[`agglomerate`](/agglomerate) and unlike `decimate` itself. The volume-specific validity guards sit on top of the mesh's own outer skin, whose incremental maintenance through hundreds of collapses is exactly the kind of intricate bookkeeping a second, independently written implementation would risk silently diverging from. Calling `decimate_volume` without the compiled `meshioplusplus._core` extension raises `NotImplementedError` naming the reason.

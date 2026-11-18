@@ -2285,6 +2285,10 @@ if(MESHIOPLUSPLUS_BUILD_BENCHMARKS)
   # parallel backends and thread counts).
   add_executable(meshioplusplus_bench_ops src/cpp/benchmark/bench_ops.cpp)
   target_link_libraries(meshioplusplus_bench_ops PRIVATE meshioplusplus_core_obj)
+  # The core's maps and sets against the candidates that could replace them
+  # (bench_containers.cpp; roadmap 5.22).
+  add_executable(meshioplusplus_bench_containers src/cpp/benchmark/bench_containers.cpp)
+  target_link_libraries(meshioplusplus_bench_containers PRIVATE meshioplusplus_core_obj)
 endif()
 
 # --------------------------------------------------------------------------

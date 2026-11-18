@@ -61,6 +61,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <functional>
 #include <map>
 #include <optional>
@@ -135,6 +137,7 @@
 #include "meshioplusplus/operations/measure.hpp"
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/morph.hpp"
+#include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/operations/offset_surface.hpp"
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
@@ -305,6 +308,186 @@ Mesh bench_ops_tri_plate(std::size_t m) {
  * Used for the jittered cube (`optimize_volume` has nothing to flip on the
  * regular one) and the inflated surface `shrinkwrap` projects back.
  */
+// ---- Sparse, shuffled ids for the readers' id maps (roadmap 5.22.2) -------
+// The writers number points and elements 1..n in file order, so a reader's
+// map from file id to index never leaves its dense case. These rewrite a
+// written file in place: every point and element id i becomes stride * i +
+// offset, and the point lines and the element lines are each permuted by a
+// seeded Fisher-Yates shuffle (hand-written, so the file is the same on every
+// standard library). The mesh read back has the same points and cells.
+
+std::string bench_ops_read_text(const std::string& rPath) {
+    auto in = meshioplusplus::detail::make_classic_ifstream(rPath, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+
+void bench_ops_write_text(const std::string& rPath, const std::string& rText) {
+    auto out = meshioplusplus::detail::make_classic_ofstream(rPath, std::ios::binary);
+    out << rText;
+}
+
+std::vector<std::string> bench_ops_lines(const std::string& rText) {
+    std::vector<std::string> lines;
+    std::size_t at = 0;
+    while (at < rText.size()) {
+        std::size_t eol = rText.find('\n', at);
+        if (eol == std::string::npos)
+            eol = rText.size();
+        lines.push_back(rText.substr(at, eol - at));
+        at = eol + 1;
+    }
+    return lines;
+}
+
+// A permutation of [0, n) by Fisher-Yates over a splitmix64 stream.
+std::vector<std::size_t> bench_ops_permutation(std::size_t N, std::uint64_t Seed) {
+    std::vector<std::size_t> p(N);
+    for (std::size_t i = 0; i < N; ++i)
+        p[i] = i;
+    std::uint64_t state = Seed;
+    for (std::size_t i = N; i > 1; --i) {
+        state += 0x9E3779B97F4A7C15ull;
+        std::uint64_t z = state;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+        z ^= z >> 31;
+        std::swap(p[i - 1], p[static_cast<std::size_t>(z % i)]);
+    }
+    return p;
+}
+
+// Permute lines [rFirst, rFirst + count) in groups of `Group` lines.
+void bench_ops_shuffle_lines(std::vector<std::string>& rLines, std::size_t First, std::size_t Count,
+                             std::size_t Group, std::uint64_t Seed) {
+    const std::size_t groups = Count / Group;
+    const std::vector<std::size_t> perm = bench_ops_permutation(groups, Seed);
+    std::vector<std::string> out;
+    out.reserve(Count);
+    for (std::size_t g = 0; g < groups; ++g)
+        for (std::size_t k = 0; k < Group; ++k)
+            out.push_back(rLines[First + perm[g] * Group + k]);
+    for (std::size_t i = 0; i < out.size(); ++i)
+        rLines[First + i] = std::move(out[i]);
+}
+
+std::string bench_ops_join(const std::vector<std::string>& rLines) {
+    std::string text;
+    for (const std::string& l : rLines) {
+        text += l;
+        text += '\n';
+    }
+    return text;
+}
+
+std::int64_t bench_ops_sparse_id(std::int64_t Id) {
+    return 7 * Id + 3;
+}
+
+// Split `l` at `Sep` into fields (kept verbatim).
+std::vector<std::string> bench_ops_split(const std::string& rLine, char Sep) {
+    std::vector<std::string> fields;
+    std::size_t at = 0;
+    while (true) {
+        const std::size_t cut = rLine.find(Sep, at);
+        if (cut == std::string::npos) {
+            fields.push_back(rLine.substr(at));
+            return fields;
+        }
+        fields.push_back(rLine.substr(at, cut - at));
+        at = cut + 1;
+    }
+}
+
+void bench_ops_sparsify_gmsh22(const std::string& rPath) {
+    std::vector<std::string> lines = bench_ops_lines(bench_ops_read_text(rPath));
+    for (std::size_t i = 0; i + 1 < lines.size(); ++i) {
+        const bool nodes = lines[i] == "$Nodes";
+        if (!nodes && lines[i] != "$Elements")
+            continue;
+        const std::size_t count = static_cast<std::size_t>(std::stoull(lines[i + 1]));
+        const std::size_t first = i + 2;
+        for (std::size_t k = 0; k < count; ++k) {
+            std::string& line = lines[first + k];
+            std::vector<std::string> f = bench_ops_split(line, ' ');
+            f[0] = std::to_string(bench_ops_sparse_id(std::stoll(f[0])));
+            if (!nodes) {
+                const std::size_t ntags = static_cast<std::size_t>(std::stoull(f[2]));
+                for (std::size_t j = 3 + ntags; j < f.size(); ++j)
+                    f[j] = std::to_string(bench_ops_sparse_id(std::stoll(f[j])));
+            }
+            line.clear();
+            for (std::size_t j = 0; j < f.size(); ++j)
+                line += (j ? " " : "") + f[j];
+        }
+        bench_ops_shuffle_lines(lines, first, count, 1, nodes ? 17 : 29);
+    }
+    bench_ops_write_text(rPath, bench_ops_join(lines));
+}
+
+void bench_ops_sparsify_abaqus(const std::string& rPath) {
+    std::vector<std::string> lines = bench_ops_lines(bench_ops_read_text(rPath));
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        const bool nodes = lines[i].rfind("*NODE", 0) == 0;
+        if (!nodes && lines[i].rfind("*ELEMENT", 0) != 0)
+            continue;
+        std::size_t last = i + 1;
+        while (last < lines.size() && !lines[last].empty() && lines[last][0] != '*')
+            ++last;
+        for (std::size_t k = i + 1; k < last; ++k) {
+            std::vector<std::string> f = bench_ops_split(lines[k], ',');
+            f[0] = std::to_string(bench_ops_sparse_id(std::stoll(f[0])));
+            if (!nodes)
+                for (std::size_t j = 1; j < f.size(); ++j)
+                    f[j] = std::to_string(bench_ops_sparse_id(std::stoll(f[j])));
+            lines[k].clear();
+            for (std::size_t j = 0; j < f.size(); ++j)
+                lines[k] += (j ? "," : "") + f[j];
+        }
+        bench_ops_shuffle_lines(lines, i + 1, last - i - 1, 1, nodes ? 17 : 29);
+        i = last - 1;
+    }
+    bench_ops_write_text(rPath, bench_ops_join(lines));
+}
+
+// Nastran: `GRID*` plus its continuation line (the id is the 16 characters
+// after the 8 of the keyword), and `CTETRA` and friends in 8-character fields
+// (element id, property id, then the nodes).
+void bench_ops_sparsify_nastran(const std::string& rPath) {
+    std::vector<std::string> lines = bench_ops_lines(bench_ops_read_text(rPath));
+    std::size_t grid_first = lines.size(), grid_last = 0, cell_first = lines.size(), cell_last = 0;
+    const auto field = [](std::string& rLine, std::size_t At, std::size_t Width, bool Ids) {
+        if (rLine.size() < At + 1)
+            return;
+        std::string cell = rLine.substr(At, Width);
+        const std::size_t end = cell.find_last_not_of(' ');
+        if (end == std::string::npos || !Ids)
+            return;
+        cell = std::to_string(bench_ops_sparse_id(std::stoll(cell.substr(0, end + 1))));
+        cell.resize(Width, ' ');
+        rLine.replace(At, Width, cell);
+    };
+    for (std::size_t i = 0; i < lines.size(); ++i) {
+        std::string& l = lines[i];
+        if (l.rfind("GRID*", 0) == 0) {
+            field(l, 8, 16, true);
+            grid_first = std::min(grid_first, i);
+            grid_last = i + 2;
+            ++i;  // its continuation line
+        } else if (l.rfind("C", 0) == 0 && l.size() > 8 && l.rfind("CTETRA", 0) == 0) {
+            field(l, 8, 8, true);
+            for (std::size_t at = 24; at < l.size(); at += 8)
+                field(l, at, 8, true);
+            cell_first = std::min(cell_first, i);
+            cell_last = i + 1;
+        }
+    }
+    if (grid_last > grid_first)
+        bench_ops_shuffle_lines(lines, grid_first, grid_last - grid_first, 2, 17);
+    if (cell_last > cell_first)
+        bench_ops_shuffle_lines(lines, cell_first, cell_last - cell_first, 1, 29);
+    bench_ops_write_text(rPath, bench_ops_join(lines));
+}
+
 Mesh bench_ops_moved(const Mesh& rMesh, const std::function<void(std::size_t, double*)>& rF) {
     NDArray pts = NDArray::Uninit(DType::Float64, {rMesh.NumPoints(), 3});
     std::memcpy(pts.Data(), rMesh.Points().Data(), pts.Nbytes());
@@ -1086,6 +1269,45 @@ int main(int argc, char** argv) {
                 mio::write_gmsh22(rPath, with_field, /*binary=*/false);
             },
             registry_reader("gmsh"));
+        // The readers' id maps (roadmap 5.22.2): the writers number points and
+        // elements 1..n, so the dense rows reach a map's easy case; the sparse
+        // rows rewrite the same file with ids 7 i + 3 and shuffled lines. The
+        // setup checks that the sparse file reads back as the same mesh.
+        const auto dense_write = [&](const char* pFormat) {
+            return [&, pFormat](const std::string& rPath) {
+                mio::registry_write_ex(rPath, with_field, pFormat, mio::WriteOptions{});
+            };
+        };
+        const auto sparse_write = [&](const char* pFormat, void (*pSparsify)(const std::string&)) {
+            return [&, pFormat, pSparsify](const std::string& rPath) {
+                mio::registry_write_ex(rPath, with_field, pFormat, mio::WriteOptions{});
+                const Mesh dense = mio::registry_read(rPath, pFormat, mio::ReadOptions{});
+                pSparsify(rPath);
+                const Mesh sparse = mio::registry_read(rPath, pFormat, mio::ReadOptions{});
+                if (sparse.NumPoints() != dense.NumPoints() ||
+                    sparse.NumCellBlocks() != dense.NumCellBlocks() ||
+                    sparse.Cells(0).NumCells() != dense.Cells(0).NumCells())
+                    throw std::runtime_error("the sparse-id file does not read back as the mesh");
+            };
+        };
+        file_row(
+            "read_gmsh22_sparse", ".msh",
+            [&](const std::string& rPath) {
+                mio::write_gmsh22(rPath, with_field, /*binary=*/false);
+                const Mesh dense = mio::registry_read(rPath, "gmsh", mio::ReadOptions{});
+                bench_ops_sparsify_gmsh22(rPath);
+                const Mesh sparse = mio::registry_read(rPath, "gmsh", mio::ReadOptions{});
+                if (sparse.NumPoints() != dense.NumPoints() ||
+                    sparse.Cells(0).NumCells() != dense.Cells(0).NumCells())
+                    throw std::runtime_error("the sparse-id file does not read back");
+            },
+            registry_reader("gmsh"));
+        file_row("read_abaqus", ".inp", dense_write("abaqus"), registry_reader("abaqus"));
+        file_row("read_abaqus_sparse", ".inp", sparse_write("abaqus", bench_ops_sparsify_abaqus),
+                 registry_reader("abaqus"));
+        file_row("read_nastran", ".bdf", dense_write("nastran"), registry_reader("nastran"));
+        file_row("read_nastran_sparse", ".bdf", sparse_write("nastran", bench_ops_sparsify_nastran),
+                 registry_reader("nastran"));
         read_row("read_medit", "medit", ".mesh", with_field);
         const auto write_row = [&](const char* pOp, const char* pFormat, const char* pExt,
                                    const Mesh& rSource, mio::WriteEncoding Encoding) {
@@ -1174,6 +1396,33 @@ int main(int argc, char** argv) {
                 pD->Array(r.mSideB.mEntries);
             }
         });
+        // The upper half's facets on the planar interface, as a Side region,
+        // split with cohesive cells (roadmap 5.18: the staging of
+        // `split_interface`).
+        {
+            mio::FindInterfaceOptions fo;
+            fo.mMode = mio::InterfaceMode::Proximity;
+            auto found = mio::find_interface(with_halves, mio::RegionSelector{"lower"},
+                                             mio::RegionSelector{"upper"}, fo);
+            Mesh cut_mesh = bench_ops_moved(with_halves, [](std::size_t, double*) {});
+            found.mSideA.mName = "cut";
+            cut_mesh.AddRegion(std::move(found.mSideA));
+            row("split_interface", [&](MeshDigest* pD) {
+                mio::SplitInterfaceOptions o;
+                o.mAddCohesive = true;
+                auto r = mio::split_interface(cut_mesh, mio::RegionSelector{"cut"}, o);
+                of(pD, r.mMesh);
+                if (pD) {
+                    pD->U64(static_cast<std::uint64_t>(r.mNumDuplicatedPoints));
+                    pD->U64(static_cast<std::uint64_t>(r.mNumCohesiveCells));
+                    // The plain split, without cohesive cells, on the same cut.
+                    mio::SplitInterfaceOptions plain;
+                    auto q = mio::split_interface(cut_mesh, mio::RegionSelector{"cut"}, plain);
+                    of(pD, q.mMesh);
+                    pD->U64(static_cast<std::uint64_t>(q.mNumDuplicatedPoints));
+                }
+            });
+        }
         // The cube's x = 0 and x = 1 faces as Point regions, matched by the
         // unit translation (roadmap 5.1.2): (n+1)^2 node pairs.
         const Mesh with_faces = [&] {

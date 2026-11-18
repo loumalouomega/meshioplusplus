@@ -149,6 +149,17 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rS, const OctreeMeshOptions& r
                 if (wa <= thr)
                     return vec3_add(a, vec3_scale(ab, h.mT));
             }
+            // Both ends on the skin and no crossing: the edge lies in the skin
+            // (coplanar with its triangles, which the segment test skips), so
+            // every point of it is on the interface. Take the middle, where
+            // bisection would chase the noise of the winding number on the
+            // plane with 40 evaluations of it (benchmarks: "Octree cut points on the skin").
+            if (hits.empty()) {
+                const std::vector<Vec3> ends{a, b};
+                const auto closest = query_closest_points(rS.mQuery, ends);
+                if (closest[0].mDistance <= rS.mOnSkin && closest[1].mDistance <= rS.mOnSkin)
+                    return vec3_add(a, vec3_scale(ab, 0.5));
+            }
             double lo = 0.0, hi = 1.0;
             for (int it = 0; it < 40 && (hi - lo) * vec3_norm(ab) > step; ++it) {
                 const double mid = 0.5 * (lo + hi);
@@ -290,8 +301,7 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
                 // The point of the tetrahedron which is not on the face.
                 Index opposite = -1;
                 for (const Index v : rTets.mTets[t])
-                    if (v != faces[i].first[0] && v != faces[i].first[1] &&
-                        v != faces[i].first[2])
+                    if (v != faces[i].first[0] && v != faces[i].first[1] && v != faces[i].first[2])
                         opposite = v;
                 for (const Index v : faces[i].first)
                     incident[v].push_back(triangles.size());
@@ -429,8 +439,8 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
                     if (current == a || is_chain(current) || lc == link.end() ||
                         lc->second.size() != 2)
                         break;
-                    const auto& next = lc->second[0].first == previous ? lc->second[1]
-                                                                       : lc->second[0];
+                    const auto& next =
+                        lc->second[0].first == previous ? lc->second[1] : lc->second[0];
                     previous = current;
                     current = next.first;
                     tri = next.second;
@@ -830,9 +840,8 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
                 // by P keeps the orientation.
                 const Index p = static_cast<Index>(rTets.mPoints.size());
                 std::vector<std::pair<std::size_t, std::array<std::array<Index, 4>, 2>>> splits;
-                for (const auto& [e0, e1] :
-                     {std::pair<Index, Index>{tet[i], tet[j]},
-                      std::pair<Index, Index>{tet[k], tet[l]}})
+                for (const auto& [e0, e1] : {std::pair<Index, Index>{tet[i], tet[j]},
+                                             std::pair<Index, Index>{tet[k], tet[l]}})
                     for (const std::size_t other : shell(e0, e1)) {
                         if (other == t)
                             continue;
@@ -848,8 +857,8 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
                 bool splittable = true;
                 for (const auto& [other, children] : splits)
                     for (const auto& r_child : children)
-                        splittable = splittable &&
-                                     (!considered(other) || volume_and_tolerance(r_child).first > 0.0);
+                        splittable = splittable && (!considered(other) ||
+                                                    volume_and_tolerance(r_child).first > 0.0);
                 if (!splittable) {
                     rTets.mPoints.pop_back();
                     continue;
