@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Tooling:** `tools/api/python_api.json`, a dump of the public Python API (every name of `__all__` with its signature), written by `tools/gen_api_dump.py`; the `lint` job fails a pull request that removes a name or a parameter, makes one required or changes a default without a `**Breaking:**` line in this file (roadmap 3.13.3).
 - **Build:** `MESHIOPLUSPLUS_WARNINGS` and `MESHIOPLUSPLUS_WARNINGS_AS_ERRORS` compile meshio++'s own sources with `-Wall -Wextra` (`/W4`), PRIVATE per target with the vendored sources exempted, and `--warnings` in `build/configure.sh` and `.bat` (roadmap 3.6.1); `MESHIOPLUSPLUS_HARDENED_STL` turns on the standard library's assertions (3.9.3). The consumer test fails when an installed target exports a warning option.
 - **CI:** advisory `warnings` (GCC and Clang counts), `compiler-matrix` (GCC 11 to 14, Clang 15 to 18) and required `cpp-hardened` jobs; the `lint` job holds pull requests to `.clang-format` on the lines they change (3.6.2, 3.15.4, 3.9.3, 3.8). The first measure: 258 distinct GCC 13 warnings.
 - **CI:** a weekly `notebooks` workflow executes the Python example notebooks (roadmap 3.11.4); step timeouts on the `coverage` job's long steps and the `mcp` install step (3.21).
