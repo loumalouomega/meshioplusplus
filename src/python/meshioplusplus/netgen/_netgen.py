@@ -7,6 +7,7 @@ import numpy as np
 
 from .. import _provenance
 from .._common import warn
+from .._exceptions import WriteError
 from .._files import open_file
 from .._mesh import Mesh
 
@@ -229,6 +230,10 @@ def _write_codim_domain_data(f, mesh, cells_index, dim, codim):
     f.write(f"\n{codim_tag:s}\n")
 
     ncd = max(data.keys())
+    # The table holds one line per id up to the largest, so a stray large tag would
+    # write billions of lines; the native writer has the same budget (roadmap 3.19).
+    if ncd > 10000000:
+        raise WriteError("Netgen: name-table id exceeds the 10000000-entry budget")
     f.write(f"{ncd:d}\n")
     for idx in range(1, ncd + 1):
         f.write("{:d} {:s}\n".format(idx, data.get(idx, "")))

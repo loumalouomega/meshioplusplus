@@ -544,12 +544,13 @@ Publishing already uses OIDC for PyPI and (with a token fallback, `wasm.yml` lin
 
 ### 3.19 Index and identifier widths
 
-*Verify first.* The VTU `UInt64` header type is tested (`tests/python/meshes/vtu/01_raw_binary_int64.vtu`), but no test builds a mesh with a node or cell tag above 2³¹ and writes it to every format that can hold one. **S–M**
+`tests/python/id_widths_spec.py` writes an int64 point array and an int64 cell array of `2**31 + 5` and up to every writable format that has a conformance row, reads it back, and classifies the outcome; `tools/gen_id_widths_table.py` renders it as [integer widths](./id_widths.md), and `tests/python/test_id_widths.py` fails on a silent wrap, on a refusal that does not name the format and on any drift from the declared table. It found and fixed three defects: GIFTI wrapped 64-bit integers to 32 bits (a value of `2**31 + 5` came back as `-2147483643`; both engines now throw a `WriteError` naming the format), the Python Netgen writer tried to write one name-table line per id up to `2**31 + 5` where the native writer's 10,000,000-entry budget refuses it, and ADCIRC's native reader cut a `long long` time step to `int` (now a `ReadError`). Clang's `-Wshorten-64-to-32` over `src/cpp/src/formats` found that one narrowing, the ADCIRC step: the readers cast explicitly everywhere else. **S–M**
 
-- **Steps.**
-  - **3.19.1 An audit.** Build with `-Wshorten-64-to-32` on Clang (an advisory leg, as 3.6.2) and list the narrowing conversions on index, count and tag paths of `src/cpp/src/formats/`; each is fixed, or a check that throws `ReadError`/`WriteError` naming the format and the value.
-  - **3.19.2 A table of widths** in [formats](./formats.md): for each format, the widest node and cell id it stores (MSH 4.1's sizes, Exodus' `int64` mode, CGNS' `cgsize_t`, VTKHDF, VTU's header types), generated from a test that writes an id above 2³¹ to each and records the outcome as the conformance matrix does.
-- **Done when.** A mesh with a tag of 2³¹ + 5 either round-trips or fails with the format's name, for every registered writer.
+- **Remaining.**
+  - **3.19.3 Ids, not data.** The table covers integer *data* arrays. The ids a format stores for nodes and elements (Nastran and Abaqus numbers, Exodus `int64` mode, MSH 4.1's sizes, CGNS' `cgsize_t`, VTKHDF) need a mesh with explicit ids above `2**31`, which most writers renumber; extend the probe format by format, starting with the formats whose pages state a width.
+  - **3.19.4 The wider audit.** The `narrowing` job of `ci.yml` (advisory, Clang) lists every `-Wshorten-64-to-32` in the core, not only the formats; triage its first count, fixing each finding or turning it into a check that throws naming the format and the value.
+  - **3.19.5 Float-only formats.** `ensight`, `cae`, `frd`, `marc_t19` and the text decks that print a few significant digits return the integers `rounded`. That is the format's own limit, but nothing warns: decide whether a writer should warn when an integer array above `2**24` goes into single precision.
+- **Done when.** A mesh with a tag of `2**31 + 5` either round-trips or fails with the format's name, for every registered writer, and the ids of 3.19.3 are in the table.
 
 ### 3.20 A corpus manifest: producers, licences and sources {#corpus-manifest}
 

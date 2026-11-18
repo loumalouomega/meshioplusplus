@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <bit>
 #include <cstdint>
+#include <limits>
 #include <cstring>
 #include <map>
 #include <string>
@@ -44,6 +45,18 @@
 namespace meshioplusplus {
 
 namespace {
+
+/// A GIFTI integer array is 32-bit: a value outside that range is an error, not a
+/// silent wrap to another number (roadmap 3.19). The message is only built on the
+/// error path; `pName` names the point array, if any.
+std::int32_t gii_int32(std::int64_t Value, const char* pWhat, const std::string* pName = nullptr) {
+    if (Value < std::numeric_limits<std::int32_t>::min() ||
+        Value > std::numeric_limits<std::int32_t>::max())
+        throw WriteError(std::string("meshio++: gifti: ") + pWhat +
+                         (pName ? " '" + *pName + "'" : std::string()) +
+                         " holds an integer outside the 32-bit range");
+    return static_cast<std::int32_t>(Value);
+}
 
 DType gii_dtype(const std::string& rName) {
     static const std::map<std::string, DType> table = {
@@ -334,7 +347,7 @@ void write_gifti(const std::string& rPath, const Mesh& rMesh) {
         const auto cb = rMesh.Cells(0);
         bytes.clear();
         for (std::size_t k = 0; k < cb.NumCells() * 3; ++k)
-            gii_put(bytes, static_cast<std::int32_t>(detail::read_int(cb.Conn(), k)));
+            gii_put(bytes, gii_int32(detail::read_int(cb.Conn(), k), "the triangle connectivity"));
         arrays.push_back(gii_array("NIFTI_INTENT_TRIANGLE", "NIFTI_TYPE_INT32", {cb.NumCells(), 3},
                                    bytes, "", ""));
     }
@@ -352,7 +365,7 @@ void write_gifti(const std::string& rPath, const Mesh& rMesh) {
             if (floating)
                 gii_put(bytes, static_cast<float>(detail::read_double(a, k)));
             else
-                gii_put(bytes, static_cast<std::int32_t>(detail::read_int(a, k)));
+                gii_put(bytes, gii_int32(detail::read_int(a, k), "point data", &name));
         }
         const std::string intent = name == "gifti:label" ? "NIFTI_INTENT_LABEL"
                                    : width > 1           ? "NIFTI_INTENT_NONE"

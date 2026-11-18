@@ -527,6 +527,66 @@ jobs:
             warnings.uniq
 
   # --------------------------------------------------------------------------
+  # Narrowing conversions in the readers and writers (roadmap 3.19.1): Clang's
+  # -Wshorten-64-to-32 lists every place a 64-bit index, count or id is cut to 32
+  # bits. Advisory; the log is the artifact and the count the step summary. Each
+  # finding is fixed, or becomes a check that throws a ReadError/WriteError
+  # naming the format and the value.
+  # --------------------------------------------------------------------------
+  narrowing:
+    name: Narrowing conversions (Clang)
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
+        with:
+          key: narrowing
+          max-size: 300M
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Install native libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev libbz2-dev pkg-config ninja-build
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          "-DCMAKE_CXX_FLAGS=-Wshorten-64-to-32"
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ
+          -DMESHIOPLUSPLUS_WITH_HDF5=OFF
+          -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+      - name: Build the core, keeping the compiler's output
+        run: cmake --build build --target meshioplusplus_core_obj 2>&1 | tee narrowing.log
+      - name: Count the findings
+        run: |
+          grep 'Wshorten-64-to-32' narrowing.log | sort -u > narrowing.uniq || true
+          {
+            echo "### Narrowing conversions: $(wc -l < narrowing.uniq) distinct"
+            echo "Under src/cpp/src/formats: $(grep -c 'src/cpp/src/formats/' narrowing.uniq || true)"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: narrowing
+          path: |
+            narrowing.log
+            narrowing.uniq
+
+  # --------------------------------------------------------------------------
   # Byte-identical operation output across parallel backends and thread counts
   # (roadmap §3). Every serial phase that §3 parallelises is a determinism pin;
   # this is the check that proves a change kept it: tools/bench_ops.sh builds
