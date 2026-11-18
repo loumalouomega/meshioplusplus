@@ -1,0 +1,20 @@
+# Link-check configuration (roadmap 3.16.1). Every exclusion carries its reason.
+
+exclude_path = [
+  "doc/node_modules",
+  "doc/.vitepress",
+  "doc/doxygen-build",
+]
+
+exclude = [
+  # Vendor portals and sites that answer automated clients with 403/429.
+  '^https://(www\.)?(sciencedirect|dl\.acm|doi|link\.springer)\.(com|org)',
+  '^https://(www\.)?linkedin\.com',
+  # The deployed site and its repository, which do not exist for a pull request's own new pages.
+  '^https://loumalouomega\.github\.io/meshioplusplus',
+  # Placeholders in examples.
+  '^https?://(localhost|127\.0\.0\.1)',
+  '^https?://example\.(com|org)',
+]
+
+accept = ["200..=204", "403", "429"]

@@ -54460,7 +54460,7 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
 /**
  * @file detail/library_lock.hpp
  * @brief One process-wide lock serialising every call into a third-party
- * library that is not thread-safe (roadmap 3.4.1.1).
+ * library that is not thread-safe (see doc/sequences.md, "library lock").
  *
  * A **core-private** header (the `slot_runs.hpp` precedent): no installed
  * header names it, and it adds nothing to the API or the ABI.

@@ -14,3 +14,9 @@ repos:
     rev: 7.0.0
     hooks:
       - id: flake8
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.3.0
+    hooks:
+      - id: codespell
+        # Skips and the project word list live in .codespellrc.

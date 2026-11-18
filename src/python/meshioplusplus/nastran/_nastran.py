@@ -713,7 +713,7 @@ def _float_to_nastran_string(value, length=16):
     ```
 
     This methods converts a float value into the corresponding string. Choose
-    the variant with `E` to make the file less ambigious when edited by a
+    the variant with `E` to make the file less ambiguous when edited by a
     human. (`5.-1` looks like 4.0, not 5.0e-1 = 0.5.)
 
     Examples:

@@ -1657,7 +1657,7 @@ endfunction()
 if(MESHIOPLUSPLUS_INSTALL_CPP)
   include(CMakePackageConfigHelpers)
 
-  # All 112 headers, subdirectory structure preserved. detail/ is included
+  # Every installed header, subdirectory structure preserved. detail/ is included
   # deliberately: the public headers include it transitively, so an install
   # without it does not compile.
   install(DIRECTORY src/cpp/include/meshioplusplus/

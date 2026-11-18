@@ -1,0 +1,61 @@
+name: links
+
+# Link checks for the documentation (roadmap 3.16.1). Internal links and anchors
+# run on every pull request that touches prose; external links run weekly, since
+# a vendor portal that is down must not fail an unrelated pull request.
+#
+# Both start advisory (continue-on-error): the first run is triaged, its
+# findings fixed or listed in .lychee.toml with a reason, and then the internal
+# job becomes a required check.
+
+on:
+  pull_request:
+    paths:
+      - "doc/**/*.md"
+      - "README.md"
+      - "CHANGELOG.md"
+      - ".lychee.toml"
+      - ".github/workflows/links.yml"
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  internal:
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Check internal links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          # --offline checks relative links and anchors only; site-absolute
+          # links (/formats/foo) resolve against the VitePress root, doc/.
+          args: >-
+            --offline --no-progress --root-dir "${{ github.workspace }}/doc"
+            --config .lychee.toml
+            'README.md' 'CHANGELOG.md' 'doc/**/*.md'
+          fail: true
+
+  external:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: false
+      - name: Check external links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress --max-retries 3 --retry-wait-time 5 --timeout 30
+            --config .lychee.toml
+            'README.md' 'doc/**/*.md'
+          fail: true
