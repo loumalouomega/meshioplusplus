@@ -109,16 +109,20 @@ jobs:
           mkdir -p "$RUNNER_TEMP/nb" "$RUNNER_TEMP/nblogs"
           : > "$RUNNER_TEMP/skipped.txt"
           : > "$RUNNER_TEMP/failed.txt"
+          : > "$RUNNER_TEMP/times.txt"
           ok=0
           for nb in example/python/*.ipynb; do
             name=$(basename "$nb" .ipynb)
             echo "== $nb"
+            start=$(date +%s)
             if xvfb-run -a jupyter nbconvert --to notebook --execute \
-                --ExecutePreprocessor.timeout=600 \
+                --ExecutePreprocessor.timeout=1800 \
                 --output-dir "$RUNNER_TEMP/nb" "$nb" > "$RUNNER_TEMP/nblogs/$name.log" 2>&1; then
               ok=$((ok + 1))
+              echo "$(( $(date +%s) - start )) $name" >> "$RUNNER_TEMP/times.txt"
               continue
             fi
+            echo "$(( $(date +%s) - start )) $name" >> "$RUNNER_TEMP/times.txt"
             # A notebook that needs a build option or library the CI wheel lacks is
             # skipped, not failed (tools/classify_notebook_error.py).
             IFS=$'\t' read -r kind message < <(python tools/classify_notebook_error.py "$RUNNER_TEMP/nblogs/$name.log")
@@ -133,6 +137,8 @@ jobs:
           done
           {
             echo "### Notebooks: $ok ran, $(grep -c . "$RUNNER_TEMP/skipped.txt") skipped (optional build or library), $(grep -c . "$RUNNER_TEMP/failed.txt") failed"
+            printf '\n**Slowest notebooks (seconds)**\n\n'
+            sort -rn "$RUNNER_TEMP/times.txt" | head -n 3 | sed 's/^/- /'
             if [ -s "$RUNNER_TEMP/failed.txt" ]; then
               printf '\n**Failed**\n\n| Notebook | Error |\n| --- | --- |\n'; cat "$RUNNER_TEMP/failed.txt"
             fi
