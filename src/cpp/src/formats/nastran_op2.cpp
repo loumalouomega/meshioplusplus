@@ -2341,8 +2341,7 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
             unique.mIds.push_back(g.mIds[i]);
             unique.mCp.push_back(g.mCp[i]);
             unique.mCd.push_back(g.mCd[i]);
-            unique.mXyz.insert(unique.mXyz.end(), g.mXyz.data() + 3 * i,
-                               g.mXyz.data() + 3 * i + 3);
+            unique.mXyz.insert(unique.mXyz.end(), g.mXyz.data() + 3 * i, g.mXyz.data() + 3 * i + 3);
         }
         g = std::move(unique);
     }
