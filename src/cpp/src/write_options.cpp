@@ -28,6 +28,7 @@
 #include "meshioplusplus/write_options.hpp"
 
 #include "meshioplusplus/exceptions.hpp"
+#include "detail/integer_precision.hpp"
 #include "meshioplusplus/formats/abaqus_fil.hpp"
 #include "meshioplusplus/formats/ansys.hpp"
 #include "meshioplusplus/formats/flac3d.hpp"
@@ -147,6 +148,7 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     std::string why;
     if (!registry_write_supports(fmt, rOptions, why))
         throw WriteError("meshio++: " + why);
+    detail::warn_integer_precision(fmt, rMesh);
 
     const bool appended = rOptions.mEncoding == WriteEncoding::RawAppended;
     const bool binary = rOptions.mEncoding == WriteEncoding::Binary || appended;

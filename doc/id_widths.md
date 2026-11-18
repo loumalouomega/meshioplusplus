@@ -7,7 +7,7 @@ Every writable format is given one mesh, with an int64 point array and an int64 
 - **exact** the same integers came back, as the dtype named.
 - **double** the format stores the values as floating point and they came back equal.
 - **single (exact)** the format stores single-precision floats and these particular values survived.
-- **rounded** the format stores floating point with limited precision (single precision, or a few significant digits of text), so the values came back close but not equal; integers above 2**24 are not exact in it, which is the format's own limit.
+- **rounded** the format stores floating point with limited precision (single precision, or a few significant digits of text), so the values came back close but not equal; integers above 2**24 are not exact in it, which is the format's own limit. Writing such an array to one of these formats (`cae`, `ensight`, `frd`, `gid`, `gltf`, `marc_t19`, `radioss_anim`, `xplt`) warns once per array, in both engines.
 - **dropped** the format does not carry that array.
 - **error** the writer refuses the mesh and its message names the format.
 - **not observed** an optional library the writer needs is not installed in the environment that generated the page.
@@ -112,3 +112,17 @@ A value that comes back as a *different integer* is a silent narrowing and is a 
 | `xyz` | double | dropped |
 | `z88` | dropped | dropped |
 | `zarr` | not observed | not observed |
+
+## Node and element ids
+
+The ids a format stores for its nodes and elements, for the formats that take them through a data key of the mesh model (`tests/python/id_widths_spec.py`, `ID_KEYS`): the same probe with one distinct id of `2**31 + 5` and up per node and per cell, set as `abaqus:id`, `global:node_id`/`global:cell_id`, `libmesh:id`, `mdpa:id`, `med:num` or `radioss:node_id`/`radioss:element_id`. A format that is not listed renumbers its entities or takes ids only through its own numbering; its width is stated on its page instead: [CGNS](./formats/cgns.md) writes `I4` connectivity while the point count fits `int32` and `I8` after, [Exodus](./formats/exodus.md) has an `int64` mode, and [Gmsh 4.1](./formats/gmsh.md) stores tags as `size_t`.
+
+| Format | Point ids | Cell ids |
+| --- | --- | --- |
+| `abaqus` | dropped | dropped |
+| `abaqus_fil` | exact int64 | exact int64 |
+| `exodus` | exact int64 | exact int64 |
+| `libmesh` | error (WriteError) | error (WriteError) |
+| `mdpa` | exact int64 | dropped |
+| `med` | exact int64 | exact int64 |
+| `radioss_anim` | error (WriteError) | error (WriteError) |

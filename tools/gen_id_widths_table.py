@@ -31,7 +31,7 @@ Every writable format is given one mesh, with an int64 point array and an int64 
 - **exact** the same integers came back, as the dtype named.
 - **double** the format stores the values as floating point and they came back equal.
 - **single (exact)** the format stores single-precision floats and these particular values survived.
-- **rounded** the format stores floating point with limited precision (single precision, or a few significant digits of text), so the values came back close but not equal; integers above 2**24 are not exact in it, which is the format's own limit.
+- **rounded** the format stores floating point with limited precision (single precision, or a few significant digits of text), so the values came back close but not equal; integers above 2**24 are not exact in it, which is the format's own limit. Writing such an array to one of these formats (`cae`, `ensight`, `frd`, `gid`, `gltf`, `marc_t19`, `radioss_anim`, `xplt`) warns once per array, in both engines.
 - **dropped** the format does not carry that array.
 - **error** the writer refuses the mesh and its message names the format.
 - **not observed** an optional library the writer needs is not installed in the environment that generated the page.
@@ -57,8 +57,21 @@ def rows(table):
     return "\n".join(out) + "\n"
 
 
-def render(table):
-    return HEADER + rows(table)
+IDS_HEADER = """
+## Node and element ids
+
+The ids a format stores for its nodes and elements, for the formats that take them through a data key of the mesh model (`tests/python/id_widths_spec.py`, `ID_KEYS`): the same probe with one distinct id of `2**31 + 5` and up per node and per cell, set as `abaqus:id`, `global:node_id`/`global:cell_id`, `libmesh:id`, `mdpa:id`, `med:num` or `radioss:node_id`/`radioss:element_id`. A format that is not listed renumbers its entities or takes ids only through its own numbering; its width is stated on its page instead: [CGNS](./formats/cgns.md) writes `I4` connectivity while the point count fits `int32` and `I8` after, [Exodus](./formats/exodus.md) has an `int64` mode, and [Gmsh 4.1](./formats/gmsh.md) stores tags as `size_t`.
+
+| Format | Point ids | Cell ids |
+| --- | --- | --- |
+"""
+
+
+def render(table, ids=None):
+    text = HEADER + rows(table)
+    if ids:
+        text += IDS_HEADER + rows(ids)
+    return text
 
 
 def main(argv=None):
@@ -76,9 +89,16 @@ def main(argv=None):
             o = spec.observe(fmt)
             if o is not None:
                 observed[fmt] = {k: v for k, v in o.items() if k != "named"}
+        observed_ids = {}
+        for fmt in sorted(spec.ID_KEYS):
+            o = spec.observe_ids(fmt)
+            if o is not None:
+                observed_ids[fmt] = {k: v for k, v in o.items() if k != "named"}
         pprint.pprint(observed, width=100, sort_dicts=True)
+        print("# ids")
+        pprint.pprint(observed_ids, width=100, sort_dicts=True)
         return 0
-    text = render(spec.EXPECTED)
+    text = render(spec.EXPECTED, spec.EXPECTED_IDS)
     if args.check:
         current = PAGE.read_text(encoding="utf-8") if PAGE.is_file() else ""
         if current != text:

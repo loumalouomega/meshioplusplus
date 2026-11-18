@@ -42,6 +42,16 @@ import numpy as np
 BIG = 2**31 + 5
 _TIMEOUT_S = 30
 
+EXPECTED_IDS = {
+    "abaqus": {"cell": "dropped", "point": "dropped"},
+    "abaqus_fil": {"cell": "exact int64", "point": "exact int64"},
+    "exodus": {"cell": "exact int64", "point": "exact int64"},
+    "libmesh": {"error": "WriteError"},
+    "mdpa": {"cell": "dropped", "point": "exact int64"},
+    "med": {"cell": "exact int64", "point": "exact int64"},
+    "radioss_anim": {"error": "WriteError"},
+}
+
 # Declared outcomes, from ``python tools/gen_id_widths_table.py --observe``.
 EXPECTED = {
     "3mf": {"cell": "dropped", "point": "dropped"},
@@ -196,21 +206,51 @@ def _array_outcome(back, want):
     return "WRAPPED"
 
 
-def observe(fmt):
-    """``{"point": outcome, "cell": outcome}``, ``{"error": ...}`` or ``None``."""
+# The formats that expose the ids they store for nodes and elements through a
+# data key of the mesh model: ``{format: (point key, cell key)}``, ``None`` for a
+# kind the format has no id for. Other formats renumber, or take an id only
+# through their own numbering, so their ids are documented, not probed.
+ID_KEYS = {
+    "abaqus": ("abaqus:id", "abaqus:id"),
+    "abaqus_fil": ("abaqus:id", "abaqus:id"),
+    "exodus": ("global:node_id", "global:cell_id"),
+    "libmesh": ("libmesh:id", None),
+    "mdpa": ("mdpa:id", "mdpa:id"),
+    "med": ("med:num", "med:num"),
+    "radioss_anim": ("radioss:node_id", "radioss:element_id"),
+}
+
+
+def observe(fmt, keys=None):
+    """``{"point": outcome, "cell": outcome}``, ``{"error": ...}`` or ``None``.
+
+    With ``keys`` (from :data:`ID_KEYS`) the arrays are the format's id arrays,
+    one distinct id per node and per cell, instead of the generic data arrays.
+    """
     spec = cs.SPEC.get(fmt)
     if not spec or "cells" not in spec:
         return None
+    pkey, ckey = keys if keys else ("p_big", "c_big")
     ctypes = [c for c in cs.CELL_TYPES if c in spec["cells"]]
     mesh = cs.canonical_mesh(
         ctypes, data=False, regions=False, planar=spec.get("input") == "2d"
     )
     n = len(mesh.points)
     point = np.arange(n, dtype=np.int64) + BIG
-    mesh.point_data["p_big"] = point.copy()
-    mesh.cell_data["c_big"] = [
-        np.full(len(b.data), BIG, dtype=np.int64) for b in mesh.cells
-    ]
+    ncells = sum(len(b.data) for b in mesh.cells)
+    want_cells = (
+        np.arange(ncells, dtype=np.int64) + BIG
+        if keys
+        else np.full(ncells, BIG, dtype=np.int64)
+    )
+    if pkey:
+        mesh.point_data[pkey] = point.copy()
+    if ckey:
+        offsets = np.cumsum([0] + [len(b.data) for b in mesh.cells])
+        mesh.cell_data[ckey] = [
+            want_cells[offsets[i] : offsets[i + 1]].copy()
+            for i in range(len(mesh.cells))
+        ]
     old = signal.signal(signal.SIGALRM, _alarm)
     signal.alarm(_TIMEOUT_S)
     try:
@@ -230,15 +270,20 @@ def observe(fmt):
         signal.alarm(0)
         signal.signal(signal.SIGALRM, old)
     cells = None
-    if "c_big" in back.cell_data:
+    if ckey and ckey in back.cell_data:
         cells = np.concatenate(
-            [np.asarray(a).reshape(-1) for a in back.cell_data["c_big"]]
+            [np.asarray(a).reshape(-1) for a in back.cell_data[ckey]]
         )
-    want_cells = np.full(sum(len(b.data) for b in mesh.cells), BIG, dtype=np.int64)
-    pts = back.point_data.get("p_big")
-    if pts is not None and len(np.asarray(pts).reshape(-1)) == n:
+    pts = back.point_data.get(pkey) if pkey else None
+    if pts is not None:
         pts = np.asarray(pts).reshape(-1)
     return {
-        "point": _array_outcome(pts, point),
-        "cell": _array_outcome(cells, want_cells),
+        "point": _array_outcome(pts, point) if pkey else "no id",
+        "cell": _array_outcome(cells, want_cells) if ckey else "no id",
     }
+
+
+def observe_ids(fmt):
+    """:func:`observe` on the format's id arrays (``None`` when it has none)."""
+    keys = ID_KEYS.get(fmt)
+    return observe(fmt, keys) if keys else None

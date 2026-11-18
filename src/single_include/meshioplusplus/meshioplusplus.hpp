@@ -53841,6 +53841,29 @@ HoleFillPatch hole_fill(const HoleFillInput& rIn, std::int64_t Base);
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/hole_fill.hpp =====
+// ===== begin src/cpp/src/detail/integer_precision.hpp =====
+#ifndef MESHIOPLUSPLUS_DETAIL_INTEGER_PRECISION_HPP
+#define MESHIOPLUSPLUS_DETAIL_INTEGER_PRECISION_HPP
+
+#include <string>
+
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The largest magnitude every integer up to which a float32 holds exactly.
+inline constexpr long long kExactFloatInteger = 1LL << 24;
+
+/// Warn, once per array, for each integer point or cell array of @p rMesh whose
+/// values the format @p rFormat cannot keep exactly. Does nothing for a format
+/// that stores integers as integers, for float arrays and for small values.
+void warn_integer_precision(const std::string& rFormat, const Mesh& rMesh);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+
+#endif  // MESHIOPLUSPLUS_DETAIL_INTEGER_PRECISION_HPP
+// ===== end src/cpp/src/detail/integer_precision.hpp =====
 // ===== begin src/cpp/src/detail/isosurface_stuffing.hpp =====
 /**
  * @file detail/isosurface_stuffing.hpp
@@ -100150,6 +100173,80 @@ HoleFillPatch hole_fill(const HoleFillInput& rIn, std::int64_t Base) {
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/hole_fill.cpp =====
+// ===== begin src/cpp/src/detail/integer_precision.cpp =====
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
+#include <map>
+
+
+namespace meshioplusplus {
+namespace detail {
+
+namespace {
+
+/// Which arrays a format carries at all (an array it drops is not worth a warning).
+struct IpKinds {
+    bool mPoint;
+    bool mCell;
+};
+
+// Keep in step with `_FLOAT_STORED_INTEGER_FORMATS` in
+// src/python/meshioplusplus/_helpers.py; test_integer_precision.py compares them.
+const std::map<std::string, IpKinds>& ip_formats() {
+    static const std::map<std::string, IpKinds> m = {
+        {"cae", {false, true}},          {"ensight", {true, true}},
+        {"frd", {true, false}},          {"gid", {true, true}},
+        {"gltf", {true, false}},         {"marc_t19", {true, true}},
+        {"radioss_anim", {true, true}},  {"xplt", {true, true}},
+    };
+    return m;
+}
+
+bool ip_inexact(const NDArray& rA) {
+    if (is_float_dtype(rA.Dtype()))
+        return false;
+    const std::size_t n = rA.Size();
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::int64_t v = read_int(rA, i);
+        if (v > kExactFloatInteger || v < -kExactFloatInteger)
+            return true;
+    }
+    return false;
+}
+
+void ip_warn(const std::string& rFormat, const std::string& rName) {
+    log::warn("{}: the integer array '{}' is stored as floating point, so values above {} are rounded",
+              rFormat, rName, kExactFloatInteger);
+}
+
+}  // namespace
+
+void warn_integer_precision(const std::string& rFormat, const Mesh& rMesh) {
+    const auto it = ip_formats().find(rFormat);
+    if (it == ip_formats().end())
+        return;
+    if (it->second.mPoint) {
+        for (const std::string& name : rMesh.PointDataNames())
+            if (ip_inexact(rMesh.PointData(name)))
+                ip_warn(rFormat, name);
+    }
+    if (it->second.mCell) {
+        for (const std::string& name : rMesh.CellDataNames()) {
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+                if (ip_inexact(rMesh.CellData(name, b))) {
+                    ip_warn(rFormat, name);
+                    break;
+                }
+            }
+        }
+    }
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/integer_precision.cpp =====
 // ===== begin src/cpp/src/detail/isosurface_stuffing.cpp =====
 #include <algorithm>
 #include <array>
@@ -168675,6 +168772,14 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
         if (ok) {
             node_id = std::move(v);
             max_node_id = np ? *unique.rbegin() + 1 : 0;
+            // The nodes are written as a table of `max_node_id` rows, a NaN row for
+            // each unused id, so a stray large id would ask for a table of that many
+            // rows (roadmap 3.19).
+            const std::int64_t budget = std::max<std::int64_t>(10000000, 4 * static_cast<std::int64_t>(np));
+            if (max_node_id > budget)
+                throw WriteError("meshio++: libmesh: node id " + std::to_string(max_node_id - 1) +
+                                 " would need a table of " + std::to_string(max_node_id) +
+                                 " nodes, over the budget of " + std::to_string(budget));
         }
     }
 
@@ -213149,6 +213254,12 @@ class AwOut {
 public:
     void Ints(const std::vector<std::int64_t>& rValues) {
         for (const std::int64_t v : rValues) {
+            // The file's integers are 32-bit: a wider id is an error, not a wrap
+            // to another number (roadmap 3.19).
+            if (v < std::numeric_limits<std::int32_t>::min() ||
+                v > std::numeric_limits<std::int32_t>::max())
+                throw WriteError("Radioss animation: the integer " + std::to_string(v) +
+                                 " is outside the 32-bit range of the file format");
             const std::uint32_t u = static_cast<std::uint32_t>(static_cast<std::int32_t>(v));
             Be32(u);
         }
@@ -316450,6 +316561,18 @@ std::map<std::string, ReadFn> registry_guard_readers(std::map<std::string, ReadF
     return raw;
 }
 
+/// Wraps each writer so a format that stores integers as floating point says so
+/// (roadmap 3.19); the wrapped writer itself is unchanged.
+std::map<std::string, WriteFn> registry_guard_writers(std::map<std::string, WriteFn> raw) {
+    for (auto& [name, fn] : raw) {
+        fn = [format = name, inner = std::move(fn)](const std::string& rPath, const Mesh& rMesh) {
+            detail::warn_integer_precision(format, rMesh);
+            inner(rPath, rMesh);
+        };
+    }
+    return raw;
+}
+
 }  // namespace
 
 namespace {
@@ -317182,8 +317305,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
 }
 
 const std::map<std::string, WriteFn>& registry_writers() {
-    static const std::map<std::string, WriteFn> m =
-        registry_collect<std::map<std::string, WriteFn>>(&RegistryRow::mWrite);
+    static const std::map<std::string, WriteFn> m = registry_guard_writers(
+        registry_collect<std::map<std::string, WriteFn>>(&RegistryRow::mWrite));
     return m;
 }
 
@@ -317694,6 +317817,7 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
     std::string why;
     if (!registry_write_supports(fmt, rOptions, why))
         throw WriteError("meshio++: " + why);
+    detail::warn_integer_precision(fmt, rMesh);
 
     const bool appended = rOptions.mEncoding == WriteEncoding::RawAppended;
     const bool binary = rOptions.mEncoding == WriteEncoding::Binary || appended;
