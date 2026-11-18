@@ -1671,6 +1671,7 @@ jobs:
           max-size: 500M
 
       - name: Build and run the C++ tests (instrumented)
+        timeout-minutes: 90
         if: steps.lfs.outputs.available != 'false'
         run: |
           cmake -S . -B build-cpp-cov -G Ninja \
@@ -1696,6 +1697,7 @@ jobs:
       # measures on master and release tags, and the occt job is where those
       # suites run without instrumentation.
       - name: Build instrumented _core and run the Python tests
+        timeout-minutes: 90
         if: steps.lfs.outputs.available != 'false'
         env:
           CMAKE_ARGS: >-
@@ -2087,6 +2089,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install meshio++ with the mcp and dashboard extras
+        timeout-minutes: 20
         run: |
           python -m pip install --upgrade pip
           # httpx is Starlette's TestClient transport, used by test_mcp_http.py

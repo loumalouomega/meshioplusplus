@@ -1,0 +1,61 @@
+name: notebooks
+
+# Executes the Python example notebooks (roadmap 3.11.4), so an API change that
+# breaks an example is found within a week instead of by a reader. Outputs are
+# not compared; an exception in any cell fails the notebook. Runs into a scratch
+# directory, so the committed outputs are never rewritten.
+
+on:
+  schedule:
+    - cron: "23 6 * * 6"  # weekly, Saturday 06:23 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/notebooks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  execute:
+    name: Execute example/python notebooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Fetch Git LFS content for the example data
+        run: |
+          git lfs install --local
+          git lfs pull --include="example/data/**"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install system libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y libgl1 libglx-mesa0 libosmesa6 xvfb
+      - name: Install meshio++ and the notebook tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[all]" jupyter nbconvert ipykernel matplotlib pyvista trimesh pandas pyarrow
+      - name: Execute every notebook
+        env:
+          PYVISTA_OFF_SCREEN: "true"
+        run: |
+          mkdir -p "$RUNNER_TEMP/nb"
+          status=0
+          for nb in example/python/*.ipynb; do
+            echo "== $nb"
+            if ! xvfb-run -a jupyter nbconvert --to notebook --execute \
+                --ExecutePreprocessor.timeout=600 \
+                --output-dir "$RUNNER_TEMP/nb" "$nb"; then
+              echo "::error file=$nb::notebook failed to execute"
+              status=1
+            fi
+          done
+          exit $status
