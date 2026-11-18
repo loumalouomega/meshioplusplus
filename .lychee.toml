@@ -18,3 +18,7 @@ exclude = [
 ]
 
 accept = ["200..=204", "403", "429"]
+
+# VitePress links pages without their extension (`/geodesic`, `./roadmap#anchor`):
+# try the file with these extensions before reporting it missing.
+fallback_extensions = ["md"]
