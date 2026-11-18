@@ -6,7 +6,7 @@ The NASA PLOT3D format: multi-block structured grids, with `.q` solution and `.f
 |---|---|
 | **Format name** | `plot3d` |
 | **Extensions** | `.p3d`, `.p3dfmt`, `.x`, `.g` (`.xyz` stays the point cloud [`xyz`](./xyz.md); pass `file_format="plot3d"`) |
-| **Read / Write** | ✓ / ✓ (lattice blocks only; see [conformance](./conformance.md#plot3d)) |
+| **Read / Write** | ✓ / ✓ (lattice blocks only; see [conformance](../conformance.md#plot3d)) |
 | **Extra dependencies** | — |
 
 ## Reading

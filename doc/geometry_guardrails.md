@@ -20,7 +20,7 @@ report["verdict"]     # 'in' or 'out'
 report["worst"]       # the descriptors that put it there, with z-values
 ```
 
-The library is unusually well placed for this. [`compute_stats`](stats.md), [`compute_quality`](quality.md) and [`extract_surface`](extract_surface.md) already produce every descriptor, [`dataset_health`](dashboard.md#health-summaries) already walks a manifest one mesh at a time, and fitting a density over those summaries is a small amount of code on top. Pure Python; the C++ core, the WASM build and every binding are untouched.
+The library is unusually well placed for this. [`compute_stats`](stats.md), [`compute_quality`](mesh_quality.md) and [`extract_surface`](extract_surface.md) already produce every descriptor, [`dataset_health`](dashboard.md#health-summaries) already walks a manifest one mesh at a time, and fitting a density over those summaries is a small amount of code on top. Pure Python; the C++ core, the WASM build and every binding are untouched.
 
 ## The descriptors are not invariant, deliberately
 

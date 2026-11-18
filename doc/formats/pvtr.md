@@ -6,7 +6,7 @@ The parallel index over `.vtr` pieces: it declares the whole grid's `WholeExtent
 |---|---|
 | **Format name** | `pvtr` |
 | **Extensions** | `.pvtr` |
-| **Read / Write** | ✓ / — (see [conformance](./conformance.md#pvtr)) |
+| **Read / Write** | ✓ / — (see [conformance](../conformance.md#pvtr)) |
 | **Extra dependencies** | — (zlib for compressed pieces, as `.vtr`) |
 
 ## Reading

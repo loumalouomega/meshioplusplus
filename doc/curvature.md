@@ -64,7 +64,7 @@ Degenerate (zero-area) triangles are skipped by the same predicate `soup_quality
 
 ## Triangulation
 
-Triangles come from the same fan [`convert_cells(simplexify)`](/convert_cells) uses, so a quad or rectangular-polygon mesh's curvature is the curvature of its **canonical triangulation**, not of the quad surface itself. A volume or polyhedron block is refused by name pointing at [`extract_surface`](/surface); a higher-order block is refused pointing at `linearize`.
+Triangles come from the same fan [`convert_cells(simplexify)`](/convert_cells) uses, so a quad or rectangular-polygon mesh's curvature is the curvature of its **canonical triangulation**, not of the quad surface itself. A volume or polyhedron block is refused by name pointing at [`extract_surface`](/extract_surface); a higher-order block is refused pointing at `linearize`.
 
 ## numpy fallback: a partial twin
 

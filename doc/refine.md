@@ -93,7 +93,7 @@ At most **one** may be given; two is an error rather than a precedence rule, bec
 
 The **closure** then decides what happens to everything the selection touched: `"redgreen"` (default) and `"propagate"` both return a conforming mesh; `"balanced"` keeps the hanging nodes and only enforces 2:1 balance.
 
-A **non-finite** cell value never matches a predicate. That is deliberate rather than incidental: [`compute_quality`](/quality) reports `NaN` where a metric does not apply — `scaled_jacobian` is `NaN` for a quadrilateral in 3-D, for instance — so rejecting such an array outright would break the case the feature exists for. The flip side is that a predicate over a metric that is N/A for a cell type simply selects nothing there.
+A **non-finite** cell value never matches a predicate. That is deliberate rather than incidental: [`compute_quality`](/mesh_quality) reports `NaN` where a metric does not apply — `scaled_jacobian` is `NaN` for a quadrilateral in 3-D, for instance — so rejecting such an array outright would break the case the feature exists for. The flip side is that a predicate over a metric that is N/A for a cell type simply selects nothing there.
 
 ### How the closure works
 
