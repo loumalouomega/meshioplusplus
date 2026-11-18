@@ -30,19 +30,20 @@
 #include "zone_fit.hpp"
 #include "dense_lp.hpp"
 #include "lsq_fit.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 
 namespace {
 
-using ZfV3 = std::array<double, 3>;
+using detail::Vec3;
 
-double zf_dot(const ZfV3& rA, const ZfV3& rB) {
+double zf_dot(const Vec3& rA, const Vec3& rB) {
     return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
 }
 
-ZfV3 zf_unit(ZfV3 V) {
+Vec3 zf_unit(Vec3 V) {
     const double l = std::sqrt(zf_dot(V, V));
     if (l > 0.0)
         for (double& r_x : V)
@@ -51,7 +52,7 @@ ZfV3 zf_unit(ZfV3 V) {
 }
 
 // The fit table's sign: the largest-magnitude component positive.
-ZfV3 zf_canonical(ZfV3 V) {
+Vec3 zf_canonical(Vec3 V) {
     std::size_t big = 0;
     for (std::size_t k = 1; k < 3; ++k)
         if (std::fabs(V[k]) > std::fabs(V[big]))
@@ -65,8 +66,8 @@ ZfV3 zf_canonical(ZfV3 V) {
 // The surface's current geometry: a point (plane point, sphere centre,
 // cylinder axis point) and a direction (plane normal, cylinder axis).
 struct ZfState {
-    ZfV3 mPoint{};
-    ZfV3 mDir{0.0, 0.0, 1.0};
+    Vec3 mPoint{};
+    Vec3 mDir{0.0, 0.0, 1.0};
 };
 
 struct ZfProblem {
@@ -76,12 +77,12 @@ struct ZfProblem {
     std::size_t mN = 0;
     double mExtent = 1.0;
 
-    ZfV3 P(std::size_t I) const { return {mPts[3 * I], mPts[3 * I + 1], mPts[3 * I + 2]}; }
+    Vec3 P(std::size_t I) const { return {mPts[3 * I], mPts[3 * I + 1], mPts[3 * I + 2]}; }
 
     // The signed distance of point I from the plane, or its radius about the
     // centre or the axis.
     double Dist(const ZfState& rS, std::size_t I) const {
-        const ZfV3 w{mPts[3 * I] - rS.mPoint[0], mPts[3 * I + 1] - rS.mPoint[1],
+        const Vec3 w{mPts[3 * I] - rS.mPoint[0], mPts[3 * I + 1] - rS.mPoint[1],
                      mPts[3 * I + 2] - rS.mPoint[2]};
         if (mType == 1)
             return zf_dot(w, rS.mDir);
@@ -108,9 +109,9 @@ struct ZfProblem {
     std::size_t NumGeo() const { return mType == 1 ? 2 : (mType == 2 ? 3 : 4); }
 
     // The linearised distance of point I: d0 + g . step (step in lengths).
-    double Linear(const ZfState& rS, std::size_t I, const ZfV3& rU, const ZfV3& rV,
+    double Linear(const ZfState& rS, std::size_t I, const Vec3& rU, const Vec3& rV,
                   double* pGrad) const {
-        const ZfV3 w{mPts[3 * I] - rS.mPoint[0], mPts[3 * I + 1] - rS.mPoint[1],
+        const Vec3 w{mPts[3 * I] - rS.mPoint[0], mPts[3 * I + 1] - rS.mPoint[1],
                      mPts[3 * I + 2] - rS.mPoint[2]};
         if (mType == 1) {
             // Tilting the normal by (a, b) / extent about the point.
@@ -125,9 +126,9 @@ struct ZfProblem {
             return r;
         }
         const double h = zf_dot(w, rS.mDir);
-        ZfV3 q{w[0] - h * rS.mDir[0], w[1] - h * rS.mDir[1], w[2] - h * rS.mDir[2]};
+        Vec3 q{w[0] - h * rS.mDir[0], w[1] - h * rS.mDir[1], w[2] - h * rS.mDir[2]};
         const double rho = std::sqrt(zf_dot(q, q));
-        const ZfV3 e = rho > 0.0 ? ZfV3{q[0] / rho, q[1] / rho, q[2] / rho} : ZfV3{0.0, 0.0, 0.0};
+        const Vec3 e = rho > 0.0 ? Vec3{q[0] / rho, q[1] / rho, q[2] / rho} : Vec3{0.0, 0.0, 0.0};
         const double eu = zf_dot(e, rU), ev = zf_dot(e, rV);
         pGrad[0] = -eu;  // moving the axis point
         pGrad[1] = -ev;
@@ -136,7 +137,7 @@ struct ZfProblem {
         return rho;
     }
 
-    ZfState Apply(const ZfState& rS, const ZfV3& rU, const ZfV3& rV, const double* pStep,
+    ZfState Apply(const ZfState& rS, const Vec3& rU, const Vec3& rV, const double* pStep,
                   double Offset) const {
         ZfState n = rS;
         if (mType == 1) {
@@ -181,14 +182,14 @@ ZoneFitResult zone_fit(std::int64_t Type, const double* pStart, const double* pP
     pb.mCriterion = Criterion;
     pb.mPts = pPts;
     pb.mN = N;
-    ZfV3 lo{pPts[0], pPts[1], pPts[2]}, hi = lo, mean{0.0, 0.0, 0.0};
+    Vec3 lo{pPts[0], pPts[1], pPts[2]}, hi = lo, mean{0.0, 0.0, 0.0};
     for (std::size_t i = 0; i < N; ++i)
         for (std::size_t k = 0; k < 3; ++k) {
             lo[k] = std::min(lo[k], pPts[3 * i + k]);
             hi[k] = std::max(hi[k], pPts[3 * i + k]);
             mean[k] += pPts[3 * i + k] / static_cast<double>(N);
         }
-    const ZfV3 ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    const Vec3 ext{hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
     pb.mExtent = std::sqrt(zf_dot(ext, ext));
     if (!(pb.mExtent > 0.0) || !std::isfinite(pb.mExtent)) {
         out.mWhy = "the points have no extent";
@@ -198,7 +199,7 @@ ZoneFitResult zone_fit(std::int64_t Type, const double* pStart, const double* pP
     s.mPoint = {pStart[0], pStart[1], pStart[2]};
     if (Type != 2)
         s.mDir = zf_unit({pStart[3], pStart[4], pStart[5]});
-    const ZfV3 start_dir = s.mDir;
+    const Vec3 start_dir = s.mDir;
     double f = pb.Objective(s);
     double trust = 0.1 * pb.mExtent;
     const std::size_t g = pb.NumGeo();
@@ -209,7 +210,7 @@ ZoneFitResult zone_fit(std::int64_t Type, const double* pStart, const double* pP
     std::vector<double> grad(g);
     for (std::int64_t round = 0; round < 200 && trust > 1e-14 * pb.mExtent; ++round) {
         ++out.mRounds;
-        ZfV3 u{}, v{};
+        Vec3 u{}, v{};
         lsq_frame(s.mDir.data(), u.data(), v.data());
         std::vector<double> c(k, 0.0), a, b;
         a.reserve((2 * N + 2 * g) * k);
@@ -281,7 +282,7 @@ ZoneFitResult zone_fit(std::int64_t Type, const double* pStart, const double* pP
             for (double& r_x : s.mDir)
                 r_x = -r_x;
         for (std::size_t i = 0; i < N; ++i) {
-            const ZfV3 p = pb.P(i);
+            const Vec3 p = pb.P(i);
             const double d = zf_dot({p[0] - mean[0], p[1] - mean[1], p[2] - mean[2]}, s.mDir);
             dlo = std::min(dlo, d);
             dhi = std::max(dhi, d);

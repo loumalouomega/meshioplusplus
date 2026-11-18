@@ -50,7 +50,7 @@ namespace meshioplusplus {
 
 namespace {
 
-using BlV3 = std::array<double, 3>;
+using detail::Vec3;
 
 constexpr const char* kBoundaryLayerPrefix = "meshio++: boundary_layer: ";
 // A cell is valid when its least scaled corner Jacobian passes this.
@@ -153,11 +153,11 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
             const detail::LayerSweepCell& r_c = *cells[C].pCell;
             const int kind = cells[C].mKind;
             const auto nn = static_cast<std::size_t>(kind);
-            BlV3 lo{std::numeric_limits<double>::infinity(),
+            Vec3 lo{std::numeric_limits<double>::infinity(),
                     std::numeric_limits<double>::infinity(),
                     std::numeric_limits<double>::infinity()};
-            BlV3 hi{-lo[0], -lo[1], -lo[2]};
-            BlV3 mid{0.0, 0.0, 0.0};
+            Vec3 hi{-lo[0], -lo[1], -lo[2]};
+            Vec3 mid{0.0, 0.0, 0.0};
             for (std::size_t k = 0; k < nn; ++k) {
                 const double* x = pt(r_c.mNodes[k]);
                 for (std::size_t d = 0; d < 3; ++d) {
@@ -192,8 +192,8 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
             // face's cannot meet it, and tri_tri_intersect is exact, so the
             // test below skips only pairs it would have answered false.
             const std::vector<Tri>& r_faces = faces_of(kind);
-            std::array<BlV3, 12> face_lo{};
-            std::array<BlV3, 12> face_hi{};
+            std::array<Vec3, 12> face_lo{};
+            std::array<Vec3, 12> face_hi{};
             for (std::size_t f = 0; f < r_faces.size(); ++f)
                 for (std::size_t d = 0; d < 3; ++d) {
                     const double* a = pt(r_c.mNodes[static_cast<std::size_t>(r_faces[f][0])]);
@@ -226,8 +226,8 @@ std::int64_t bl_front_crossings(const detail::LayerSweepResult& rSweep, std::vec
                     const double* d1 = soup.mCorners[3 * u + 1].data();
                     const double* d2 = soup.mCorners[3 * u + 2].data();
                     bool meets = inside(d0);
-                    BlV3 tri_lo{};
-                    BlV3 tri_hi{};
+                    Vec3 tri_lo{};
+                    Vec3 tri_hi{};
                     for (std::size_t d = 0; d < 3; ++d) {
                         tri_lo[d] = std::min({d0[d], d1[d], d2[d]});
                         tri_hi[d] = std::max({d0[d], d1[d], d2[d]});
@@ -296,7 +296,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
         x[i] = detail::read_double(r_pts, i);
     const auto point = [&](std::int64_t P) {
         const auto i = static_cast<std::size_t>(P);
-        return BlV3{x[3 * i], x[3 * i + 1], x[3 * i + 2]};
+        return Vec3{x[3 * i], x[3 * i + 1], x[3 * i + 2]};
     };
 
     // The faces, and where each comes from.
@@ -354,7 +354,7 @@ BoundaryLayerResult boundary_layer(const Mesh& rSurface, const BoundaryLayerOpti
     detail::OffsetNormals normals =
         detail::offset_normals(x, faces, o.mReverse ? -1.0 : 1.0, o.mNormalSmoothIterations);
     const std::vector<std::vector<std::int64_t>>& nbrs = normals.mNeighbours;
-    const std::vector<BlV3>& dir = normals.mDirections;
+    const std::vector<Vec3>& dir = normals.mDirections;
     const std::vector<double>& stretch = normals.mStretch;
     const std::vector<char>& used = normals.mUsed;
     const std::vector<char>& not_visible = normals.mNotVisible;

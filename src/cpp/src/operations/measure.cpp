@@ -42,12 +42,13 @@
 #include "meshioplusplus/operations/fit_primitives.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/region.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
-using MsV3 = std::array<double, 3>;
+using detail::Vec3;
 using detail::JsonValue;
 
 constexpr const char* kMsPrefix = "meshio++: measure: ";
@@ -58,28 +59,28 @@ constexpr double kMsParallel = 1e-9;  // |sin| below which directions are parall
     throw std::invalid_argument(std::string(kMsPrefix) + rWhy);
 }
 
-double ms_dot(const MsV3& rA, const MsV3& rB) {
+double ms_dot(const Vec3& rA, const Vec3& rB) {
     return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];
 }
-MsV3 ms_add(const MsV3& rA, const MsV3& rB, double S = 1.0) {
+Vec3 ms_add(const Vec3& rA, const Vec3& rB, double S = 1.0) {
     return {rA[0] + S * rB[0], rA[1] + S * rB[1], rA[2] + S * rB[2]};
 }
-MsV3 ms_sub(const MsV3& rA, const MsV3& rB) {
+Vec3 ms_sub(const Vec3& rA, const Vec3& rB) {
     return {rA[0] - rB[0], rA[1] - rB[1], rA[2] - rB[2]};
 }
-MsV3 ms_scale(const MsV3& rA, double S) {
+Vec3 ms_scale(const Vec3& rA, double S) {
     return {S * rA[0], S * rA[1], S * rA[2]};
 }
-MsV3 ms_cross(const MsV3& rA, const MsV3& rB) {
+Vec3 ms_cross(const Vec3& rA, const Vec3& rB) {
     return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
             rA[0] * rB[1] - rA[1] * rB[0]};
 }
-double ms_norm(const MsV3& rA) {
+double ms_norm(const Vec3& rA) {
     return std::sqrt(ms_dot(rA, rA));
 }
-MsV3 ms_unit(const MsV3& rA) {
+Vec3 ms_unit(const Vec3& rA) {
     const double n = ms_norm(rA);
-    return n > 0.0 ? ms_scale(rA, 1.0 / n) : MsV3{0.0, 0.0, 0.0};
+    return n > 0.0 ? ms_scale(rA, 1.0 / n) : Vec3{0.0, 0.0, 0.0};
 }
 
 const char* ms_kind_name(ElementKind Kind) {
@@ -140,10 +141,10 @@ double ms_number(const JsonValue& rObj, const char* pKey, const std::string& rWh
     return v->mNumber;
 }
 
-MsV3 ms_vec3(const JsonValue& rV, const std::string& rWhere) {
+Vec3 ms_vec3(const JsonValue& rV, const std::string& rWhere) {
     if (!rV.IsArray() || rV.mItems.size() != 3)
         ms_refuse(rWhere + ": a point is [x, y, z]");
-    MsV3 out{};
+    Vec3 out{};
     for (std::size_t k = 0; k < 3; ++k) {
         if (!rV.mItems[k].IsNumber())
             ms_refuse(rWhere + ": a point is [x, y, z]");
@@ -174,12 +175,12 @@ std::vector<std::string> ms_names(const JsonValue& rObj, const char* pKey,
 
 // --- geometry -----------------------------------------------------------------
 
-double ms_point_line(const MsV3& rP, const MsV3& rA, const MsV3& rD) {
+double ms_point_line(const Vec3& rP, const Vec3& rA, const Vec3& rD) {
     return ms_norm(ms_cross(ms_sub(rP, rA), rD));
 }
 
 // The axis' ends: its points' extent along the axis (the point alone without).
-std::pair<MsV3, MsV3> ms_axis_ends(const MeasureElement& rE) {
+std::pair<Vec3, Vec3> ms_axis_ends(const MeasureElement& rE) {
     if (rE.mPoints.empty())
         return {rE.mPoint, rE.mPoint};
     double lo = std::numeric_limits<double>::infinity(), hi = -lo;
@@ -193,7 +194,7 @@ std::pair<MsV3, MsV3> ms_axis_ends(const MeasureElement& rE) {
 }
 
 // The spread of an element's points along a unit direction.
-double ms_spread(const MeasureElement& rE, const MsV3& rM) {
+double ms_spread(const MeasureElement& rE, const Vec3& rM) {
     double lo = std::numeric_limits<double>::infinity(), hi = -lo;
     for (std::size_t i = 0; i + 2 < rE.mPoints.size(); i += 3) {
         const double t = ms_dot({rE.mPoints[i], rE.mPoints[i + 1], rE.mPoints[i + 2]}, rM);
@@ -204,11 +205,11 @@ double ms_spread(const MeasureElement& rE, const MsV3& rM) {
 }
 
 // A unit vector perpendicular to rD, from rV when it is not parallel.
-MsV3 ms_perp(const MsV3& rD, const MsV3& rV) {
-    const MsV3 w = ms_sub(rV, ms_scale(rD, ms_dot(rV, rD)));
+Vec3 ms_perp(const Vec3& rD, const Vec3& rV) {
+    const Vec3 w = ms_sub(rV, ms_scale(rD, ms_dot(rV, rD)));
     if (ms_norm(w) > kMsParallel)
         return ms_unit(w);
-    MsV3 e1{}, e2{};
+    Vec3 e1{}, e2{};
     detail::lsq_frame(rD.data(), e1.data(), e2.data());
     return e1;
 }
@@ -385,18 +386,18 @@ MeasureElement MsRun::Construct(const JsonValue& rSpec, const std::string& rName
         const MeasureElement& a = Get(of[0], where);
         const MeasureElement& b = Get(of[1], where);
         if (a.mKind == ElementKind::Plane && b.mKind == ElementKind::Plane) {
-            const MsV3 u = ms_cross(a.mDir, b.mDir);
+            const Vec3 u = ms_cross(a.mDir, b.mDir);
             const double s = ms_norm(u);
             if (s < kMsParallel)
                 ms_refuse(where + ": the planes are parallel");
             const double d1 = ms_dot(a.mDir, a.mPoint), d2 = ms_dot(b.mDir, b.mPoint);
-            const MsV3 p = ms_scale(
+            const Vec3 p = ms_scale(
                 ms_add(ms_scale(ms_cross(b.mDir, u), d1), ms_scale(ms_cross(u, a.mDir), d2)),
                 1.0 / (s * s));
             e.mKind = ElementKind::Line;
             e.mDir = ms_unit(u);
             // The point of the line nearest the planes' points' midpoint.
-            const MsV3 mid = ms_scale(ms_add(a.mPoint, b.mPoint), 0.5);
+            const Vec3 mid = ms_scale(ms_add(a.mPoint, b.mPoint), 0.5);
             e.mPoint = ms_add(p, e.mDir, ms_dot(ms_sub(mid, p), e.mDir));
             return e;
         }
@@ -413,7 +414,7 @@ MeasureElement MsRun::Construct(const JsonValue& rSpec, const std::string& rName
             return e;
         }
         if (ms_line_like(a) && ms_line_like(b)) {
-            const MsV3 w0 = ms_sub(a.mPoint, b.mPoint);
+            const Vec3 w0 = ms_sub(a.mPoint, b.mPoint);
             const double aa = 1.0, bb = ms_dot(a.mDir, b.mDir), cc = 1.0;
             const double d = ms_dot(a.mDir, w0), f = ms_dot(b.mDir, w0);
             const double den = aa * cc - bb * bb;
@@ -455,7 +456,7 @@ MeasureElement MsRun::Construct(const JsonValue& rSpec, const std::string& rName
         const MeasureElement& b = Get(of[1], where);
         if (a.mKind != ElementKind::Plane || b.mKind != ElementKind::Plane)
             ms_refuse(where + ": 'mid_plane' takes two planes");
-        const MsV3 nb = ms_dot(a.mDir, b.mDir) < 0.0 ? ms_scale(b.mDir, -1.0) : b.mDir;
+        const Vec3 nb = ms_dot(a.mDir, b.mDir) < 0.0 ? ms_scale(b.mDir, -1.0) : b.mDir;
         e.mKind = ElementKind::Plane;
         e.mDir = ms_unit(ms_add(a.mDir, nb));
         e.mPoint = ms_scale(ms_add(a.mPoint, b.mPoint), 0.5);
@@ -470,7 +471,7 @@ MeasureElement MsRun::Construct(const JsonValue& rSpec, const std::string& rName
         e.mPoint =
             ms_sub(a.mPoint, ms_scale(pl.mDir, ms_dot(ms_sub(a.mPoint, pl.mPoint), pl.mDir)));
         if (ms_line_like(a)) {
-            const MsV3 d = ms_sub(a.mDir, ms_scale(pl.mDir, ms_dot(a.mDir, pl.mDir)));
+            const Vec3 d = ms_sub(a.mDir, ms_scale(pl.mDir, ms_dot(a.mDir, pl.mDir)));
             if (ms_norm(d) < kMsParallel)
                 ms_refuse(where + ": the line is perpendicular to the plane");
             e.mKind = ElementKind::Line;
@@ -484,9 +485,9 @@ MeasureElement MsRun::Construct(const JsonValue& rSpec, const std::string& rName
     }
     if (how == "plane_through") {
         need(3);
-        const MsV3 p0 = Get(of[0], where).mPoint, p1 = Get(of[1], where).mPoint,
+        const Vec3 p0 = Get(of[0], where).mPoint, p1 = Get(of[1], where).mPoint,
                    p2 = Get(of[2], where).mPoint;
-        const MsV3 n = ms_cross(ms_sub(p1, p0), ms_sub(p2, p0));
+        const Vec3 n = ms_cross(ms_sub(p1, p0), ms_sub(p2, p0));
         if (ms_norm(n) <
             kMsParallel * std::max(1.0, ms_norm(ms_sub(p1, p0)) * ms_norm(ms_sub(p2, p0))))
             ms_refuse(where + ": the three points are collinear");
@@ -524,7 +525,7 @@ MeasureCheck MsRun::Dimension(const JsonValue& rSpec, std::size_t K) {
             const MeasureElement& l = pa ? b : a;
             c.mValue = ms_point_line(p.mPoint, l.mPoint, l.mDir);
         } else if (la && lb) {
-            const MsV3 u = ms_cross(a.mDir, b.mDir);
+            const Vec3 u = ms_cross(a.mDir, b.mDir);
             c.mValue = ms_norm(u) < kMsParallel
                            ? ms_point_line(b.mPoint, a.mPoint, a.mDir)
                            : std::fabs(ms_dot(ms_sub(b.mPoint, a.mPoint), u)) / ms_norm(u);
@@ -608,7 +609,7 @@ MeasureCheck MsRun::Tolerance(const JsonValue& rSpec, std::size_t K) {
         std::vector<double> hi(static_cast<std::size_t>(sections),
                                -std::numeric_limits<double>::infinity());
         for (std::size_t i = 0; i + 2 < f.mPoints.size(); i += 3) {
-            const MsV3 x{f.mPoints[i], f.mPoints[i + 1], f.mPoints[i + 2]};
+            const Vec3 x{f.mPoints[i], f.mPoints[i + 1], f.mPoints[i + 2]};
             const double s = len > 0.0 ? ms_dot(ms_sub(x, e0), f.mDir) / len : 0.0;
             const auto k = static_cast<std::size_t>(std::clamp<std::int64_t>(
                 static_cast<std::int64_t>(s * static_cast<double>(sections)), 0, sections - 1));
@@ -635,19 +636,19 @@ MeasureCheck MsRun::Tolerance(const JsonValue& rSpec, std::size_t K) {
         if (!std::isfinite(basic))
             ms_refuse(where + ": 'angularity' needs a 'basic_angle' in degrees");
         const double th = basic * kMsPi / 180.0;
-        const MsV3 D = d.mDir;
+        const Vec3 D = d.mDir;
         if (f.mKind == ElementKind::Plane) {
             if (f.mPoints.empty())
                 ms_refuse(where + ": the feature must be a measured plane");
             // The zone's normal at the basic angle to the datum's normal (a
             // plane datum) or to the plane the datum axis is normal to.
             const double beta = d.mKind == ElementKind::Plane ? th : kMsPi / 2.0 - th;
-            const MsV3 w = ms_perp(D, f.mDir);
-            const MsV3 m = ms_unit(ms_add(ms_scale(D, std::cos(beta)), w, std::sin(beta)));
+            const Vec3 w = ms_perp(D, f.mDir);
+            const Vec3 m = ms_unit(ms_add(ms_scale(D, std::cos(beta)), w, std::sin(beta)));
             c.mValue = ms_spread(f, m);
         } else if (ms_line_like(f)) {
             const auto [e0, e1] = ms_axis_ends(f);
-            const MsV3 delta = ms_sub(e1, e0);
+            const Vec3 delta = ms_sub(e1, e0);
             const bool plane_datum = d.mKind == ElementKind::Plane;
             if ((t == "perpendicularity" && plane_datum) || (t == "parallelism" && !plane_datum)) {
                 // A cylindrical zone along the datum direction.
@@ -656,8 +657,8 @@ MeasureCheck MsRun::Tolerance(const JsonValue& rSpec, std::size_t K) {
                 // Two planes: inclined at the basic angle to the datum plane,
                 // or perpendicular to... the datum axis' at the basic angle.
                 const double beta = plane_datum ? th : kMsPi / 2.0 - th;
-                const MsV3 w = ms_perp(D, f.mDir);
-                const MsV3 m = ms_unit(ms_add(ms_scale(D, std::cos(beta)), w, -std::sin(beta)));
+                const Vec3 w = ms_perp(D, f.mDir);
+                const Vec3 m = ms_unit(ms_add(ms_scale(D, std::cos(beta)), w, -std::sin(beta)));
                 c.mValue = std::fabs(ms_dot(m, delta));
             }
         } else {
@@ -668,7 +669,7 @@ MeasureCheck MsRun::Tolerance(const JsonValue& rSpec, std::size_t K) {
             ms_refuse(where + ": '" + t + "' needs a 'datum'");
         const MeasureElement& d = Get(datum, where);
         c.mOf.push_back(datum);
-        auto dist = [&](const MsV3& rP) {
+        auto dist = [&](const Vec3& rP) {
             if (ms_line_like(d))
                 return ms_point_line(rP, d.mPoint, d.mDir);
             if (ms_point_like(d))
@@ -699,7 +700,7 @@ MeasureCheck MsRun::Tolerance(const JsonValue& rSpec, std::size_t K) {
     return c;
 }
 
-JsonValue ms_vec_json(const MsV3& rV) {
+JsonValue ms_vec_json(const Vec3& rV) {
     JsonValue a = JsonValue::Array();
     for (const double x : rV)
         a.Push(JsonValue::Number(x));
@@ -938,19 +939,19 @@ AlignDatumsResult align_datums(const Mesh& rMesh, const std::string& rPrimary,
         ms_refuse("align_datums: the primary must be a plane or an axis");
     if (!(s.mKind == ElementKind::Plane || ms_line_like(s)))
         ms_refuse("align_datums: the secondary must be a plane or an axis");
-    const MsV3 z = ms_unit(p.mDir);
-    const MsV3 xs = ms_sub(s.mDir, ms_scale(z, ms_dot(s.mDir, z)));
+    const Vec3 z = ms_unit(p.mDir);
+    const Vec3 xs = ms_sub(s.mDir, ms_scale(z, ms_dot(s.mDir, z)));
     if (ms_norm(xs) < 1e-9)
         ms_refuse("align_datums: the secondary is parallel to the primary");
-    const MsV3 x = ms_unit(xs);
-    const MsV3 y = ms_cross(z, x);
-    MsV3 o = p.mPoint;
+    const Vec3 x = ms_unit(xs);
+    const Vec3 y = ms_cross(z, x);
+    Vec3 o = p.mPoint;
     if (!rOrigin.empty()) {
         const MeasureElement& q = find(rOrigin);
         if (q.mKind == ElementKind::Plane) {
             if (p.mKind == ElementKind::Plane && s.mKind == ElementKind::Plane) {
                 // The meeting point of three planes (Cramer).
-                const MsV3 n1 = p.mDir, n2 = s.mDir, n3 = q.mDir;
+                const Vec3 n1 = p.mDir, n2 = s.mDir, n3 = q.mDir;
                 const double det = ms_dot(n1, ms_cross(n2, n3));
                 if (std::fabs(det) < 1e-12)
                     ms_refuse("align_datums: the three planes do not meet in a point");
@@ -973,7 +974,7 @@ AlignDatumsResult align_datums(const Mesh& rMesh, const std::string& rPrimary,
     }
     AlignDatumsResult result;
     AffineTransform xf;
-    const MsV3 rows[3] = {x, y, z};
+    const Vec3 rows[3] = {x, y, z};
     for (std::size_t r = 0; r < 3; ++r) {
         for (std::size_t c = 0; c < 3; ++c)
             xf.mMatrix[4 * r + c] = rows[r][c];
@@ -984,7 +985,7 @@ AlignDatumsResult align_datums(const Mesh& rMesh, const std::string& rPrimary,
     result.mMatrix = xf.mMatrix;
     result.mMesh = transform(rMesh, xf);
     for (MeasureElement& r_e : table) {
-        const MsV3 d = ms_sub(r_e.mPoint, o);
+        const Vec3 d = ms_sub(r_e.mPoint, o);
         r_e.mPoint = {ms_dot(x, d), ms_dot(y, d), ms_dot(z, d)};
         r_e.mDir = {ms_dot(x, r_e.mDir), ms_dot(y, r_e.mDir), ms_dot(z, r_e.mDir)};
     }

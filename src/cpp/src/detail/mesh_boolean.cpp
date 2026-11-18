@@ -45,20 +45,21 @@
 #include "predicates.hpp"
 #include "tri_pairs.hpp"
 #include "tri_tri.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 
 namespace {
 
-using MbVec = std::array<double, 3>;
+using detail::Vec3;
 using MbTri = std::array<std::int64_t, 3>;
 
 /// A point as exact homogeneous coordinates; `mApprox` its rounded position.
 struct MbPoint {
     std::array<Expansion, 3> mX;
     Expansion mW;
-    MbVec mApprox{};
+    Vec3 mApprox{};
     bool mExplicit = false;
 };
 
@@ -68,7 +69,7 @@ struct MbFailure {
 };
 
 struct MbSurface {
-    std::vector<MbVec> mP;
+    std::vector<Vec3> mP;
     std::vector<MbTri> mT;
 };
 
@@ -106,7 +107,7 @@ MbSurface mb_surface(const Mesh& rMesh, const char* pName) {
     return s;
 }
 
-MbPoint mb_explicit(const MbVec& rP) {
+MbPoint mb_explicit(const Vec3& rP) {
     MbPoint q;
     for (std::size_t k = 0; k < 3; ++k)
         q.mX[k] = exp_of(rP[k]);
@@ -117,7 +118,7 @@ MbPoint mb_explicit(const MbVec& rP) {
 }
 
 /// The exact normal `(b - a) x (c - a)`.
-std::array<Expansion, 3> mb_normal(const MbVec& rA, const MbVec& rB, const MbVec& rC) {
+std::array<Expansion, 3> mb_normal(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
     std::array<Expansion, 3> u, v, n;
     for (std::size_t k = 0; k < 3; ++k) {
         u[k] = exp_diff(rB[k], rA[k]);
@@ -132,8 +133,8 @@ std::array<Expansion, 3> mb_normal(const MbVec& rA, const MbVec& rB, const MbVec
 
 /// The edge `pq` meets the plane of `abc` (the caller has checked that `p`
 /// and `q` lie strictly on opposite sides).
-MbPoint mb_lpi(const MbVec& rP, const MbVec& rQ, const MbVec& rA, const MbVec& rB,
-               const MbVec& rC) {
+MbPoint mb_lpi(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB,
+               const Vec3& rC) {
     const std::array<Expansion, 3> n = mb_normal(rA, rB, rC);
     Expansion dp, dq;
     for (std::size_t k = 0; k < 3; ++k) {
@@ -220,7 +221,7 @@ public:
     std::size_t Size() const { return mPoints.size(); }
 
 private:
-    std::array<std::int64_t, 3> Key(const MbVec& rP) const {
+    std::array<std::int64_t, 3> Key(const Vec3& rP) const {
         return {static_cast<std::int64_t>(std::floor(rP[0] / mCell)),
                 static_cast<std::int64_t>(std::floor(rP[1] / mCell)),
                 static_cast<std::int64_t>(std::floor(rP[2] / mCell))};
@@ -250,8 +251,8 @@ std::uint64_t mb_edge_key(std::int64_t A, std::int64_t B) {
 
 /// The dropped axis of a triangle (its normal's largest component) and the
 /// sign that makes its own corners turn positively in that projection.
-std::pair<std::size_t, int> mb_axis(const MbVec& rA, const MbVec& rB, const MbVec& rC) {
-    const MbVec n = GeometryUtils::TriangleNormal(rA, rB, rC);
+std::pair<std::size_t, int> mb_axis(const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+    const Vec3 n = GeometryUtils::TriangleNormal(rA, rB, rC);
     std::size_t ax = 0;
     for (std::size_t k = 1; k < 3; ++k)
         if (std::fabs(n[k]) > std::fabs(n[ax]))
@@ -437,8 +438,8 @@ private:
 
 /// Whether the segment pq crosses triangle abc properly (exact); `rDegenerate`
 /// is set when it touches an edge, a vertex or the plane at an end.
-bool mb_ray_crosses(const MbVec& rP, const MbVec& rQ, const MbVec& rA, const MbVec& rB,
-                    const MbVec& rC, bool& rDegenerate) {
+bool mb_ray_crosses(const Vec3& rP, const Vec3& rQ, const Vec3& rA, const Vec3& rB,
+                    const Vec3& rC, bool& rDegenerate) {
     const int s1 = mb_sign(orient3d(rA.data(), rB.data(), rC.data(), rP.data()));
     const int s2 = mb_sign(orient3d(rA.data(), rB.data(), rC.data(), rQ.data()));
     if (s1 == s2 && s1 != 0)
@@ -462,7 +463,7 @@ bool mb_ray_crosses(const MbVec& rP, const MbVec& rQ, const MbVec& rA, const MbV
 
 /// Whether `rP` lies inside the closed surface `rS` (exact ray parity; a ray
 /// that touches an edge, a vertex or a plane is cast again elsewhere).
-bool mb_inside(const MbVec& rP, const MbSurface& rS, const MbVec& rLo, const MbVec& rHi,
+bool mb_inside(const Vec3& rP, const MbSurface& rS, const Vec3& rLo, const Vec3& rHi,
                std::int64_t& rRetries) {
     static const double kDirs[8][3] = {
         {0.5773502691896258, 0.6123724356957945, 0.5400617248673217},
@@ -478,8 +479,8 @@ bool mb_inside(const MbVec& rP, const MbSurface& rS, const MbVec& rLo, const MbV
         diag += (rHi[k] - rLo[k]) * (rHi[k] - rLo[k]);
     const double len = 4.0 * std::sqrt(diag) + 1.0;
     for (const auto& r_d : kDirs) {
-        const MbVec q{rP[0] + len * r_d[0], rP[1] + len * r_d[1], rP[2] + len * r_d[2]};
-        MbVec lo{}, hi{};
+        const Vec3 q{rP[0] + len * r_d[0], rP[1] + len * r_d[1], rP[2] + len * r_d[2]};
+        Vec3 lo{}, hi{};
         for (std::size_t k = 0; k < 3; ++k) {
             lo[k] = std::min(rP[k], q[k]);
             hi[k] = std::max(rP[k], q[k]);
@@ -487,9 +488,9 @@ bool mb_inside(const MbVec& rP, const MbSurface& rS, const MbVec& rLo, const MbV
         bool degenerate = false;
         std::int64_t crossings = 0;
         for (const auto& r_t : rS.mT) {
-            const MbVec& a = rS.mP[static_cast<std::size_t>(r_t[0])];
-            const MbVec& b = rS.mP[static_cast<std::size_t>(r_t[1])];
-            const MbVec& c = rS.mP[static_cast<std::size_t>(r_t[2])];
+            const Vec3& a = rS.mP[static_cast<std::size_t>(r_t[0])];
+            const Vec3& b = rS.mP[static_cast<std::size_t>(r_t[1])];
+            const Vec3& c = rS.mP[static_cast<std::size_t>(r_t[2])];
             bool outside = false;
             for (std::size_t k = 0; k < 3 && !outside; ++k)
                 outside =
@@ -511,7 +512,7 @@ bool mb_inside(const MbVec& rP, const MbSurface& rS, const MbVec& rLo, const MbV
 /// The pieces of one surface after the arrangement, and their patches.
 struct MbPieces {
     std::vector<MbTri> mT;             ///< global point ids
-    std::vector<MbVec> mNormal;        ///< the parent triangle's normal, rounded
+    std::vector<Vec3> mNormal;        ///< the parent triangle's normal, rounded
     std::vector<std::int64_t> mPatch;  ///< patch of each piece
     std::int64_t mNumPatches = 0;
 };
@@ -551,7 +552,7 @@ void mb_patches(MbPieces& rPieces, const std::unordered_set<std::uint64_t>& rCur
 double closed_surface_volume(const Mesh& rSurface) {
     const std::size_t np = rSurface.NumPoints();
     const NDArray& r_p = rSurface.Points();
-    MbVec c{};
+    Vec3 c{};
     for (std::size_t i = 0; i < np; ++i)
         for (std::size_t k = 0; k < 3; ++k)
             c[k] += read_double(r_p, 3 * i + k) / static_cast<double>(np);
@@ -561,7 +562,7 @@ double closed_surface_volume(const Mesh& rSurface) {
         if (cells.Type() != "triangle")
             continue;
         for (std::size_t t = 0; t < cells.NumCells(); ++t) {
-            MbVec q[3];
+            Vec3 q[3];
             for (std::size_t j = 0; j < 3; ++j) {
                 const auto v = static_cast<std::size_t>(read_int(cells.Conn(), 3 * t + j));
                 for (std::size_t k = 0; k < 3; ++k)
@@ -584,9 +585,9 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
         const MbSurface sb = mb_surface(rB, "B");
 
         // The bounding box of both, for the point grid and the rays.
-        MbVec lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+        Vec3 lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
         for (const MbSurface* p_s : {&sa, &sb})
-            for (const MbVec& r_p : p_s->mP)
+            for (const Vec3& r_p : p_s->mP)
                 for (std::size_t k = 0; k < 3; ++k) {
                     lo[k] = std::min(lo[k], r_p[k]);
                     hi[k] = std::max(hi[k], r_p[k]);
@@ -773,10 +774,10 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
                 const std::array<std::int64_t, 3> corners{rIds[static_cast<std::size_t>(tri[0])],
                                                           rIds[static_cast<std::size_t>(tri[1])],
                                                           rIds[static_cast<std::size_t>(tri[2])]};
-                const MbVec& pa_ = rS.mP[static_cast<std::size_t>(tri[0])];
-                const MbVec& pb_ = rS.mP[static_cast<std::size_t>(tri[1])];
-                const MbVec& pc_ = rS.mP[static_cast<std::size_t>(tri[2])];
-                const MbVec nrm = GeometryUtils::TriangleNormal(pa_, pb_, pc_);
+                const Vec3& pa_ = rS.mP[static_cast<std::size_t>(tri[0])];
+                const Vec3& pb_ = rS.mP[static_cast<std::size_t>(tri[1])];
+                const Vec3& pc_ = rS.mP[static_cast<std::size_t>(tri[2])];
+                const Vec3 nrm = GeometryUtils::TriangleNormal(pa_, pb_, pc_);
                 if (rCut[t].mPoints.empty()) {
                     out.mT.push_back(corners);
                     out.mNormal.push_back(nrm);
@@ -819,13 +820,13 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
         const auto classify = [&](const MbPieces& rP, const MbSurface& rOther) {
             // One sample per patch: the centroid of its largest piece.
             std::vector<double> best(static_cast<std::size_t>(rP.mNumPatches), -1.0);
-            std::vector<MbVec> sample(static_cast<std::size_t>(rP.mNumPatches));
+            std::vector<Vec3> sample(static_cast<std::size_t>(rP.mNumPatches));
             for (std::size_t t = 0; t < rP.mT.size(); ++t) {
-                const MbVec& a = store[rP.mT[t][0]].mApprox;
-                const MbVec& b = store[rP.mT[t][1]].mApprox;
-                const MbVec& c = store[rP.mT[t][2]].mApprox;
-                const MbVec u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-                const MbVec v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+                const Vec3& a = store[rP.mT[t][0]].mApprox;
+                const Vec3& b = store[rP.mT[t][1]].mApprox;
+                const Vec3& c = store[rP.mT[t][2]].mApprox;
+                const Vec3 u{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+                const Vec3 v{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
                 const double area2 = std::pow(u[1] * v[2] - u[2] * v[1], 2) +
                                      std::pow(u[2] * v[0] - u[0] * v[2], 2) +
                                      std::pow(u[0] * v[1] - u[1] * v[0], 2);
@@ -864,7 +865,7 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
 
         // Selection.
         std::vector<MbTri> out;
-        std::vector<MbVec> parent_normal;
+        std::vector<Vec3> parent_normal;
         std::vector<std::int64_t> source;
         const bool keep_a_inside = Op == BooleanOp::Intersection;
         const bool keep_b_inside = Op != BooleanOp::Union;
@@ -877,7 +878,7 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
         for (std::size_t t = 0; t < pb.mT.size(); ++t)
             if ((in_b[static_cast<std::size_t>(pb.mPatch[t])] != 0) == keep_b_inside) {
                 MbTri tri = pb.mT[t];
-                MbVec nrm = pb.mNormal[t];
+                Vec3 nrm = pb.mNormal[t];
                 if (Op == BooleanOp::Difference) {
                     std::swap(tri[1], tri[2]);
                     nrm = {-nrm[0], -nrm[1], -nrm[2]};
@@ -914,10 +915,10 @@ BooleanResult mesh_boolean_spike(const Mesh& rA, const Mesh& rB, BooleanOp Op) {
         // corners are collinear or turn against the exact piece (its parent's
         // normal), though every piece is positive exactly.
         for (std::size_t t = 0; t < out.size(); ++t) {
-            const MbVec& a = store[out[t][0]].mApprox;
-            const MbVec& b = store[out[t][1]].mApprox;
-            const MbVec& c = store[out[t][2]].mApprox;
-            const MbVec n = GeometryUtils::TriangleNormal(a, b, c);
+            const Vec3& a = store[out[t][0]].mApprox;
+            const Vec3& b = store[out[t][1]].mApprox;
+            const Vec3& c = store[out[t][2]].mApprox;
+            const Vec3 n = GeometryUtils::TriangleNormal(a, b, c);
             if (MathUtils::Dot(n, parent_normal[t]) <= 0.0)
                 ++r_rep.mNumRoundingInverted;
         }

@@ -37,16 +37,16 @@ namespace detail {
 namespace {
 
 using McrV2 = std::array<double, 2>;
-using McrV3 = std::array<double, 3>;
+using detail::Vec3;
 
 constexpr double kMcrPi = 3.14159265358979323846;
 
 /// The angle at `rO` of the triangle `rO, rA, rB`, in radians; 0 when an
 /// edge has no length.
-double mcr_angle(const McrV3& rO, const McrV3& rA, const McrV3& rB) {
-    const McrV3 a = vec3_sub(rA, rO);
-    const McrV3 b = vec3_sub(rB, rO);
-    const McrV3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+double mcr_angle(const Vec3& rO, const Vec3& rA, const Vec3& rB) {
+    const Vec3 a = vec3_sub(rA, rO);
+    const Vec3 b = vec3_sub(rB, rO);
+    const Vec3 c = detail::vec3_cross(a, b);
     const double s = std::sqrt(vec3_dot(c, c));
     const double d = vec3_dot(a, b);
     if (!(s > 0.0) && !(std::fabs(d) > 0.0))
@@ -56,10 +56,10 @@ double mcr_angle(const McrV3& rO, const McrV3& rA, const McrV3& rB) {
 
 /// The eigenvalues of `(J L^-1)^T (J L^-1)`, `J = (Su, Sv)` and `L` the
 /// upper Cholesky factor `(L11, L12; 0, L22)`: {smallest, largest}.
-std::array<double, 2> mcr_eigen(const McrV3& rSu, const McrV3& rSv, double L11, double L12,
+std::array<double, 2> mcr_eigen(const Vec3& rSu, const Vec3& rSv, double L11, double L12,
                                 double L22) {
-    McrV3 c1{};
-    McrV3 c2{};
+    Vec3 c1{};
+    Vec3 c2{};
     for (std::size_t i = 0; i < 3; ++i) {
         c1[i] = rSu[i] / L11;
         c2[i] = rSv[i] / L22 - rSu[i] * L12 / (L11 * L22);
@@ -73,9 +73,9 @@ std::array<double, 2> mcr_eigen(const McrV3& rSu, const McrV3& rSv, double L11, 
 
 /// `J D`, the surface's derivative along the disc from its derivative along
 /// the parameters and `D = d(u, v)/d(p, q)`.
-std::array<McrV3, 2> mcr_chain(const McrV3& rSu, const McrV3& rSv,
+std::array<Vec3, 2> mcr_chain(const Vec3& rSu, const Vec3& rSv,
                                const std::array<double, 4>& rD) {
-    std::array<McrV3, 2> out{};
+    std::array<Vec3, 2> out{};
     for (std::size_t i = 0; i < 3; ++i) {
         out[0][i] = rSu[i] * rD[0] + rSv[i] * rD[2];
         out[1][i] = rSu[i] * rD[1] + rSv[i] * rD[3];
@@ -289,7 +289,7 @@ double mcad_coarse_condition(const McadCoarseMesh& rCoarse,
     double smin = std::numeric_limits<double>::infinity();
     for (std::size_t t = 0; t < rCoarse.mTris.size(); ++t) {
         const McrV2 uv = probe.UvAt(t, {1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0});
-        McrV3 x{}, su{}, sv{};
+        Vec3 x{}, su{}, sv{};
         rSurfaces[static_cast<std::size_t>(rCoarse.mOwner[t])]->Eval(uv[0], uv[1], x.data(),
                                                                      su.data(), sv.data());
         const auto e = mcr_eigen(su, sv, L11, L12, L22);
@@ -422,7 +422,7 @@ std::string mcad_build_disc(const McadCoarseMesh& rCoarse,
         for (std::size_t l = 0; l < loops.size(); ++l) {
             double len = 0.0;
             for (std::size_t k = 0; k < loops[l].size(); ++k) {
-                const McrV3 d =
+                const Vec3 d =
                     vec3_sub(r_c.mX[loops[l][(k + 1) % loops[l].size()]], r_c.mX[loops[l][k]]);
                 len += std::sqrt(vec3_dot(d, d));
             }
@@ -436,7 +436,7 @@ std::string mcad_build_disc(const McadCoarseMesh& rCoarse,
         for (std::size_t l = 0; l < loops.size(); ++l) {
             if (l == outer)
                 continue;
-            McrV3 centre{0.0, 0.0, 0.0};
+            Vec3 centre{0.0, 0.0, 0.0};
             for (const std::size_t w : loops[l])
                 for (std::size_t d = 0; d < 3; ++d)
                     centre[d] += r_c.mX[w][d] / double(loops[l].size());
@@ -470,7 +470,7 @@ std::string mcad_build_disc(const McadCoarseMesh& rCoarse,
     for (std::size_t t = 0; t < nt; ++t) {
         const std::array<double, 3> third{1.0 / 3.0, 1.0 / 3.0, 1.0 / 3.0};
         const McrV2 uv = rDisc.UvAt(t, third);
-        McrV3 x{}, su{}, sv{};
+        Vec3 x{}, su{}, sv{};
         rSurfaces[static_cast<std::size_t>(r_c.mOwner[t])]->Eval(uv[0], uv[1], x.data(), su.data(),
                                                                  sv.data());
         const auto j = mcr_chain(su, sv, mcr_d(rDisc, t, third));

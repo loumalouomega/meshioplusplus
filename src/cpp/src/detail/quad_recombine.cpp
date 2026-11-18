@@ -38,18 +38,18 @@ namespace meshioplusplus::detail {
 
 namespace {
 
-using QrV3 = std::array<double, 3>;
+using detail::Vec3;
 
-QrV3 qr_at(const double* pX, std::int64_t Id) {
+Vec3 qr_at(const double* pX, std::int64_t Id) {
     const auto i = static_cast<std::size_t>(Id);
     return {pX[3 * i], pX[3 * i + 1], pX[3 * i + 2]};
 }
 
 /// The quad's unit normal (its vector area normalised); zero when none.
-QrV3 qr_normal(const std::array<QrV3, 4>& rP) {
-    QrV3 n{0.0, 0.0, 0.0};
+Vec3 qr_normal(const std::array<Vec3, 4>& rP) {
+    Vec3 n{0.0, 0.0, 0.0};
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 c = vec3_cross(rP[i], rP[(i + 1) % 4]);
+        const Vec3 c = vec3_cross(rP[i], rP[(i + 1) % 4]);
         for (std::size_t k = 0; k < 3; ++k)
             n[k] += c[k];
     }
@@ -59,7 +59,7 @@ QrV3 qr_normal(const std::array<QrV3, 4>& rP) {
     return {n[0] / l, n[1] / l, n[2] / l};
 }
 
-std::array<QrV3, 4> qr_points(const double* pX, const std::array<std::int64_t, 4>& rQ) {
+std::array<Vec3, 4> qr_points(const double* pX, const std::array<std::int64_t, 4>& rQ) {
     return {qr_at(pX, rQ[0]), qr_at(pX, rQ[1]), qr_at(pX, rQ[2]), qr_at(pX, rQ[3])};
 }
 
@@ -67,11 +67,11 @@ std::array<QrV3, 4> qr_points(const double* pX, const std::array<std::int64_t, 4
 
 double quad_scaled_jacobian(const double* pX, const std::array<std::int64_t, 4>& rQ) {
     const auto p = qr_points(pX, rQ);
-    const QrV3 n = qr_normal(p);
+    const Vec3 n = qr_normal(p);
     double sj = std::numeric_limits<double>::infinity();
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 e1 = vec3_sub(p[(i + 1) % 4], p[i]);
-        const QrV3 e2 = vec3_sub(p[(i + 3) % 4], p[i]);
+        const Vec3 e1 = vec3_sub(p[(i + 1) % 4], p[i]);
+        const Vec3 e2 = vec3_sub(p[(i + 3) % 4], p[i]);
         const double l = vec3_norm(e1) * vec3_norm(e2);
         if (!(l > 0.0))
             return 0.0;
@@ -83,13 +83,13 @@ double quad_scaled_jacobian(const double* pX, const std::array<std::int64_t, 4>&
 namespace {
 
 /// `quad_recombine_quality` of a quad given by its corners.
-double qr_quality(const std::array<QrV3, 4>& rP) {
+double qr_quality(const std::array<Vec3, 4>& rP) {
     const auto& p = rP;
-    const QrV3 n = qr_normal(p);
+    const Vec3 n = qr_normal(p);
     double q = 1.0;
     for (std::size_t i = 0; i < 4; ++i) {
-        const QrV3 e1 = vec3_sub(p[(i + 1) % 4], p[i]);
-        const QrV3 e2 = vec3_sub(p[(i + 3) % 4], p[i]);
+        const Vec3 e1 = vec3_sub(p[(i + 1) % 4], p[i]);
+        const Vec3 e2 = vec3_sub(p[(i + 3) % 4], p[i]);
         const double s = vec3_dot(vec3_cross(e1, e2), n);
         if (!(s > 0.0))
             return 0.0;  // a reflex or flat corner
@@ -118,8 +118,8 @@ using QrEdge = MatchingEdge;
 bool qr_splits_well(const double* pX, const std::array<std::int64_t, 4>& rQ,
                     const std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t>& rMid,
                     double MinQuality) {
-    std::array<QrV3, 4> mid{};
-    QrV3 centre{0.0, 0.0, 0.0};
+    std::array<Vec3, 4> mid{};
+    Vec3 centre{0.0, 0.0, 0.0};
     for (std::size_t i = 0; i < 4; ++i) {
         const auto it = rMid.find(std::minmax(rQ[i], rQ[(i + 1) % 4]));
         if (it == rMid.end())
@@ -255,7 +255,7 @@ QuadRecombineResult quad_recombine(
         for (std::size_t k = 0; k < 3; ++k)
             of_edge.emplace(std::make_pair(rTris[t][k], rTris[t][(k + 1) % 3]), t);
     const auto normal_of = [&](std::size_t T) {
-        const QrV3 a = qr_at(pX, rTris[T][0]);
+        const Vec3 a = qr_at(pX, rTris[T][0]);
         return vec3_cross(vec3_sub(qr_at(pX, rTris[T][1]), a), vec3_sub(qr_at(pX, rTris[T][2]), a));
     };
     struct Candidate {
@@ -303,7 +303,7 @@ QuadRecombineResult quad_recombine(
                 continue;
         }
         const std::array<std::int64_t, 4> quad{a, d, b, c};
-        const QrV3 n1 = normal_of(t1), n2 = normal_of(t2);
+        const Vec3 n1 = normal_of(t1), n2 = normal_of(t2);
         const double l = vec3_norm(n1) * vec3_norm(n2);
         if (!(l > 0.0))
             continue;

@@ -28,6 +28,7 @@
 
 // Project includes
 #include "curved_triangle.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus::detail {
 
@@ -240,8 +241,7 @@ double curved_triangle_jacobian(int Order, const CurvedVec3* pNodes, const Curve
             a[k] += dxi[i] * pNodes[i][k];
             b[k] += deta[i] * pNodes[i][k];
         }
-    const CurvedVec3 c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                       a[0] * b[1] - a[1] * b[0]};
+    const CurvedVec3 c = detail::vec3_cross(a, b);
     return c[0] * rNormal[0] + c[1] * rNormal[1] + c[2] * rNormal[2];
 }
 

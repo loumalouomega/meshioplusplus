@@ -33,12 +33,13 @@
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
-using UtgVec = std::array<double, 3>;
+using detail::Vec3;
 
 /// A corner simplex: the corner node, its three edge ends (right-handed for a
 /// valid cell), and whether it is a tetrahedron (ideal: regular) or a
@@ -63,11 +64,11 @@ struct UtgMeasure {
     double mFrob2;  ///< |S|_F^2
 };
 
-UtgMeasure utg_measure(const std::vector<UtgVec>& rX, const UtgCorner& rC, double InvScale) {
-    const UtgVec& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
+UtgMeasure utg_measure(const std::vector<Vec3>& rX, const UtgCorner& rC, double InvScale) {
+    const Vec3& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
     double a[3][3];  // columns: the three edges, scaled
     for (int k = 0; k < 3; ++k) {
-        const UtgVec& p = rX[static_cast<std::size_t>(rC.mNodes[k + 1])];
+        const Vec3& p = rX[static_cast<std::size_t>(rC.mNodes[k + 1])];
         for (int r = 0; r < 3; ++r)
             a[r][k] = (p[r] - p0[r]) * InvScale;
     }
@@ -97,12 +98,12 @@ UtgMeasure utg_measure(const std::vector<UtgVec>& rX, const UtgCorner& rC, doubl
 }
 
 /// The corner's scaled Jacobian: det of the edges over their lengths' product.
-double utg_scaled_jacobian(const std::vector<UtgVec>& rX, const UtgCorner& rC) {
-    const UtgVec& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
-    UtgVec e[3];
+double utg_scaled_jacobian(const std::vector<Vec3>& rX, const UtgCorner& rC) {
+    const Vec3& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
+    Vec3 e[3];
     double len = 1.0;
     for (int k = 0; k < 3; ++k) {
-        const UtgVec& p = rX[static_cast<std::size_t>(rC.mNodes[k + 1])];
+        const Vec3& p = rX[static_cast<std::size_t>(rC.mNodes[k + 1])];
         e[k] = {p[0] - p0[0], p[1] - p0[1], p[2] - p0[2]};
         len *= std::sqrt(e[k][0] * e[k][0] + e[k][1] * e[k][1] + e[k][2] * e[k][2]);
     }
@@ -213,7 +214,7 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
         if ((!rOptions.mFrozen.empty() && rOptions.mFrozen[i]) || node_cells[i].empty())
             pinned[i] = 1;
 
-    std::vector<UtgVec> x(n, UtgVec{0.0, 0.0, 0.0});
+    std::vector<Vec3> x(n, Vec3{0.0, 0.0, 0.0});
     for (std::size_t i = 0; i < n; ++i)
         for (std::size_t k = 0; k < dim && k < 3; ++k)
             x[i][k] = detail::read_double(rMesh.Points(), i * dim + k);
@@ -222,8 +223,8 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
     std::size_t edge_count = 0;
     for (const UtgCorner& c : corners)
         for (int k = 1; k < 4; ++k) {
-            const UtgVec& a = x[static_cast<std::size_t>(c.mNodes[0])];
-            const UtgVec& b = x[static_cast<std::size_t>(c.mNodes[k])];
+            const Vec3& a = x[static_cast<std::size_t>(c.mNodes[0])];
+            const Vec3& b = x[static_cast<std::size_t>(c.mNodes[k])];
             edge_sum += std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) +
                                   (a[2] - b[2]) * (a[2] - b[2]));
             ++edge_count;
@@ -315,7 +316,7 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
             const double h = 1e-6 * unit;
             for (int step = 0; step < 4; ++step) {
                 const double f0 = node_objective(v, delta);
-                UtgVec g{0.0, 0.0, 0.0};
+                Vec3 g{0.0, 0.0, 0.0};
                 bool finite = std::isfinite(f0);
                 for (std::size_t k = 0; k < 3 && finite; ++k) {
                     const double keep = x[v][k];
@@ -331,7 +332,7 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
                 if (!finite || !(gn > 0.0))
                     break;
                 // Backtracking from a step of half the length unit.
-                const UtgVec keep = x[v];
+                const Vec3 keep = x[v];
                 double alpha = 0.5 * unit / gn;
                 bool moved = false;
                 for (int tries = 0; tries < 30; ++tries, alpha *= 0.5) {

@@ -32,7 +32,7 @@ namespace detail {
 
 namespace {
 
-using SfVec = std::array<double, 3>;
+using detail::Vec3;
 
 }  // namespace
 
@@ -76,7 +76,7 @@ SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
 
     SurfaceFem fem;
     const NDArray& points = rMesh.Points();
-    fem.mPoints.assign(n, SfVec{0.0, 0.0, 0.0});
+    fem.mPoints.assign(n, Vec3{0.0, 0.0, 0.0});
     for (std::size_t i = 0; i < n; ++i)
         for (std::size_t k = 0; k < dim && k < 3; ++k)
             fem.mPoints[i][k] = read_double(points, i * dim + k);
@@ -86,9 +86,9 @@ SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
     double edge_sum = 0.0;
     std::size_t edge_count = 0;
     for (SurfaceFemTriangle t : tris) {
-        const SfVec& a = fem.mPoints[t.mNodes[0]];
-        const SfVec& b = fem.mPoints[t.mNodes[1]];
-        const SfVec& c = fem.mPoints[t.mNodes[2]];
+        const Vec3& a = fem.mPoints[t.mNodes[0]];
+        const Vec3& b = fem.mPoints[t.mNodes[1]];
+        const Vec3& c = fem.mPoints[t.mNodes[2]];
         const double ab = vec3_norm(vec3_sub(b, a)), bc = vec3_norm(vec3_sub(c, b)),
                      ca = vec3_norm(vec3_sub(a, c));
         t.mDoubleArea = vec3_norm(vec3_cross(vec3_sub(b, a), vec3_sub(c, a)));
