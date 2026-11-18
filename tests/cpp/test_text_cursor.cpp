@@ -112,15 +112,17 @@ std::vector<std::string> tc_lines(std::size_t count) {
     return out;
 }
 
-// The `istream >> double` oracle is implementation-defined past the decimal
-// grammar: libc++ also extracts hexadecimal floats ("0x1p3" reads 8) and inf/nan,
-// libstdc++ stops at them, and TextStream follows libstdc++. Under libc++ only the
-// lines that stay inside the decimal grammar are compared.
+// The `istream >> double` oracle is implementation-defined past plain decimals:
+// libc++ also extracts hexadecimal floats ("0x1p3" reads 8) and inf/nan, and treats
+// a range error differently ("1e999" reads inf, "1e-999" fails), where libstdc++
+// stops at the first and stores the limit with failbit on the others, and
+// TextStream follows libstdc++. Under libc++ only lines without a letter are
+// compared; the libstdc++ legs keep the full comparison.
 template <class T>
 bool tc_oracle_is_defined(const std::string& rLine) {
 #if defined(_LIBCPP_VERSION)
     if constexpr (std::is_floating_point_v<T>)
-        return rLine.find_first_of("xXinfaINFA") == std::string::npos;
+        return rLine.find_first_of("eExXinfaINFA") == std::string::npos;
 #endif
     (void)rLine;
     return true;

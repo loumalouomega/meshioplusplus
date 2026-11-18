@@ -1050,6 +1050,17 @@ jobs:
           lfs: false
       - name: Initialise submodules
         uses: ./.github/actions/init-submodules
+      # The Python cut suite reads LFS fixtures (tests/python/conftest.py stops on pointers).
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
@@ -1096,6 +1107,7 @@ jobs:
           -DMESHIOPLUSPLUS_WITH_OCCT=OFF"
           pip install . -v
       - name: Run the Python cut suite
+        if: steps.lfs.outputs.available != 'false'
         run: |
           python -c "from meshioplusplus import _core; assert _core.__has_cutcells__"
           python -m pytest tests/python/test_cut.py tests/python/test_mcp.py -k "cut" -v
