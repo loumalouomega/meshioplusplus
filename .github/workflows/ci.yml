@@ -65,7 +65,16 @@ jobs:
           - { mesh: MESHIO, parallel: THREADS, python: ON, json: ON }
           - { mesh: NATIVE, parallel: OPENMP, python: OFF, json: ON }
           - { mesh: KRATOS, parallel: OPENMP, python: OFF, json: ON }
+    # ccache (roadmap 3.17.2): CMake reads the launcher from the environment.
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: cpp-tests-${{ matrix.mesh }}-${{ matrix.parallel }}
+          max-size: 300M
       - uses: actions/checkout@v4
         with:
           lfs: false
@@ -239,7 +248,16 @@ jobs:
     name: C++ tests (ASan + UBSan)
     needs: [lint]
     runs-on: ubuntu-24.04
+    # ccache (roadmap 3.17.2): CMake reads the launcher from the environment.
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: cpp-sanitize
+          max-size: 300M
       - uses: actions/checkout@v4
         with:
           lfs: false
@@ -295,7 +313,16 @@ jobs:
     name: Operation output across SEQ / OpenMP / TBB
     needs: [lint]
     runs-on: ubuntu-24.04
+    # ccache (roadmap 3.17.2): CMake reads the launcher from the environment.
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: determinism
+          max-size: 300M
       - uses: actions/checkout@v4
         with:
           lfs: false
@@ -327,7 +354,16 @@ jobs:
     name: Instruction counts against the baseline
     needs: [lint]
     runs-on: ubuntu-24.04
+    # ccache (roadmap 3.17.2): CMake reads the launcher from the environment.
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: instructions
+          max-size: 300M
       - uses: actions/checkout@v4
         with:
           lfs: false
@@ -365,7 +401,16 @@ jobs:
           # export is observable on that backend -- a missing MESHIOPLUSPLUS_API
           # is a link error here and nowhere else.
           - { name: "shared, kratos", backends: "KRATOS", shared: "ON", cli: "OFF", default_backend: "KRATOS" }
+    # ccache (roadmap 3.17.2): CMake reads the launcher from the environment.
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: cpp-install-${{ matrix.name }}
+          max-size: 300M
       - uses: actions/checkout@v4
       - name: Install dependencies
         run: |
@@ -1501,7 +1546,9 @@ jobs:
       - name: Install meshio++ and test deps
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-codeblocks h5py netCDF4 foamlib
+          # hypothesis runs test_properties.py (its "ci" profile is derandomized,
+          # so a failure reproduces); without it the module skips (roadmap 3.11.2).
+          pip install pytest pytest-codeblocks h5py netCDF4 foamlib hypothesis
           # The DOLFINx VTX reader's Python twin; best effort, since the
           # adios2 wheels do not cover every platform and Python here.
           pip install adios2 || echo "no adios2 wheel: the vtx tests skip"
@@ -1519,11 +1566,9 @@ jobs:
   # (most C++ format code is reached through the pybind11 shims, so measuring
   # only the gtest binary would badly under-report it).
   #
-  # It runs only on pushes to `master` and on `v*` release tags, never on a
-  # pull request: the instrumented build is expensive, and its uploads exist
-  # for the Codecov baseline and badge rather than to gate a review. The job's
-  # `if:` is the enforcement; the `tags:` trigger above keeps release tags
-  # covered.
+  # It runs on pull requests, pushes to `master` and `v*` release tags (roadmap
+  # 3.11.1): the instrumented build is cached with ccache, and the PR upload
+  # feeds Codecov's patch status (.codecov.yml).
   #
   # This works because pyproject.toml pins a persistent
   # `build-dir = "build/{wheel_tag}"`: the .gcno/.gcda files survive the pip
@@ -1535,7 +1580,9 @@ jobs:
   coverage:
     name: Coverage (Python + C++)
     needs: [lint]
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))
+    # Runs on pull requests too (roadmap 3.11.1), so Codecov's patch status can
+    # judge the lines a change adds; SonarCloud still reads the artifact of the
+    # `master` run only.
     runs-on: ubuntu-24.04
     # The `secrets` context is not allowed in step-level `if:` expressions
     # (referencing it there makes the whole workflow file invalid and GitHub
@@ -1605,8 +1652,7 @@ jobs:
           # `mcp<3` must match pyproject's [mcp] extra: this list installs the
           # SDK directly rather than through the extra, so the bound there does
           # NOT apply here. Keep the two in step. `hypothesis` runs
-          # test_properties.py, which importorskips it everywhere else
-          # (roadmap §3: the determinism properties need one leg that runs them).
+          # test_properties.py, which is also installed in the `test` job.
           pip install pytest pytest-codeblocks pytest-cov h5py netCDF4 pybind11 scikit-build-core cmake ninja \
             pyvista trimesh pyarrow pandas polars zarr usd-core "mcp<3" starlette uvicorn httpx foamlib \
             hypothesis
@@ -1963,6 +2009,36 @@ jobs:
           MESHIOPLUSPLUS_GLTF_VALIDATOR: ${{ runner.temp }}/gltf-validator
           MESHIOPLUSPLUS_REQUIRE_GLTF_VALIDATOR: "1"
         run: python -m pytest tests/python/test_gltf.py -v
+
+  # --------------------------------------------------------------------------
+  # CalculiX .frd output against ccx2paraview, an independent open reader of
+  # the ASCII layout (roadmap 3.2). The tests skip when the packages are
+  # missing; the variable below turns that skip into a failure, so this job
+  # cannot go green without the validator. Pinned: a new release must be
+  # re-checked before it becomes the reference.
+  # --------------------------------------------------------------------------
+  frd-validator:
+    name: CalculiX FRD (ccx2paraview)
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install meshio++ and the validator
+        run: |
+          python -m pip install --upgrade pip
+          pip install . ccx2paraview==3.2.0 vtk pytest
+
+      - name: FRD tests, validator required
+        env:
+          MESHIOPLUSPLUS_REQUIRE_FRD_VALIDATOR: "1"
+        run: python -m pytest tests/python/test_frd.py -v
 
   # --------------------------------------------------------------------------
   # The MCP server with its extra installed. The default `test` matrix keeps

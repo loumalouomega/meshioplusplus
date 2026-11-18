@@ -55,12 +55,15 @@ def pytest_collection_finish(session):
     pointers = _pointer_directories()
     if not pointers:
         return
-    texts = [t for t in _modules_text(session) if "meshes" in t or "input" in t]
+    texts = _modules_text(session)
     hit = {}
     for key, files in pointers.items():
-        name = key.split("/", 1)[1]
+        root, name = key.split("/", 1)
+        # Only a path built from the fixture root and the directory counts: a bare
+        # "vtu" is a format name in most test modules, and must not stop the run.
         pattern = re.compile(
-            r"""["']%s["']|/%s/""" % (re.escape(name), re.escape(name))
+            r"""["']%(r)s["']\s*[/,]\s*["']%(n)s["']|\b%(r)s/%(n)s\b"""
+            % {"r": re.escape(root), "n": re.escape(name)}
         )
         if any(pattern.search(t) for t in texts):
             hit[key] = files
