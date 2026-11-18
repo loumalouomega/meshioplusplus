@@ -338,12 +338,15 @@ jobs:
     name: C++ tests (hardened ${{ matrix.name }})
     needs: [lint]
     runs-on: ubuntu-24.04
+    continue-on-error: ${{ matrix.experimental }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: "libstdc++", cc: gcc, cxx: g++, flags: "" }
-          - { name: "libc++", cc: clang, cxx: clang++, flags: "-stdlib=libc++" }
+          - { name: "libstdc++", cc: gcc, cxx: g++, flags: "", experimental: false }
+          # libc++ 18 (Ubuntu 24.04) lacks std::atomic_ref, among other things
+          # (roadmap 3.9.3): advisory until the core builds with it.
+          - { name: "libc++", cc: clang, cxx: clang++, flags: "-stdlib=libc++", experimental: true }
     env:
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
@@ -393,8 +396,9 @@ jobs:
           -DMESHIOPLUSPLUS_WITH_HDF5=OFF
           -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
           -DMESHIOPLUSPLUS_WITH_BZIP2=ON
+      # -k 0: one run lists every incompatibility, not only the first.
       - name: Build
-        run: cmake --build build
+        run: cmake --build build -- -k 0
       - name: Run C++ tests with the hardened standard library
         if: steps.lfs.outputs.available != 'false'
         run: ctest --test-dir build --output-on-failure
@@ -694,7 +698,7 @@ jobs:
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@5ebbd400eff9e74630f759d94ddd7b6c26299639 # v1.2
         with:
-          key: cpp-install-${{ matrix.name }}
+          key: cpp-install-${{ matrix.shared }}-${{ matrix.default_backend }}-${{ matrix.cli }}
           max-size: 300M
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install dependencies

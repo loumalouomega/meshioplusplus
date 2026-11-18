@@ -466,7 +466,9 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
             for (std::size_t n = 0; n < leaves.size(); ++n)
                 maps[static_cast<std::size_t>(leaves[n].mLevel)]
                     [oct_morton(leaves[n].mX, leaves[n].mY, leaves[n].mZ)] = n;
-            std::vector<char> flag(leaves.size(), 0);
+            // std::atomic<char> rather than std::atomic_ref<char>: libc++ only has the
+            // latter from version 19, and the array is value-initialised to 0.
+            std::vector<std::atomic<char>> flag(leaves.size());
             parallel_for(leaves.size(), [&](std::size_t n) {
                 const OctLeaf& leaf = leaves[n];
                 if (leaf.mLevel < 2)
@@ -491,8 +493,7 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
                                 if (it != maps[static_cast<std::size_t>(lev)].end()) {
                                     // Relaxed: an idempotent mark several threads may
                                     // set, read only after parallel_for has joined.
-                                    std::atomic_ref<char>(flag[it->second])
-                                        .store(1, std::memory_order_relaxed);  // NOSONAR(cpp:S8417)
+                                    flag[it->second].store(1, std::memory_order_relaxed);
                                     break;
                                 }
                             }
@@ -501,7 +502,7 @@ OctreeResult octree(const Mesh& rMesh, const OctreeOptions& rOptions) {
             bool any = false;
             std::vector<OctLeaf> next;
             for (std::size_t n = 0; n < leaves.size(); ++n) {
-                if (flag[n]) {
+                if (flag[n].load(std::memory_order_relaxed)) {
                     any = true;
                     oct_split(grid, prims, leaves[n], next);
                 } else {

@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **Portability:** `octree` marks the leaves to split with `std::atomic<char>` instead of `std::atomic_ref<char>`, which libc++ only has from version 19 (found by the new hardened libc++ CI leg); the result is unchanged (roadmap 3.9.3).
 - **Fix:** the Radioss animation writers refuse an id outside the 32-bit range of the file format instead of wrapping it, and both libMesh writers refuse a `libmesh:id` that would need a node table over `max(10,000,000, 4 x points)` rows instead of allocating it (a value of `2**31 + 5` was a `MemoryError`), in the native and Python engines (roadmap 3.19).
 - **Warnings:** writing an integer array holding values above `2**24` to a format that stores it as single-precision floats or a few digits of text (`cae`, `ensight`, `frd`, `gid`, `gltf`, `marc_t19`, `radioss_anim`, `xplt`) warns once per array, in both engines. [Integer widths](doc/id_widths.md) now also covers the node and element id arrays.
 - **Fix:** GIFTI no longer wraps 64-bit integers to 32 bits on write: an integer point array or a connectivity entry outside the 32-bit range is a `WriteError` naming the format, in both engines (before, `2**31 + 5` was written as `-2147483643`). The Python Netgen writer applies the native writer's 10,000,000-entry name-table budget (a tag of `2**31 + 5` made it write billions of lines), and ADCIRC's native reader refuses a time step outside the 32-bit range instead of wrapping it (roadmap 3.19).
