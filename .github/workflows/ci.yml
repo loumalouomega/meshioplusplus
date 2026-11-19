@@ -1992,8 +1992,18 @@ jobs:
           cmake --build build-cpp-cov
           # One process per gtest case, each starting the instrumented binary: in
           # parallel (libgcov merges the .gcda files of concurrent processes under a
-          # file lock) the 3.9k cases fit the step's budget; serially they did not.
-          ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)"
+          # file lock) the cases fit the step's budget; serially they did not.
+          # The FitCad numeric suites take minutes each at -O0 with gcov (some pass
+          # ctest's 1500 s default); the OpenCASCADE jobs run them optimized. A pull
+          # request skips them here, master and release tags keep the full run.
+          exclude=()
+          timeout=()
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            exclude=(-E '^FitCad')
+          else
+            timeout=(--timeout 3600)
+          fi
+          ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)" "${exclude[@]}" "${timeout[@]}"
 
       # SKBUILD_CMAKE_BUILD_TYPE overrides pyproject's `cmake.build-type =
       # "Release"`; -O0 keeps the gcov line mapping honest.
