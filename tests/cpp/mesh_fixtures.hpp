@@ -39,6 +39,7 @@
  */
 
 // System includes
+#include <random>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -399,8 +400,13 @@ inline Mesh tri_quad_mesh() {
  */
 inline std::string temp_path(const std::string& rSuffix) {
     static std::atomic<unsigned> counter{0};
+    // A per-process token: ctest starts one process per test, so a counter alone repeats
+    // across processes and parallel runs (ctest -j) would share a path.
+    static const unsigned token = std::random_device{}();
     auto dir = std::filesystem::temp_directory_path();
-    return (dir / ("meshio_cpp_" + std::to_string(counter++) + rSuffix)).string();
+    return (dir /
+            ("meshio_cpp_" + std::to_string(token) + "_" + std::to_string(counter++) + rSuffix))
+        .string();
 }
 
 /**

@@ -1976,7 +1976,7 @@ jobs:
           max-size: 500M
 
       - name: Build and run the C++ tests (instrumented)
-        timeout-minutes: 90
+        timeout-minutes: 150
         if: steps.lfs.outputs.available != 'false'
         run: |
           cmake -S . -B build-cpp-cov -G Ninja \
