@@ -10,6 +10,7 @@ notable enhancements, and breaking changes. Breaking changes are called out expl
 
 ## Unreleased
 
+- **CI:** the instrumented coverage run executes ctest in parallel with a private `TMPDIR` per test process (`tools/ci/private_tmpdir.sh`, registered as `CMAKE_CROSSCOMPILING_EMULATOR`), and pull requests skip the slow `FitCad` suites; the test helpers that named scratch directories from a per-process counter, seed or unseeded `rand()` now add a random token.
 - **Fix:** `nastran_op2` no longer indexes one past the end of the GRID table when it drops a repeated GRID (an out-of-range `std::vector::operator[]` that the hardened-library CI leg aborted on, in 12 tests); and the instrumented library fuzz build carries a third netCDF patch (`netcdf-4.9.3-coordinates-read-type.patch`) for a heap overflow inside netcdf-c's `read_coord_dimids`, with its input under `tools/fuzz/library_findings/` (replayed first by the instrumented library job; not in `tests/fuzz/regressions/`, whose ctest replay links the system netCDF).
 - **Fix:** the Python Nastran HDF5 writer no longer fails with `cannot reshape array of size 0 into shape (0,newaxis)` when a per-cell result exists for some cell blocks only (NumPy cannot infer `-1` for zero rows); found by the notebook job (`37_parity_tier_closed`). `30_xdmf_series_regions.ipynb` named a kernel that exists only on the maintainer's machine and now uses `python3`.
 - **Portability:** `gmsh.cpp` reads the element-node data through a plain `const NDArray&`, which GCC 11 needs (the new compiler matrix found it).

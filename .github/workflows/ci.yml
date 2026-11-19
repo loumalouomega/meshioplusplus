@@ -1988,8 +1988,12 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+            -DCMAKE_CROSSCOMPILING_EMULATOR="$GITHUB_WORKSPACE/tools/ci/private_tmpdir.sh" \
             -DPython_EXECUTABLE=$(which python)
           cmake --build build-cpp-cov
+          # tools/ci/private_tmpdir.sh (the emulator above) gives each test process its own
+          # TMPDIR: several helpers name scratch directories from a per-process counter or
+          # seed, which two concurrent processes would share.
           # One process per gtest case, each starting the instrumented binary: in
           # parallel (libgcov merges the .gcda files of concurrent processes under a
           # file lock) the cases fit the step's budget; serially they did not.
