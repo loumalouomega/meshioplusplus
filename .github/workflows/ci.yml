@@ -1990,7 +1990,10 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DPython_EXECUTABLE=$(which python)
           cmake --build build-cpp-cov
-          ctest --test-dir build-cpp-cov --output-on-failure
+          # One process per gtest case, each starting the instrumented binary: in
+          # parallel (libgcov merges the .gcda files of concurrent processes under a
+          # file lock) the 3.9k cases fit the step's budget; serially they did not.
+          ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)"
 
       # SKBUILD_CMAKE_BUILD_TYPE overrides pyproject's `cmake.build-type =
       # "Release"`; -O0 keeps the gcov line mapping honest.
