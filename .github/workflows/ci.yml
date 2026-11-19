@@ -1976,7 +1976,8 @@ jobs:
           max-size: 500M
 
       - name: Build and run the C++ tests (instrumented)
-        timeout-minutes: 150
+        # The full run took 84 minutes on a fast runner and passed 150 on a slow one.
+        timeout-minutes: ${{ github.event_name == 'pull_request' && 150 || 240 }}
         if: steps.lfs.outputs.available != 'false'
         run: |
           cmake -S . -B build-cpp-cov -G Ninja \
@@ -1997,13 +1998,14 @@ jobs:
           # One process per gtest case, each starting the instrumented binary: in
           # parallel (libgcov merges the .gcda files of concurrent processes under a
           # file lock) the cases fit the step's budget; serially they did not.
-          # The FitCad numeric suites take minutes each at -O0 with gcov (some pass
-          # ctest's 1500 s default); the OpenCASCADE jobs run them optimized. A pull
-          # request skips them here, master and release tags keep the full run.
+          # The FitCad, OctreeMesh, MeshCad, PatchNetwork and a few more numeric suites take
+          # 5 to 25 minutes each at -O0 with gcov (some pass ctest's 1500 s default); the
+          # other C++ jobs run them optimized. A pull request skips them here, master and
+          # release tags keep the full run.
           exclude=()
           timeout=()
           if [ "${{ github.event_name }}" = pull_request ]; then
-            exclude=(-E '^FitCad')
+            exclude=(-E '^(FitCad|OctreeMesh|MeshCad|PatchNetwork|HexDualSchemes)|^CApi\.OffsetThicken|^Decimate\.MaxDeviation')
           else
             timeout=(--timeout 3600)
           fi
