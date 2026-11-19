@@ -1,0 +1,28 @@
+Local fix, not yet reported upstream (netcdf-c 4.9.3, libhdf5/hdf5open.c).
+
+read_coord_dimids() reads the hidden _Netcdf4Coordinates attribute of a
+multi-dimensional coordinate variable into var->dimids, an array of
+var->ndims C ints, but passes the attribute's own *file* datatype
+(H5Aget_type) as the memory type. A corrupt file that declares the
+attribute with a wider element type (8-byte integers, or an array or
+compound type) therefore makes H5Aread write npoints * sizeof(file type)
+bytes into a buffer of npoints * sizeof(int): a heap-buffer-overflow in
+H5A__read reached by nc_open of an untrusted UGRID/netCDF-4 file.
+
+netCDF itself writes this attribute as H5T_NATIVE_INT, so reading it with
+H5T_NATIVE_INT is the intended contract: HDF5 converts a valid file's
+values unchanged, and an attribute type that cannot convert to an int
+makes H5Aread fail, which the function already reports as NC_EATTMETA.
+Remove the patch once the pinned netCDF release reads it this way.
+
+--- a/libhdf5/hdf5open.c
++++ b/libhdf5/hdf5open.c
+@@ -330,7 +330,7 @@ read_coord_dimids(NC_GRP_INFO_T *grp, NC_VAR_INFO_T *var)
+         BAIL(NC_EATTMETA);
+ 
+     /* Read the dimids for this var. */
+-    if (H5Aread(coord_attid, coord_att_typeid, var->dimids) < 0)
++    if (H5Aread(coord_attid, H5T_NATIVE_INT, var->dimids) < 0)
+         BAIL(NC_EATTMETA);
+     LOG((4, "read dimids for this var"));
+ 
