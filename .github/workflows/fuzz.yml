@@ -70,6 +70,12 @@ jobs:
           formats=$(grep -v '^#' tools/fuzz/library_formats.txt | paste -sd,)
           python tools/fuzz/seed_corpus.py library-seeds --library-readers --formats "$formats" \
             --replay build-library-fuzz/meshioplusplus_fuzz_replay
+      # Inputs that crashed the pinned libraries before a tools/fuzz/patches fix: the seed replay
+      # below runs them first, so dropping the patch turns this job red.
+      - name: Add the library findings to the seeds
+        run: |
+          mkdir -p library-seeds/ugrid_nc
+          cp tools/fuzz/library_findings/netcdf-*.nc library-seeds/ugrid_nc/
       - name: Verify mutator child failures stay isolated
         env:
           MIO_FUZZ_MUTATOR_PROBE: build-library-fuzz/meshioplusplus_fuzz_mutator_probe

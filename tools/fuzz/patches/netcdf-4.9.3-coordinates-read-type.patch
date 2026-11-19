@@ -13,6 +13,7 @@ netCDF itself writes this attribute as H5T_NATIVE_INT, so reading it with
 H5T_NATIVE_INT is the intended contract: HDF5 converts a valid file's
 values unchanged, and an attribute type that cannot convert to an int
 makes H5Aread fail, which the function already reports as NC_EATTMETA.
+The failing input is tools/fuzz/library_findings/netcdf-coordinates-wide-type.nc.
 Remove the patch once the pinned netCDF release reads it this way.
 
 --- a/libhdf5/hdf5open.c
