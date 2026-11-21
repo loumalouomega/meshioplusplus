@@ -397,11 +397,33 @@ def _set_primvar(UsdGeom, Sdf, Vt, primvars, name, values, rows, interpolation, 
         )
         return
     if values.dtype.kind in "iub" and width != 3:
-        primvar = primvars.CreatePrimvar(name, Sdf.ValueTypeNames.IntArray, token)
+        # int[] holds 32 bits: an array that does not fit is written as int64[],
+        # never wrapped (an id above 2**31 came back negative before).
+        i32 = np.iinfo(np.int32)
+        wide = values.size and (
+            values.dtype.kind == "u"
+            and values.max() > i32.max
+            or values.dtype.kind == "i"
+            and (values.min() < i32.min or values.max() > i32.max)
+        )
+        if wide:
+            if values.dtype.kind == "u" and values.max() > np.iinfo(np.int64).max:
+                raise WriteError(
+                    f"meshio++: usd: '{name}' holds integers above the int64 range "
+                    "of USD's widest integer primvar"
+                )
+            type_name, array, dtype = (
+                Sdf.ValueTypeNames.Int64Array,
+                Vt.Int64Array,
+                np.int64,
+            )
+        else:
+            type_name, array, dtype = Sdf.ValueTypeNames.IntArray, Vt.IntArray, np.int32
+        primvar = primvars.CreatePrimvar(name, type_name, token)
         if width != 1:
             primvar.SetElementSize(width)
         primvar.Set(
-            Vt.IntArray.FromNumpy(np.ascontiguousarray(values, dtype=np.int32).ravel()),
+            array.FromNumpy(np.ascontiguousarray(values, dtype=dtype).ravel()),
             code,
         )
         return

@@ -2021,8 +2021,8 @@ jobs:
       # measures on master and release tags, and the occt job is where those
       # suites run without instrumentation.
       - name: Build instrumented _core and run the Python tests
-        # pytest under --cov reached 85% of the suite in 90 minutes (plus an 8-minute build).
-        timeout-minutes: 180
+        # pytest under --cov took 167 minutes on a pull request (plus an 8-minute build).
+        timeout-minutes: 210
         if: steps.lfs.outputs.available != 'false'
         env:
           CMAKE_ARGS: >-

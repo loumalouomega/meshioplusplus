@@ -122,7 +122,9 @@ def test_vtk_reads_an_unstructured_grid_bit_exact(compression, tmp_path):
         vtk.VTK_WEDGE,
     ]
     ids = [g.GetCell(2).GetPointId(j) for j in range(6)]
-    assert ids == [5, 8, 6, 7, 10, 9]  # meshio++'s wedge order permuted into VTK's
+    # A linear wedge is written in Gmsh's node order, which is VTK's own (see
+    # _vtk_common.vtk_to_meshio_order: the old [0, 2, 1, 3, 5, 4] turned it inside out).
+    assert ids == [5, 6, 8, 7, 9, 10]
     pd, cd = g.GetPointData(), g.GetCellData()
     for name in ("u", "vel", "id"):
         assert np.array_equal(_arr(pd.GetArray(name)), mesh.point_data[name]), name
