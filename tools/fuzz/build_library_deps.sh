@@ -12,7 +12,8 @@ JOBS=${JOBS:-4}
 mkdir -p "$PREFIX" "$WORK"
 patch_hash=$(sha256sum "$(dirname "$0")/patches/netcdf-4.9.3-utf8proc-null-guard.patch" | cut -d' ' -f1)
 hdf5_patch_hash=$(sha256sum "$(dirname "$0")/patches/hdf5-1.14.6-dimension-scale-zero-init.patch" | cut -d' ' -f1)
-manifest=$(printf '%s\n' "recipe=5 zlib=1.3.1 hdf5=1.14.6 netcdf=4.9.3 hdf5-no-function-check netcdf-null-guard=$patch_hash hdf5-dimension-scale-zero-init=$hdf5_patch_hash" \
+coord_patch_hash=$(sha256sum "$(dirname "$0")/patches/netcdf-4.9.3-coordinates-read-type.patch" | cut -d' ' -f1)
+manifest=$(printf '%s\n' "recipe=6 zlib=1.3.1 hdf5=1.14.6 netcdf=4.9.3 hdf5-no-function-check netcdf-null-guard=$patch_hash hdf5-dimension-scale-zero-init=$hdf5_patch_hash netcdf-coordinates-read-type=$coord_patch_hash" \
     "$($CC --version)" "$($CXX --version)" "$CFLAGS" "$CXXFLAGS")
 if [ -f "$PREFIX/instrumentation.txt" ]; then
     [ "$(cat "$PREFIX/instrumentation.txt")" = "$manifest" ] || {
@@ -71,6 +72,11 @@ patch -d "$WORK/hdf5-1.14.6" -N -p1 --no-backup-if-mismatch \
 # a reused work directory cannot keep an unpatched tree.
 patch -d "$WORK/netcdf-c-4.9.3" -N -p1 --no-backup-if-mismatch \
     < "$(dirname "$0")/patches/netcdf-4.9.3-utf8proc-null-guard.patch"
+# A local fix for netCDF's read of the hidden _Netcdf4Coordinates attribute, which used the
+# file's own datatype as the memory type and so overflowed var->dimids on a corrupt file (see the
+# patch's header).
+patch -d "$WORK/netcdf-c-4.9.3" -N -p1 --no-backup-if-mismatch \
+    < "$(dirname "$0")/patches/netcdf-4.9.3-coordinates-read-type.patch"
 common=(-G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_INSTALL_PREFIX="$PREFIX"
     -DCMAKE_PREFIX_PATH="$PREFIX" -DCMAKE_INSTALL_LIBDIR=lib -DBUILD_SHARED_LIBS=ON
     -DCMAKE_INSTALL_RPATH="$PREFIX/lib")

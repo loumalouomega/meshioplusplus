@@ -70,7 +70,7 @@ Since v16.18.0 the pair search above 2048 points runs in the C++ core (`neighbor
 
 `knn` is dearer per edge because it must *rank* every candidate rather than threshold it. At or below a couple of thousand points a plain `O(N²)` route runs instead — the same answer by a shorter road, and the oracle the bucket path is tested against on every run of the suite.
 
-The bucket size is an implementation detail that **cannot** change the answer, which is why it can be retuned on measurement alone; a test pins that output is identical across a sixteen-fold range of it.
+The bucket size is an implementation detail that **cannot** change the answer, which is why it can be re-tuned on measurement alone; a test pins that output is identical across a sixteen-fold range of it.
 
 ## Edge features
 

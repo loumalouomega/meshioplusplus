@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -416,8 +417,7 @@ DiscParam param_annulus(const std::vector<PatchVec>& rPts, const std::vector<Pat
     for (const PatchTri& t : rTris) {
         const PatchVec a = vec3_sub(rPts[t[1]], rPts[t[0]]);
         const PatchVec b = vec3_sub(rPts[t[2]], rPts[t[0]]);
-        const PatchVec c{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                         a[0] * b[1] - a[1] * b[0]};
+        const PatchVec c = detail::vec3_cross(a, b);
         area += 0.5 * vec3_norm(c);
     }
     const double len = 0.5 * (cum[0].back() + cum[1].back());

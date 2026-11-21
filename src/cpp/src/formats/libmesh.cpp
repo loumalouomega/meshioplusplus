@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -1358,6 +1359,15 @@ void write_libmesh(const std::string& rPath, const Mesh& rMesh) {
         if (ok) {
             node_id = std::move(v);
             max_node_id = np ? *unique.rbegin() + 1 : 0;
+            // The nodes are written as a table of `max_node_id` rows, a NaN row for
+            // each unused id, so a stray large id would ask for a table of that many
+            // rows (roadmap 3.19).
+            const std::int64_t budget =
+                std::max<std::int64_t>(10000000, 4 * static_cast<std::int64_t>(np));
+            if (max_node_id > budget)
+                throw WriteError("meshio++: libmesh: node id " + std::to_string(max_node_id - 1) +
+                                 " would need a table of " + std::to_string(max_node_id) +
+                                 " nodes, over the budget of " + std::to_string(budget));
         }
     }
 

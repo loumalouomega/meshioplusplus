@@ -6,7 +6,7 @@ The parallel index over `.vti` pieces: it declares the whole grid's `WholeExtent
 |---|---|
 | **Format name** | `pvti` |
 | **Extensions** | `.pvti` |
-| **Read / Write** | ✓ / — (see [conformance](./conformance.md#pvti)) |
+| **Read / Write** | ✓ / — (see [conformance](../conformance.md#pvti)) |
 | **Extra dependencies** | — (zlib for compressed pieces, as `.vti`) |
 
 ## Reading

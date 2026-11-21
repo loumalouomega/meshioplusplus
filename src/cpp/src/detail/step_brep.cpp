@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -1341,8 +1342,7 @@ StepBrepResult step_brep_write(const std::string& rPath, const Mesh& rSurface,
                     sb_perpendicular(sg.mAxis, x);
                     const double* z = sg.mAxis;
                     const PatchVec ex{x[0], x[1], x[2]};
-                    const PatchVec ey{z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2],
-                                      z[0] * x[1] - z[1] * x[0]};
+                    const PatchVec ey = detail::MathUtils::Cross(z, x);
                     const PatchVec c{sg.mCentre[0], sg.mCentre[1], sg.mCentre[2]};
                     const auto angle = [&](const PatchVec& rP) {
                         const PatchVec d{rP[0] - c[0], rP[1] - c[1], rP[2] - c[2]};

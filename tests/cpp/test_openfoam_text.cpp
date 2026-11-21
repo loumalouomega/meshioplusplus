@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -16,6 +17,7 @@
 //
 
 // System includes
+#include <random>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -51,7 +53,8 @@ using meshioplusplus::detail::read_int;
 
 fs::path temp_case() {
     static std::atomic<unsigned> counter{0};
-    return fs::temp_directory_path() / ("meshio_ofpin_" + std::to_string(counter++));
+    return fs::temp_directory_path() / ("meshio_ofpin_" + std::to_string(std::random_device{}()) +
+                                        "_" + std::to_string(counter++));
 }
 
 // Two hexahedra side by side, so `neighbour` holds one internal face.

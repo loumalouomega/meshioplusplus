@@ -1,0 +1,4139 @@
+{
+ "schema_version": 1,
+ "fixtures": [
+  {
+   "path": "tests/python/input/mdpa/test_edge_cases.mdpa",
+   "bytes": 1386,
+   "sha256": "081dbd378ae13f7582d9b8d77a904f1b039608856f95e39a2ddfe4780e2415b0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/input/mdpa/test_elements_permutations.mdpa",
+   "bytes": 897,
+   "sha256": "b9ea6ce9660ef64b07c04ede0f2045b96d94c69148ab165303a0f19d2e09d435",
+   "readme": null
+  },
+  {
+   "path": "tests/python/input/mdpa/test_geometries_minimal.mdpa",
+   "bytes": 219,
+   "sha256": "e4330e7c1e245cccae49bebf4ede07ac5b066734a805804b993f1967d8c3295c",
+   "readme": null
+  },
+  {
+   "path": "tests/python/input/mdpa/test_geometries_read.mdpa",
+   "bytes": 1039,
+   "sha256": "f833dd90c30d8e5dd1b51e3dd19c385f80648d7c90cd98eef765a1d753667b1b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/input/mdpa/test_mesh_blocks.mdpa",
+   "bytes": 1542,
+   "sha256": "ec47d3b17995ae1d461eb169a5714c746cfb1cd0a8fa85b0968ea6ab9822cd28",
+   "readme": null
+  },
+  {
+   "path": "tests/python/input/mdpa/test_submodelparts_hierarchical.mdpa",
+   "bytes": 1936,
+   "sha256": "f422eff8996c9cf3b10d9e79ad544d92e5420ba52c75265b45569a94b6beb010",
+   "readme": null
+  },
+  {
+   "path": "tests/python/input/mdpa/test_tables_varied.mdpa",
+   "bytes": 586,
+   "sha256": "8b9b737c32cea9804f86664d31c2ef321641bea454cc00aeff2e78cebfdc2481",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/abaqus/UUea.inp",
+   "bytes": 7338,
+   "sha256": "0263bf32e6bd93bbdaf9fe0ff531aaad9ac9af8722100ef8f92813f8c2ccdb3b",
+   "readme": "tests/python/meshes/abaqus/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus/element_elset.inp",
+   "bytes": 216,
+   "sha256": "f6f96eed6f4ceb1160c52ff45131762c979e212e1bd7e2776999e574efc2e863",
+   "readme": "tests/python/meshes/abaqus/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus/nle1xf3c.inp",
+   "bytes": 1850,
+   "sha256": "2d8bc83d571066e10faac3fe9b43d1c91d02ec6ab89903f479e0d3546a7cc424",
+   "readme": "tests/python/meshes/abaqus/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus/wInclude_bulk.inp",
+   "bytes": 483,
+   "sha256": "26ddc51edbe37e3067a9d0add9bb691363df19b485e0b6a8e5bfd4a67dc4507f",
+   "readme": "tests/python/meshes/abaqus/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus/wInclude_main.inp",
+   "bytes": 204,
+   "sha256": "0d5211e855b2d70e4e06ed7c288edad09f1ac3b795b58157a9c95e5d713a8dd7",
+   "readme": "tests/python/meshes/abaqus/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/bertoldi/LICENSE",
+   "bytes": 1071,
+   "sha256": "719e8591302472caf0cdc141edf3b1f3f5cb6dbcda520dd07a3e426063c81457",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/bertoldi/job-strip-angle-buckle-45.fil",
+   "bytes": 989064,
+   "sha256": "d0a927ae42300b2ed2834d5c180e313bca0dbc94fa2a20d8e2f3fee634fe08f4",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/cjekel/LICENSE",
+   "bytes": 1070,
+   "sha256": "63a57fe85e9ac2cfa829d81b6df5f3ea15123641471b1a95b61b45c667d11df8",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/cjekel/TenBarArea.dat",
+   "bytes": 29317,
+   "sha256": "a17cd6dc5ac83f797b8f5bceb49cdcd854f2107af2809e61d90a23ed8f7210e6",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/cjekel/TenBarArea.fil",
+   "bytes": 8208,
+   "sha256": "0088709c4fb4f1e1c4a732fd71a0169969b86b81bdea5059e80d83a5fe3993ec",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/cjekel/TenBarArea.inp",
+   "bytes": 1053,
+   "sha256": "ac7f10018677c5c30bb7b4645bbf9a8d379d81561f40bda8e0d98071f17d4b26",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/extras.fil",
+   "bytes": 19116,
+   "sha256": "8e2431dec8fc760867cebefd9ab2adab1a45c62aa34a84f22050628541c3297f",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/extras_le.fil",
+   "bytes": 16416,
+   "sha256": "45cb2ea557f59d65d117546d10317923dbdfe69d092461a92fdcd87bbf24a54e",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/model.fil",
+   "bytes": 19116,
+   "sha256": "51d9a447ae3594db5423a7e79e94055b462c88feca84a2db67ff5613213cf89b",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/model_be.fil",
+   "bytes": 16416,
+   "sha256": "dc9d8b37cdfb5e1e22708b0e6e0a7fd3717ff86ef284964dc7308df63b73384e",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/model_le.fil",
+   "bytes": 16416,
+   "sha256": "c94c878b56504d43ffebd433478c70449144779e3ebd0f1011e9789fa5737b21",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/pybaqus/discontinuous_numbering_2D.fil",
+   "bytes": 4779,
+   "sha256": "51872c8f0e55d2b759ccba405f02eef3ca60b4e55ca405aac36366bd6f6b78f7",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/pybaqus/hex_C3D8.fil",
+   "bytes": 7047,
+   "sha256": "839b3e954b0d3ef51c5a25af77172771afed9752fd1e4ce91b7cdb91262b52cf",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/pybaqus/quad_CPS4.fil",
+   "bytes": 3240,
+   "sha256": "4077d8be14d397803241f456256bdf7cdb77668d822d3bbd44cc0a6e08dc6f60",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/abaqus_fil/pybaqus/tri_CPE3.fil",
+   "bytes": 2268,
+   "sha256": "282addf42ab6067c8d410bee26404af06fa23311cac3df33db969b5ac52ef709",
+   "readme": "tests/python/meshes/abaqus_fil/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/ErnoRadiation.cdb",
+   "bytes": 17279,
+   "sha256": "3f95d48e6e0f006773faa059b46c03b6b4292c4c2500e00a5bff2ba4a4c5eeb8",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/HexBeam.cdb",
+   "bytes": 44894,
+   "sha256": "506eb4c74138edc57d623f632343832fc75db58d4df0d3b577a1e38af5471fcc",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/all_solid_cells.cdb",
+   "bytes": 5645,
+   "sha256": "8fa6438c9d11b3043844cd3071c0d22ff617893ed4d33025ca5453d6cb3360ce",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/binary3d.msh",
+   "bytes": 687,
+   "sha256": "4c75dec57a931c73ba90a9101465961022573facd18e1ed51ea682d31476ea34",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/cells3d.msh",
+   "bytes": 1157,
+   "sha256": "54edea9c689143e70cc28375ae64b4d7d9934b214970b1afe37d6e46ce25cea1",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/etblock.cdb",
+   "bytes": 905,
+   "sha256": "5595760e8de7dcc5eb4b4b4189cc2685baa04b54123629a518f0bf4352e4c051",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/gambit2d.msh",
+   "bytes": 267,
+   "sha256": "d6eddad7153bcf1d4f640f99dd9b4543ed3f752d5d6747ec2455b22262889961",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/hypermesh.cdb",
+   "bytes": 19308,
+   "sha256": "4db3531c340d4492d450f40141e56078cbf057d40fb5703bd083f589b5387045",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/mapdl_archive_reference.npz",
+   "bytes": 52655,
+   "sha256": "0255b9a0a342a6054beb3cfa0f96273f939e47114f8d535ea513abb215cfad7e",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/mixed_missing_midside.cdb",
+   "bytes": 107332,
+   "sha256": "cdc0435fe60221fa6062dafc6f71595462c20eb43dab3f7de6c90b7750e9ba77",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/beam44.rst",
+   "bytes": 196608,
+   "sha256": "eee7ecd5f41718d3d8e568ecea82b15706b63aa1f819bfb6d47e6efa0872c2fc",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/beam_static_bc.rst",
+   "bytes": 393216,
+   "sha256": "ee84cbab2ec7dcebb74c96b16a6467d1a9287a6ccc5ec40cf03918e22650f3b1",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/cyc12.rst",
+   "bytes": 1048576,
+   "sha256": "a918886a1fed2d8ec24281b7769132be0c732f41fd2e66ac84f1b55dab45ff4a",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/cyc_stress.rst",
+   "bytes": 393216,
+   "sha256": "f5e3aa588b60e4a670c9ebc2cde75fdfcb595fcbe1c5a9cee056b4946154f0c5",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/cyclic_v182.rst",
+   "bytes": 655360,
+   "sha256": "4f12ad521e93829a30b271fa83ed507a1b8755801c9ced01a040ef6f651570a0",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/dist_static/file.rst",
+   "bytes": 786432,
+   "sha256": "2913e67200e525f4ac4cf28bbe7125743878394625c21b9cd0b86eb292d92e48",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/dist_static/file0.rst",
+   "bytes": 458752,
+   "sha256": "a2794aa34fcde90c15a21bed89fc0a8fc95fd6ebbc687e11435f3a74e66b1b5d",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/dist_static/file1.rst",
+   "bytes": 458752,
+   "sha256": "f516e9425d8f99a0671026986aed3c6c25beb11bddb668c961c86daa97bfb544",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/dist_static/file2.rst",
+   "bytes": 458752,
+   "sha256": "af217ca51b29c311bc12755c39baa822ffb71d65eba95bc6cdd38a426b9da063",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/dist_static/file3.rst",
+   "bytes": 458752,
+   "sha256": "eb7eda943e9a0671671a58b4037177daeb26b18407c952219a872cd76ae1da0c",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/file.rst",
+   "bytes": 917504,
+   "sha256": "d052349540d4da8c1ab732db90110c6083174fff1f11de5fbfbabb28395f7dd7",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/file.rth",
+   "bytes": 786432,
+   "sha256": "61a94fa9220047098068fa51e671308d6501e1f8151b3bdc98c84696ece35a30",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/hex_201.rst",
+   "bytes": 393216,
+   "sha256": "44cfc9fa4421ee1e06b2ad74533ca416002e6fd128d936dd892bf4a74355f62a",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/pymapdl_reference.npz",
+   "bytes": 2993559,
+   "sha256": "f5004f585f6cb8f05f8d62051fd177d4d01146cb4df4fcac2bb0fd9178d05761",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/shell181_2021R1.rst",
+   "bytes": 327680,
+   "sha256": "0a7578e5a2108ee1aa2b84c12b625479a2fa773b7f971810bd04f0a12d26f6c2",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/shell281.rst",
+   "bytes": 458752,
+   "sha256": "ef3e19e1f6eea4b4b789795db5d0fe8418d0ad10835ad451fb9ee26c9c87aa39",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/rst/temp_v13.rst",
+   "bytes": 458752,
+   "sha256": "6e7239939603c2493aba8f6de25c88ca578ddc7d174fa282bb4c2ee9b083d9a8",
+   "readme": "tests/python/meshes/ansys/rst/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/sector.cdb",
+   "bytes": 80003,
+   "sha256": "5f4419ca3db3ab61acade8a59755fda40d451b7fd522499021ae4161eef26769",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/tgrid2d.msh",
+   "bytes": 326,
+   "sha256": "7c280a96b24134ce102456f63af6c3c7bd88da5759e63daa324a7447886341c5",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ansys/workbench_193.cdb",
+   "bytes": 524,
+   "sha256": "f04a0e1413e158fec96c4be3b26ca6249539359dee9e8274673ebb08c2753559",
+   "readme": "tests/python/meshes/ansys/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/capped_cylinder.cad.json",
+   "bytes": 40377,
+   "sha256": "fe3c4fafae646ae567779c8afd96dc7c6a73dd3bd10f941ef1ccb36c809260f2",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/capped_cylinder_offset.cad.json",
+   "bytes": 40542,
+   "sha256": "10d48d7e0d9340b2555119f198c8d6b38ee8dbcb37360509922b9c2d18d500c1",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/cylindrical_roof.cad.json",
+   "bytes": 3246,
+   "sha256": "083542b7a52bd31f4f98487cc42eef69a36d2607d3c833d7413c264b19c1291b",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/import_square.json",
+   "bytes": 4104,
+   "sha256": "2dc400480944f46e3b2db396a3534dc3cbade7bf2b52c3695faf39527d3b0f29",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/plate_with_hole.cad.json",
+   "bytes": 36040,
+   "sha256": "4b7972e258abd97cd19c3af9b13af24c029a4e1efb83c86d996b4df55d341aba",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/plate_with_near_hole.cad.json",
+   "bytes": 13646,
+   "sha256": "c20bda34256588e657b3e611732b8c4982f7db3df512924a6ab9d4d0503bfaec",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/sliver_strip.cad.json",
+   "bytes": 44667,
+   "sha256": "acb52f727ee6bf5daf6f4db1080baf0c1d3727354a9ea654fa18124d37c21cb1",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/sphere.cad.json",
+   "bytes": 44810,
+   "sha256": "9786018de5945b000b66425618e0254a85f3e2079fd7ff55b73bb724b6094b30",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/split_rim.cad.json",
+   "bytes": 40862,
+   "sha256": "9fc7814a7bf5b8b5e092999998202d71dde84bf190d82d65ff7ee360d68806df",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/two_patch_beam.cad.json",
+   "bytes": 29722,
+   "sha256": "c2aba4a85604567e33bbe07d5ec8c1f59c3b6d318229f3aedf1f06d78901363e",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cad_json/unit_cube.cad.json",
+   "bytes": 78651,
+   "sha256": "93dbb6f0f62398c85e6d247224ff902d27682b2bcdb9fe35bccca8b754755b9b",
+   "readme": "tests/python/meshes/cad_json/README.md"
+  },
+  {
+   "path": "tests/python/meshes/cgns/tri_quad_fields_cgnslib.cgns",
+   "bytes": 17913,
+   "sha256": "112ba34baa59d99727b7116eaad050103ae35ab8941ad106048594884e37cbc0",
+   "readme": "tests/python/meshes/cgns/README.md"
+  },
+  {
+   "path": "tests/python/meshes/code_aster/all_elements.mail",
+   "bytes": 7390,
+   "sha256": "a58f662c1d9e3787702a6b6fa9a1265e2e20f7855661119025a86f3e39476e07",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/code_aster/hexa20_block.mail",
+   "bytes": 3512,
+   "sha256": "f0192f2ef6de4556f6c11697c93e844efa83ced3a365988d1ef54b1129e8d682",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/code_aster/plate_2d.mail",
+   "bytes": 384,
+   "sha256": "00204e7007b0411b0c72bf4cd0dac7e964d48787bb724599fc657685329c25ba",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/comsol/legacy_v2.mphtxt",
+   "bytes": 1916,
+   "sha256": "d6a02de3ee071f7c8b72bda21f3eda01fb58c4a667a0702c0e2ac6c4a5e953b7",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/comsol/quadratic.mphtxt",
+   "bytes": 2570,
+   "sha256": "aaeac5c6a628238f365190a189dc193134323c969a60b74bcb88439781b4a159",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/comsol/two_domains.mphbin",
+   "bytes": 1168,
+   "sha256": "20a014684f0c39410d83b321cfea8de13f454bd9029c76d28d6882fb718cb464",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/comsol/two_domains.mphtxt",
+   "bytes": 1793,
+   "sha256": "62dbe44c8e902dd1fd4c269f12bf58f3ffa7958ee80ca8db73a0d224ee7f7623",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/comsol/two_objects.mphtxt",
+   "bytes": 1015,
+   "sha256": "b94815bab604d468a78004c9b5ae3fe420adc7021993612b731c36c679afd6d6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/hex27_block/mesh.boundary",
+   "bytes": 34,
+   "sha256": "1d9036cff06618ffa63a2d7cbf92073f497ed056d29ab2dababedebfc3d917f6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/hex27_block/mesh.elements",
+   "bytes": 80,
+   "sha256": "4f6a5aeadb85009ad531f58c914b4a77021df869f00fcb58a544eb98751c0555",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/hex27_block/mesh.header",
+   "bytes": 56,
+   "sha256": "d569c07ad71ddd8cb72db80fd856294f8a282a666c831cd05a056e3c93bdaf8d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/hex27_block/mesh.names",
+   "bytes": 91,
+   "sha256": "b9a20eb2c00c749709ca0efedba54a10ecc0aa15ce78836507c1353f9b633fb6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/hex27_block/mesh.nodes",
+   "bytes": 351,
+   "sha256": "3825fd7684da8e24924f87447ba934d8beff8de5ce6abfe2a8e5b154e6feb763",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/mesh.names",
+   "bytes": 103,
+   "sha256": "5d6e5ca3bbc8dc7db20ae0c6c10b32ecca174f27f3fc94decf2c7c2e7289ddd4",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.1.boundary",
+   "bytes": 16,
+   "sha256": "fac67ea7a19e75784bfa50a6c744163fe72459820a0eff66337e740bbdeee92d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.1.elements",
+   "bytes": 14,
+   "sha256": "f48a16caf765d62f9207141129c31a2a54f0a254f79aaffcd258c31deca4aa51",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.1.header",
+   "bytes": 70,
+   "sha256": "6700159e2c1b77ae10a04f95594eba4fa736f4f6a560c9ef3f777e95e0b01916",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.1.nodes",
+   "bytes": 33,
+   "sha256": "0a4b4907e9b374b64bd2c4fefd3eb6bf03b6b052f4253f005a8c9a65b4ed7b8c",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.1.shared",
+   "bytes": 16,
+   "sha256": "41ccf1ad3b08a745631b6071ecb4064520fc194e9efafc39b924162750ac97a4",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.2.boundary",
+   "bytes": 16,
+   "sha256": "8230619712e0ba08352676a2e48889e0db3445e922b984fa6e127d539f774e26",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.2.elements",
+   "bytes": 30,
+   "sha256": "709306a3e8e5df89c490bd6c6e6ed9fcfb5a6e40c117bf2ba968f8c0f538f781",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.2.header",
+   "bytes": 70,
+   "sha256": "6223eda33304b5287f1c960e459beef99f7f06e4c39384ab6fb1949ca4c487d6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.2.nodes",
+   "bytes": 44,
+   "sha256": "d0adae7ac8a77081d684ac736be2e316f41c930ff2a62f4a304fba2b6af34898",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/partitioned/partitioning.2/part.2.shared",
+   "bytes": 16,
+   "sha256": "41ccf1ad3b08a745631b6071ecb4064520fc194e9efafc39b924162750ac97a4",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/quad8_2d/mesh.boundary",
+   "bytes": 38,
+   "sha256": "8d509c89cb3cb649e02ce3ef3a6ef2060c91386420c7ce17be6b94f37e9a780c",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/quad8_2d/mesh.elements",
+   "bytes": 52,
+   "sha256": "6345b04439dbde06d125777307b7881e45d16c95976fcc350f837cdb03185384",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/quad8_2d/mesh.header",
+   "bytes": 56,
+   "sha256": "f70c72f274e7564962344d3c52d0fb5c1a33fc1d60f51429d5e02912bd4992e2",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/quad8_2d/mesh.nodes",
+   "bytes": 161,
+   "sha256": "2379d779c5d1841384ff2ea8eb24dfd63d9a9ff4f8e3746cfa6d6c0a0fbcc507",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/quad8_2d_sbin/mesh.boundary.bin",
+   "bytes": 72,
+   "sha256": "d29746bdb79805bdb944019c4956f10960cadb9cc51fa16bf3415025083524b8",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/quad8_2d_sbin/mesh.elements.bin",
+   "bytes": 96,
+   "sha256": "b8979008fa91a365a2d1a7411b4a308626a92c67baf913f33548dc20d8dffe75",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/quad8_2d_sbin/mesh.header",
+   "bytes": 56,
+   "sha256": "f70c72f274e7564962344d3c52d0fb5c1a33fc1d60f51429d5e02912bd4992e2",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/quad8_2d_sbin/mesh.nodes.sbin",
+   "bytes": 208,
+   "sha256": "6381ff479a9e4f5f20fdb1feacd8335437f2528d364deddf73a585f73be7942b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies/mesh.boundary",
+   "bytes": 63,
+   "sha256": "26d863c4e640f8fe3bca040f835a54637c6e155088fe65bee3af600fb9d11988",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies/mesh.elements",
+   "bytes": 62,
+   "sha256": "bee32d3dbece3cba8a86be4bc5c25fb78063670018e5bbbe17102cfd544417a1",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies/mesh.header",
+   "bytes": 70,
+   "sha256": "1099e21eccb2e64a67edc7a95d3832568886e9416ac83a0d9b969c18664e6611",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies/mesh.names",
+   "bytes": 130,
+   "sha256": "0da54fa979d79cfd4abcc6e379e02ae1191da125609700035995ff1456cb673f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies/mesh.nodes",
+   "bytes": 189,
+   "sha256": "27e94b57c44a44e96f9398c7dd3955e054680535010e1ef97ca998a25624a0e2",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies_bin/mesh.boundary.bin",
+   "bytes": 124,
+   "sha256": "d3402e3cc1b62458eb5a11d990ce0310ff8fbeafe1facdc6c24954d76cc83786",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies_bin/mesh.elements.bin",
+   "bytes": 112,
+   "sha256": "fc5d9392f7aafa500ca017ab8c0c8bbe296e14aaf6e7745ad34bce6e09e26ffd",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies_bin/mesh.header",
+   "bytes": 70,
+   "sha256": "1099e21eccb2e64a67edc7a95d3832568886e9416ac83a0d9b969c18664e6611",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies_bin/mesh.names",
+   "bytes": 130,
+   "sha256": "0da54fa979d79cfd4abcc6e379e02ae1191da125609700035995ff1456cb673f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/elmer/tet10_two_bodies_bin/mesh.nodes.bin",
+   "bytes": 392,
+   "sha256": "b361883cdbd2c6a38da60a0f61b0c2a98bdaa2683beb2884de4b1dafd6cc130f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/ensight/simple.case",
+   "bytes": 56,
+   "sha256": "e4a4d5f65e399847f6219201a6121560bc5fbb7521fa275b99fd2ec2d1a23dc9",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/ensight/simple.geo",
+   "bytes": 977,
+   "sha256": "c19743032616d43abde310084381fdb3093dd10b892246da0e4130092b5bda24",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/exodus/DCBmodel_PD_solid.e",
+   "bytes": 384632,
+   "sha256": "c0be64f9949a918126b16934837e2ca0e0de2f62fc9ef7d920e5b2c8ae9703d3",
+   "readme": "tests/python/meshes/exodus/README.md"
+  },
+  {
+   "path": "tests/python/meshes/exodus/DCBmodel_PD_solid.e.license",
+   "bytes": 155,
+   "sha256": "2e100f308634e20c32d262aee35e1d2e25153e7cc99304e254371df727877576",
+   "readme": "tests/python/meshes/exodus/README.md"
+  },
+  {
+   "path": "tests/python/meshes/exodus/LICENSE.BSD-3-Clause",
+   "bytes": 1525,
+   "sha256": "91b17e0c689edbaa28cd8182b1b436d7f5e3aff56cce1fd37abd8b0fb9946d03",
+   "readme": "tests/python/meshes/exodus/README.md"
+  },
+  {
+   "path": "tests/python/meshes/febio/all_elements_v40.feb",
+   "bytes": 7385,
+   "sha256": "c876343b2525444380f985280346dddfd84804fbc520fa73a972f4060f349e9f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/block_v25.feb",
+   "bytes": 1373,
+   "sha256": "0ce1b53a89d89a9a86fcb6db58d89ca802abbcf6661a600fbd753ddca6cc9d1a",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/block_v30.feb",
+   "bytes": 1450,
+   "sha256": "930693cbae603f3e272d6a8921899704bc017c7064867a265e299fd5d4d81d64",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_blocks.feb",
+   "bytes": 2232,
+   "sha256": "4cc134aa0f9856ad068dbdb0bb69a55a64ce3f7d4e026f8c4c0f8096b95c8c8d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_blocks.xplt",
+   "bytes": 6043,
+   "sha256": "712a8725ac2ca0ecaea6430cd1ef2db7d3346195efc0b72194f122de9e79b153",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_blocks_z.feb",
+   "bytes": 2264,
+   "sha256": "f2d978637b4c8876c7a22710d4ecf2261ddc360772653185990a41fbb8b435f9",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_blocks_z.xplt",
+   "bytes": 4162,
+   "sha256": "ada6ae362a9e849ce3a6354f7851665dc39eada0b1db6687e21ace4851d07621",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_edge.feb",
+   "bytes": 2145,
+   "sha256": "c8bce5a4df36520d401f902ec131244d2e6b8a8ef08424441facad155b6e46d1",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_edge.xplt",
+   "bytes": 3040,
+   "sha256": "31075285cf6c08a39c2bc7d21cdb2ea80d09722b15bd2375705477d7e8695484",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_hex27.feb",
+   "bytes": 2229,
+   "sha256": "65c8cd7aefe7c99ccd65844fb78c53ea467568526504acad3bb70543a9a4ab01",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_hex27.xplt",
+   "bytes": 3429,
+   "sha256": "8cbdcc5a17d2cc6d9a86ac65f1545b59677051da18b7576de0f752e35ad28af0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_remesh.feb",
+   "bytes": 1960,
+   "sha256": "07229d94a8f2479ead0253729896e723fb5a860ade9b2b2ff771c67e468189fb",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_remesh.xplt",
+   "bytes": 16918,
+   "sha256": "1f30b1f1d1fcc60dc9a7e5093c137355247f79c91451ad75953d41d6473cb863",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_surface.feb",
+   "bytes": 2165,
+   "sha256": "4ca9a9b0a164da1c009a36fc1889ea94f75cd6785f7bbc50dee1facaac02ad86",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/febio/xplt/xplt_surface.xplt",
+   "bytes": 4001,
+   "sha256": "c7b9e54851b4285ba0d7534dcdce996d442168f3c3ec905ba3ca036721089711",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/femap/A342.neu",
+   "bytes": 66988,
+   "sha256": "6a1eaa3693a525892ef6ba47e77ee568d9cb34a5d29c526024922cc9fb1fa5cb",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/A352.neu",
+   "bytes": 41427,
+   "sha256": "2e0daea6e8a3862ca857b42f682c851e70a46957934679420267101e3e966c39",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/A362.neu",
+   "bytes": 26100,
+   "sha256": "256b8695ca6301db65aace76b9a3fa867ce6a6ca0ca741d8ddfae4524cbbc875",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/A731.neu",
+   "bytes": 14565,
+   "sha256": "fa4d9ac2bf936d391a7cf81adc2d132ee8ef3a24b753ac4b1e83ea765f16a99c",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/B741.neu",
+   "bytes": 10300,
+   "sha256": "872397c0d5fccd449226df382b1c4fb87da215947f11c1253748e45eb57de106",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/MC361.neu",
+   "bytes": 34785,
+   "sha256": "37edc0eb246b5489ae66fcb077da3f1767b1bf5aed25139c11065de6a2df15c3",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/ems_results_1051.neu",
+   "bytes": 35412,
+   "sha256": "bbc516ccba00ca2e009235e67a26220171f437b4c39aba17aec2d29b62479ab8",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/ems_results_451.neu",
+   "bytes": 43757,
+   "sha256": "c4385884debc4b9104486d5b191be41f4c95fb199c03a812d150a99a13fb0241",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/mesh_sample.neu",
+   "bytes": 4236,
+   "sha256": "d58b5ebcc775544115aceeb0c7ecceb4bd31912edf239d8f840ae99519588e82",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/mystran_results.neu",
+   "bytes": 59929,
+   "sha256": "be4970dd51e697b33e281024962bc5ddb11618b5fd2a49e7fc553c0c4fdd8c2b",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/v2020_results.neu",
+   "bytes": 47512,
+   "sha256": "c0ec28a3076d981da5b5a7aeca4c33760c7156c1ee7e50e9aefc474b2019999f",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/femap/v82_results.neu",
+   "bytes": 46404,
+   "sha256": "7050d22a4158e30431914395e97bc1c04e45379094795194bc76c208011200fc",
+   "readme": "tests/python/meshes/femap/README.md"
+  },
+  {
+   "path": "tests/python/meshes/flac3d/flac3d_mesh_ex.f3grid",
+   "bytes": 17428,
+   "sha256": "5498167a42b956782c2b4c963126295fbccc69660ff07068a11ef1131c5ecf48",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/flac3d/flac3d_mesh_ex_bin.f3grid",
+   "bytes": 9517,
+   "sha256": "f06c14ffee7905f190645a18b08b263ee206b662b3bdc5cdfff2a67c02ccf704",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/flux/solids.pf3",
+   "bytes": 5761,
+   "sha256": "a6d96bbe1be37faf069c915fb8b2e890af8dc6c42a75f360953a24171a97edfd",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/flux/truncated.pf3",
+   "bytes": 1549,
+   "sha256": "aac18d64635e25eb39b480d1a5136ef99902fee5f5f58618c30be7d714de77a8",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/b31.dat",
+   "bytes": 210,
+   "sha256": "dceaad3f75eb80470790fa202acaeef511fb0837ba25eff89466032d31a12e45",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/b31.frd",
+   "bytes": 4751,
+   "sha256": "9efe2fb0373b7606ceef23e0464b09e8be225795368bc0ad85e010c481a71a9f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/b32.dat",
+   "bytes": 210,
+   "sha256": "3e5b9ac64c35be8bf7738c722cf7afbedb064f792b09c368a35382c89c16683f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/b32.frd",
+   "bytes": 8451,
+   "sha256": "df163285933721a23549f7efd644e86d695f38f4fa62e075f2d2ac45b2201d99",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d10.dat",
+   "bytes": 695,
+   "sha256": "fb00c71fcdad196fae34668aa1cdb9c3256ebc0bfbb934ef88856e09d19ce876",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d10.frd",
+   "bytes": 5367,
+   "sha256": "0029fbbc437af963c3e016795011fb193671e68c06816454e91f4040aa1af190",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d15.dat",
+   "bytes": 1296,
+   "sha256": "ecb17dd5afe81e9467f4feeddd78715ba2e2ae06bfe416402d58d6fd12398efb",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d15.frd",
+   "bytes": 6911,
+   "sha256": "929d4901bf1433a0e742a556dcbbbcf43047d4f789c3bc7eb8032081984fc62b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d20.dat",
+   "bytes": 3343,
+   "sha256": "5ccceceae94cec7d9da4bf006e52c189607c50b827392aae5bdc011fcae1f2e3",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d20.frd",
+   "bytes": 8451,
+   "sha256": "bd27a690500722b6bfc42659ac7b3590989bc4acdb3e87bc82c53cfba7fb9ceb",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d20_bin.frd",
+   "bytes": 4486,
+   "sha256": "94036b456fd77aa89e2ef1c35341614f3881c86492ca42f69195d5afccff8cf6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d4.dat",
+   "bytes": 398,
+   "sha256": "401509473003ade357dcd4a94c6fe8bba4524fb1fd0a186733632a9a3f9f2a9f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d4.frd",
+   "bytes": 3519,
+   "sha256": "3bf8fc87f0c3a3aa742c34d6733d3a5beadc7823da39aa1ce65cc5faec6fd1e1",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d6.dat",
+   "bytes": 550,
+   "sha256": "f2abae1d8a728547d2ee1a8d151ce5eb8a3f2d61883c64bc20b99b8e46bccaca",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d6.frd",
+   "bytes": 4135,
+   "sha256": "79a6ecbe536a6e5b3c4ab2e2d550f3db1f09fcebefad69eb63c7103212ceea20",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d8.dat",
+   "bytes": 1250,
+   "sha256": "2523a5541181c3ef9a5baa88e012c8a34e39e6076922485786e9cfac1eb87e00",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d8.frd",
+   "bytes": 4751,
+   "sha256": "981b43d6e4f739aff8f315045a6610252e7116815c56c5049e83dcf109a25925",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/c3d8_bin.frd",
+   "bytes": 3142,
+   "sha256": "c9ad5d6de47a7ad72cb457fddf1ec43c8290c7b3fb12e201cc58b6812f9f18d0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/cantilever_modes.frd",
+   "bytes": 38338,
+   "sha256": "aac9d8220781dd8011dca882bef04cdc3f7de73d4500cee1d3cbb9a0fdbef7f9",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/cantilever_static.frd",
+   "bytes": 72846,
+   "sha256": "e5e223dd24f1bdef80be1c59471baefcca3e117381da71954c0eb601f77772ad",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/cantilever_static_bin.frd",
+   "bytes": 27800,
+   "sha256": "7a9a1ff1b280fc5f0ea6f372c46ffd3d6e33145ea28b8217cd9b7b12750e3a7f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/cgx_short.frd",
+   "bytes": 5820,
+   "sha256": "ff921731bd0c6bae946af0b29b2a21f06d727248f2b514e717d77b373d2c841c",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/b31.inp",
+   "bytes": 466,
+   "sha256": "ac278faf86f7c1e8c22a7e1dd09c535781998a969ebedc33969d256637c3e65f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/b32.inp",
+   "bytes": 501,
+   "sha256": "6178eeecb25b078762f72da155663ca63a17cea4094678950c37a5da9926f442",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/c3d10.inp",
+   "bytes": 757,
+   "sha256": "4aa3c28bce2786421be4e4a22453f13348b36976fccdc8f1c3b6a326852b12a0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/c3d15.inp",
+   "bytes": 957,
+   "sha256": "77a00d878a6b0d75a0c964407020e7d9e22a585043e26e836e021cb74bb6e221",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/c3d20.inp",
+   "bytes": 1161,
+   "sha256": "0ff672626d13ea27c4d8a1f1ddca847cbb1ccf7b7122160d7b73ee6dd3369cf0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/c3d20_bin.inp",
+   "bytes": 1170,
+   "sha256": "f5c60005dc331a563b2175a72465b0780b1fccb418e99f24cdb3fd175bb854f9",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/c3d4.inp",
+   "bytes": 533,
+   "sha256": "5b4d89722fd78c8f3a8774c42f3ab7f03743a207a84dd389dd68aca1ba98b46f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/c3d6.inp",
+   "bytes": 609,
+   "sha256": "613dc88fdb68be3e2e3d1474a85b0324d637bb6b2064201e9afae3b7ac52d27b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/c3d8.inp",
+   "bytes": 685,
+   "sha256": "935c0ea646452cf90f4a3b7c1a90426bb4f509bd76bf4a1fe1a2bdad68644085",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/c3d8_bin.inp",
+   "bytes": 694,
+   "sha256": "a40c2c239ce2eddaa80891644e447fc38c70e411a5e478175045321d20f862e0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/cantilever_modes.inp",
+   "bytes": 5909,
+   "sha256": "34d69ad7f5edaf6ffdc3e97f6a027c20f890577c54e408594f634e6103d441e2",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/cantilever_static.inp",
+   "bytes": 6028,
+   "sha256": "8d78f52c5029ec465ea39492283823c4690d4d067700367e4798083b4aeedcb6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/cantilever_static_bin.inp",
+   "bytes": 6046,
+   "sha256": "69d19d7a7affce4c6671fc8dd62d82963a94fad6e1bedb177ef6383a12e67190",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/freq.inp",
+   "bytes": 451,
+   "sha256": "9701b56a5b94afe1c96b97d65a444f66f73ba879704bb30eb034a4a9c12cd91d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/heat.inp",
+   "bytes": 591,
+   "sha256": "b292831f9a52f719978ece55502927e4f4294add5e98e87e03ff212d16d282f0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/mixed.inp",
+   "bytes": 690,
+   "sha256": "1ee2560229eb11003483b571b33c85dbb437f28954773abbffea13f8e3e7b814",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/s3.inp",
+   "bytes": 474,
+   "sha256": "375790ce7ae6588b28e7db9588ad0d2efd6d0ac78463d3df559d28c444fecd70",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/s4.inp",
+   "bytes": 512,
+   "sha256": "c1452da7388c76c947837c0d433d4821601088b654181f4666a731b58c867b21",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/s6.inp",
+   "bytes": 582,
+   "sha256": "ab2c36d2ca860b87f4f55795a97ecc92035d77f7d36cecbc4875d48d797dbe9d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/s8.inp",
+   "bytes": 658,
+   "sha256": "14d3b1437c1b4de8a0ee7e85e87aab85fdbf2c1ea0f0fc52280fbe90803fa567",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/t3d2.inp",
+   "bytes": 433,
+   "sha256": "0326483d4ab562cd452547649da00f6cc96ac406299e65e0bffb1c3544abf294",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/decks/t3d3.inp",
+   "bytes": 468,
+   "sha256": "82bce57357b718560d1faf484c3ee40b366345fe51aa314c4f39654e947b5387",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/freq.frd",
+   "bytes": 5616,
+   "sha256": "50fad5d12b3f0879da8de4e0921d4689b149c3792c54fc67c2ca6da2dbdf721e",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/heat.frd",
+   "bytes": 7554,
+   "sha256": "6a0508fd1548bf2cdc9300c963b6f59432018544f15ad69aec272b18f30a1e5a",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/mixed.dat",
+   "bytes": 526,
+   "sha256": "f7cf04f1648d0a0e1b98b36cf46df8890df90d1c768b0fdf34f7205ee1ed1e0e",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/mixed.frd",
+   "bytes": 7967,
+   "sha256": "3e02ce15b2d52cc95b2374078520b417e66e0c61dae76eb14a0965c8a907952f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/s3.dat",
+   "bytes": 210,
+   "sha256": "5c85fbbf827274ef07961912b048b5b7d8c4e82005dd0df4f7620eb2b1cc4105",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/s3.frd",
+   "bytes": 4135,
+   "sha256": "c344ab45870333c169e8580667bdecafc23f6fb7d928a1b8506bbbb058acbae6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/s4.dat",
+   "bytes": 263,
+   "sha256": "e86b3a89dafad94c43c37f2a377526c14089e24cbf5af5e923a87df0cd94ba94",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/s4.frd",
+   "bytes": 4751,
+   "sha256": "2d0bd2ffce37297b29a9127102cd101c24a9e2f55822cd2ba43d9adefdb97113",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/s6.dat",
+   "bytes": 210,
+   "sha256": "730044e647e3964a50750bee466eb1acd2f1b892a45fead714de64fb2370258c",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/s6.frd",
+   "bytes": 6911,
+   "sha256": "8b75701b534330c7f271fd9c93ec073dd065dc4daf44c7d37eda658f78c8b1b9",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/s8.dat",
+   "bytes": 316,
+   "sha256": "34045e97655ae289f175d6bc5f24e952afb4326ad0d5c21780c65c96d6b0a51d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/s8.frd",
+   "bytes": 8451,
+   "sha256": "47088539cc4fa013dcd0754641432f3bcafc6735ac16fcbfc9a0c61ff1d609ff",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/t3d2.dat",
+   "bytes": 210,
+   "sha256": "302a9af9ec39b494f4bd0c368dcf49bd925b7a94cdc1ea5b5cddd409e779a087",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/t3d2.frd",
+   "bytes": 2903,
+   "sha256": "6e8d70fa66fe88d3dada1763827929e4d8ade030189b34d7827a9dcc398d36a0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/t3d3.dat",
+   "bytes": 210,
+   "sha256": "042cdec2fac7eae8825c6b047f98c91b5f9a18ac9a1719a3eff074b32a3d54c7",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/frd/t3d3.frd",
+   "bytes": 3211,
+   "sha256": "5a991cd684d797a5bbcbed32406e8fe428d0a8c6b31458c1e39e6e08cd7e27c0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/gid/repeated_nodes.post.msh",
+   "bytes": 352,
+   "sha256": "b56e538d60d845b415baeddfecdc670bf4a9e9717ba3539bed03ddd1241ade18",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/gid/results.post.msh",
+   "bytes": 148,
+   "sha256": "3fd03271d793ae3cff5de69d763cad87b488754b291e941c6e16713c70aadf3e",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/gid/results.post.res",
+   "bytes": 746,
+   "sha256": "a24421ed441fa881a4db9716d6611d7861c519daf0043dce8500ccde053d8476",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/gmsh/indented.msh",
+   "bytes": 364,
+   "sha256": "482e9d9a579603f7ced38ed8e4bc3972bbae14893cba4c70b9a4a6d2b405e664",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/libmesh/amr_quad.xda",
+   "bytes": 1754,
+   "sha256": "a10eb7981393fb45966b3017ed9e91779c97debbee11286fe8015eeb42d24357",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/amr_quad.xdr",
+   "bytes": 956,
+   "sha256": "67c1dd7c384497f159b43f9a5d1da85b37e2b303d5c7cdccbbd8002b0eba2f3e",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/edges_shell.xda",
+   "bytes": 2643,
+   "sha256": "56103b8105ba8d96831ca7e531ddd873e1dc0692f5d03cdb6f2695e357912625",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/edges_shell.xdr",
+   "bytes": 1332,
+   "sha256": "bd8c1492a42e68ac5b5379c45b3b0c107fe755799544deb2f63cdaf024be7404",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/hex27.xda",
+   "bytes": 4379,
+   "sha256": "c6f1acce7b3b85745d8e7d9a03980c20c024895c24f93492846b903308ba5a9f",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/hex27.xda.gz",
+   "bytes": 591,
+   "sha256": "b5e4097ad7aa05d968a4f80af71681b9bb62970a5d72666fc03ca137c8020e32",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/hex27.xdr",
+   "bytes": 2100,
+   "sha256": "1fd627425620bccfb98e0ff8a79e8254313b8d12da41e7288465cff38082b67d",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/hex27.xdr.bz2",
+   "bytes": 351,
+   "sha256": "8be42be771741beb193bdebc59df3c7b3d908edd034112517c91ae479b959afa",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/one_hex.xda",
+   "bytes": 921,
+   "sha256": "c3d5c633ddce52544d8620ee197374f87110e6e0bb9538f8d4d38e4c835a7eb3",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/one_hex.xdr",
+   "bytes": 372,
+   "sha256": "6967aa6281780459ff732437945dbd89778397ba31700a36dd8f4d800c13df28",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/tet14_prism18.xda",
+   "bytes": 2814,
+   "sha256": "3a46f2994220d066672d02f14ed5e37d077d077e0dc65d7f581358e51cf8c719",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/tet14_prism18.xdr",
+   "bytes": 1060,
+   "sha256": "42068c0bcdc16850b0cdddf90dddbc9790e77a71df94019a32b32ba6d249bd49",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/tree_hex20.xdr",
+   "bytes": 5404,
+   "sha256": "53dc858ef860025aacf40fd2dd1846bbbdaaf8020af8d4cd4a87ba06ac1fbeb7",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/tree_quad.xda",
+   "bytes": 4056,
+   "sha256": "daf266cb3776a07cbbe5274b5af0e1929fe3b622b5f2e6910bc25f01c3c00619",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/libmesh/tree_quad.xdr",
+   "bytes": 3244,
+   "sha256": "12b179df9b64d1335938b16cdb2780ca355877d27b3ec2a2c4ceda30b9660167",
+   "readme": "tests/python/meshes/libmesh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna/crash_main.k",
+   "bytes": 917,
+   "sha256": "117c401698ec8c9b82dde11348742846e8a4b5507155d8fe4a00f6460a5ca52e",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/lsdyna/crash_nodes.k",
+   "bytes": 2575,
+   "sha256": "0e187461d96d4e9e4141959f8fdc37d83c8f5a90aebd357a5c901d61b58f2db0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/lsdyna/elements/shells.k",
+   "bytes": 235,
+   "sha256": "0cb58f686b79f9834e1b0f04eeee3d4fe6fb13c4642fbaa90d8dc3ab12f5a4d7",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/lsdyna/elements/solids.k",
+   "bytes": 1505,
+   "sha256": "4ee8a1cd61cf48b96292de554dd444171c47a100e877a6f4fc468df7c63ca615",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_binout/binout_glstat",
+   "bytes": 607384,
+   "sha256": "e8ba67319d08fd9e3042f3c37256af90d3f5cfc4e2a968e5c32edb0aded09149",
+   "readme": "tests/python/meshes/lsdyna_binout/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_binout/binout_reference.npz",
+   "bytes": 167684,
+   "sha256": "db2b9c7291c4fc2ad5e48b9d77b96b29f3ee5c51e105c49b41bdd1f3248b155b",
+   "readme": "tests/python/meshes/lsdyna_binout/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_binout/nodout/binout",
+   "bytes": 345078,
+   "sha256": "63200246d54fc50283b35875b000d9d2b94d49d6fc3dc6c9ceeb2716c280ce58",
+   "readme": "tests/python/meshes/lsdyna_binout/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/dyna/LICENSE",
+   "bytes": 1114,
+   "sha256": "46617266d39d9ecdd829d29ef6e9a237e9312e71531ddc258e2303e28ab041db",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/dyna/bird_strike/d3plot",
+   "bytes": 135168,
+   "sha256": "ff9c5378d8962dbc5ade8c810630e9362a220b3688f7aad6fe6654dae655e6f6",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/dyna/bird_strike/d3plot01",
+   "bytes": 2601320,
+   "sha256": "ff416b441d43c28897d11a328c235f14119471f63cdac2f676bce5ad531e5b81",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/dyna/projectile/d3plot",
+   "bytes": 700416,
+   "sha256": "743d026b2b4e76830079dae0b5e65971a6e90db6254ff595eebca5902790e398",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/dyna/projectile/d3plot01",
+   "bytes": 917504,
+   "sha256": "4625cf2f448b473e680caffdf2ddadb9bb4d1c5b324a2f2990c74248bfb3d28d",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/dyna/projectile/d3plot02",
+   "bytes": 917504,
+   "sha256": "b8f351216b283edbc4739d7795c00e318a0cb3b32a5c6618aee2e182ec53dd17",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/quadratic_rigid/d3plot",
+   "bytes": 2048,
+   "sha256": "1d9f99c7fa256ab73cf7bc7d7fd49857140766561f04bb47e56e83fa0ecb62e6",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/quadratic_rigid/d3plot01",
+   "bytes": 3632,
+   "sha256": "b0e1f6cbfbe5b58c609faf924e07470790a35ecd0271d0ba07078f7937b2ee14",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid/d3plot",
+   "bytes": 2048,
+   "sha256": "1b2919426b0a483ee01fef649d65f154ca4e3a6ae9e8b165ac1d0bdaedd2b40f",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid/d3plot01",
+   "bytes": 6188,
+   "sha256": "0c7d487d59a0322d15acadc0a810a4470817fed12551ae03ba20ee77d222f792",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid_double/d3plot",
+   "bytes": 4096,
+   "sha256": "0d1cfdbe003a9077dbe72482f6cca133a4e005e68137965fbeed0f58714a0e63",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid_double/d3plot01",
+   "bytes": 12376,
+   "sha256": "4517b77d5841a11ed63d0f23fc016b7dff91a2a9c56c0a7980ebc125b34e1c9c",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid_split/d3plot",
+   "bytes": 2048,
+   "sha256": "1b2919426b0a483ee01fef649d65f154ca4e3a6ae9e8b165ac1d0bdaedd2b40f",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid_split/d3plot01",
+   "bytes": 2048,
+   "sha256": "7c73d8d80198306ddad909ff182e12c46a3d4c09725ca319a714583d947bd01b",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid_split/d3plot02",
+   "bytes": 2048,
+   "sha256": "24c201863d2e6b7eb862e2f872af36be9348dacebfa932bdf5fcef6b555c2c4a",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid_split/d3plot03",
+   "bytes": 2048,
+   "sha256": "d8179a8b3c2933fb516f8ec7c556dd94a73ebaf7e6eda9f0a4e5d32c5620c29d",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/generated/shell_solid_split/d3plot04",
+   "bytes": 2048,
+   "sha256": "6fad7cbf47b8755f50e1b2637092724cb30928168db5ff990b41a686eece0c64",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_beamip/d3plot",
+   "bytes": 2048,
+   "sha256": "6e045d3ea76de5457fd60098ef7bd60d1f55203e12f2725c86ee6ac9b80c80dc",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_beamip/d3plot01",
+   "bytes": 2048,
+   "sha256": "3f5d768404a1de38fb063a2c30b98b3ffb9e335797fdbb441639025b80fbb9f9",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_node_temperature/d3plot",
+   "bytes": 86016,
+   "sha256": "f7e0648918b59b14cc5435e11cf22670f4ca9b1f68fcf2f9bc20905132120f07",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_node_temperature/d3plot01",
+   "bytes": 804864,
+   "sha256": "e87b18dde70c4639b031f20070c7ce6f461a789689c46e70792605c4659db475",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot",
+   "bytes": 4096,
+   "sha256": "6f9b0f9bdf910809f06d94c11067b0f27225e312c1d6cc553e6554449e350a04",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot01",
+   "bytes": 12288,
+   "sha256": "4f676b42f009047a8e758a22302c0ed191f7412725bccc79a9ac57972fd7b244",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot02",
+   "bytes": 12288,
+   "sha256": "7bfeb260fad7a53724b2c2bff97ecd100deacde97edb9568936849ef5fcc7459",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot03",
+   "bytes": 12288,
+   "sha256": "19d0fb1a0b03677b9ceed1e2d017313fec7d8aabd23bdfb00e3206fa7f3c9cbd",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot04",
+   "bytes": 12288,
+   "sha256": "cc8a925217d5ef8004049c94953e7a9780cdb9b66434dc0ca168de56d1ce6c65",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot05",
+   "bytes": 12288,
+   "sha256": "6795670caf4ba3e03454c5f1f20fca1be68d43cba46b0ce3ff0e894497f1094a",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot06",
+   "bytes": 12288,
+   "sha256": "d4e1b7656926187e12ab16a9d17dc7c1b49e1d09966469ae5273eb9fc1201848",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot07",
+   "bytes": 12288,
+   "sha256": "6e57578f39f7fd8247fabe4f68732237a1bea8e9ebdcdc401e6d01e57cb579d9",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot08",
+   "bytes": 12288,
+   "sha256": "4a3ba81d746820fe58c3eaee97d85e4a5754a38073aee763c15ace1b70479763",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot09",
+   "bytes": 12288,
+   "sha256": "87fb456a330a9cee072c2ec945819f08264aa526d3df577bd66a7b1c69e240c4",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot10",
+   "bytes": 12288,
+   "sha256": "5e95d94f7f413e53ed0230d4bd7ff4239a32d7c41f08c48230fdbd40a314de47",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot11",
+   "bytes": 12288,
+   "sha256": "5d1a3e682386f37a8cc2c7c9cc4c85017d51c420446aa12f7c163920cfcec682",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot12",
+   "bytes": 12288,
+   "sha256": "8a556b5f937696ba33c1f71d21d426e9a37028472064c6bd14e9aa03858735cb",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot13",
+   "bytes": 12288,
+   "sha256": "4bd6acbb7592836196b6267e29d344fb4c3ada90c5cd29a95fe9281579248534",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot14",
+   "bytes": 12288,
+   "sha256": "fc3e2923010e1a5f16438543d03f5d8ed5c49b9d6995fff0a526ba679e0a069c",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot15",
+   "bytes": 12288,
+   "sha256": "9cd8f82c9f149027640f885975b3e452fa35d6179e3fcfc59d9642e1b4f6fb5c",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot16",
+   "bytes": 12288,
+   "sha256": "c3b39ea1b06207ebb9d183349573a29e2fde713b107e6e302a791459bda5ebd8",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot17",
+   "bytes": 12288,
+   "sha256": "2bc3ce3792235d5833e8dbde288f62853d2f69401d949fe23dfafddff535500b",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot18",
+   "bytes": 12288,
+   "sha256": "3980af7b6ffd9daa60e02acc0eeaee78dff186c72ed61fbbde2df2bcfe525ee5",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot19",
+   "bytes": 12288,
+   "sha256": "e1d1de706e7fe1d48b5a77340c065afd30fcc7a9494ac2c2fe29c18ae5c45709",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot20",
+   "bytes": 12288,
+   "sha256": "8d08a19cb32f75f462061a08291ba6f714c5ee0729eaa4dbe874830dce8a1bd6",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot21",
+   "bytes": 12288,
+   "sha256": "031086c889e94dd037e71f0269770a83b9823ca7579b66b0215be4f74c66e03c",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/d3plot_solid_int/d3plot22",
+   "bytes": 12288,
+   "sha256": "0945cb70c7fbeb8bc3a86367563ee97e4eaa8ce50dd265bddd29d2e7c0cba23a",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/order_d3plot/d3plot",
+   "bytes": 4096,
+   "sha256": "6f9b0f9bdf910809f06d94c11067b0f27225e312c1d6cc553e6554449e350a04",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/order_d3plot/d3plot01",
+   "bytes": 12288,
+   "sha256": "b262b4ef94d52d2afa094b10080f8f0325b8935bef226fc407d4b72c8f62a8fe",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/order_d3plot/d3plot02",
+   "bytes": 12288,
+   "sha256": "98835496508d8a5e98db06eb5668e494eeaa96472bcf2c792100e70a25d752c5",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/order_d3plot/d3plot10",
+   "bytes": 12288,
+   "sha256": "69388e313e4dc166fdb000c5e15e71ab577137f6c24ca57e6c43a94e42487a00",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/order_d3plot/d3plot100",
+   "bytes": 12288,
+   "sha256": "5b0904e39c52071ebab686617fdbea3790191000e5f0e9bfc54fb3ed6c793069",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/order_d3plot/d3plot11",
+   "bytes": 12288,
+   "sha256": "ec7baffb3c3bbac77fe7baca73de5cab6a8bda18a93e6860756198b8112dae5a",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/order_d3plot/d3plot12",
+   "bytes": 12288,
+   "sha256": "a2eb816598fc4ef4089b9c1556615dee9eac2a05739492db60bf7c4514fbae7a",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/order_d3plot/d3plot22",
+   "bytes": 12288,
+   "sha256": "979d3c3f425d2209a603a735306539557ca7856511e6b5bbb8e6cb5a9af38586",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/simple_d3plot/d3plot",
+   "bytes": 192512,
+   "sha256": "761cddc427de0c91e47d82257ef75abf46f3f9c78ca116317f78788ccbadad34",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso/simple_d3plot/d3plot01",
+   "bytes": 2113536,
+   "sha256": "7c126c614b0bfcc9e4397450a3128726c423b332133b3be7ae5cd5cf919c2553",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/lsdyna_d3plot/lasso_reference.npz",
+   "bytes": 2277863,
+   "sha256": "7657b99e0c66f6e2db57387699237a32594eeeff890895ae34b5d606faccaa41",
+   "readme": "tests/python/meshes/lsdyna_d3plot/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/hex20.dat",
+   "bytes": 2475,
+   "sha256": "746a8f3ea39613011f43bceccebc91f738f5552d306f72da8d347536a0c9d128",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/hex20_extended.dat",
+   "bytes": 4054,
+   "sha256": "655d6beb002308a274db1360a746cdbbfee344900f16a59128b60bc6eea01af7",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/include/sets.inc",
+   "bytes": 86,
+   "sha256": "45b2ac8bbce61e80b5dc40059184559d37852e4a15446d348b6cc38a4f1da338",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/include_main.dat",
+   "bytes": 172,
+   "sha256": "213fc09af7953b696b19f5df4b987aa282eaeaf90c86c758ddc1cac79324a4f3",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/include_nodes.inc",
+   "bytes": 232,
+   "sha256": "f482e91bc1064c2cde5e12d4dcd20fdf7f2f3f5643a741dc0f1325778daa2732",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/mixed_free.dat",
+   "bytes": 525,
+   "sha256": "85298e5ff791ac3162a20d4295d7df456cff4ca46e3c9c5dc4793592ec779eac",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/plane_quad8.dat",
+   "bytes": 628,
+   "sha256": "3d93e7fb26a3868236dbea0c12381f80a87520845b18f49c6bb09924dd10c626",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/remesh.t19",
+   "bytes": 15308,
+   "sha256": "8f1cd415fdf2519d8294de7aecb1bcb4b3ff7d49b3a66c57efdcd086ac122bd2",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/marc/results.t19",
+   "bytes": 10687,
+   "sha256": "1cd33170675a7b51b56a30b0638104828220cb8f0462ed136dbafa586dc77adc",
+   "readme": "tests/python/meshes/marc/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mdpa/test_elements_and_conditions.mdpa",
+   "bytes": 4099,
+   "sha256": "4018e354c9c27d8bd8363a0e205d4cc562d6a1a5e53b929d9924d719c454a82e",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/mdpa/test_geometries.mdpa",
+   "bytes": 359,
+   "sha256": "817d7d568f032376f99113780007ddeaa9e70596da8f666c72cbdfceb0617b0b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/mdpa/test_small_cube.mdpa",
+   "bytes": 357,
+   "sha256": "239be417bc82ec35672dc268ecdc96abf29e0f7db12cb25a6934744890519443",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/mdpa/test_submodelpart.mdpa",
+   "bytes": 661,
+   "sha256": "ee7a9f3c6f24e79fd7eeb22a2c08799e48c85079e49b525bbb10366263371f15",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/med/box.med",
+   "bytes": 21200,
+   "sha256": "2cf5acf2b5a22a10d1e169ab656d7830d165d5efd2f8f4e27f287d4349188888",
+   "readme": "tests/python/meshes/med/README.md"
+  },
+  {
+   "path": "tests/python/meshes/med/cylinder.med",
+   "bytes": 23913,
+   "sha256": "69557124595d36444852b9995218c81c030516162bec4f25afd1d638c0a69f8f",
+   "readme": "tests/python/meshes/med/README.md"
+  },
+  {
+   "path": "tests/python/meshes/med/hexa27_penta18.med",
+   "bytes": 7316,
+   "sha256": "cdb803812596ddceb28a3bdd2bae596efec8886a1bcae25b54811ea912d1d1ea",
+   "readme": "tests/python/meshes/med/README.md"
+  },
+  {
+   "path": "tests/python/meshes/med/input_code_aster.med",
+   "bytes": 4826402,
+   "sha256": "7d6baf3729690ce7194be1dbf9b7c014529006a364dd1a77eabb18ffb89008d9",
+   "readme": "tests/python/meshes/med/README.md"
+  },
+  {
+   "path": "tests/python/meshes/med/voronoi_hex.med",
+   "bytes": 15335,
+   "sha256": "4742ee08f0cb284a620b1e560e5edb5d2795a8336d3b1fa1b74a6eaa6863b4f3",
+   "readme": "tests/python/meshes/med/README.md"
+  },
+  {
+   "path": "tests/python/meshes/medit/cube86.mesh",
+   "bytes": 3331,
+   "sha256": "3ecbf7b48edc448fcbe2d28aba387c5d77ec535c6ebbd2977325101afd7834e8",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/medit/hch_strct.4.be.meshb",
+   "bytes": 20308,
+   "sha256": "7bc3a876b24bf2a56399e6ebe9dae5a50baf3eb7005e74efc99e0ab4814bc491",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/medit/hch_strct.4.meshb",
+   "bytes": 20280,
+   "sha256": "066fd5060749b6399831f1af0306c05246e4de01042eb051048e916d2652d709",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/medit/no_dimension.mesh",
+   "bytes": 406,
+   "sha256": "a1b1b269dcab888c4f1dc7eb24372d5a79f94f856e5535581742e254222c2ac9",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/medit/sphere_mixed.1.meshb",
+   "bytes": 371572,
+   "sha256": "e2d9a8b96372cfb4a61ff5663ced88ad2c56d602e9b1610d9a40abed5b7ddfdb",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/mfem/amr-hex.e.gf",
+   "bytes": 958,
+   "sha256": "278dd6b58e8e247bc544955ba8a7bcd4c358aa30412ce65ee2bcadfcc5401a41",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/amr-hex.mesh",
+   "bytes": 9156,
+   "sha256": "d3cd805466adf4ed5d92af128b38ed5698b1a05c1571ff7ec0459c4d1d006540",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/amr-hex.u.gf",
+   "bytes": 25544,
+   "sha256": "cb5f3dc64c954e544c70d849213f76aaa7cf371f46547c135d470a3e415efa3e",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/amr-quad.e.gf",
+   "bytes": 281,
+   "sha256": "07df1729daa20dabba8f219a1d4faf25ecfa87090d4379cdb2048c645535d2b0",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/amr-quad.mesh",
+   "bytes": 1524,
+   "sha256": "f85f071d2c61465a407d4481bf7b40f1642c1f83c0bab6a8097696887edc6fa0",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/amr-quad.u.gf",
+   "bytes": 5763,
+   "sha256": "2a24b7ca6d69460f80f1c01ad84c9ced370bc0853fff2770637cfe7dc8cde48f",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/compass.e.gf",
+   "bytes": 274,
+   "sha256": "a7e3926fb38993717d8f071502e37e53d64cd1626ff6e8c89a9057b4e9320889",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/compass.mesh",
+   "bytes": 1195,
+   "sha256": "bc906dfb7bbb39ff2738eca8d9aa4249cd336ee2d26cf9065de287d43c4ee638",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/compass.q.gf",
+   "bytes": 512,
+   "sha256": "dbfa9fb23a0ccedc5c541a679c0830583e9613559e95803f372e3906e1634c0d",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/compass.t.gf",
+   "bytes": 183,
+   "sha256": "3896d266fc8ab61368431f08d2b157e42e22d3a2784f06b6895320a8da254bf1",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-hex-p3.mesh",
+   "bytes": 21131,
+   "sha256": "188bbc55e95a4477c6d2c5d9834a2738e139ad98ef1ca6b2977bcc3ea4257476",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-hex-p3.u.gf",
+   "bytes": 26239,
+   "sha256": "83c4c14de484f8fa097a8e21eeac454e617016856eaf06eb583a31137ec37047",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-prism-p4.mesh",
+   "bytes": 24579,
+   "sha256": "2be4004e67888cc41b3dfbfa5a416bfefcb3f711a97c0feb24ec168c7d91e6a5",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-prism-p4.u.gf",
+   "bytes": 3932,
+   "sha256": "383a17f39bf417db8140faf93430061b4a7364b33cd5b9c6f42ae38a991cca2c",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-quad-p3u.mesh",
+   "bytes": 2366,
+   "sha256": "e6fdce5dbdb0fa5353cae3a263fd2b48c52f3fd76af2b3dae48985a7097949dc",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-quad-p3u.u.gf",
+   "bytes": 1022,
+   "sha256": "603eb3f5bd5315cd2c5d1713e83c5e94b1c3c1f2adb655482fb876157b097704",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-segment-p3.mesh",
+   "bytes": 620,
+   "sha256": "fc8d20ab18d803c606ce4fb04a4aa70edd094225f6d60bbfb0f9698b70303bee",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-segment-p3.u.gf",
+   "bytes": 308,
+   "sha256": "55dbf72607811098fe0cb4a3c3a596542b062626f2e5a6e2d256afa8264b9a6e",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-tet-p4.mesh",
+   "bytes": 10357,
+   "sha256": "141034ef17aa9a17336c68b77ba06fc862ec361a73b1da7be697f79285599336",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-tet-p4.u.gf",
+   "bytes": 768,
+   "sha256": "f08d931206c44ed04d4cc786a0c785e64d99a931d255eea6c18ef3a932fe95b1",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-tri-p5.mesh",
+   "bytes": 3036,
+   "sha256": "a72db9f155c39f62e2cdc42ea700e062b8d5ade0e82eeb3967a28e1b00143407",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/curved-tri-p5.u.gf",
+   "bytes": 627,
+   "sha256": "7624b1dc9e3cb3a9143b1e2ac3160d98866e6f1bb079cb3d7b428dd97cee1fd3",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/escher-p2.mesh",
+   "bytes": 4824,
+   "sha256": "1cce5af8a88af9ddfbf6defd34b32402a35b6450b02d65f87578092c36bf66f3",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/escher-p3.mesh",
+   "bytes": 10457,
+   "sha256": "21ac97d50128298eadf0562854728ff7594c3393ec7bed5a5bbacb2d1e3677e3",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/fichera-mixed-p2.mesh",
+   "bytes": 7092,
+   "sha256": "7200d8401be87784dc79ecc5d325bd41c4cb2ba6e117cdb1c67e1895e610a4f9",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/fichera-q2.mesh",
+   "bytes": 4155,
+   "sha256": "8b5fc38fdeb5368fb7f10fcdeed1d3b1145990cd7188d5212751a4e711b6c173",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/fichera-q2.w.gf",
+   "bytes": 5326,
+   "sha256": "8b29a4b521847857a053fdf5e6ade68469f0b2a77cd06176497e7d4d7940cc5a",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/fichera-q3.mesh",
+   "bytes": 9783,
+   "sha256": "0ed887642dba9e267ce252afb9cdf68077c3ed555be8116309029a91e6cbf649",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/fichera-q3.u.gf",
+   "bytes": 6386,
+   "sha256": "615c3008a5d5f196a09a9c8723c338165970c87fa3b38ea3e6f852c97d68dbae",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-hex-p3.mesh",
+   "bytes": 18458,
+   "sha256": "25db940fdc1590c033cbe757f19ff9daa6c59994bd4c75effa078e5bca14638a",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-hex-p3.u.gf",
+   "bytes": 6203,
+   "sha256": "b4c27e6fda4239146e144e0ee77fc68366573a8d1f9d2da26cd58fbb33b8bcab",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-quad-p3.mesh",
+   "bytes": 9386,
+   "sha256": "fd77c95880aba8cbd485c8a5a3359e3deb45d64cdb1e71bc3ed1e50481e1effb",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-quad-p3.u.gf",
+   "bytes": 4176,
+   "sha256": "d09db15c44f8eef74d768899156969899ff669e46847cb292ff1ee7e5b20e427",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-seg-p4.mesh",
+   "bytes": 704,
+   "sha256": "a67536a7d36b4b5c9b9c6db3123e0d90b5136636f0b4f06141986af645fb01be",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-seg-p4.u.gf",
+   "bytes": 382,
+   "sha256": "9ee6d082cea930bb95ccc9e301049be1ba096a004effe9322a448e1b045b8714",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-tet-p3.mesh",
+   "bytes": 20328,
+   "sha256": "d6df0271210f3258be83624d4a08b808113d0b84f22ae9858b56ce44a3eb3409",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-tet-p3.u.gf",
+   "bytes": 2358,
+   "sha256": "1c8878a4df3eda4501aac0215d2d18741b661134bfabc23bc248d3e88678d305",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-tri-p4.mesh",
+   "bytes": 3703,
+   "sha256": "de2de16d9c019766272ea10ffbd47881ea9d132ea21f99fe7611d03f75e169a6",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-tri-p4.u.gf",
+   "bytes": 1001,
+   "sha256": "256ec59c5c66bfb834ea35bf0dd7f8169bdf2394957c726dff3eef7e81c17196",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-wedge-p3.mesh",
+   "bytes": 6493,
+   "sha256": "8ef9c4529e25e694ee8227182517bca4a7308411e1e8e3e7b3d7048292cd66d6",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/pos-wedge-p3.u.gf",
+   "bytes": 2185,
+   "sha256": "18fb4c9c2dde66617d62c467f4f2b2ef70214a3ff0ad59f8d63637c6fbb18d90",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/reference_modal.npz",
+   "bytes": 59472,
+   "sha256": "71c8f8d752e72ddcee1f834a732d85d2bef47099924f61b384c8376af7618c0d",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/ser-quad-p3.mesh",
+   "bytes": 6148,
+   "sha256": "754f9470a59466b607131eb89c0a8b45ea1d2acbe27388b3bdfc8caed0ed5c5f",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/ser-quad-p3.u.gf",
+   "bytes": 5947,
+   "sha256": "e8eb8f8f18eaad2766164c2d7b198154268fd5f19a99a289bd5deebd10e86692",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/ser-quad-p5.mesh",
+   "bytes": 10199,
+   "sha256": "248210d22d0432a934a3108345339b0faf5080feec1e89b1f441bbf6c09fe1ae",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/modal/ser-quad-p5.u.gf",
+   "bytes": 2201,
+   "sha256": "bbfc5d282272b833ecb8fd0dedce4d7f362e9f429c48d787e7b9b93794c79c62",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/ball-nurbs.mesh",
+   "bytes": 29759,
+   "sha256": "e6c1d231cdfb099d19936c1007e42c62d0c6876ee93149e2f8a4ddab51c05282",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/ball-nurbs.u.gf",
+   "bytes": 10014,
+   "sha256": "bac9532090d2b4e684f330a7610e7ac4634e151f0d42533bbbde5d850d09d5be",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/beam-quad-nurbs-sf.mesh",
+   "bytes": 622,
+   "sha256": "1d7fd76fa0c09d2759dc3ab690f5ff8724ea0559a906d67d3368644b3aea365c",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/beam-quad-nurbs-sf.u.gf",
+   "bytes": 412,
+   "sha256": "e3115fcb479762188911f00d93ff3b1b91ef761ec1543e542da2272a10379eff",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/cube-nurbs.mesh",
+   "bytes": 544,
+   "sha256": "000eafe1a335ef43183fdab2793aa07927d698182710ff7df636adbb73fc9d8d",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/cube-nurbs.u.gf",
+   "bytes": 225,
+   "sha256": "95188f4f136cc4deeac96a64d6f4a1ac304e0bc14690ba06831801b5634cf53e",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/nurbs-segments2d-patches.mesh",
+   "bytes": 801,
+   "sha256": "dac42eed4d36cf7bf8d887328360319ad43f000bca47ab12f9d65fcc9d5441a2",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/nurbs-segments2d-patches.u.gf",
+   "bytes": 286,
+   "sha256": "4a8a48cac74e22bdfe67ff3c0b96af17cba33241e924f98c86fd68793f293719",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/pipe-nurbs.mesh",
+   "bytes": 3211,
+   "sha256": "50ea6997458e986e7801716b28af1148275ad9afa5dfe485dbf32c13a84877b7",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/pipe-nurbs.u.gf",
+   "bytes": 2341,
+   "sha256": "61067680ffa75437d181456eafbf7bc1c03cfe2d91d22fe07fc9bf27a67c1ec7",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/reference_nurbs.npz",
+   "bytes": 16095,
+   "sha256": "f50d85e532445326cd069a9850aea0ad38b2716387ca91799feffd6b8bcacd8b",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/square-disc-nurbs-patch.mesh",
+   "bytes": 1805,
+   "sha256": "8d1cdaf88ec389be825e110018c3c0a49fe7201c7ca0b8714a8ca391437ff0d4",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/nurbs/square-disc-nurbs-patch.u.gf",
+   "bytes": 802,
+   "sha256": "e901b1a185b2267a8b512e3ebae89a9f2323bc28b754afaa0380216265b97862",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.mesh.000000",
+   "bytes": 4030,
+   "sha256": "730f6b092e9402eb4d8f8ed21234e6a2ba8ba352521f5b65b123af6b99d2298c",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.mesh.000001",
+   "bytes": 4156,
+   "sha256": "06941bbb371c545453feef180ba145504cc76d85d36cc57222a72d31a5ece152",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.mesh.000002",
+   "bytes": 4036,
+   "sha256": "4c9c3ec1b867bdb50f921355a88f8948c29547c4e09055a67ec72b30564f5b4f",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.pmesh.000000",
+   "bytes": 4517,
+   "sha256": "308f95702aa2b66b0cc2a12e0ed9c144aa97efd3809b8d94752b9687a5a31520",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.pmesh.000001",
+   "bytes": 4855,
+   "sha256": "a6725ad3a230d5bda01eb57cc3cdf6572e9bc8dfa7df8e328b3a65ceccbc3b26",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.pmesh.000002",
+   "bytes": 4519,
+   "sha256": "618bb74eef4e254f88d75524a3cc5f0356e123fe18ddc75bcf1e278dd6eb7a73",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.u.000000",
+   "bytes": 1191,
+   "sha256": "3b5e303f8383ba5596de16aa3318f9f33e46dd6e036b3d24ef35ac3c5c3318cb",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.u.000001",
+   "bytes": 1322,
+   "sha256": "e4421f72235a01e7d3052ea289b44586b842b48c46ddc7e753552a91ce5ef9a9",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/beam-tet.u.000002",
+   "bytes": 1227,
+   "sha256": "182b31cb2412ac4d06e82e6c3d6372e2708fa36a401dda0c68067e8efb820cb7",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/reference.npz",
+   "bytes": 42683,
+   "sha256": "72c40b81741c8b357c300da4327ef4b94bd5a76f991a83800494ed0499c43a4b",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.mesh.000000",
+   "bytes": 6438,
+   "sha256": "3f1088ffe7114ebe31582ed53578a9497a4555ed1da6fa757cb0eb7a22837a0d",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.mesh.000001",
+   "bytes": 8545,
+   "sha256": "03968aed83f8573fc9429389f0c66f177d6368b5463fe67367f31f17dd3bfe6d",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.mesh.000002",
+   "bytes": 6744,
+   "sha256": "a79e4ed752a044491511a6cacc24fd482a9eff76db05e66567ae714f1b36d820",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.pmesh.000000",
+   "bytes": 10522,
+   "sha256": "f60b4df9ed079fdac1b32e7e440a386818547fa599d42f8bccc9af296c8f0a3e",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.pmesh.000001",
+   "bytes": 12549,
+   "sha256": "ec5de3c9506840467a23e5df87942e9d6f634535933cba56eab7ee60c2a037b5",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.pmesh.000002",
+   "bytes": 10379,
+   "sha256": "09953bd9dc5b34d4245f7a94cbdfa380430516cd42638d8d05cb1d97be2b5b02",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.u.000000",
+   "bytes": 8369,
+   "sha256": "b13c8c0bcf69289a5350de6b50a61cb4a71c332a6126622dbc5c4424d65e478a",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.u.000001",
+   "bytes": 11249,
+   "sha256": "3a80ad79c2ef46ce2b5ac2164f7f6c631de2a5b42b6fa3621647847020f0545c",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-nc.u.000002",
+   "bytes": 8924,
+   "sha256": "815f7a42054ff48322fa5a0b8a211e5aebe204213f0dc4d9493b61ab40b9907c",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.mesh.000000",
+   "bytes": 2947,
+   "sha256": "efafb042551b0d8b7804190ddbad374eb0fe1422c1b4b61922343c718e439e0e",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.mesh.000001",
+   "bytes": 6638,
+   "sha256": "00a50efb5cdebbb3566d50bc56ab0db18ddee02c759ce83a08f4ac27acb3a52c",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.mesh.000002",
+   "bytes": 5970,
+   "sha256": "127c5348ac9f1908db3e501f2bf64446f471e72d867f2200a9b572fc17e25ace",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.mesh.000003",
+   "bytes": 4972,
+   "sha256": "950269116c40c9720d1fe835eae7074c475cfaad391c91c81150e4cff019646b",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.pmesh.000000",
+   "bytes": 3230,
+   "sha256": "167e0eb9c3cba5aecc6a9ee6c4168004c7268bea80ef68cb6edda4ece8a7656b",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.pmesh.000001",
+   "bytes": 6970,
+   "sha256": "fd03ee1f843c57c4f2e0fe1fe58a4710d119f800c79b98a61e8c34dda2e1f809",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.pmesh.000002",
+   "bytes": 6299,
+   "sha256": "0506c16aa7350ad83fcaa95afa031575792d8b14e0e47d82462fc7956422e809",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.pmesh.000003",
+   "bytes": 5261,
+   "sha256": "4ce418661e14b93782f0099056c452edd32424e5d5afeb2eeafbda1686c81ca8",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.u.000000",
+   "bytes": 1272,
+   "sha256": "8beabbcf416ff50eb7e25d215bd31abea228e8b130d486e339d5e0a06b7114b6",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.u.000001",
+   "bytes": 2839,
+   "sha256": "410427cfaf6287eb59ebd85838f8a5105e9c54e2123ecc747fe2528321afd6df",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.u.000002",
+   "bytes": 2560,
+   "sha256": "13ed487b1782aec980a8b7aaf85735bd4c0eec1d7d83167deb8cc0e52f298306",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/parallel/star-p2.u.000003",
+   "bytes": 2106,
+   "sha256": "51e6e25b5b42e0c7aa4e6e7d4539fe1bc484bf4d510232a5da7645a18a5968d3",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/periodic-square.mesh",
+   "bytes": 1181,
+   "sha256": "dc2aede852cb3a8eabaf0deca6c8907fc2e64811806956dfb95def35c9075f15",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/reference.npz",
+   "bytes": 22659,
+   "sha256": "4e97076bc018aaf0b807ec84803a95920c50fa66c53ad724172c3ad57981755a",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/reference_lagrange.npz",
+   "bytes": 90166,
+   "sha256": "c9750bc3fade7219e3548277da6b29690d71a1076c74897d3f85cf9bd0736b93",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/reference_nc.npz",
+   "bytes": 14158,
+   "sha256": "095c4ef198781c826a5d28e189be8786d7e6bce1b2423debacf2e5da6858fd03",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/rt-2d-p4-tri.mesh",
+   "bytes": 6782,
+   "sha256": "7ab3b452600e1d29ec3ee416a37f8b7734a0f463eac708ed69fe340a6cc76ab5",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/star-q2.mesh",
+   "bytes": 2640,
+   "sha256": "ff4cde39e1d53c46221d68bfe7f346317fb273d753364b6f93992823a01f81ba",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/star-q2.u.gf",
+   "bytes": 1650,
+   "sha256": "7f53be54d63283e622b0b13af7968d7e12f1a57f16743c3a272a8237a118c510",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/star-q2.v.gf",
+   "bytes": 2791,
+   "sha256": "a96f270bb8fafc8184e1a50ed94a4f4c324c2e35d11b17691bc0b8043880b375",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/tinyzoo-3d.mesh",
+   "bytes": 557,
+   "sha256": "c22501a38d5a21d3df96d129ffd7b73f3e497174f2cc42fe0f6fa803974653b7",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/toroid-wedge.mesh",
+   "bytes": 6711,
+   "sha256": "a29d5c657e54178e49bd5633e1da1cb14380e2a508da128729becb20e0db1bed",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/mfem/toroid-wedge.u.gf",
+   "bytes": 3710,
+   "sha256": "4f555175b6b3cbc525f65670728eb450b17f22843c9417b1364097e0afaae9e3",
+   "readme": "tests/python/meshes/mfem/README.md"
+  },
+  {
+   "path": "tests/python/meshes/msh/Makefile",
+   "bytes": 124,
+   "sha256": "a3ed5fc602c48ad60d1ff80b098dd9922c6f82c86ae535140156b16747eae761",
+   "readme": "tests/python/meshes/msh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/msh/insulated-2.2.msh",
+   "bytes": 5479,
+   "sha256": "e948c04847537cffd8b00fbcc4d5add982d18c76cab2200635d43b84ded08523",
+   "readme": "tests/python/meshes/msh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/msh/insulated-4.1.msh",
+   "bytes": 5570,
+   "sha256": "4cc31fc8b786fbddb66c2a5765daf7a14c420d26894076ec0a5771315e487378",
+   "readme": "tests/python/meshes/msh/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran/composite_plate_2022.fem",
+   "bytes": 13953,
+   "sha256": "3f93d6c877d2d782fc4608b22b2e639c41fbddf16e7172c995c4f2c0966456e8",
+   "readme": "tests/python/meshes/nastran/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran/cylinder.fem",
+   "bytes": 11786,
+   "sha256": "d94291be93499c166bcdf317b071d08345c3cb870b8c4ae90d27e2d620661f99",
+   "readme": "tests/python/meshes/nastran/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran/cylinder_cells_first.fem",
+   "bytes": 11447,
+   "sha256": "7b6d7151d15f16f2267727e474a19388d50106465ebf26af9a1496c7a9edb404",
+   "readme": "tests/python/meshes/nastran/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran/optistruct_mixed.fem",
+   "bytes": 3053,
+   "sha256": "72deebdfe82d9af1c1c612c9adcc92c36addaba9b6bf79a79edb1d0edb7f34be",
+   "readme": "tests/python/meshes/nastran/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_h5/buckling_solid_shell_bar.h5",
+   "bytes": 382110,
+   "sha256": "74711b2f05e0b6d9c5f344192bbeaf9d27ff2389a60d53fd6bf2430c129ed2c6",
+   "readme": "tests/python/meshes/nastran_h5/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_h5/cord_reference.npz",
+   "bytes": 6700,
+   "sha256": "ad7fe52a865d0eb22c1a017154c62b950ab7ad5e31a09bbb4a6a36a14cdc709d",
+   "readme": "tests/python/meshes/nastran_h5/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_h5/freq_elements.h5",
+   "bytes": 623928,
+   "sha256": "d60ef6ec4a2355af2c28cc1bcb338a36f1d9a00143d0c16c23b9fb484682aa30",
+   "readme": "tests/python/meshes/nastran_h5/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_h5/modes_complex_elements.h5",
+   "bytes": 530329,
+   "sha256": "ddcd7020c2f4a5c45c4c28facfde357fd6f98890d6970d63084609da4379d92d",
+   "readme": "tests/python/meshes/nastran_h5/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_h5/modes_elements.h5",
+   "bytes": 596227,
+   "sha256": "26478a99d6ec0e35810bf6b4b6aca3bdc3d2bde24e6bf82d75527d61f346c356",
+   "readme": "tests/python/meshes/nastran_h5/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_h5/pynastran_reference.npz",
+   "bytes": 31519,
+   "sha256": "81aeb17320d13a783b2ed8e348dae9a6033f9950b94807442b46b4f3aa16783d",
+   "readme": "tests/python/meshes/nastran_h5/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_h5/static_elements.h5",
+   "bytes": 570012,
+   "sha256": "a3488b6f4e21c0a3febf01d8528f22ab56a2befe07d56b8ecffbe2cd69bf0ff4",
+   "readme": "tests/python/meshes/nastran_h5/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_h5/time_thermal_elements.h5",
+   "bytes": 120733,
+   "sha256": "9ddfadfa66199911c7824a74d5dad08b80ba42fc4a80308853750f07a3d2477b",
+   "readme": "tests/python/meshes/nastran_h5/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/buckling_solid_shell_bar.op2",
+   "bytes": 182856,
+   "sha256": "453d4a0da630d8c187731a0261a122846beb3effc692536c7a35dc447be00b7e",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/cbush.op2",
+   "bytes": 11412,
+   "sha256": "0c39ce9615dd7ea6db924265b2c12af6041b0b96b9312ff3c35cc78e2574329f",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/cbush_2021.op2",
+   "bytes": 238752,
+   "sha256": "f3bf0ae590038ef912d45e2897b00988119ba6caa80e1a720eaa296fcc30144d",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/cc188b.op2",
+   "bytes": 29748,
+   "sha256": "01b596a085eb51d42433b9088aafcd9d2df2b60e395bd431577dd437e2a5fcd7",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/cord_reference.npz",
+   "bytes": 3246,
+   "sha256": "60575ffff8e67f66813f4926e5b55eeec163776660259344fea378aca6d267d1",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/ctetra10.op2",
+   "bytes": 10272,
+   "sha256": "7362126a0f7c3def200212bc4018d0ba46c8c8561273815dc852f2d74dbb2414",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/d173.op2",
+   "bytes": 229104,
+   "sha256": "9c3ac69f3b26f6238f07dd9dbb29991eec4d29f0936307333668526f0df26b43",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/freq_elements2.op2",
+   "bytes": 415200,
+   "sha256": "7e9170a2211ce2466214e757e29807208eb88a17efe5ae25e77578bfb8fddbd1",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/mode_solid_shell_bar.op2",
+   "bytes": 141252,
+   "sha256": "9acbb38bcfe5e27d3cb69d46e7f174ce740a425ff737536008a6b47c85dcc72d",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/modes_complex_elements.op2",
+   "bytes": 269804,
+   "sha256": "71c6b66641383435049f04a4503557a1bf8c2a158b9ecc9cc07bee9f0f26b188",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/pynastran_reference.npz",
+   "bytes": 4403464,
+   "sha256": "5eb0c45960850af8f5f5a02c7b0094db7740d7155ecfaa73d689c29f6d248f78",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/rms_tri_oesrmx1.op2",
+   "bytes": 106948,
+   "sha256": "bed920a7b12a1c561ad755161bdbbe44785ee60e493532ac2cc25bdc82ae0364",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/sdbush01.op2",
+   "bytes": 20848,
+   "sha256": "ee428767715789078f9cf94792b13bc60c43b79d4e311ec7b844d99e958ca419",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/sol401_tstep1.op2",
+   "bytes": 35832,
+   "sha256": "36f18f8f41d1b9674b847f3e14664f31e0dac22d56408ce14d63edfc27d87eb0",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/sol401_tstep1_bgpdt.op2",
+   "bytes": 35100,
+   "sha256": "1f472b8c49e2a00b84054a84874d512528004bf2e7bb7b336dea118cbbdf51f7",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/solid_bending.bdf",
+   "bytes": 15616,
+   "sha256": "755e61336d7b90f9012ff36270318313a1437beda04996cd6d4046bea5e8fd99",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/solid_bending.op2",
+   "bytes": 102848,
+   "sha256": "7d5fe290abcc7f9e5eab65b2e384f5aa9305eabe3400937b0c2c75bf26a09e76",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/solid_bending_no_geom.bdf",
+   "bytes": 15616,
+   "sha256": "755e61336d7b90f9012ff36270318313a1437beda04996cd6d4046bea5e8fd99",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/solid_bending_no_geom.op2",
+   "bytes": 89000,
+   "sha256": "c7ae16f0a43436bc2856482bff142208b5eb92c9d0eec83cd6732bf391ae8f31",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/static_elements.op2",
+   "bytes": 106096,
+   "sha256": "e29a318e7c177eb076e57e0cb5a0a71ac834a2d1c9a807dec739b12c57b37e5f",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/static_elements_bgpdt.op2",
+   "bytes": 104392,
+   "sha256": "bc8197cf8eacc91b96602246537462a807a3cbbb4117ffb87b3ba1a950b903cc",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/static_solid_shell_bar.op2",
+   "bytes": 55076,
+   "sha256": "1ba5769b06e3184c78f8282ab01a919f2b1ddd23964fdaedefb2668bfe8fe995",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/static_solid_shell_bar_cord.op2",
+   "bytes": 55076,
+   "sha256": "6cb3fd555cc03a022e2ca8bd5db2c7587e7f086757844175bb3358d8c9bad9a1",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/test_vba.op2",
+   "bytes": 130024,
+   "sha256": "3f996e0a3fb2b03a8736d46f4a91c210e30ec56f100581aec5735a10cdf10b68",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/time_thermal_elements.op2",
+   "bytes": 46004,
+   "sha256": "23d53494f510d2f6b8a8b3815371fec0c8cc69161e2e1e895fcd04961f95270c",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/time_thermal_elements_sort2_nx.op2",
+   "bytes": 83888,
+   "sha256": "080f36ad023b6560740bed2bfff6559929083398584b9af90e1d5bf6920d66d6",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/nastran_op2/time_thermal_elements_sort2_only.op2",
+   "bytes": 42064,
+   "sha256": "a96078e706a5b44d31630d32a78f7f0498193db4ead0b1f8f31d1b5bb370161d",
+   "readme": "tests/python/meshes/nastran_op2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/netgen/periodic_1d.vol",
+   "bytes": 9854,
+   "sha256": "6fd137054fdea70eb0e23779902884e72d6323d45733eadb88366bf30b8da94b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/netgen/periodic_2d.vol",
+   "bytes": 7174,
+   "sha256": "097236ae257101a7aa4827f898bc124ea477ad3741add9789a8aaeaf842c7532",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/netgen/periodic_3d.vol",
+   "bytes": 19433,
+   "sha256": "94a96d5fda6a8233f6e46ab937fe625659cf58010818a0234cda0f84f07a7236",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/neuroglancer/simple1",
+   "bytes": 100,
+   "sha256": "18091be1eeeaa78d4d62c4c268072bc949945c8c98cb3cf217c748d81b8445ea",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/obj/elephav.obj",
+   "bytes": 76928,
+   "sha256": "863bb0ad077f2af5c05e70338b9a2643c840208d26984141c731e95b7bcc1b6a",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/off/cube_example.off",
+   "bytes": 314,
+   "sha256": "06277adcdf885de8269fcd9559f5b3e99a45522d85073bf8191263658d5a0d62",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/off/cube_example_as_triangs.off",
+   "bytes": 357,
+   "sha256": "76d31076729e6044160420269cbe1e57ad11302c8ed80b6924b3b35c45e6a4cc",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/patran/mixed_linear.pat",
+   "bytes": 7225,
+   "sha256": "f8467ba08f2d8eedc418ad54407c15728eac06798c919ba10a483c16853bb067",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/patran/quadratic.pat",
+   "bytes": 13236,
+   "sha256": "f6322ffb2e42b6390aa12f6969ef0fd0469e1daf55fd9cd9d0c1fc74f9ee1cb0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/patran/real/LICENSE.tahoe",
+   "bytes": 2403,
+   "sha256": "f22bebf6eb34b836958ff79d80d8ee19bf328c9349a670c63ebbb28dc4db9c45",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/LICENSE.warp3d",
+   "bytes": 3132,
+   "sha256": "44abe58286d1fd3b0a573aaa1f352c7f4307c8b4c0dac50707d9a831b0355828",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/tahoe_square.pat",
+   "bytes": 5433,
+   "sha256": "ee8f0757e4d920be3e733b8e4fd71f9b90031394226c89fbe0b2f312ed61c100",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/warp3d_ssy.out",
+   "bytes": 51148,
+   "sha256": "031a822c13b48f18fc1fb21aae512d102b5dd5efe00a1dafa89074443bcd4759",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/warp3d_ssy.webs00001",
+   "bytes": 5788,
+   "sha256": "b1184cb29f22ea96837eec51c4df63312c436580761a2d731e6d508e780d58f9",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/warp3d_ssy.wefe00001",
+   "bytes": 12529,
+   "sha256": "2650b3e8c0fe9da2a38754a95e07c34d69ad266c9471574e0e967ce2814db6ed",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/warp3d_ssy.wnbd00001",
+   "bytes": 4940,
+   "sha256": "ebaf7741ba3b27c1c122bf8325858958b5a4a18c8be36242e0e2ca283506dd02",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/warp3d_ssy.wnfr00001",
+   "bytes": 8167,
+   "sha256": "3b2930739dbb7607de0f332959c2af8a2f782db827dfc67d88224ae6c2f9da49",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/warp3d_test_25.out",
+   "bytes": 96619,
+   "sha256": "e8dc42f115d632ce116447f4cfd48f2217d81c661e85621630b55d2964d367bf",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/patran/real/warp3d_test_28.out",
+   "bytes": 11697,
+   "sha256": "9afc8dc06a39da4e3fd7ae306f3d6581e7d408a2ae7946ab913e256aea017320",
+   "readme": "tests/python/meshes/patran/real/README.md"
+  },
+  {
+   "path": "tests/python/meshes/pcd/LICENSE.PCL",
+   "bytes": 1687,
+   "sha256": "303429f6701ee55a5f53106ea337e9ce4653f1dcda66d190054643bf94e947ae",
+   "readme": "tests/python/meshes/pcd/README.md"
+  },
+  {
+   "path": "tests/python/meshes/pcd/bun0.pcd",
+   "bytes": 32101,
+   "sha256": "d714de14c068adad5577db8129dbfd9455b0bda78ad4c03d68d988e693a2c04d",
+   "readme": "tests/python/meshes/pcd/README.md"
+  },
+  {
+   "path": "tests/python/meshes/pcd/colored_cloud.pcd",
+   "bytes": 32241,
+   "sha256": "30e3a4937388c65990681b907213f235556e13d51808fe0450ad6751914b94e6",
+   "readme": "tests/python/meshes/pcd/README.md"
+  },
+  {
+   "path": "tests/python/meshes/pcd/milk_color.pcd",
+   "bytes": 146087,
+   "sha256": "78023d6dd8d61265d66438d6324e697db41f19b5d3f5d20245e9ce4f4428e903",
+   "readme": "tests/python/meshes/pcd/README.md"
+  },
+  {
+   "path": "tests/python/meshes/pcd/pcl_logo.pcd",
+   "bytes": 29714,
+   "sha256": "2ce168facd97d70cac3c3a3c0f0035d4eb29a886447c04274b778414860e93d4",
+   "readme": "tests/python/meshes/pcd/README.md"
+  },
+  {
+   "path": "tests/python/meshes/ply/bun_zipper_res4.ply",
+   "bytes": 34359,
+   "sha256": "2ca4b1c9206eb2768f10eeb06f30d2dcf576c21f69243335660c896605d1f0ab",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/ply/tet.ply",
+   "bytes": 381,
+   "sha256": "26d0f95e29cb87cf129d3b794aad50a28bd4ead97760527e072452197cba3415",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/radioss/deck_0000.rad",
+   "bytes": 8870,
+   "sha256": "83e715c1cb12880ee2a5aae28b3686a60465d897ecec4d31e6a0955b046ca018",
+   "readme": "tests/python/meshes/radioss/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss/deck_include.inc",
+   "bytes": 171,
+   "sha256": "f0e10f45117e3102474c5b59d82f51d122c5aa6ec9b9b51ee6f9f80eeb180dc6",
+   "readme": "tests/python/meshes/radioss/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss/gmsh_hex20.msh",
+   "bytes": 3347,
+   "sha256": "40c50ccf86ca79db998f95ccdc775faf3a712d61bb2356a04b054ae4cb0b063a",
+   "readme": "tests/python/meshes/radioss/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss/gmsh_hex20_0000.rad",
+   "bytes": 4272,
+   "sha256": "559c29a4a4baa43b95fa254930319d104cb228560e86f88f76e8b4e395c13d93",
+   "readme": "tests/python/meshes/radioss/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss/gmsh_tet10.msh",
+   "bytes": 5357,
+   "sha256": "c8bfe7c6888156a0a016e1ba17cc4042ece3f0804cf5936fc2343efc73be3014",
+   "readme": "tests/python/meshes/radioss/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss/gmsh_tet10_0000.rad",
+   "bytes": 12852,
+   "sha256": "8c2126455e5aa4810416e8231e4ef427a4c169de885c2c4432aed72511bb7fc4",
+   "readme": "tests/python/meshes/radioss/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss/old_0000.rad",
+   "bytes": 817,
+   "sha256": "e1ec0857282b5d37dcfb8ddab158519cd4eb44d83903c0f33edef66eee5bd59f",
+   "readme": "tests/python/meshes/radioss/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss_anim/anim_to_vtk/cubeA001.vtk",
+   "bytes": 2570,
+   "sha256": "3295e9c7bcf0a07c95b536d4a90c1b02d1fbbea22e5c1193c356add8f1901591",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/radioss_anim/anim_to_vtk/cubeA002.vtk",
+   "bytes": 2729,
+   "sha256": "770e42e4c8129dbcedecfcf22e6020503c586d51a2a29637ad7018582af8114b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/radioss_anim/cubeA001",
+   "bytes": 3386,
+   "sha256": "354593d3bf37ee9f97c206271acb0b10370178845cd76ae42933586b17aebcb6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/radioss_anim/cubeA002",
+   "bytes": 3386,
+   "sha256": "f284f73d85054d8fd299f05031864ed2b97ce4876e4b6a9910ac353341d6d10d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/radioss_th/column/columnA001",
+   "bytes": 1767,
+   "sha256": "5fac7257618f44b0d080542c81709459e80c89991658e2c59c24111be15b6b11",
+   "readme": "tests/python/meshes/radioss_th/column/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss_th/column/columnA002",
+   "bytes": 1767,
+   "sha256": "5b26a64833cb9b5dbf16bee8fed7b63da118e56f86031081924ebb3521cbe767",
+   "readme": "tests/python/meshes/radioss_th/column/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss_th/column/columnT01",
+   "bytes": 3000,
+   "sha256": "39e3717150e6e02638bf445c00e41be490bf6126abb02eae5bf4318e04d63563",
+   "readme": "tests/python/meshes/radioss_th/column/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss_th/column/columnT01_th_to_csv.csv",
+   "bytes": 5271,
+   "sha256": "e52cd931ab7a7a415f8d05e006503ae612bf4b06095c226b77a31abc3f09dc68",
+   "readme": "tests/python/meshes/radioss_th/column/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss_th/column/column_0000.rad",
+   "bytes": 2472,
+   "sha256": "69267917141a2a187d871bcaf9180048b3ff31bb3f66108f17428d8dce041749",
+   "readme": "tests/python/meshes/radioss_th/column/README.md"
+  },
+  {
+   "path": "tests/python/meshes/radioss_th/column/column_0001.rad",
+   "bytes": 171,
+   "sha256": "53af1aa6a61de96044a46f9ef549f6371f4ccf9e6c45e17d3071d3c56a1f0f68",
+   "readme": "tests/python/meshes/radioss_th/column/README.md"
+  },
+  {
+   "path": "tests/python/meshes/su2/mixgrid.su2",
+   "bytes": 4871,
+   "sha256": "762370a2dec30b52b989794f1f06146f0331cb1f91efdd6674a907549b38e0e4",
+   "readme": "tests/python/meshes/su2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/su2/square.su2",
+   "bytes": 859,
+   "sha256": "58c56bef6d32ae93e4c8ab6fbd5ab92676bd353ea0d160a702fd6bb101b4b16c",
+   "readme": "tests/python/meshes/su2/README.md"
+  },
+  {
+   "path": "tests/python/meshes/szplt/fe_mixed.dat",
+   "bytes": 511,
+   "sha256": "8fb28a8b561ced438cc1e23408843a1e3a3250048b222eb0e7036a028e9759f6",
+   "readme": "tests/python/meshes/szplt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/szplt/fe_mixed.szplt",
+   "bytes": 1994,
+   "sha256": "aee92ea2e02b81368558e7be25c90f4fa4628c2af254264130ea73c76f608ae5",
+   "readme": "tests/python/meshes/szplt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/szplt/ordered.dat",
+   "bytes": 271,
+   "sha256": "5da4b3d0c1b9f8ac1ffd3aa9cd5878b44f1f346a0d296d6efb3ea598c336f03a",
+   "readme": "tests/python/meshes/szplt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/szplt/ordered.szplt",
+   "bytes": 1201,
+   "sha256": "f2cb44459c2a6bd2bede2c8d7a82aa2bca8c3ee1c6321a085fe65fcc7d06c526",
+   "readme": "tests/python/meshes/szplt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/szplt/transient.dat",
+   "bytes": 643,
+   "sha256": "5f6bd5fabd8b33f13c4847bf73550cdb069df7b5113a685c24a8aae26eb205b1",
+   "readme": "tests/python/meshes/szplt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/szplt/transient.szplt",
+   "bytes": 1371,
+   "sha256": "e08477e8b2e93df9f88ff73067e9fcf6ef31b6d4b8a34360d2da9c71b217bb1b",
+   "readme": "tests/python/meshes/szplt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/szplt/triangles.dat",
+   "bytes": 198,
+   "sha256": "71bc878c21c64eb6b66ce0daa055bad320f8f7c5c4fb06ec9f22712ff58285a3",
+   "readme": "tests/python/meshes/szplt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/szplt/triangles.szplt",
+   "bytes": 622,
+   "sha256": "6fc90e185bcc90bdd3c6f3f91e6677c2df54bd97600a5086fbf83a318ddef61d",
+   "readme": "tests/python/meshes/szplt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/fe_2d.dat",
+   "bytes": 1315,
+   "sha256": "3768444bfd2a4ab172b540f5a04618e0b42c405ef60e83e7a2fade6877fc3568",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/fe_2d.plt",
+   "bytes": 1288,
+   "sha256": "ee152d7279b737da7cef9f5e6361ddf1b23c8bc68c4af5f6f92d6f45593d2a53",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/fe_mixed.dat",
+   "bytes": 654,
+   "sha256": "8367f40f32293bc62b4051cbd120769575e83c87c3dd44030955c01542209975",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/fe_mixed.plt",
+   "bytes": 1964,
+   "sha256": "36a1d01bfb4e43d5306b0a3644cbdc8e24046e32272b39e73cb3a5a095bf53c6",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/ordered.dat",
+   "bytes": 1097,
+   "sha256": "26d2b14ae5262bb1c7cc1f215a39572cdfbd5d2ce788fbd8af759a38e01b9d45",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/ordered.plt",
+   "bytes": 2184,
+   "sha256": "1ea60373b9d20d54caf039ffebd75e613845813c80138c9548b7712321877dbc",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/poly_2d.dat",
+   "bytes": 791,
+   "sha256": "b510eb3b28e3ac37db46932864f3eb05cab353fe4a671e89225f3ea5a6d6a4b1",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/poly_2d.plt",
+   "bytes": 1068,
+   "sha256": "65b4adc8bef6786c9a65aa29aff4477a3d19618a711eaf21b10f949b9f8fc9d3",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/poly_3d.dat",
+   "bytes": 1807,
+   "sha256": "e4517d25914a829047cc04673386132c1f7c8d6c6b6416cbf4c15f32ad6693a3",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/poly_3d.plt",
+   "bytes": 2672,
+   "sha256": "76569fc907c99a929ea212f15959942f2af63c7e0947490d586a7330dd90f2d1",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/transient.dat",
+   "bytes": 1284,
+   "sha256": "65e333c21b394d50610e2a4c3d833bfbd07694f6ebf680335b03728325538e2a",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/plt/transient.plt",
+   "bytes": 1664,
+   "sha256": "29d2e293704f6ad08a757fe4bb836d1cd0c6e1ae6653ef1a1ccce4b6d0c40d3f",
+   "readme": "tests/python/meshes/tecplot/plt/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/quad_zone_comma.tec",
+   "bytes": 360,
+   "sha256": "6e84134ac1b8c4d3b64c8505910fb7a3fd6ca1716a62bc318ae11bfc53283270",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/tecplot/quad_zone_multivar.tec",
+   "bytes": 367,
+   "sha256": "535e906f51481edcc71ed1d22caeccbca06b5b8624e16fbd188541409ad802ab",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/tecplot/quad_zone_space.tec",
+   "bytes": 354,
+   "sha256": "3768182bcbf2052f05584cf424d70781eb195ef4a11313c0634f2e7996752f9b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/LICENSE",
+   "bytes": 1565,
+   "sha256": "bad6b3fe1fde919a415a1ae9f0e85fa5ddc92d74c33113dc34c02bd551a10e63",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/eddy.plt",
+   "bytes": 1004,
+   "sha256": "2d60ea3b09b8b378b7be0893924031734261f4bc66d25b15e41cc7d6ab690770",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/fetebk.plt",
+   "bytes": 1164,
+   "sha256": "fc220f85b2b9cb4db3288d1f985b0b0f7c81482b5bac723a616e4b8382270517",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/fetebk.tec",
+   "bytes": 588,
+   "sha256": "6e93c16a678b55d0c3d3629954eebb9c9b9bbc53aeefda5ba83b83fe831313f5",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/fetetpt.plt",
+   "bytes": 1164,
+   "sha256": "5d83d9170f45c4cd9cd68b12132bce00966cf5b3077c2daf39f21aaf983d270c",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/fluid.plt",
+   "bytes": 23936,
+   "sha256": "e1c1890efdd494efa00562ddbc21b5255f51eccf04682010cf6a7ed44a0f9280",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/jetflow.plt",
+   "bytes": 38300,
+   "sha256": "1481caa099a1827b219efb97b7ea884d45f98c505c218eb346a842a0a89f6bec",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/movie.plt",
+   "bytes": 516,
+   "sha256": "1786eaa2860f8bdf7f2bde69d2f6a1a07f56442518d64ddd36ccc5661551bad4",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/movie.tec",
+   "bytes": 127,
+   "sha256": "dc1778113f7e58896d07acb81823712a7287bc1f97fb9884bddb163e2eba1350",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/polarplot.plt",
+   "bytes": 13004,
+   "sha256": "7110d5fefb08d636801ca2a7438d4018e30fa0e309fc80018bad8f0acf6c91d6",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/simpscat.plt",
+   "bytes": 1280,
+   "sha256": "6b255999fd998eda7e34a1b0bdcb1ad996b991adcf9e62e8fc58d22cf0708a5e",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tecplot/visit/simpscat.tec",
+   "bytes": 4069,
+   "sha256": "12fcfd65c41760ff101219c26780c9ce753eb24e238efb39106cee5b30136772",
+   "readme": "tests/python/meshes/tecplot/visit/README.md"
+  },
+  {
+   "path": "tests/python/meshes/tetgen/mesh.ele",
+   "bytes": 5376,
+   "sha256": "a03caba0ddba428ddaf06f408132f44bf925173a6209be06a3cd2d98298c56e0",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/tetgen/mesh.node",
+   "bytes": 8724,
+   "sha256": "a6002594138fc8dfc2e427e1c8f95c9dac1bc9434d1a9d00264f606513e8739b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/ugrid/hch_strct.4.lb8.ugrid",
+   "bytes": 18036,
+   "sha256": "e3251c928a906cd6601fb8419f0e2ee95ff3024afa85254ae7677641ad5b2e76",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/ugrid/pyra_cube.ugrid",
+   "bytes": 182,
+   "sha256": "219511b05b1918906bd1c81a7a10931ba670fc80852c768002d37afd223be52d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/ugrid/sphere_mixed.1.lb8.ugrid",
+   "bytes": 310060,
+   "sha256": "4bb422ca7343a46bcf9705acf2823c8c31747422353e989b27d041f2c5cf7028",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/gmsh_hex20.msh",
+   "bytes": 3834,
+   "sha256": "26c4a58ca767b440666ed02f5e1e6e5451e0211e8f61f41f32d2a19522c60993",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/gmsh_hex20.unv",
+   "bytes": 17011,
+   "sha256": "c76451c2974609e7fdae4d5947ba4cf3a645753fc2b601f1f7fa726b81b5f9b6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/gmsh_tet10.msh",
+   "bytes": 16752,
+   "sha256": "6ec972c6ac29e831628e488da162801995645fbe7406e9c483f8ba4e8942ae94",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/gmsh_tet10.unv",
+   "bytes": 64518,
+   "sha256": "d29da791ae00626677b61235209ca55d293b1ee7ce97bef6dd8abbad2e043f1d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/gmsh_wedge15.msh",
+   "bytes": 3583,
+   "sha256": "2b3bc2a3da35d608b8bf2614471ca346614d62762c4205fc87a19e071632440f",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/gmsh_wedge15.unv",
+   "bytes": 14376,
+   "sha256": "5dc4fbda37429a0dc719d9085f663fa8ae9445ac58c4f8df1464e8b66d06693e",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/legacy55.unv",
+   "bytes": 2099,
+   "sha256": "2c3730c1974cb9c190c9e03f4888e88cdb34cdcd7ba4376d393dce6a79ae7c47",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/modes_2414.unv",
+   "bytes": 6035,
+   "sha256": "a7348fb8aee8480c8ede1f2316628563d1a5746e60cd6193e07376f2ed835062",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/pyuff_frf.uff",
+   "bytes": 13144,
+   "sha256": "278eab2c685eb77d6d677bafc02295336ee6f202b7864c7bd92a043e03e91aff",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/pyuff_frf_58b.uff",
+   "bytes": 11034,
+   "sha256": "d023bab7eb309195f89a94ba931fa4f4a18e37f63fb6dbe0384598496fd89f44",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/pyuff_frf_only.uff",
+   "bytes": 1288,
+   "sha256": "55d45745c9c62adc5e1e693bb45e98e5992a7cac99d34c0e32fee0bdba278bcc",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/pyuff_modes.uff",
+   "bytes": 2300,
+   "sha256": "07dfa57b6691eebce07bd5362e572df870b300474181f01cb87681d94a122b42",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/transient_2414.unv",
+   "bytes": 2873,
+   "sha256": "0ec57f51bf7117ca1f1b9a9abeeb700d1088913b539a3099ece59acc1a42cb13",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/unv/units_cs_legacy.unv",
+   "bytes": 1489,
+   "sha256": "44356ee248795716c34a090d124be7e215d4db92644bdf8caf686a18d4f45710",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/00_image.vtk",
+   "bytes": 1672,
+   "sha256": "088c98f2273a967f918ec3bd364366ba765a4f7a1c1516cc369b02583ad7842e",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/01_image.vtk",
+   "bytes": 6511,
+   "sha256": "bd37649ca8c4a0b11cc55261babc652121db2602591c40c97377be30e0a83964",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/02_structured.vtk",
+   "bytes": 12960,
+   "sha256": "6fa88d3aa5e87f28fd8cefb0692b453cde4d1631dd057a0de26f8c60735f7b1c",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/03_rectilinear.vtk",
+   "bytes": 6788,
+   "sha256": "bafd9aaf285b501234f2aafa68a15fd6cb99f61b3cecaa90b5e1f68f9be4e031",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/04_rectilinear.vtk",
+   "bytes": 2427,
+   "sha256": "d7b4369b6482f3981af441c3c6756014b3485b1841d7ecee12960d578a4595f6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/05_rectilinear.vtk",
+   "bytes": 2447,
+   "sha256": "451edfe4367db3b0dcb9ec3337d132909dde566d32e8ed12625b2f801b5649ee",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/06_color_scalars.vtk",
+   "bytes": 328,
+   "sha256": "0ce07ff71f44553e8d87f8a59c8a2702d9f9f4e51ce24b7ddb3775e050ea5320",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/06_unstructured.vtk",
+   "bytes": 1201,
+   "sha256": "bba5171c092aa0ed9714ab5fc9f3715b430500554e58e2b8dac3dd9443988414",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/gh-935.vtk",
+   "bytes": 358,
+   "sha256": "49d09f61cd621a26dcbbd715699462118b9b12cec4c73e64e50365ea0e351a07",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtk/rbc_001.vtk",
+   "bytes": 33167,
+   "sha256": "99194a222a634a6dea1fcac5c719e5cdb1c356cba19bb330764c5358be380b07",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtu/00_raw_binary.vtu",
+   "bytes": 7324,
+   "sha256": "4c49eba5ad1431d77cd1ce8730d009df56c8602486bc78ba66df0fe15423f950",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtu/01_raw_binary_int64.vtu",
+   "bytes": 11058,
+   "sha256": "fb4b45be9b5174d8c7a442b1587f2cfc7566a68cf4d93a0aa93ed95e4436f241",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtu/02_raw_compressed.vtu",
+   "bytes": 2712,
+   "sha256": "2b6b8e8fabfdf3644ac05e76bd2073efa3e50ef411b8c8d3fb2f7fa7118e9725",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtu/base64_appended.vtu",
+   "bytes": 1996,
+   "sha256": "fc361d20a1b6f3cd2d8041063900a61a3c838575967daadcb9c5a6d6538c8e1b",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtu/binary_bigendian.vtu",
+   "bytes": 1881,
+   "sha256": "f0b70544a070d721f026d71254b4e21112073e6a1af3b8df7484fe20c8a206b9",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtu/raw_bigendian.vtu",
+   "bytes": 1826,
+   "sha256": "c1657692f51f047a14b59838c2520889fc30810fc9b0ef8f1ff4df68ba00048d",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtu/raw_zlib.vtu",
+   "bytes": 1885,
+   "sha256": "fc881faa6bb336c8134134ff59b4a867af9210e57a54f95a571f0c0561f00086",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtu/two_pieces_polyhedron.vtu",
+   "bytes": 2377,
+   "sha256": "0a7d4eb6b33880e4ad56266b60307b0947559a777b443b10944441d787458f68",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/vtx/complex.bp/data.0",
+   "bytes": 4384,
+   "sha256": "a588f8fb0a2f04098900d94b3dab62a464977d1e333e90f28450f9be36ebe7a2",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/complex.bp/md.0",
+   "bytes": 3360,
+   "sha256": "940ebddc92620c3c3ac2bfab2c61f0d796d5948ab98a6721fa2d4d9ba31ec2e0",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/complex.bp/md.idx",
+   "bytes": 187,
+   "sha256": "8744ece720045bab7f8c7dcccf75a31b2a4d97a639db2884cd9d33968dc7cf39",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/complex.bp/mmd.0",
+   "bytes": 2368,
+   "sha256": "c1aa8ce228bb63d6095cf03fdd04d7a32cbfde151611f32d4c148da0f96f3b41",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/complex.raw.npz",
+   "bytes": 811,
+   "sha256": "375bee35fd8883b768753f449179241972bdb8fab2d08cfa7b4ed5aaafc1d1f9",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/complex.reference.npz",
+   "bytes": 3370,
+   "sha256": "b20c8b488a6dddda2a37e9af833cd8e67b8db9f4e15f744899d6f2eac4e3ba6e",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/elastic.bp/data.0",
+   "bytes": 16000,
+   "sha256": "70b3904820330a655ba6a516fec1497421d3fa5edd356afae9ada35ffc172dcc",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/elastic.bp/md.0",
+   "bytes": 3335,
+   "sha256": "4d2b50f06a51dbbff07207b5f66f780b4c3af72a03f69c0a36ffc92739c32135",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/elastic.bp/md.idx",
+   "bytes": 192,
+   "sha256": "0be1cdda059e0aaefc71b2b5d186b9a652decd5b7771d0bfb7be7759170b9a08",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/elastic.raw.npz",
+   "bytes": 1707,
+   "sha256": "dc51ae06a0a0ecb058e206c20611b4cade46c70b884d48cade1faa16b912e9f6",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/elastic.reference.npz",
+   "bytes": 6131,
+   "sha256": "2d7a8f7622c7517f4718ac0c0bed60470e1c93f274d8f86533149b643cdfd671",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat.bp/data.0",
+   "bytes": 8624,
+   "sha256": "c5df72b271abd15532ca46e214ceb3102d572064a155fd53e616bb9f5ac1dbf7",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat.bp/md.0",
+   "bytes": 3048,
+   "sha256": "81936c1bd3ed68ae81b81008a86678253ceea9e9cc6ea0e017efebb1e8482eec",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat.bp/md.idx",
+   "bytes": 228,
+   "sha256": "8fabfa6d0311b28c0c141b079ad864f03f2494ae32bd5fb710f4459b7dcb56eb",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat.bp/mmd.0",
+   "bytes": 1960,
+   "sha256": "de92e028d11b6754e3740fd1161e9bf254596403416b9f6811a40ee98461d6cd",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat.raw.npz",
+   "bytes": 902,
+   "sha256": "a947b5a3ccef5058c0d769261a16eb27cd19030464c4e3e24d07b9a84ab40c78",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat.reference.npz",
+   "bytes": 2093,
+   "sha256": "4a4398d53748a6b59d311b391825374232bb654cd4b4347c34118e5e76c4b55d",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat_np2.bp/data.0",
+   "bytes": 8864,
+   "sha256": "4f14d901e437d1355f11d792a15589b0e46592e0df427b322cf9624c9c7f44ec",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat_np2.bp/md.0",
+   "bytes": 4728,
+   "sha256": "936dfcbd0408e982e5e5bea8518e1f86799d5d015f84de37d6f4c0b418c39e8c",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat_np2.bp/md.idx",
+   "bytes": 260,
+   "sha256": "e3c246d0aefa0c01708b5fb846b76512a4ae1ee3b0f3925a232baba7c985e1fc",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat_np2.bp/mmd.0",
+   "bytes": 1960,
+   "sha256": "de92e028d11b6754e3740fd1161e9bf254596403416b9f6811a40ee98461d6cd",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat_np2.raw.npz",
+   "bytes": 966,
+   "sha256": "3fbc5d04821935c31af6cbbafe54258097b2ad41899248756a6d9a0c5a3a3d0a",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/heat_np2.reference.npz",
+   "bytes": 2256,
+   "sha256": "7459ef5881822555a4272e9839ae26a9934fbee935614bd08131fbbab1f91d86",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/plain.bp/data.0",
+   "bytes": 32,
+   "sha256": "9392b85eaba90b4aa6f39e1f269927b4bd6bec47cd2e34a80cf3ed914c26dc7e",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/plain.bp/md.0",
+   "bytes": 216,
+   "sha256": "c455bdcbcb9ec51e789f6ad8a9ef0cff670072a5d7b05a9c2ed8291a217b6db2",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/plain.bp/md.idx",
+   "bytes": 146,
+   "sha256": "868fc12095c4b6bdb8090b8853383714a62450482490c3e61ed42e16129dbab5",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/plain.bp/mmd.0",
+   "bytes": 620,
+   "sha256": "d016de878cc4612f84295788a06a6dac1dd85ec78a36b85110d096e850fd2b03",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/quads.bp/data.0",
+   "bytes": 640,
+   "sha256": "e9e24c90de4094aa0e51ae58754b8e714d9ccc2574acb81534bf901c0a467251",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/quads.bp/md.0",
+   "bytes": 1856,
+   "sha256": "2dbf8cafb23ae117c2a4de15fcad664dd84c5ef313ce6d122484984c721fc312",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/quads.bp/md.idx",
+   "bytes": 146,
+   "sha256": "31cdf1313a79859a386e639c1d1ffad0491793a4aeacf17352f824d56aee3271",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/quads.bp/mmd.0",
+   "bytes": 1920,
+   "sha256": "22b2801a3bffe070ee4449baf2a037732676b2c585ad90856d143f314dfa7311",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/quads.raw.npz",
+   "bytes": 22,
+   "sha256": "8739c76e681f900923b900c9df0ef75cf421d39cabb54650c4b9ad19b6a76d85",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/vtx/quads.reference.npz",
+   "bytes": 1560,
+   "sha256": "f4f5636d0ee384376bb3d99599e6db4da5c2015f9af64fc7cad82e422d070f1d",
+   "readme": "tests/python/meshes/vtx/README.md"
+  },
+  {
+   "path": "tests/python/meshes/wkt/simple.wkt",
+   "bytes": 69,
+   "sha256": "3f24bf3d8f7666b55c9775a749ecda4f1104dddbc355aca3ed3880067cd176e6",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/wkt/whitespaced.wkt",
+   "bytes": 103,
+   "sha256": "9577c017f76d742118be50cabe187b874dfa9ddcdcae9cf09cbd3c31e34e2e99",
+   "readme": null
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/51.txt",
+   "bytes": 11,
+   "sha256": "2dd056d09ffc8dc2038782c6ae1bdb9e39fbb177d02569fcc41e15f542d2ac5d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88elp.txt",
+   "bytes": 20,
+   "sha256": "638c9496972f0b146ed2eb9e0b72bdfbe3403a5d81047a2f1157d5900a13af62",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88i1.txt",
+   "bytes": 4872,
+   "sha256": "c69a6c356843e79bb81d4376bdceff533a1bd7830dee10cfd9d15ceb4174cb47",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88i2.txt",
+   "bytes": 611,
+   "sha256": "9f3aff9f5b47e43f331b40d10c1fe02fd69e9f7e5fbd94d99238db8e9677cc1e",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88i5.txt",
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88int.txt",
+   "bytes": 10,
+   "sha256": "62ba8227db3adc323dc729fd1152d3d9f6bfefd003b3d15382e68928bc1ffb2b",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88mat.txt",
+   "bytes": 13,
+   "sha256": "905bcff6456ccbd931bd95b960585417e0c61cc46bd26b1f6c1ae08106154ef1",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88o2.txt",
+   "bytes": 4370,
+   "sha256": "ed2826f48ba9db683d50bb607b1a15a55821d3f447a0389f6902d798fd6a646a",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88o3.txt",
+   "bytes": 16973,
+   "sha256": "9c03a335a68745853148131732d6f89c99dd382c4e2a8683e61c1637a758a231",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/cantilever/z88o4.txt",
+   "bytes": 12624,
+   "sha256": "c85630bde53d50bfd6e1fd47057d5cf8236c00c692f20bbbce10857261d63ea1",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/51.txt",
+   "bytes": 11,
+   "sha256": "2dd056d09ffc8dc2038782c6ae1bdb9e39fbb177d02569fcc41e15f542d2ac5d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88elp.txt",
+   "bytes": 39,
+   "sha256": "ac5f2292a163d92a42bcaf5ab40fe3620a2d064f69fe6a0e0302ccbf616ee34d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88i1.txt",
+   "bytes": 402,
+   "sha256": "e206942e86b77246a95d0b47d31d1dc1c9976b07ddefb12264527efae455fbc7",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88i2.txt",
+   "bytes": 367,
+   "sha256": "6cdded4a4bb30716864cb5dbe4223679d7d400b68e82cd6df8f56bc110e6ba52",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88i5.txt",
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88int.txt",
+   "bytes": 10,
+   "sha256": "10bc485c8eadb9a09a1993ef20552024fc1bcd592b7700b88ba586d76afcf544",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88mat.txt",
+   "bytes": 13,
+   "sha256": "ae4c0baa5dee57eed1f08b4c8a17ce8846e28fbc25fe34d049a66b0a09c80dc2",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88o2.txt",
+   "bytes": 682,
+   "sha256": "ade595350942b5788cadea8a676c77e1bb8d04fe5c569551c270596f5dd6e02a",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88o3.txt",
+   "bytes": 853,
+   "sha256": "ff16267b7fd93534f98e2a45445c780f34317a206d0301783ea36433e7a69f2e",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/frame/z88o4.txt",
+   "bytes": 1936,
+   "sha256": "5b58174a58a35ac48014c2e618ee06377f9e6e5b6bd26db8807b73e8bf490cbb",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/51.txt",
+   "bytes": 11,
+   "sha256": "2dd056d09ffc8dc2038782c6ae1bdb9e39fbb177d02569fcc41e15f542d2ac5d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88elp.txt",
+   "bytes": 20,
+   "sha256": "a9333438a714028589904c3958052ff04513a685510f3ece9ee37220772e3aa1",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88i1.txt",
+   "bytes": 2044,
+   "sha256": "388e65b9799bf9b8ec6b54a0916d88e7c044b7e139c0a7706da0adb3b517a0fa",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88i2.txt",
+   "bytes": 675,
+   "sha256": "38fd4f15c095c81bd0c1bca728a4a8888ba5671d29bdb85dd2f5cdfc826410d5",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88i5.txt",
+   "bytes": 55,
+   "sha256": "68e9135ca291ea2dcd632bc6f364495ad07a568cdefa5b1507855e97741507cd",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88int.txt",
+   "bytes": 18,
+   "sha256": "15cefdd070b0cb01bf269ffd9c632c631be7e9f76bb2d4fe4585c974898e0070",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88mat.txt",
+   "bytes": 13,
+   "sha256": "d5100a3c2a1420fdd08bc23a1acb0210f0203c8855aa7ee7be5073064a3ab11f",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88o2.txt",
+   "bytes": 1930,
+   "sha256": "ab9a5b8f023e197054112a775d5bc514e017aa49e39aa0bf580bed5a66e9f25f",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88o3.txt",
+   "bytes": 6152,
+   "sha256": "e6553f681014677a7383103f709288d8c9eced052c58e8b6abcbf7f9a654e4b9",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/layered/z88o4.txt",
+   "bytes": 5421,
+   "sha256": "1e3b739e430159356678dc14bc61fdbc653e0edeef07b1f1a923aa9edab4a03c",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/51.txt",
+   "bytes": 11,
+   "sha256": "2dd056d09ffc8dc2038782c6ae1bdb9e39fbb177d02569fcc41e15f542d2ac5d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88elp.txt",
+   "bytes": 21,
+   "sha256": "e74068c094b7f84ba0a4fcae8678d451ae54dd9f617a947aafbbc5d47d1c8157",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88i1.txt",
+   "bytes": 1226,
+   "sha256": "37ce1ae80225e1170269b66fe8e14052aa5e52d7afdb390c19cf430e68ca480b",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88i2.txt",
+   "bytes": 451,
+   "sha256": "0f2cda2384d9a0e7d10719d0fdcc1de1e189c924220a78bc321bf5d20fb3a19b",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88i5.txt",
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88int.txt",
+   "bytes": 10,
+   "sha256": "7aeb3bbf6815abcbbcb0123704db35a74f31d8274eeea93c9a046e5219f7d511",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88mat.txt",
+   "bytes": 13,
+   "sha256": "ae4c0baa5dee57eed1f08b4c8a17ce8846e28fbc25fe34d049a66b0a09c80dc2",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88o2.txt",
+   "bytes": 1503,
+   "sha256": "ce0d65e2e95d4a55f42ad954b4593a042cebfa3a1ad3d2ed8bbf1f7ba2f5454c",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88o3.txt",
+   "bytes": 6599,
+   "sha256": "8d3ac99c4e95929c77e55a2d1135c0af481b72d337ead92354667b0810b5af64",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate/z88o4.txt",
+   "bytes": 4443,
+   "sha256": "a02cc2d48775712148356758126b3bba864b102de17a990314114b1301465b64",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/51.txt",
+   "bytes": 11,
+   "sha256": "2dd056d09ffc8dc2038782c6ae1bdb9e39fbb177d02569fcc41e15f542d2ac5d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88elp.txt",
+   "bytes": 21,
+   "sha256": "e74068c094b7f84ba0a4fcae8678d451ae54dd9f617a947aafbbc5d47d1c8157",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88i1.txt",
+   "bytes": 2650,
+   "sha256": "29b2add44422783c799c9b057a9444d558d37d0cd33b6c07413cc1d942b1e846",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88i2.txt",
+   "bytes": 619,
+   "sha256": "21aa2f4abcbd66ef6dec854d8b12ea062638c6b7e053cbd129c247cb879d6f6d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88i5.txt",
+   "bytes": 10,
+   "sha256": "5877489086e9e3b8e59dd3fc0e7399af629d21b28755f44990a3b239f77e06bd",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88int.txt",
+   "bytes": 10,
+   "sha256": "af1a5600daed72a62c85bc246d92618b7b35d13d5daf93db77c2e448f1de6685",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88mat.txt",
+   "bytes": 13,
+   "sha256": "ae4c0baa5dee57eed1f08b4c8a17ce8846e28fbc25fe34d049a66b0a09c80dc2",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88o2.txt",
+   "bytes": 3211,
+   "sha256": "683bd5fa3fa7b87f82861a0dbf05ba63b60f4ff56934a8b454fcd96501f5dfeb",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88o3.txt",
+   "bytes": 10943,
+   "sha256": "28b098e0567eb13207eea4919f39608a4132c4aa9a97978b7998c3adb95f1f2a",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate19/z88o4.txt",
+   "bytes": 8827,
+   "sha256": "a86125b56aa6193ecca69179cb15ec810242f25e422cc0ca0a4836be5ebc8196",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/plate_v13/z88i1.txt",
+   "bytes": 709,
+   "sha256": "ef807e4290b7b13b48d2a7d204018ddfeb80abc09b42bf1b6a78bafc4b93415c",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/polar/z88i1.txt",
+   "bytes": 527,
+   "sha256": "caa2a44668af760408e8c3cc20170e6cfd9ac0c5eaeef61a0b71f95767269295",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/51.txt",
+   "bytes": 11,
+   "sha256": "2dd056d09ffc8dc2038782c6ae1bdb9e39fbb177d02569fcc41e15f542d2ac5d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88elp.txt",
+   "bytes": 20,
+   "sha256": "d0b631a47331f020f11aa20834e8d4f335baa7222fda10651d21c678793f702b",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88i1.txt",
+   "bytes": 1169,
+   "sha256": "2346c3fc8525e41a27dce0b9cdad985beda3e27ecc677196b790c0e8d1475d5c",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88i2.txt",
+   "bytes": 675,
+   "sha256": "1e4dae9712dfbf450c3146a0c2b8fb44a9afcbc9ee5f7fa487e3674c1eb58585",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88i5.txt",
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88int.txt",
+   "bytes": 10,
+   "sha256": "7aeb3bbf6815abcbbcb0123704db35a74f31d8274eeea93c9a046e5219f7d511",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88mat.txt",
+   "bytes": 13,
+   "sha256": "ae4c0baa5dee57eed1f08b4c8a17ce8846e28fbc25fe34d049a66b0a09c80dc2",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88o2.txt",
+   "bytes": 1947,
+   "sha256": "2995e6143fa5034ef232152030048e76dc1b45c2b5b1614b5f684b15ab2a1afc",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88o3.txt",
+   "bytes": 1703,
+   "sha256": "877912e4b20d150bc2884e2385277142d16ff65792d2d4f128e34bd27a7df4b7",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell/z88o4.txt",
+   "bytes": 4493,
+   "sha256": "bb888eff7c03d7b10049847a3c076206fa3f45b3755a1a4d8199a5aa17f984d4",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/51.txt",
+   "bytes": 11,
+   "sha256": "2dd056d09ffc8dc2038782c6ae1bdb9e39fbb177d02569fcc41e15f542d2ac5d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88elp.txt",
+   "bytes": 20,
+   "sha256": "85d02b63e72b1832c3198a545546f2ca8d1476bd6ada6e481394b6ab651d24f4",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88i1.txt",
+   "bytes": 971,
+   "sha256": "edd28c9af880b9eef554e7a4cfa36d977f5d510e530e7cd5f149987c74e53f98",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88i2.txt",
+   "bytes": 675,
+   "sha256": "b9a55d34a32d6c7a2cec5b96270d1defbb4c9d3322939be0d267e1cab929928a",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88i5.txt",
+   "bytes": 9,
+   "sha256": "103e448bf3f48f21e4ced19217bc10e8714d2063ba611820a52f51a9a6a13482",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88int.txt",
+   "bytes": 10,
+   "sha256": "1e2487f9217fbd0ebb2b95e6bdfb7ba87382b1b431936f06dff0029f584eaa85",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88mat.txt",
+   "bytes": 13,
+   "sha256": "a29914911b7f00d3d9b820ba9fa5fadb11b47fff78d0d7b19d495f95f78337c1",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88o2.txt",
+   "bytes": 1717,
+   "sha256": "49d81f559be18c55432c2af44ec4c50eb7607c1b1c8bc654916e6eaac1d72006",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88o3.txt",
+   "bytes": 912,
+   "sha256": "8c6e009d501c0833372a474281d9f896196cfbb62bb0b22efebeb46836a5a0ab",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/shell23/z88o4.txt",
+   "bytes": 3347,
+   "sha256": "f9bf636da2efb79fd22bf337237a2a52c930a518a04635deeac816e41d00c7fb",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/tets/z88i1.txt",
+   "bytes": 814,
+   "sha256": "1c235171453e7dc15e62ca36686a76bfd81a2a4fa6e502531675b2453cd196ca",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/51.txt",
+   "bytes": 11,
+   "sha256": "2dd056d09ffc8dc2038782c6ae1bdb9e39fbb177d02569fcc41e15f542d2ac5d",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88elp.txt",
+   "bytes": 20,
+   "sha256": "54b4a37f07317bf0051eff3942be9a49827dd3574a22f9501063952d99b20198",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88i1.txt",
+   "bytes": 750,
+   "sha256": "d871f54a3eddc76490977f82103c73d1c59dc1d4e0654c37c725a28a6fe10e54",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88i2.txt",
+   "bytes": 226,
+   "sha256": "bdd778069347f513c9c24c5f37a351a8bfbeb8b7802f88f4ed7b69d6ca1ce950",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88i5.txt",
+   "bytes": 2,
+   "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88int.txt",
+   "bytes": 10,
+   "sha256": "6be0bc68355c495fba0760087ea605635441534bd32cf348593f4e7b0dc7c7b2",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88mat.txt",
+   "bytes": 13,
+   "sha256": "a29914911b7f00d3d9b820ba9fa5fadb11b47fff78d0d7b19d495f95f78337c1",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88o2.txt",
+   "bytes": 781,
+   "sha256": "4ffabd6833f9ca8b97e4d6e4962f5faba6e33d89147d6b3bd0c175c275a10604",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88o3.txt",
+   "bytes": 1999,
+   "sha256": "3f56cbb56b3dfe6e842eac8e571b80cfd251dc303643294eb03381eab3c6954b",
+   "readme": "tests/python/meshes/z88/README.md"
+  },
+  {
+   "path": "tests/python/meshes/z88/torus/z88o4.txt",
+   "bytes": 2357,
+   "sha256": "81b19166f2ab3d00d13ff3f4b74090a39133513561de34fefe5afa6445be6ffd",
+   "readme": "tests/python/meshes/z88/README.md"
+  }
+ ]
+}

@@ -37,6 +37,8 @@ set "MMG_ROOT_DIR="
 set "WITH_CUTCELLS=OFF"
 set "CUTCELLS_ROOT_DIR="
 set "TESTS=OFF"
+set "WARNINGS=OFF"
+set "WARNINGS_AS_ERRORS=OFF"
 set "C_API=OFF"
 set "FORTRAN=OFF"
 set "INSTALL_CPP=OFF"
@@ -71,6 +73,8 @@ if /I "%~1"=="--mmg-root"       set "WITH_MMG=ON" & set "MMG_ROOT_DIR=%~2" & shi
 if /I "%~1"=="--with-cutcells"  set "WITH_CUTCELLS=ON" & shift & goto parse
 if /I "%~1"=="--cutcells-root"  set "WITH_CUTCELLS=ON" & set "CUTCELLS_ROOT_DIR=%~2" & shift & shift & goto parse
 if /I "%~1"=="--tests"          set "TESTS=ON" & shift & goto parse
+if /I "%~1"=="--warnings"       set "WARNINGS=ON" & shift & goto parse
+if /I "%~1"=="--warnings-as-errors" set "WARNINGS=ON" & set "WARNINGS_AS_ERRORS=ON" & shift & goto parse
 if /I "%~1"=="--c-api"          set "C_API=ON" & shift & goto parse
 if /I "%~1"=="--fortran"        set "FORTRAN=ON" & set "C_API=ON" & shift & goto parse
 if /I "%~1"=="--install-cpp"    set "INSTALL_CPP=ON" & shift & goto parse
@@ -169,6 +173,8 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DMESHIOPLUSPLUS_WITH_MMG=%WITH_MMG% ^
     -DMESHIOPLUSPLUS_WITH_CUTCELLS=%WITH_CUTCELLS% ^
     -DMESHIOPLUSPLUS_BUILD_TESTS=%TESTS% ^
+    -DMESHIOPLUSPLUS_WARNINGS=%WARNINGS% ^
+    -DMESHIOPLUSPLUS_WARNINGS_AS_ERRORS=%WARNINGS_AS_ERRORS% ^
     -DMESHIOPLUSPLUS_BUILD_C_API=%C_API% ^
     -DMESHIOPLUSPLUS_INSTALL_CPP=%INSTALL_CPP% ^
     -DMESHIOPLUSPLUS_BUILD_CLI=%CLI% ^
@@ -220,6 +226,7 @@ echo   --mmg-root ^<dir^>                 MMG's install prefix (holds lib\cmake\
 echo   --with-cutcells                  CutCells-backed cut_level_set and cut_quadrature (MIT)
 echo   --cutcells-root ^<dir^>            CutCells' install prefix
 echo   --tests                          also build the GoogleTest suite (CTest)
+echo   --warnings[-as-errors]           compile meshio++ sources with /W4 [/WX]
 echo   --c-api                          build the installable libmeshioplusplus C API
 echo   --fortran                        build the Fortran module (implies --c-api;
 echo                                    needs a Fortran compiler, untested on MSVC)

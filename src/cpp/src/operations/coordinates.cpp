@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -40,9 +41,9 @@ namespace meshioplusplus {
 
 namespace {
 
-using CoordVec = std::array<double, 3>;
+using detail::Vec3;
 
-CoordVec coord_unit(const CoordVec& rA) {
+Vec3 coord_unit(const Vec3& rA) {
     const double n = std::sqrt(detail::vec3_dot(rA, rA));
     return {rA[0] / n, rA[1] / n, rA[2] / n};
 }
@@ -50,23 +51,23 @@ CoordVec coord_unit(const CoordVec& rA) {
 // The frame every point shares: the unit axis, and the two directions of angle
 // 0 and pi/2 about it.
 struct CoordFrame {
-    CoordVec mAxis, mE1, mE2, mOrigin;
+    Vec3 mAxis, mE1, mE2, mOrigin;
 };
 
 // The coordinates of position @p rP, and the local basis (rows) there; true
 // when the radial direction was undefined and e1 stood in.
-bool coord_local(const CoordFrame& rF, CoordinateSystem System, const CoordVec& rP,
-                 CoordVec& rCoords, std::array<CoordVec, 3>& rBasis) {
-    const CoordVec d{rP[0] - rF.mOrigin[0], rP[1] - rF.mOrigin[1], rP[2] - rF.mOrigin[2]};
+bool coord_local(const CoordFrame& rF, CoordinateSystem System, const Vec3& rP, Vec3& rCoords,
+                 std::array<Vec3, 3>& rBasis) {
+    const Vec3 d{rP[0] - rF.mOrigin[0], rP[1] - rF.mOrigin[1], rP[2] - rF.mOrigin[2]};
     const double z = detail::vec3_dot(d, rF.mAxis);
-    const CoordVec rho{d[0] - z * rF.mAxis[0], d[1] - z * rF.mAxis[1], d[2] - z * rF.mAxis[2]};
+    const Vec3 rho{d[0] - z * rF.mAxis[0], d[1] - z * rF.mAxis[1], d[2] - z * rF.mAxis[2]};
     const double r_cyl = std::sqrt(detail::vec3_dot(rho, rho));
     const double scale = std::sqrt(detail::vec3_dot(d, d));
     const bool on_axis = !(r_cyl > 1e-14 * std::max(scale, 1.0));
-    const CoordVec e_rho = on_axis ? rF.mE1 : coord_unit(rho);
+    const Vec3 e_rho = on_axis ? rF.mE1 : coord_unit(rho);
     const double angle =
         on_axis ? 0.0 : std::atan2(detail::vec3_dot(rho, rF.mE2), detail::vec3_dot(rho, rF.mE1));
-    const CoordVec e_phi = detail::vec3_cross(rF.mAxis, e_rho);
+    const Vec3 e_phi = detail::vec3_cross(rF.mAxis, e_rho);
     if (System == CoordinateSystem::Cylindrical) {
         rCoords = {r_cyl, angle, z};
         rBasis = {e_rho, e_phi, rF.mAxis};
@@ -76,18 +77,17 @@ bool coord_local(const CoordFrame& rF, CoordinateSystem System, const CoordVec& 
     const bool at_centre = !(r > 0.0);
     const double polar = at_centre ? 0.0 : std::atan2(r_cyl, z);
     const double c = std::cos(polar), s = std::sin(polar);
-    const CoordVec e_r{s * e_rho[0] + c * rF.mAxis[0], s * e_rho[1] + c * rF.mAxis[1],
-                       s * e_rho[2] + c * rF.mAxis[2]};
-    const CoordVec e_theta{c * e_rho[0] - s * rF.mAxis[0], c * e_rho[1] - s * rF.mAxis[1],
-                           c * e_rho[2] - s * rF.mAxis[2]};
+    const Vec3 e_r{s * e_rho[0] + c * rF.mAxis[0], s * e_rho[1] + c * rF.mAxis[1],
+                   s * e_rho[2] + c * rF.mAxis[2]};
+    const Vec3 e_theta{c * e_rho[0] - s * rF.mAxis[0], c * e_rho[1] - s * rF.mAxis[1],
+                       c * e_rho[2] - s * rF.mAxis[2]};
     rCoords = {r, polar, angle};
     rBasis = {e_r, e_theta, e_phi};
     return on_axis || at_centre;
 }
 
 // v' = R v (forward) or R^T v (inverse), R's rows the basis.
-void coord_vector(const std::array<CoordVec, 3>& rB, bool Inverse, const double* pIn,
-                  double* pOut) {
+void coord_vector(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn, double* pOut) {
     for (std::size_t i = 0; i < 3; ++i) {
         double acc = 0.0;
         for (std::size_t k = 0; k < 3; ++k)
@@ -97,8 +97,7 @@ void coord_vector(const std::array<CoordVec, 3>& rB, bool Inverse, const double*
 }
 
 // T' = R T R^T (forward) or R^T T R (inverse), row-major 3x3.
-void coord_tensor(const std::array<CoordVec, 3>& rB, bool Inverse, const double* pIn,
-                  double* pOut) {
+void coord_tensor(const std::array<Vec3, 3>& rB, bool Inverse, const double* pIn, double* pOut) {
     const auto m = [&](std::size_t i, std::size_t k) { return Inverse ? rB[k][i] : rB[i][k]; };
     double tmp[9];
     for (std::size_t i = 0; i < 3; ++i)
@@ -119,7 +118,7 @@ void coord_tensor(const std::array<CoordVec, 3>& rB, bool Inverse, const double*
 
 // Rewrite one array of @p Rows rows at @p rPositions; returns the new array.
 NDArray coord_convert_array(const NDArray& rIn, const std::string& rName,
-                            const std::vector<CoordVec>& rPositions, const CoordFrame& rF,
+                            const std::vector<Vec3>& rPositions, const CoordFrame& rF,
                             const CoordinateOptions& rOptions) {
     const std::vector<std::size_t>& shape = rIn.Shape();
     const std::size_t rows = rPositions.size();
@@ -135,8 +134,8 @@ NDArray coord_convert_array(const NDArray& rIn, const std::string& rName,
     NDArray out(DType::Float64, shape);
     double* po = out.As<double>();
     parallel_for(rows, [&](std::size_t i) {
-        CoordVec coords;
-        std::array<CoordVec, 3> basis;
+        Vec3 coords;
+        std::array<Vec3, 3> basis;
         coord_local(rF, rOptions.mSystem, rPositions[i], coords, basis);
         double in[9];
         for (std::size_t k = 0; k < width; ++k)
@@ -168,12 +167,10 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
     frame.mAxis = coord_unit(rOptions.mAxis);
     frame.mOrigin = rOptions.mOrigin;
     // e1: the reference projected off the axis, or x / y when it lies along it.
-    for (const CoordVec& candidate :
-         {rOptions.mReference, CoordVec{1.0, 0.0, 0.0}, CoordVec{0.0, 1.0, 0.0}}) {
+    for (const Vec3& candidate : {rOptions.mReference, Vec3{1.0, 0.0, 0.0}, Vec3{0.0, 1.0, 0.0}}) {
         const double along = detail::vec3_dot(candidate, frame.mAxis);
-        const CoordVec off{candidate[0] - along * frame.mAxis[0],
-                           candidate[1] - along * frame.mAxis[1],
-                           candidate[2] - along * frame.mAxis[2]};
+        const Vec3 off{candidate[0] - along * frame.mAxis[0], candidate[1] - along * frame.mAxis[1],
+                       candidate[2] - along * frame.mAxis[2]};
         const double len = std::sqrt(detail::vec3_dot(off, off));
         const double clen = std::sqrt(detail::vec3_dot(candidate, candidate));
         if (len > 1e-9 * clen) {
@@ -186,7 +183,7 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
     // Positions: the points, and the cell centroids (distinct nodes).
     const std::size_t n = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
-    std::vector<CoordVec> points(n, CoordVec{0.0, 0.0, 0.0});
+    std::vector<Vec3> points(n, Vec3{0.0, 0.0, 0.0});
     for (std::size_t i = 0; i < n; ++i)
         for (std::size_t k = 0; k < dim && k < 3; ++k)
             points[i][k] = detail::read_double(rMesh.Points(), i * dim + k);
@@ -198,8 +195,8 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
         double* pc = coords.As<double>();
         std::int64_t singular = 0;
         for (std::size_t i = 0; i < n; ++i) {
-            CoordVec c;
-            std::array<CoordVec, 3> basis;
+            Vec3 c;
+            std::array<Vec3, 3> basis;
             if (coord_local(frame, rOptions.mSystem, points[i], c, basis))
                 ++singular;
             pc[i * 3 + 0] = c[0];
@@ -213,9 +210,9 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
                                   std::move(coords));
     }
 
-    std::vector<CoordVec> centroids;
+    std::vector<Vec3> centroids;
     bool have_centroids = false;
-    const auto cell_positions = [&]() -> const std::vector<CoordVec>& {
+    const auto cell_positions = [&]() -> const std::vector<Vec3>& {
         if (!have_centroids) {
             std::vector<std::int64_t> ids;
             for (const auto cb : rMesh.CellRange())
@@ -223,7 +220,7 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
                     detail::cell_node_ids(cb, c, n, ids);
                     std::sort(ids.begin(), ids.end());
                     ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-                    CoordVec m{0.0, 0.0, 0.0};
+                    Vec3 m{0.0, 0.0, 0.0};
                     for (const std::int64_t id : ids)
                         for (std::size_t k = 0; k < 3; ++k)
                             m[k] += points[static_cast<std::size_t>(id)][k];
@@ -247,14 +244,14 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
         }
         if (rMesh.HasCellData(name)) {
             found = true;
-            const std::vector<CoordVec>& positions = cell_positions();
+            const std::vector<Vec3>& positions = cell_positions();
             std::vector<NDArray> blocks;
             std::size_t base = 0;
             std::size_t block = 0;
             for (const auto cb : rMesh.CellRange()) {
                 const std::size_t count = cb.NumCells();
-                const std::vector<CoordVec> slice(positions.begin() + base,
-                                                  positions.begin() + base + count);
+                const std::vector<Vec3> slice(positions.begin() + base,
+                                              positions.begin() + base + count);
                 blocks.push_back(
                     coord_convert_array(rMesh.CellData(name, block), name, slice, frame, rOptions));
                 base += count;

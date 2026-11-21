@@ -6,7 +6,9 @@ regenerates them); ``cgx_short.frd`` is hand written because ccx never writes th
 layout nor the cgx shell types 7-10.
 """
 
+import importlib
 import io
+import os
 import pathlib
 import re
 
@@ -18,6 +20,21 @@ from meshioplusplus import _core, _sequence
 from meshioplusplus._exceptions import ReadError, WriteError
 from meshioplusplus._fallback import set_strict_core
 from meshioplusplus.frd import _frd as py_frd
+
+
+def _require_validator(module):
+    """Import ``module``; skip when it is missing, or fail under the CI job.
+
+    ``MESHIOPLUSPLUS_REQUIRE_FRD_VALIDATOR=1`` (the ``frd-validator`` job) turns
+    the skip into a failure, so the job cannot go green without the validator.
+    """
+    try:
+        return importlib.import_module(module)
+    except ImportError:
+        if os.environ.get("MESHIOPLUSPLUS_REQUIRE_FRD_VALIDATOR") == "1":
+            pytest.fail(f"the FRD validator needs {module}, which is not installed")
+        pytest.skip(f"needs {module} (pip install ccx2paraview vtk)")
+
 
 FIXTURES = pathlib.Path(__file__).parent / "meshes" / "frd"
 
@@ -1218,8 +1235,8 @@ class TestBinaryWriter:
         """It opens the file as text and splits it into lines on the ``-1``/``-2``
         markers, so the ASCII layout is its only input (the long form at that): the
         binary file is not a thing it can check."""
-        pytest.importorskip("ccx2paraview")
-        pytest.importorskip("vtk")
+        _require_validator("ccx2paraview")
+        _require_validator("vtk")
         from ccx2paraview import common
 
         out = tmp_path / "bin.frd"
@@ -1409,8 +1426,8 @@ def test_ccx2paraview_reads_what_the_writer_wrote(name, tmp_path):
     the principal and von Mises extras are stubbed out; the points, the cells and
     the DISP, STRESS and TOSTRAIN arrays are what it reads back.
     """
-    pytest.importorskip("ccx2paraview")
-    vtk = pytest.importorskip("vtk")
+    _require_validator("ccx2paraview")
+    vtk = _require_validator("vtk")
     from ccx2paraview import common
     from vtk.util.numpy_support import vtk_to_numpy
 

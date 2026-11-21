@@ -28,6 +28,14 @@ _TYPES = {
 }
 
 
+def _check_int32(a, what):
+    """A GIFTI integer array is 32-bit; a wider value is an error, not a wrap."""
+    if a.size and (a.min() < -(2**31) or a.max() > 2**31 - 1):
+        raise WriteError(
+            f"meshio++: gifti: {what} holds an integer outside the 32-bit range"
+        )
+
+
 def _meta(node, key):
     md = node.find("MetaData")
     if md is None:
@@ -246,6 +254,7 @@ def write(filename, mesh):
     ]
     if mesh.cells:
         tri = np.asarray(mesh.cells[0].data, dtype=np.int64)
+        _check_int32(tri, "the triangle connectivity")
         arrays.append(
             _array(
                 "NIFTI_INTENT_TRIANGLE",
@@ -262,6 +271,8 @@ def write(filename, mesh):
             continue
         width = a.size // np_ if np_ else 0
         floating = a.dtype.kind == "f"
+        if not floating:
+            _check_int32(a, f"point data '{name}'")
         raw = a.reshape(-1).astype("<f4" if floating else "<i4").tobytes()
         if name == "gifti:label":
             intent = "NIFTI_INTENT_LABEL"

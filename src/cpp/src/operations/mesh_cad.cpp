@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -487,8 +488,7 @@ double mcad_piece_turning(const detail::TrimTrace& rTrace, double T0, double T1)
     for (int j = 0; j <= 8; ++j) {
         const Vec3 v = rTrace.Velocity(T0 + (T1 - T0) * (j / 8.0));
         if (j > 0) {
-            const Vec3 c{last[1] * v[2] - last[2] * v[1], last[2] * v[0] - last[0] * v[2],
-                         last[0] * v[1] - last[1] * v[0]};
+            const Vec3 c = detail::vec3_cross(last, v);
             sum += std::atan2(std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]),
                               last[0] * v[0] + last[1] * v[1] + last[2] * v[2]);
         }
@@ -2184,8 +2184,7 @@ void mcad_mesh_face(McadFace& rF, const BrepFace& rBrepFace, const std::vector<M
         const Vec2 centre{(xa[0] + xb[0] + xc[0]) / 3.0, (xa[1] + xb[1] + xc[1]) / 3.0};
         Vec3 cx{}, csu{}, csv{};
         surface_x(centre, cx.data(), csu.data(), csv.data());
-        const Vec3 cns{csu[1] * csv[2] - csu[2] * csv[1], csu[2] * csv[0] - csu[0] * csv[2],
-                       csu[0] * csv[1] - csu[1] * csv[0]};
+        const Vec3 cns = detail::vec3_cross(csu, csv);
         const bool out = against(cns) || (against(normal_at(rT[0])) && against(normal_at(rT[1])) &&
                                           against(normal_at(rT[2])));
         folded_cache.emplace(key, out);
@@ -4528,8 +4527,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                 const Vec3& c = point_of(r_f, r_t[2]);
                 const Vec3 e1{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
                 const Vec3 e2{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-                const Vec3 n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                             e1[0] * e2[1] - e1[1] * e2[0]};
+                const Vec3 n = detail::vec3_cross(e1, e2);
                 area += 0.5 * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
                 for (std::size_t k = 0; k < 3; ++k)
                     centre[k] += (a[k] + b[k] + c[k]) / (3.0 * double(r_f.mTriangles.size()));
@@ -4552,8 +4550,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             const Vec2 uv = traces[U]->Uv(uses[U].mParams[K]);
             Vec3 x{}, su{}, sv{};
             faces[F].pSurface->Eval(uv[0], uv[1], x.data(), su.data(), sv.data());
-            Vec3 n{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
-                   su[0] * sv[1] - su[1] * sv[0]};
+            Vec3 n = detail::vec3_cross(su, sv);
             if (rBrep.mFaces[F].mSwappedNormal)
                 n = {-n[0], -n[1], -n[2]};
             return n;
@@ -5637,8 +5634,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
             r_s.Eval(rUv[0], rUv[1], x.data(), su.data(), sv.data());
             const double nu = std::sqrt(su[0] * su[0] + su[1] * su[1] + su[2] * su[2]);
             const double nv = std::sqrt(sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2]);
-            const Vec3 c{su[1] * sv[2] - su[2] * sv[1], su[2] * sv[0] - su[0] * sv[2],
-                         su[0] * sv[1] - su[1] * sv[0]};
+            const Vec3 c = detail::vec3_cross(su, sv);
             const double nc = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
             return nc > 1e-6 * r_s.Scale() * r_s.Scale() && nc > 1e-3 * nu * nv;
         };
@@ -6412,8 +6408,7 @@ MeshCadSurfaceResult mcad_surface_run(const BrepInfo& rBrep, const MeshCadSurfac
                     const Vec3& q = y[(k + nc - 1) % nc];
                     const Vec3 a{p[0] - o[0], p[1] - o[1], p[2] - o[2]};
                     const Vec3 b{q[0] - o[0], q[1] - o[1], q[2] - o[2]};
-                    const Vec3 cr{a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2],
-                                  a[0] * b[1] - a[1] * b[0]};
+                    const Vec3 cr = detail::vec3_cross(a, b);
                     least[c] = std::min(
                         least[c],
                         std::atan2(std::sqrt(cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]),

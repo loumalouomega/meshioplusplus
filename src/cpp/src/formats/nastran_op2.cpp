@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -2330,8 +2331,9 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
             const auto [it, fresh] = seen.emplace(g.mIds[i], i);
             if (!fresh) {
                 const std::size_t j = it->second;
+                const double* xyz = g.mXyz.data();
                 const bool same = g.mCp[i] == g.mCp[j] && g.mCd[i] == g.mCd[j] &&
-                                  std::equal(&g.mXyz[3 * i], &g.mXyz[3 * i + 3], &g.mXyz[3 * j]);
+                                  std::equal(xyz + 3 * i, xyz + 3 * i + 3, xyz + 3 * j);
                 if (!same)
                     op2_fail("GRID " + std::to_string(g.mIds[i]) + " is defined twice");
                 continue;
@@ -2339,7 +2341,7 @@ Op2Model op2_build_mesh(const Op2Reader& rR) {
             unique.mIds.push_back(g.mIds[i]);
             unique.mCp.push_back(g.mCp[i]);
             unique.mCd.push_back(g.mCd[i]);
-            unique.mXyz.insert(unique.mXyz.end(), &g.mXyz[3 * i], &g.mXyz[3 * i + 3]);
+            unique.mXyz.insert(unique.mXyz.end(), g.mXyz.data() + 3 * i, g.mXyz.data() + 3 * i + 3);
         }
         g = std::move(unique);
     }

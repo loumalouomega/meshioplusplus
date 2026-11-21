@@ -51,7 +51,16 @@ _SPECIAL = {
 
 
 def _i4(values):
-    return np.asarray(values, dtype=">i4").tobytes()
+    a = np.asarray(values)
+    if a.dtype.kind in "iu" and a.size and (a.min() < -(2**31) or a.max() > 2**31 - 1):
+        # The file's integers are 32-bit: a wider id is an error, not a wrap to
+        # another number (roadmap 3.19).
+        bad = a.max() if a.max() > 2**31 - 1 else a.min()
+        raise WriteError(
+            f"Radioss animation: the integer {int(bad)} is outside the 32-bit range "
+            "of the file format"
+        )
+    return a.astype(">i4").tobytes()
 
 
 def _f4(values):

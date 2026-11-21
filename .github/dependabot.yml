@@ -1,0 +1,49 @@
+# Dependency updates (roadmap 3.14.2). Actions are pinned by commit (3.14.3);
+# Dependabot keeps those SHAs current and updates the tag in the trailing
+# comment. Grouped weekly, so one pull request carries each ecosystem's bumps.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/src/viewer"
+    schedule:
+      interval: weekly
+    groups:
+      viewer:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/src/wasm"
+    schedule:
+      interval: weekly
+    groups:
+      wasm:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: "/doc"
+    schedule:
+      interval: weekly
+    groups:
+      docs:
+        patterns: ["*"]
+
+  # The packages the build and the tests install by name (pyproject.toml and
+  # the packages/python add-ons). Their lower bounds are deliberate: Dependabot
+  # proposes a bump, a maintainer decides whether the floor moves.
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]

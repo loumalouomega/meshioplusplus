@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -41,7 +42,7 @@ namespace meshioplusplus {
 
 namespace {
 
-using OfsV3 = std::array<double, 3>;
+using detail::Vec3;
 using OfsFace = std::array<std::int64_t, 4>;
 
 [[noreturn]] void ofs_fail(const char* pOp, const std::string& rWhy) {
@@ -86,9 +87,9 @@ OfsSurface ofs_read(const Mesh& rMesh, const char* pOp) {
 }
 
 // A face's Newell normal (not unit) over the points X.
-OfsV3 ofs_face_normal(const std::vector<double>& rX, const OfsFace& rF) {
+Vec3 ofs_face_normal(const std::vector<double>& rX, const OfsFace& rF) {
     const int k = rF[3] >= 0 ? 4 : 3;
-    OfsV3 n{0.0, 0.0, 0.0};
+    Vec3 n{0.0, 0.0, 0.0};
     for (int i = 0; i < k; ++i) {
         const auto a = static_cast<std::size_t>(rF[static_cast<std::size_t>(i)]);
         const auto b = static_cast<std::size_t>(rF[static_cast<std::size_t>((i + 1) % k)]);

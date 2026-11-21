@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -24,6 +25,7 @@
  */
 
 // System includes
+#include <random>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -189,9 +191,11 @@ TEST(WriteOptions, OpenfoamEncodingReachesTheBinaryWriter) {
     // two cases sharing one parent would collide on the same polyMesh dir.
     static std::atomic<unsigned> counter{0};
     const std::filesystem::path dir_a =
-        std::filesystem::temp_directory_path() / ("meshio_wo_a_" + std::to_string(counter++));
+        std::filesystem::temp_directory_path() /
+        ("meshio_wo_a_" + std::to_string(std::random_device{}()) + "_" + std::to_string(counter++));
     const std::filesystem::path dir_b =
-        std::filesystem::temp_directory_path() / ("meshio_wo_b_" + std::to_string(counter++));
+        std::filesystem::temp_directory_path() /
+        ("meshio_wo_b_" + std::to_string(std::random_device{}()) + "_" + std::to_string(counter++));
     const std::string a = (dir_a / "case.foam").string();
     const std::string b = (dir_b / "case.foam").string();
 

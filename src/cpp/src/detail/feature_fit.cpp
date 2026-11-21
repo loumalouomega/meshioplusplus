@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -65,8 +66,7 @@ void ff_vertex_normals(const std::vector<PatchVec>& rPts, const std::vector<Patc
         const PatchTri& t = rTris[ti];
         const PatchVec e1 = vec3_sub(rPts[t[1]], rPts[t[0]]);
         const PatchVec e2 = vec3_sub(rPts[t[2]], rPts[t[0]]);
-        const PatchVec n{e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
-                         e1[0] * e2[1] - e1[1] * e2[0]};
+        const PatchVec n = detail::vec3_cross(e1, e2);
         for (std::size_t v : t)
             rNormals[v] = ff_axpy(rNormals[v], 1.0, n);
         for (int k = 0; k < 3; ++k) {

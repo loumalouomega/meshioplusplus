@@ -1111,6 +1111,15 @@ def write(filename, mesh):
         ):
             node_id = ids.astype(np.int64)
             max_node_id = int(ids.max()) + 1 if npts else 0
+            # The nodes are written as a table of `max_node_id` rows, a NaN row for
+            # each unused id, so a stray large id would ask for a table of that many
+            # rows; the native writer has the same budget (roadmap 3.19).
+            budget = max(10_000_000, 4 * npts)
+            if max_node_id > budget:
+                raise WriteError(
+                    f"meshio++: libmesh: node id {max_node_id - 1} would need a table "
+                    f"of {max_node_id} nodes, over the budget of {budget}"
+                )
 
     # Subdomain ids: `libmesh:subdomain`, else the first cell region holding
     # the cell (its tag, or a fresh id), else 0.
