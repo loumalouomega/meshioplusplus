@@ -2019,7 +2019,12 @@ jobs:
           # The FitCad, OctreeMesh, MeshCad, PatchNetwork and a few more numeric suites take
           # 5 to 25 minutes each at -O0 with gcov (some pass ctest's 1500 s default); the
           # other C++ jobs run them optimized. A pull request skips them here, master and
-          # release tags keep the full run.
+          # release tags keep the full run. The pull request still measures what they cover
+          # in two ways: the `Quick*` suites (tests/cpp/test_quick_*.cpp), small versions of
+          # the slow tests on skins of a few hundred triangles that take about 5 minutes
+          # together, which the exclusion below does not match (their names start with
+          # Quick); and the small suites the prefixes also caught, which take about a
+          # minute together.
           exclude=()
           timeout=()
           if [ "${{ github.event_name }}" = pull_request ]; then
@@ -2028,6 +2033,10 @@ jobs:
             timeout=(--timeout 3600)
           fi
           ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)" "${exclude[@]}" "${timeout[@]}"
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)" \
+              -R '^(OctreeMeshFixVolumes|OctreeMeshFeatureSnap|FitCadIterate|FitCadGoldens|MeshCadFolds|MeshCadGivenSizes|MeshCadTolerances|MeshCadVirtualEdges|MeshCadVirtualFaces|MeshCadVaryingMetric|MeshCadCurved)\.'
+          fi
 
       # SKBUILD_CMAKE_BUILD_TYPE overrides pyproject's `cmake.build-type =
       # "Release"`; -O0 keeps the gcov line mapping honest.
