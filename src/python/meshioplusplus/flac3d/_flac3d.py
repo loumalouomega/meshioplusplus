@@ -493,7 +493,7 @@ def write(filename, mesh: Mesh, float_fmt: str = ".16e", binary: bool = False):
             f.write(_provenance.render_lines(_provenance.SlotTier.BLOCK, "* "))
 
         _write_points(f, mesh.points, binary, float_fmt)
-        # Make gid an array such that its value can be persitently altered
+        # Make gid an array such that its value can be persistently altered
         # inside the functions. ZONES and FACES are numbered independently in
         # a FLAC3D file -- both start at 1 -- so each section gets its own
         # counter, matching what the reader (and every real file) expects.

@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -989,7 +990,11 @@ void read_elements(GmshCursor& rCur, bool is_ascii, std::vector<EBlock>& rBlocks
                 throw ReadError("Gmsh element type " + std::to_string(gtype) +
                                 " not supported by the C++ reader");
             std::size_t n = static_cast<std::size_t>(nnpc.at(it->second));
-            std::vector<std::int64_t> tags(num_tags), nodes(n);
+            // The counts come from the file: bound them by what is left of it.
+            const std::size_t left = rCur.mBuf.size() - std::min(rCur.mPos, rCur.mBuf.size());
+            const std::size_t nt = detail::checked_count(num_tags, left / 4, "Gmsh", "tag");
+            detail::checked_count(nelem, left / ((1 + nt + n) * 4), "Gmsh", "element");
+            std::vector<std::int64_t> tags(nt), nodes(n);
             for (std::int32_t k = 0; k < nelem; ++k) {
                 rCur.read_i32();  // element id
                 for (std::int32_t j = 0; j < num_tags; ++j)
@@ -1211,7 +1216,10 @@ void gmsh_add_element_node_data(Mesh& rMesh,
             }
             NDArray blk(DType::Float64, {b.mCount, block_width});
             double* bp = blk.As<double>();
-            const double* src = raw.mData.As<double>();
+            // Through a plain reference: GCC 11 reads `raw.mData.As<double>()` on a
+            // captured structured binding as a comparison (roadmap 3.15.4).
+            const NDArray& raw_data = raw.mData;
+            const double* src = raw_data.As<double>();
             for (std::size_t r = 0; r < b.mCount; ++r)
                 std::copy(src + (offset + r) * width, src + (offset + r) * width + block_width,
                           bp + r * block_width);

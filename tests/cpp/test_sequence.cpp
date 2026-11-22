@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -16,6 +17,7 @@
 //
 
 // System includes
+#include <random>
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
@@ -58,7 +60,8 @@ public:
         static std::atomic<unsigned> counter{0};
         mPath = std::filesystem::temp_directory_path() /
                 ("meshio_seq_" + std::to_string(counter++) + "_" +
-                 std::to_string(::testing::UnitTest::GetInstance()->random_seed()));
+                 std::to_string(::testing::UnitTest::GetInstance()->random_seed()) + "_" +
+                 std::to_string(std::random_device{}()));
         std::filesystem::create_directories(mPath);
     }
     ~SeqTempDir() {

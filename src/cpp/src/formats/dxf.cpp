@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -31,6 +32,7 @@
 #include "meshioplusplus/formats/dxf.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
 #include "../detail/open_source.hpp"
@@ -60,8 +62,7 @@ constexpr std::array<std::pair<int, double>, 11> kDxfUnits{{{1, 0.0254},
                                                             {14, 0.1}}};
 
 DxfV3 dxf_cross(const DxfV3& rA, const DxfV3& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
+    return detail::vec3_cross(rA, rB);
 }
 double dxf_dot(const DxfV3& rA, const DxfV3& rB) {
     return rA[0] * rB[0] + rA[1] * rB[1] + rA[2] * rB[2];

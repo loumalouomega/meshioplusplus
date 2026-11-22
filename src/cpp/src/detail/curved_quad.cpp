@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -23,6 +24,7 @@
 
 // Project includes
 #include "curved_quad.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus::detail {
 
@@ -205,8 +207,7 @@ double curved_quad_jacobian(int Order, const CurvedVec3* pNodes, const CurvedVec
             xv[k] += a[i] * db[j] * pNodes[n][k];
         }
     }
-    const CurvedVec3 c{xu[1] * xv[2] - xu[2] * xv[1], xu[2] * xv[0] - xu[0] * xv[2],
-                       xu[0] * xv[1] - xu[1] * xv[0]};
+    const CurvedVec3 c = detail::vec3_cross(xu, xv);
     return c[0] * rNormal[0] + c[1] * rNormal[1] + c[2] * rNormal[2];
 }
 

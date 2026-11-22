@@ -1,0 +1,149 @@
+name: notebooks
+
+# Executes the Python example notebooks (roadmap 3.11.4), so an API change that
+# breaks an example is found within a week instead of by a reader. Outputs are
+# not compared; an exception in any cell fails the notebook. Runs into a scratch
+# directory, so the committed outputs are never rewritten.
+
+on:
+  schedule:
+    - cron: "23 6 * * 6"  # weekly, Saturday 06:23 UTC
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/notebooks.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  execute:
+    name: Execute example/python notebooks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      # The notebooks read example/data and the reference fixtures under
+      # tests/python/meshes, all Git LFS: without them a reader sees a pointer file.
+      # Same degrading fetch as ci.yml (tools/fetch-lfs.sh): an exhausted LFS budget
+      # skips the execution instead of failing it.
+      - name: Compute the Git LFS cache key
+        run: git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
+      - name: Restore the Git LFS object cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .git/lfs
+          key: lfs-${{ hashFiles('.lfs-assets-id') }}
+      - name: Fetch Git LFS content
+        id: lfs
+        run: bash tools/fetch-lfs.sh
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Install system libraries
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          # Rendering, plus what the optional-backend notebooks need: OpenCASCADE
+          # (step, fit_cad), TBB and HDF5 (CutCells), the build tools.
+          sudo apt-get install -y libgl1 libglx-mesa0 libosmesa6 xvfb \
+            libocct-foundation-dev libocct-modeling-data-dev libocct-modeling-algorithms-dev \
+            libocct-data-exchange-dev libtbb-dev libhdf5-dev zlib1g-dev pkg-config
+      - name: Install build tools
+        run: python -m pip install --upgrade pip pybind11 cmake ninja numpy
+      # CutCells (66_cut_level_set) and QuadriFlow (65_remesh_quads): built from the
+      # commits pinned in build/deps-pins.sh, as the cutcells and netgen jobs of
+      # ci.yml do, and cached.
+      - name: Read the dependency pins
+        id: pins
+        run: |
+          . build/deps-pins.sh
+          echo "cutcells=$CUTCELLS_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "quadriflow=$QUADRIFLOW_COMMIT" >> "$GITHUB_OUTPUT"
+      - name: Cache CutCells
+        id: cc-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/cutcells-install
+          key: cutcells-${{ steps.pins.outputs.cutcells }}-${{ runner.os }}
+      - name: Build CutCells from source
+        if: steps.cc-cache.outputs.cache-hit != 'true'
+        run: build/build-cutcells.sh "$HOME/cutcells-install" --work /tmp/cutcells-work
+      - name: Cache QuadriFlow
+        id: qf-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/quadriflow-bin
+          key: quadriflow-${{ steps.pins.outputs.quadriflow }}-${{ runner.os }}
+      - name: Build QuadriFlow from source
+        if: steps.qf-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/hjwdzh/QuadriFlow.git /tmp/qf-src
+          git -C /tmp/qf-src checkout "${{ steps.pins.outputs.quadriflow }}"
+          # QuadriFlow's pinned CMakeLists asks for CMake < 3.5, which CMake 4 refuses.
+          cmake -S /tmp/qf-src -B /tmp/qf-build -DCMAKE_BUILD_TYPE=Release -DBUILD_FREE_LICENSE=ON \
+            -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+          cmake --build /tmp/qf-build -j
+          mkdir -p ~/quadriflow-bin
+          cp /tmp/qf-build/quadriflow ~/quadriflow-bin/
+      - name: Put QuadriFlow on PATH
+        run: echo "$HOME/quadriflow-bin" >> "$GITHUB_PATH"
+      - name: Install meshio++ (with OpenCASCADE and CutCells) and the notebook tools
+        env:
+          CMAKE_ARGS: >-
+            -DMESHIOPLUSPLUS_WITH_OCCT=ON
+            -DMESHIOPLUSPLUS_WITH_CUTCELLS=ON
+            -DCUTCELLS_ROOT=/home/runner/cutcells-install
+        run: |
+          pip install ".[all]" adios2 jupyter nbconvert ipykernel matplotlib pyvista trimesh pandas pyarrow scipy
+          python -c "from meshioplusplus import _core; assert _core.__has_cutcells__"
+      - name: Execute every notebook
+        if: steps.lfs.outputs.available != 'false'
+        env:
+          PYVISTA_OFF_SCREEN: "true"
+        run: |
+          mkdir -p "$RUNNER_TEMP/nb" "$RUNNER_TEMP/nblogs"
+          : > "$RUNNER_TEMP/skipped.txt"
+          : > "$RUNNER_TEMP/failed.txt"
+          : > "$RUNNER_TEMP/times.txt"
+          ok=0
+          for nb in example/python/*.ipynb; do
+            name=$(basename "$nb" .ipynb)
+            echo "== $nb"
+            start=$(date +%s)
+            if xvfb-run -a jupyter nbconvert --to notebook --execute \
+                --ExecutePreprocessor.timeout=1800 \
+                --output-dir "$RUNNER_TEMP/nb" "$nb" > "$RUNNER_TEMP/nblogs/$name.log" 2>&1; then
+              ok=$((ok + 1))
+              echo "$(( $(date +%s) - start )) $name" >> "$RUNNER_TEMP/times.txt"
+              continue
+            fi
+            echo "$(( $(date +%s) - start )) $name" >> "$RUNNER_TEMP/times.txt"
+            # A notebook that needs a build option or library the CI wheel lacks is
+            # skipped, not failed (tools/classify_notebook_error.py).
+            IFS=$'\t' read -r kind message < <(python tools/classify_notebook_error.py "$RUNNER_TEMP/nblogs/$name.log")
+            if [ "$kind" = skip ]; then
+              echo "| $name | $message |" >> "$RUNNER_TEMP/skipped.txt"
+              echo "::notice file=$nb::skipped, needs an optional build or library: $message"
+            else
+              echo "| $name | $message |" >> "$RUNNER_TEMP/failed.txt"
+              echo "::error file=$nb::notebook failed to execute: $message"
+              tail -n 40 "$RUNNER_TEMP/nblogs/$name.log"
+            fi
+          done
+          {
+            echo "### Notebooks: $ok ran, $(grep -c . "$RUNNER_TEMP/skipped.txt") skipped (optional build or library), $(grep -c . "$RUNNER_TEMP/failed.txt") failed"
+            printf '\n**Slowest notebooks (seconds)**\n\n'
+            sort -rn "$RUNNER_TEMP/times.txt" | head -n 3 | sed 's/^/- /'
+            if [ -s "$RUNNER_TEMP/failed.txt" ]; then
+              printf '\n**Failed**\n\n| Notebook | Error |\n| --- | --- |\n'; cat "$RUNNER_TEMP/failed.txt"
+            fi
+            if [ -s "$RUNNER_TEMP/skipped.txt" ]; then
+              printf '\n**Skipped**\n\n| Notebook | Needs |\n| --- | --- |\n'; cat "$RUNNER_TEMP/skipped.txt"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          [ ! -s "$RUNNER_TEMP/failed.txt" ]

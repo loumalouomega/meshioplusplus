@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -91,6 +92,8 @@ class RstFile {
 public:
     RstFile(const std::string& rPath, const ReadOptions& rOptions)
         : mSource(rPath, rOptions.mMmap), mWords(mSource.Size() / 4) {}
+
+    std::uint64_t Words() const { return mWords; }
 
     std::int32_t Word(std::uint64_t K) const {
         if (K >= mWords)
@@ -377,6 +380,15 @@ void RstPart::ReadModel() {
     const RstFile& file = mFile;
     const RstRecord g = file.Record(mResults.mGeometry);
     const std::int64_t maxety = g.Int(1), nnod = g.Int(3), nelm = g.Int(4);
+    // Each node and each element has a record of its own (at least 3 and 13
+    // words: a header, the 10 fixed element values, a trailer), so a count past
+    // that is forged; left unchecked it re-decodes one record up to 2**31 times.
+    if (nnod > 0)
+        detail::checked_count(nnod, static_cast<std::size_t>(file.Words() / 3), "Ansys .rst",
+                              "node");
+    if (nelm > 0)
+        detail::checked_count(nelm, static_cast<std::size_t>(file.Words() / 13), "Ansys .rst",
+                              "element");
     const std::uint64_t ptr_ety = rst_pointer(g, 20, 21, 6);
     const std::uint64_t ptr_loc = rst_pointer(g, 26, 27, 8);
     const std::uint64_t ptr_eid = rst_pointer(g, 28, 29, 10);

@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -52,7 +53,7 @@ namespace meshioplusplus {
 
 namespace {
 
-using GeoVec = std::array<double, 3>;
+using detail::Vec3;
 
 // One surface triangle and its cotangents (at corners 0, 1, 2).
 using GeoTriangle = detail::SurfaceFemTriangle;
@@ -132,7 +133,7 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         throw std::invalid_argument("geodesic_distance: the tolerance must be positive");
     const std::size_t n = rMesh.NumPoints();
     const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "geodesic_distance");
-    const std::vector<GeoVec>& xyz = fem.mPoints;
+    const std::vector<Vec3>& xyz = fem.mPoints;
     const std::vector<GeoTriangle>& good = fem.mTriangles;
     GeodesicResult result;
     result.mNumDegenerate = fem.mNumDegenerate;
@@ -210,20 +211,19 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
     // --- 2. the normalised direction, and its integrated divergence -------
     std::vector<double> div(n, 0.0);
     for (const GeoTriangle& t : good) {
-        const GeoVec& p0 = xyz[t.mNodes[0]];
-        const GeoVec& p1 = xyz[t.mNodes[1]];
-        const GeoVec& p2 = xyz[t.mNodes[2]];
-        const GeoVec normal =
-            detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
+        const Vec3& p0 = xyz[t.mNodes[0]];
+        const Vec3& p1 = xyz[t.mNodes[1]];
+        const Vec3& p2 = xyz[t.mNodes[2]];
+        const Vec3 normal = detail::vec3_cross(detail::vec3_sub(p1, p0), detail::vec3_sub(p2, p0));
         const double area2 = t.mDoubleArea;
-        GeoVec unit_n{normal[0] / area2, normal[1] / area2, normal[2] / area2};
+        Vec3 unit_n{normal[0] / area2, normal[1] / area2, normal[2] / area2};
         // grad u = sum_i u_i (N x e_i) / (2 A), e_i the edge opposite corner i,
         // oriented counter-clockwise.
-        GeoVec grad{0.0, 0.0, 0.0};
-        const std::array<const GeoVec*, 3> p = {&p0, &p1, &p2};
+        Vec3 grad{0.0, 0.0, 0.0};
+        const std::array<const Vec3*, 3> p = {&p0, &p1, &p2};
         for (std::size_t k = 0; k < 3; ++k) {
-            const GeoVec e = detail::vec3_sub(*p[(k + 2) % 3], *p[(k + 1) % 3]);
-            const GeoVec ne = detail::vec3_cross(unit_n, e);
+            const Vec3 e = detail::vec3_sub(*p[(k + 2) % 3], *p[(k + 1) % 3]);
+            const Vec3 ne = detail::vec3_cross(unit_n, e);
             const double uk = u[t.mNodes[k]];
             for (std::size_t c = 0; c < 3; ++c)
                 grad[c] += uk * ne[c] / area2;
@@ -231,13 +231,13 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         const double len = detail::vec3_norm(grad);
         if (!(len > 0.0))
             continue;
-        const GeoVec x{-grad[0] / len, -grad[1] / len, -grad[2] / len};
+        const Vec3 x{-grad[0] / len, -grad[1] / len, -grad[2] / len};
         for (std::size_t k = 0; k < 3; ++k) {
             // Corner k, its two neighbours j (next) and l (after): the edges from
             // k to them, weighted by the cotangents of the angles opposite them.
             const std::size_t j = (k + 1) % 3, l = (k + 2) % 3;
-            const GeoVec e1 = detail::vec3_sub(*p[j], *p[k]);
-            const GeoVec e2 = detail::vec3_sub(*p[l], *p[k]);
+            const Vec3 e1 = detail::vec3_sub(*p[j], *p[k]);
+            const Vec3 e2 = detail::vec3_sub(*p[l], *p[k]);
             div[t.mNodes[k]] +=
                 0.5 * (t.mCot[l] * detail::vec3_dot(e1, x) + t.mCot[j] * detail::vec3_dot(e2, x));
         }

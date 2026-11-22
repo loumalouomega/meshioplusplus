@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -17,6 +18,7 @@
 // The interactive viewer (roadmap 7.2): the input parser, the prepared scene
 // it draws from, the cell diff, and the loop run on a recorded byte stream.
 
+#include <random>
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -1580,8 +1582,10 @@ TEST(TuiMusic, TheLoopIsWrittenAsAWavFile) {
 class FakePlayerDir {
 public:
     explicit FakePlayerDir(const std::string& rBody) {
+        // std::rand() is never seeded, so it repeats in every test process (ctest starts one per
+        // test): a random_device token keeps concurrent tests apart.
         mDir = std::filesystem::temp_directory_path() /
-               ("meshio_fake_player_" + std::to_string(std::rand()));
+               ("meshio_fake_player_" + std::to_string(std::random_device{}()));
         std::filesystem::create_directories(mDir);
         const auto script = mDir / "aplay";
         {

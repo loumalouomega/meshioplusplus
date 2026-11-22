@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -27,23 +28,24 @@
 // Project includes
 #include "fem_kernels.hpp"
 #include "layer_sweep.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus::detail {
 
 namespace {
 
-using LsV3 = std::array<double, 3>;
+using detail::Vec3;
 
-LsV3 ls_at(const double* pX, std::int64_t I) {
+Vec3 ls_at(const double* pX, std::int64_t I) {
     const auto i = static_cast<std::size_t>(I);
     return {pX[3 * i], pX[3 * i + 1], pX[3 * i + 2]};
 }
 
 // det(A - O, B - O, C - O) over the three lengths; 0 for a zero edge.
-double ls_corner(const LsV3& rO, const LsV3& rA, const LsV3& rB, const LsV3& rC) {
-    const LsV3 a{rA[0] - rO[0], rA[1] - rO[1], rA[2] - rO[2]};
-    const LsV3 b{rB[0] - rO[0], rB[1] - rO[1], rB[2] - rO[2]};
-    const LsV3 c{rC[0] - rO[0], rC[1] - rO[1], rC[2] - rO[2]};
+double ls_corner(const Vec3& rO, const Vec3& rA, const Vec3& rB, const Vec3& rC) {
+    const Vec3 a{rA[0] - rO[0], rA[1] - rO[1], rA[2] - rO[2]};
+    const Vec3 b{rB[0] - rO[0], rB[1] - rO[1], rB[2] - rO[2]};
+    const Vec3 c{rC[0] - rO[0], rC[1] - rO[1], rC[2] - rO[2]};
     const double la = std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]);
     const double lb = std::sqrt(b[0] * b[0] + b[1] * b[1] + b[2] * b[2]);
     const double lc = std::sqrt(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]);
@@ -58,7 +60,7 @@ double ls_corner(const LsV3& rO, const LsV3& rA, const LsV3& rB, const LsV3& rC)
 }  // namespace
 
 double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell, int Kind) {
-    std::array<LsV3, 8> c{};
+    std::array<Vec3, 8> c{};
     for (int i = 0; i < Kind; ++i)
         c[static_cast<std::size_t>(i)] = ls_at(pX, rCell.mNodes[static_cast<std::size_t>(i)]);
     double sj = std::numeric_limits<double>::infinity();

@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -43,10 +44,10 @@ namespace meshioplusplus {
 
 namespace {
 
-using RegVec = std::array<double, 3>;
+using detail::Vec3;
 using RegMat = std::array<double, 9>;  // row-major 3x3
 
-RegVec reg_apply(const RegMat& rR, const RegVec& rT, const RegVec& rP) {
+Vec3 reg_apply(const RegMat& rR, const Vec3& rT, const Vec3& rP) {
     return {rR[0] * rP[0] + rR[1] * rP[1] + rR[2] * rP[2] + rT[0],
             rR[3] * rP[0] + rR[4] * rP[1] + rR[5] * rP[2] + rT[1],
             rR[6] * rP[0] + rR[7] * rP[1] + rR[8] * rP[2] + rT[2]};
@@ -80,7 +81,7 @@ RegMat reg_quaternion(double W, double X, double Y, double Z) {
 }
 
 /// The rotation by the vector `rW` (axis times angle), exactly.
-RegMat reg_rodrigues(const RegVec& rW) {
+RegMat reg_rodrigues(const Vec3& rW) {
     const double angle = std::sqrt(detail::vec3_dot(rW, rW));
     if (!(angle > 0.0))
         return {1, 0, 0, 0, 1, 0, 0, 0, 1};
@@ -99,9 +100,9 @@ double reg_angle(const RegMat& rR) {
 }
 
 struct RegPairs {
-    std::vector<RegVec> mP;  ///< moved source points
-    std::vector<RegVec> mQ;  ///< their closest target points
-    std::vector<RegVec> mN;  ///< the target's unit normals there (point-to-plane)
+    std::vector<Vec3> mP;  ///< moved source points
+    std::vector<Vec3> mQ;  ///< their closest target points
+    std::vector<Vec3> mN;  ///< the target's unit normals there (point-to-plane)
     double mSumSq = 0.0;
 };
 
@@ -118,7 +119,7 @@ public:
         }
         const std::size_t n = rTarget.NumPoints();
         const std::size_t dim = rTarget.PointDim();
-        mPoints.assign(n, RegVec{0.0, 0.0, 0.0});
+        mPoints.assign(n, Vec3{0.0, 0.0, 0.0});
         for (std::size_t i = 0; i < n; ++i)
             for (std::size_t k = 0; k < dim && k < 3; ++k) {
                 const double v = detail::read_double(rTarget.Points(), i * dim + k);
@@ -143,13 +144,13 @@ public:
                 std::int64_t cells = 0;
                 for (const auto cb : rTarget.CellRange())
                     cells += static_cast<std::int64_t>(cb.NumCells());
-                mCellNormal.assign(static_cast<std::size_t>(cells), RegVec{0.0, 0.0, 0.0});
+                mCellNormal.assign(static_cast<std::size_t>(cells), Vec3{0.0, 0.0, 0.0});
                 for (std::size_t t = 0; t < mSoup.NumTriangles(); ++t) {
-                    RegVec& c = mCellNormal[static_cast<std::size_t>(mSoup.mSourceCell[t])];
+                    Vec3& c = mCellNormal[static_cast<std::size_t>(mSoup.mSourceCell[t])];
                     for (std::size_t a = 0; a < 3; ++a)
                         c[a] += mQuery.mFaceNormal[t][a];
                 }
-                for (RegVec& c : mCellNormal) {
+                for (Vec3& c : mCellNormal) {
                     const double len = std::sqrt(detail::vec3_dot(c, c));
                     if (len > 0.0)
                         c = {c[0] / len, c[1] / len, c[2] / len};
@@ -184,11 +185,11 @@ public:
     }
 
     /// The closest target point (and normal) of each moved source point.
-    void Match(const std::vector<RegVec>& rMoved, std::vector<RegVec>& rQ, std::vector<RegVec>& rN,
+    void Match(const std::vector<Vec3>& rMoved, std::vector<Vec3>& rQ, std::vector<Vec3>& rN,
                bool NeedNormals) const {
         const std::size_t m = rMoved.size();
-        rQ.assign(m, RegVec{0.0, 0.0, 0.0});
-        rN.assign(NeedNormals ? m : 0, RegVec{0.0, 0.0, 0.0});
+        rQ.assign(m, Vec3{0.0, 0.0, 0.0});
+        rN.assign(NeedNormals ? m : 0, Vec3{0.0, 0.0, 0.0});
         if (mSurface) {
             const std::vector<detail::ClosestPointHit> hits =
                 detail::query_closest_points(mQuery, rMoved);
@@ -209,13 +210,13 @@ public:
 
     bool IsSurface() const { return mSurface; }
     const detail::TriangleSoup& Soup() const { return mSoup; }
-    const std::vector<RegVec>& Points() const { return mPoints; }
+    const std::vector<Vec3>& Points() const { return mPoints; }
     bool HasPointNormals() const { return !mPointNormal.empty(); }
 
 private:
-    std::vector<RegVec> mPoints;
-    std::vector<RegVec> mPointNormal;
-    std::vector<RegVec> mCellNormal;
+    std::vector<Vec3> mPoints;
+    std::vector<Vec3> mPointNormal;
+    std::vector<Vec3> mCellNormal;
     detail::TriangleSoup mSoup;
     detail::DistanceQuery mQuery;
     detail::PointKnn mKnn;
@@ -225,18 +226,18 @@ private:
 /// The pairs under the transform (R, t), within `MaxDistance` when positive
 /// and within `Trim` times the median pair distance when `Trim` is positive,
 /// with finite normals when they are needed.
-RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<RegVec>& rSource, const RegMat& rR,
-                   const RegVec& rT, double MaxDistance, bool NeedNormals, double Trim = 0.0) {
-    std::vector<RegVec> moved(rSource.size());
+RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<Vec3>& rSource, const RegMat& rR,
+                   const Vec3& rT, double MaxDistance, bool NeedNormals, double Trim = 0.0) {
+    std::vector<Vec3> moved(rSource.size());
     parallel_for(rSource.size(), [&](std::size_t i) { moved[i] = reg_apply(rR, rT, rSource[i]); });
-    std::vector<RegVec> q, nrm;
+    std::vector<Vec3> q, nrm;
     rTarget.Match(moved, q, nrm, NeedNormals);
     double cut2 =
         MaxDistance > 0.0 ? MaxDistance * MaxDistance : std::numeric_limits<double>::infinity();
     if (Trim > 0.0 && !moved.empty()) {
         std::vector<double> d2s(moved.size());
         for (std::size_t i = 0; i < moved.size(); ++i) {
-            const RegVec d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
+            const Vec3 d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
             d2s[i] = detail::vec3_dot(d, d);
         }
         const double med = std::sqrt(detail::MathUtils::MedianUpper(d2s));
@@ -246,7 +247,7 @@ RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<RegVec>& rSource,
     }
     RegPairs out;
     for (std::size_t i = 0; i < moved.size(); ++i) {
-        const RegVec d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
+        const Vec3 d{q[i][0] - moved[i][0], q[i][1] - moved[i][1], q[i][2] - moved[i][2]};
         const double d2 = detail::vec3_dot(d, d);
         if (d2 > cut2)
             continue;
@@ -264,10 +265,10 @@ RegPairs reg_pairs(const RegTarget& rTarget, const std::vector<RegVec>& rSource,
 
 /// Horn's closed-form best rotation and translation for point pairs, each
 /// weighted by `pWeights[i]` when given (unweighted otherwise).
-void reg_point_to_point(const RegPairs& rPairs, RegMat& rR, RegVec& rT,
+void reg_point_to_point(const RegPairs& rPairs, RegMat& rR, Vec3& rT,
                         const std::vector<double>* pWeights = nullptr) {
     double m = static_cast<double>(rPairs.mP.size());
-    RegVec pc{0, 0, 0}, qc{0, 0, 0};
+    Vec3 pc{0, 0, 0}, qc{0, 0, 0};
     if (pWeights != nullptr) {
         m = 0.0;
         for (std::size_t i = 0; i < rPairs.mP.size(); ++i) {
@@ -317,23 +318,23 @@ void reg_point_to_point(const RegPairs& rPairs, RegMat& rR, RegVec& rT,
     qy /= len;
     qz /= len;
     rR = reg_quaternion(qw, qx, qy, qz);
-    const RegVec rp = reg_apply(rR, {0, 0, 0}, pc);
+    const Vec3 rp = reg_apply(rR, {0, 0, 0}, pc);
     rT = {qc[0] - rp[0], qc[1] - rp[1], qc[2] - rp[2]};
 }
 
 /// The linearised point-to-plane step, applied as an exact rotation about the
 /// pairs' centroid.
-void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, RegVec& rT) {
+void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, Vec3& rT) {
     const double m = static_cast<double>(rPairs.mP.size());
-    RegVec c{0, 0, 0};
-    for (const RegVec& p : rPairs.mP)
+    Vec3 c{0, 0, 0};
+    for (const Vec3& p : rPairs.mP)
         for (std::size_t a = 0; a < 3; ++a)
             c[a] += p[a];
     for (std::size_t a = 0; a < 3; ++a)
         c[a] /= m;
     double scale = 0.0;
-    for (const RegVec& p : rPairs.mP) {
-        const RegVec d{p[0] - c[0], p[1] - c[1], p[2] - c[2]};
+    for (const Vec3& p : rPairs.mP) {
+        const Vec3 d{p[0] - c[0], p[1] - c[1], p[2] - c[2]};
         scale += detail::vec3_dot(d, d);
     }
     scale = std::sqrt(scale / m);
@@ -342,12 +343,12 @@ void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, RegVec& rT) {
     std::array<double, 36> a{};
     std::array<double, 6> g{};
     for (std::size_t i = 0; i < rPairs.mP.size(); ++i) {
-        const RegVec p{(rPairs.mP[i][0] - c[0]) / scale, (rPairs.mP[i][1] - c[1]) / scale,
-                       (rPairs.mP[i][2] - c[2]) / scale};
-        const RegVec q{(rPairs.mQ[i][0] - c[0]) / scale, (rPairs.mQ[i][1] - c[1]) / scale,
-                       (rPairs.mQ[i][2] - c[2]) / scale};
-        const RegVec& nn = rPairs.mN[i];
-        const RegVec x = detail::vec3_cross(p, nn);
+        const Vec3 p{(rPairs.mP[i][0] - c[0]) / scale, (rPairs.mP[i][1] - c[1]) / scale,
+                     (rPairs.mP[i][2] - c[2]) / scale};
+        const Vec3 q{(rPairs.mQ[i][0] - c[0]) / scale, (rPairs.mQ[i][1] - c[1]) / scale,
+                     (rPairs.mQ[i][2] - c[2]) / scale};
+        const Vec3& nn = rPairs.mN[i];
+        const Vec3 x = detail::vec3_cross(p, nn);
         const std::array<double, 6> row{x[0], x[1], x[2], nn[0], nn[1], nn[2]};
         const double b = detail::vec3_dot({q[0] - p[0], q[1] - p[1], q[2] - p[2]}, nn);
         for (std::size_t r = 0; r < 6; ++r) {
@@ -374,7 +375,7 @@ void reg_point_to_plane(const RegPairs& rPairs, RegMat& rR, RegVec& rT) {
     }
     rR = reg_rodrigues({x[0], x[1], x[2]});
     // x -> R (x - c) + c + s dt
-    const RegVec rc = reg_apply(rR, {0, 0, 0}, c);
+    const Vec3 rc = reg_apply(rR, {0, 0, 0}, c);
     rT = {c[0] - rc[0] + scale * x[3], c[1] - rc[1] + scale * x[4], c[2] - rc[2] + scale * x[5]};
 }
 
@@ -399,10 +400,10 @@ struct RegIcpOutcome {
 };
 
 /// ICP from (rRot, rTr), updated in place; `rLo`/`rHi` bound the source.
-RegIcpOutcome reg_icp(const RegTarget& rTarget, const std::vector<RegVec>& rSrc,
-                      const RegIcpSettings& rSet, RegMat& rRot, RegVec& rTr) {
+RegIcpOutcome reg_icp(const RegTarget& rTarget, const std::vector<Vec3>& rSrc,
+                      const RegIcpSettings& rSet, RegMat& rRot, Vec3& rTr) {
     const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(rSrc);
-    const RegVec lo = box.mMin, hi = box.mMax;
+    const Vec3 lo = box.mMin, hi = box.mMax;
     const double extent = detail::BoundingBoxUtils::Diagonal(box);
     RegIcpOutcome out;
     for (std::int64_t it = 1; it <= rSet.mMaxIterations; ++it) {
@@ -415,17 +416,17 @@ RegIcpOutcome reg_icp(const RegTarget& rTarget, const std::vector<RegVec>& rSrc,
         if (it == 1)
             out.mInitialRms = std::sqrt(pairs.mSumSq / static_cast<double>(pairs.mP.size()));
         RegMat d_rot;
-        RegVec d_tr;
+        Vec3 d_tr;
         if (rSet.mPlane)
             reg_point_to_plane(pairs, d_rot, d_tr);
         else
             reg_point_to_point(pairs, d_rot, d_tr);
         // The step's motion: its rotation, and how far it moves the source's
         // centre (not the origin, which may lie far away).
-        const RegVec centre = reg_apply(
+        const Vec3 centre = reg_apply(
             rRot, rTr, {0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), 0.5 * (lo[2] + hi[2])});
-        const RegVec stepped = reg_apply(d_rot, d_tr, centre);
-        const RegVec shift{stepped[0] - centre[0], stepped[1] - centre[1], stepped[2] - centre[2]};
+        const Vec3 stepped = reg_apply(d_rot, d_tr, centre);
+        const Vec3 shift{stepped[0] - centre[0], stepped[1] - centre[1], stepped[2] - centre[2]};
         const double moved = std::sqrt(detail::vec3_dot(shift, shift));
         rRot = reg_mul(d_rot, rRot);
         rTr = reg_apply(d_rot, d_tr, rTr);
@@ -447,13 +448,13 @@ RegIcpOutcome reg_icp(const RegTarget& rTarget, const std::vector<RegVec>& rSrc,
 /// A principal frame: the centroid and the axes (columns of `mAxes`, by
 /// decreasing spread, right-handed).
 struct RegFrame {
-    RegVec mCentre{0, 0, 0};
+    Vec3 mCentre{0, 0, 0};
     RegMat mAxes{1, 0, 0, 0, 1, 0, 0, 0, 1};
 };
 
 /// The frame of second moments `rM` (about the origin, total weight `W`,
 /// first moment `rS`).
-RegFrame reg_frame_from_moments(const RegMat& rM, const RegVec& rS, double W) {
+RegFrame reg_frame_from_moments(const RegMat& rM, const Vec3& rS, double W) {
     RegFrame f;
     if (!(W > 0.0))
         return f;
@@ -469,8 +470,8 @@ RegFrame reg_frame_from_moments(const RegMat& rM, const RegVec& rS, double W) {
     for (std::size_t k = 0; k < 3; ++k)
         for (std::size_t a = 0; a < 3; ++a)
             f.mAxes[3 * a + k] = v[3 * (2 - k) + a];
-    const RegVec e0{f.mAxes[0], f.mAxes[3], f.mAxes[6]}, e1{f.mAxes[1], f.mAxes[4], f.mAxes[7]};
-    const RegVec e2 = detail::vec3_cross(e0, e1);
+    const Vec3 e0{f.mAxes[0], f.mAxes[3], f.mAxes[6]}, e1{f.mAxes[1], f.mAxes[4], f.mAxes[7]};
+    const Vec3 e2 = detail::vec3_cross(e0, e1);
     f.mAxes[2] = e2[0];
     f.mAxes[5] = e2[1];
     f.mAxes[8] = e2[2];
@@ -479,20 +480,20 @@ RegFrame reg_frame_from_moments(const RegMat& rM, const RegVec& rS, double W) {
 
 /// The principal frame of a triangle soup (area-weighted, exact per
 /// triangle) or, with no triangles, of the points.
-RegFrame reg_frame(const detail::TriangleSoup* pSoup, const std::vector<RegVec>& rPoints) {
+RegFrame reg_frame(const detail::TriangleSoup* pSoup, const std::vector<Vec3>& rPoints) {
     RegMat m{};
-    RegVec s{0, 0, 0};
+    Vec3 s{0, 0, 0};
     double w = 0.0;
     if (pSoup != nullptr && pSoup->NumTriangles() > 0) {
         for (std::size_t t = 0; t < pSoup->NumTriangles(); ++t) {
-            const RegVec& a = pSoup->mCorners[3 * t];
-            const RegVec& b = pSoup->mCorners[3 * t + 1];
-            const RegVec& c = pSoup->mCorners[3 * t + 2];
-            const RegVec ab{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
-            const RegVec ac{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
-            const RegVec x = detail::vec3_cross(ab, ac);
+            const Vec3& a = pSoup->mCorners[3 * t];
+            const Vec3& b = pSoup->mCorners[3 * t + 1];
+            const Vec3& c = pSoup->mCorners[3 * t + 2];
+            const Vec3 ab{b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+            const Vec3 ac{c[0] - a[0], c[1] - a[1], c[2] - a[2]};
+            const Vec3 x = detail::vec3_cross(ab, ac);
             const double area = 0.5 * std::sqrt(detail::vec3_dot(x, x));
-            const RegVec sum{a[0] + b[0] + c[0], a[1] + b[1] + c[1], a[2] + b[2] + c[2]};
+            const Vec3 sum{a[0] + b[0] + c[0], a[1] + b[1] + c[1], a[2] + b[2] + c[2]};
             // The integral of x x^T over a triangle: A/12 (sum v v^T + s s^T).
             for (std::size_t i = 0; i < 3; ++i)
                 for (std::size_t j = 0; j < 3; ++j)
@@ -507,7 +508,7 @@ RegFrame reg_frame(const detail::TriangleSoup* pSoup, const std::vector<RegVec>&
         m = {};
         s = {0, 0, 0};
     }
-    for (const RegVec& p : rPoints) {
+    for (const Vec3& p : rPoints) {
         for (std::size_t i = 0; i < 3; ++i) {
             s[i] += p[i];
             for (std::size_t j = 0; j < 3; ++j)
@@ -547,8 +548,8 @@ RegMat reg_transpose(const RegMat& rA) {
 double reg_trimmed_rms(const RegPairs& rPairs, double Keep) {
     std::vector<double> d2(rPairs.mP.size());
     for (std::size_t i = 0; i < d2.size(); ++i) {
-        const RegVec d{rPairs.mQ[i][0] - rPairs.mP[i][0], rPairs.mQ[i][1] - rPairs.mP[i][1],
-                       rPairs.mQ[i][2] - rPairs.mP[i][2]};
+        const Vec3 d{rPairs.mQ[i][0] - rPairs.mP[i][0], rPairs.mQ[i][1] - rPairs.mP[i][1],
+                     rPairs.mQ[i][2] - rPairs.mP[i][2]};
         d2[i] = detail::vec3_dot(d, d);
     }
     if (d2.empty())
@@ -563,11 +564,11 @@ double reg_trimmed_rms(const RegPairs& rPairs, double Keep) {
 }
 
 /// Every `Stride`-th point, so at most `Max` of them.
-std::vector<RegVec> reg_stride(const std::vector<RegVec>& rPts, std::size_t Max) {
+std::vector<Vec3> reg_stride(const std::vector<Vec3>& rPts, std::size_t Max) {
     if (rPts.size() <= Max || Max == 0)
         return rPts;
     const std::size_t stride = (rPts.size() + Max - 1) / Max;
-    std::vector<RegVec> out;
+    std::vector<Vec3> out;
     out.reserve(Max);
     for (std::size_t i = 0; i < rPts.size(); i += stride)
         out.push_back(rPts[i]);
@@ -575,12 +576,12 @@ std::vector<RegVec> reg_stride(const std::vector<RegVec>& rPts, std::size_t Max)
 }
 
 /// The finite points of @p rMesh, `pWhat` naming it in errors.
-std::vector<RegVec> reg_points(const Mesh& rMesh, const char* pWhat) {
+std::vector<Vec3> reg_points(const Mesh& rMesh, const char* pWhat) {
     const std::size_t n = rMesh.NumPoints();
     if (n == 0)
         throw std::invalid_argument(std::string("meshio++: ") + pWhat + " has no points");
     const std::size_t dim = rMesh.PointDim();
-    std::vector<RegVec> out(n, RegVec{0.0, 0.0, 0.0});
+    std::vector<Vec3> out(n, Vec3{0.0, 0.0, 0.0});
     for (std::size_t i = 0; i < n; ++i)
         for (std::size_t k = 0; k < dim && k < 3; ++k) {
             const double v = detail::read_double(rMesh.Points(), i * dim + k);
@@ -638,7 +639,7 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
     const std::size_t n = rSource.NumPoints();
     if (n == 0)
         throw std::invalid_argument("meshio++: register_rigid: the source has no points");
-    std::vector<RegVec> src = reg_points(rSource, "register_rigid: source");
+    std::vector<Vec3> src = reg_points(rSource, "register_rigid: source");
     detail::TriangleSoup src_soup;
     const bool src_surface = reg_has_surface(rSource);
     if (!rOptions.mSourceRegion.empty()) {
@@ -650,7 +651,7 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
         for (const auto& tri : src_soup.mVertices)
             for (const std::int64_t v : tri)
                 used[static_cast<std::size_t>(v)] = 1;
-        std::vector<RegVec> kept;
+        std::vector<Vec3> kept;
         for (std::size_t i = 0; i < n; ++i)
             if (used[i] != 0)
                 kept.push_back(src[i]);
@@ -666,7 +667,7 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
             throw std::invalid_argument(
                 "meshio++: register_rigid: the initial matrix is not finite");
     RegMat rot{m0[0], m0[1], m0[2], m0[4], m0[5], m0[6], m0[8], m0[9], m0[10]};
-    RegVec tr{m0[3], m0[7], m0[11]};
+    Vec3 tr{m0[3], m0[7], m0[11]};
 
     const bool plane = rOptions.mMethod == RegistrationMethod::PointToPlane;
     const RegTarget target(rTarget, plane, rOptions.mTargetRegion);
@@ -675,7 +676,7 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
         const RegFrame fs = reg_frame(&src_soup, src);
         const RegFrame ft =
             reg_frame(target.IsSurface() ? &target.Soup() : nullptr, target.Points());
-        const std::vector<RegVec> coarse_src = reg_stride(src, 1000);
+        const std::vector<Vec3> coarse_src = reg_stride(src, 1000);
         RegIcpSettings coarse;
         coarse.mPlane = false;
         coarse.mMaxIterations = 30;
@@ -684,12 +685,12 @@ RegistrationResult register_rigid(const Mesh& rSource, const Mesh& rTarget,
         coarse.mTrim = rOptions.mAdaptiveTrim;
         const std::vector<RegMat> maps = reg_proper_axis_maps();
         std::vector<RegMat> rots(maps.size());
-        std::vector<RegVec> trs(maps.size());
+        std::vector<Vec3> trs(maps.size());
         std::size_t best = 0;
         for (std::size_t k = 0; k < maps.size(); ++k) {
             RegMat r = reg_mul(ft.mAxes, reg_mul(maps[k], reg_transpose(fs.mAxes)));
-            const RegVec rc = reg_apply(r, {0, 0, 0}, fs.mCentre);
-            RegVec t{ft.mCentre[0] - rc[0], ft.mCentre[1] - rc[1], ft.mCentre[2] - rc[2]};
+            const Vec3 rc = reg_apply(r, {0, 0, 0}, fs.mCentre);
+            Vec3 t{ft.mCentre[0] - rc[0], ft.mCentre[1] - rc[1], ft.mCentre[2] - rc[2]};
             const RegIcpOutcome o = reg_icp(target, coarse_src, coarse, r, t);
             rots[k] = r;
             trs[k] = t;
@@ -777,7 +778,7 @@ LandmarkResult register_landmarks(const std::vector<std::array<double, 3>>& rSou
     // Collinear (or coincident) sources leave the rotation about their line free.
     {
         RegMat m{};
-        RegVec s{0, 0, 0};
+        Vec3 s{0, 0, 0};
         double tw = 0.0;
         for (std::size_t i = 0; i < pairs.mP.size(); ++i) {
             if (!(w[i] > 0.0))
@@ -802,13 +803,13 @@ LandmarkResult register_landmarks(const std::vector<std::array<double, 3>>& rSou
                                         "their line is undetermined");
     }
     RegMat r;
-    RegVec t;
+    Vec3 t;
     reg_point_to_point(pairs, r, t, &w);
     LandmarkResult out;
     double sum = 0.0, tw = 0.0;
     for (std::size_t i = 0; i < pairs.mP.size(); ++i) {
-        const RegVec p = reg_apply(r, t, pairs.mP[i]);
-        const RegVec d{p[0] - pairs.mQ[i][0], p[1] - pairs.mQ[i][1], p[2] - pairs.mQ[i][2]};
+        const Vec3 p = reg_apply(r, t, pairs.mP[i]);
+        const Vec3 d{p[0] - pairs.mQ[i][0], p[1] - pairs.mQ[i][1], p[2] - pairs.mQ[i][2]};
         const double d2 = detail::vec3_dot(d, d);
         out.mResiduals.push_back(std::sqrt(d2));
         sum += w[i] * d2;
@@ -833,7 +834,7 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     for (std::size_t a = 0; a < 3; ++a)
         if (!std::isfinite(rOptions.mSeedOrigin[a]) || !std::isfinite(rOptions.mSeedNormal[a]))
             throw std::invalid_argument(std::string(prefix) + "the seed plane is not finite");
-    const std::vector<RegVec> pts = reg_points(rMesh, "find_symmetry_plane: the input");
+    const std::vector<Vec3> pts = reg_points(rMesh, "find_symmetry_plane: the input");
     const bool plane = reg_has_surface(rMesh);
     const RegTarget target(rMesh, plane, "");
     const RegFrame frame = reg_frame(plane ? &target.Soup() : nullptr, pts);
@@ -845,7 +846,7 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     result.mTolerance = rOptions.mTolerance > 0.0 ? rOptions.mTolerance : 0.005 * diag;
 
     struct Plane {
-        RegVec mO, mN;
+        Vec3 mO, mN;
     };
     std::vector<Plane> cands;
     for (std::size_t k = 0; k < 3; ++k)
@@ -855,10 +856,10 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
         cands.push_back({rOptions.mSeedOrigin,
                          {rOptions.mSeedNormal[0] / seed_len, rOptions.mSeedNormal[1] / seed_len,
                           rOptions.mSeedNormal[2] / seed_len}});
-    const auto reflect = [](const std::vector<RegVec>& rIn, const Plane& rPl) {
-        std::vector<RegVec> out(rIn.size());
+    const auto reflect = [](const std::vector<Vec3>& rIn, const Plane& rPl) {
+        std::vector<Vec3> out(rIn.size());
         for (std::size_t i = 0; i < rIn.size(); ++i) {
-            const RegVec& p = rIn[i];
+            const Vec3& p = rIn[i];
             const double d = (p[0] - rPl.mO[0]) * rPl.mN[0] + (p[1] - rPl.mO[1]) * rPl.mN[1] +
                              (p[2] - rPl.mO[2]) * rPl.mN[2];
             out[i] = {p[0] - 2.0 * d * rPl.mN[0], p[1] - 2.0 * d * rPl.mN[1],
@@ -868,15 +869,15 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     };
     // The plane of the improper isometry `x -> R H x + t` (H the reflection
     // across `rPl`): the eigenvector of its linear part's -1 eigenvalue.
-    const auto extract = [&](const Plane& rPl, const RegMat& rR, const RegVec& rT) {
+    const auto extract = [&](const Plane& rPl, const RegMat& rR, const Vec3& rT) {
         RegMat h{};
         for (std::size_t a = 0; a < 3; ++a)
             for (std::size_t b = 0; b < 3; ++b)
                 h[3 * a + b] = (a == b ? 1.0 : 0.0) - 2.0 * rPl.mN[a] * rPl.mN[b];
         const RegMat l = reg_mul(rR, h);
         const double c = 2.0 * detail::vec3_dot(rPl.mO, rPl.mN);
-        const RegVec rn = reg_apply(rR, {0, 0, 0}, rPl.mN);
-        const RegVec b{rT[0] + c * rn[0], rT[1] + c * rn[1], rT[2] + c * rn[2]};
+        const Vec3 rn = reg_apply(rR, {0, 0, 0}, rPl.mN);
+        const Vec3 b{rT[0] + c * rn[0], rT[1] + c * rn[1], rT[2] + c * rn[2]};
         std::array<double, 9> sym{};
         for (std::size_t a = 0; a < 3; ++a)
             for (std::size_t k = 0; k < 3; ++k)
@@ -884,7 +885,7 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
         std::array<double, 3> ev{};
         std::array<double, 9> vec{};
         detail::lsq_sym3_eigen(sym.data(), ev.data(), vec.data());
-        RegVec nn{vec[0], vec[1], vec[2]};  // smallest eigenvalue, signed positive
+        Vec3 nn{vec[0], vec[1], vec[2]};  // smallest eigenvalue, signed positive
         const double d = 0.5 * detail::vec3_dot(b, nn);
         const double off = detail::vec3_dot(frame.mCentre, nn) - d;
         Plane out;
@@ -898,11 +899,11 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     set.mMaxIterations = rOptions.mMaxIterations;
     set.mTolerance = 1e-6;
     set.mTrim = 3.0;
-    const std::vector<RegVec> coarse = reg_stride(pts, 500);
+    const std::vector<Vec3> coarse = reg_stride(pts, 500);
     std::size_t best = 0;
     for (std::size_t k = 0; k < cands.size(); ++k) {
         RegMat r{1, 0, 0, 0, 1, 0, 0, 0, 1};
-        RegVec t{0, 0, 0};
+        Vec3 t{0, 0, 0};
         const RegIcpOutcome o = reg_icp(target, reflect(coarse, cands[k]), set, r, t);
         result.mCandidateRms.push_back(reg_trimmed_rms(o.mLast, 0.9));
         if (result.mCandidateRms[k] < result.mCandidateRms[best])
@@ -911,13 +912,12 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
     result.mChosenCandidate = static_cast<std::int64_t>(best);
     // Fine: from the chosen candidate on the larger sample, then twice more
     // from the plane it gives, so the recovered plane is its own fixed point.
-    const std::vector<RegVec> fine =
-        reg_stride(pts, static_cast<std::size_t>(rOptions.mMaxSamples));
+    const std::vector<Vec3> fine = reg_stride(pts, static_cast<std::size_t>(rOptions.mMaxSamples));
     set.mTolerance = 1e-12;
     Plane cur = cands[best];
     for (int round = 0; round < 3; ++round) {
         RegMat r{1, 0, 0, 0, 1, 0, 0, 0, 1};
-        RegVec t{0, 0, 0};
+        Vec3 t{0, 0, 0};
         reg_icp(target, reflect(fine, cur), set, r, t);
         cur = extract(cur, r, t);
     }
@@ -926,8 +926,8 @@ SymmetryPlaneResult find_symmetry_plane(const Mesh& rMesh, const SymmetryPlaneOp
                                     {0, 0, 0}, 0.0, false, 0.0);
     std::size_t within = 0;
     for (std::size_t i = 0; i < meas.mP.size(); ++i) {
-        const RegVec d{meas.mQ[i][0] - meas.mP[i][0], meas.mQ[i][1] - meas.mP[i][1],
-                       meas.mQ[i][2] - meas.mP[i][2]};
+        const Vec3 d{meas.mQ[i][0] - meas.mP[i][0], meas.mQ[i][1] - meas.mP[i][1],
+                     meas.mQ[i][2] - meas.mP[i][2]};
         within += detail::vec3_dot(d, d) <= result.mTolerance * result.mTolerance ? 1 : 0;
     }
     result.mRms =

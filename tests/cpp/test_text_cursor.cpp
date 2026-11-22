@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -111,8 +112,26 @@ std::vector<std::string> tc_lines(std::size_t count) {
     return out;
 }
 
+// The `istream >> double` oracle is implementation-defined past plain decimals:
+// libc++ also extracts hexadecimal floats ("0x1p3" reads 8) and inf/nan, and treats
+// a range error differently ("1e999" reads inf, "1e-999" fails), where libstdc++
+// stops at the first and stores the limit with failbit on the others, and
+// TextStream follows libstdc++. Under libc++ only lines without a letter are
+// compared; the libstdc++ legs keep the full comparison.
+template <class T>
+bool tc_oracle_is_defined(const std::string& rLine) {
+#if defined(_LIBCPP_VERSION)
+    if constexpr (std::is_floating_point_v<T>)
+        return rLine.find_first_of("eExXinfaINFA") == std::string::npos;
+#endif
+    (void)rLine;
+    return true;
+}
+
 template <class T>
 void tc_expect_same_sequence(const std::string& rLine) {
+    if (!tc_oracle_is_defined<T>(rLine))
+        return;
     auto ref = meshioplusplus::detail::make_classic_istringstream(rLine);
     det::TextStream got(rLine);
     for (int k = 0; k < 6; ++k) {
@@ -140,6 +159,8 @@ TEST(TextCursor, StreamExtractionMatchesIstringstream) {
         tc_expect_same_sequence<unsigned long long>(line);
         tc_expect_same_sequence<unsigned>(line);
         // Mixed: a word, then numbers, as `tag x y z` lines read.
+        if (!tc_oracle_is_defined<double>(line))
+            continue;
         auto ref = meshioplusplus::detail::make_classic_istringstream(line);
         det::TextStream got(line);
         std::string w1, w2;

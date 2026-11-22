@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -16,6 +17,7 @@
 //
 
 // System includes
+#include <random>
 #include <atomic>
 #include <algorithm>
 #include <cmath>
@@ -51,7 +53,9 @@ namespace {
 // Write a minimal single-hex ASCII polyMesh case; return the case dir.
 fs::path make_hex_case() {
     static std::atomic<unsigned> counter{0};
-    fs::path base = fs::temp_directory_path() / ("meshio_of_" + std::to_string(counter++));
+    fs::path base =
+        fs::temp_directory_path() /
+        ("meshio_of_" + std::to_string(std::random_device{}()) + "_" + std::to_string(counter++));
     fs::path poly = base / "constant" / "polyMesh";
     fs::create_directories(poly);
 
@@ -80,7 +84,8 @@ fs::path make_hex_case() {
 
 fs::path temp_case_dir() {
     static std::atomic<unsigned> counter{0};
-    return fs::temp_directory_path() / ("meshio_ofw_" + std::to_string(counter++));
+    return fs::temp_directory_path() / ("meshio_ofw_" + std::to_string(std::random_device{}()) +
+                                        "_" + std::to_string(counter++));
 }
 
 // ==========================================================================

@@ -9,7 +9,7 @@ from typing import Union
 import numpy as np
 from numpy.typing import ArrayLike
 
-from ._common import num_nodes_per_cell
+from ._common import num_nodes_per_cell, warn
 from ._exceptions import ReadError, WriteError
 from ._files import (
     is_binout_filename,
@@ -794,6 +794,49 @@ def _write_format_for_path(path, mesh=None) -> str:
     return _pick_best_format(writable, mesh) if mesh is not None else writable[0]
 
 
+# Formats with no integer data field: they write every array as single-precision
+# floats or as a few significant digits of text, so an integer above 2**24 comes
+# back rounded (roadmap 3.19). Value: which arrays the format carries at all.
+# Keep in step with `ip_formats()` in src/cpp/src/detail/integer_precision.cpp;
+# tests/python/test_integer_precision.py compares the two.
+_EXACT_FLOAT_INTEGER = 2**24
+_FLOAT_STORED_INTEGER_FORMATS = {
+    "cae": ("cell",),
+    "ensight": ("point", "cell"),
+    "frd": ("point",),
+    "gid": ("point", "cell"),
+    "gltf": ("point",),
+    "marc_t19": ("point", "cell"),
+    "radioss_anim": ("point", "cell"),
+    "xplt": ("point", "cell"),
+}
+
+
+def _is_inexact_integer_array(values) -> bool:
+    a = np.asarray(values)
+    if a.dtype.kind not in "iu" or a.size == 0:
+        return False
+    return bool(a.max() > _EXACT_FLOAT_INTEGER or a.min() < -_EXACT_FLOAT_INTEGER)
+
+
+def _warn_integer_precision(file_format, mesh) -> None:
+    """Say, once per array, that ``file_format`` rounds an integer array of ``mesh``."""
+    kinds = _FLOAT_STORED_INTEGER_FORMATS.get(file_format)
+    if kinds is None:
+        return
+    arrays = []
+    if "point" in kinds:
+        arrays += [(n, [v]) for n, v in mesh.point_data.items()]
+    if "cell" in kinds:
+        arrays += list(mesh.cell_data.items())
+    for name, blocks in arrays:
+        if any(_is_inexact_integer_array(b) for b in blocks):
+            warn(
+                f"{file_format}: the integer array '{name}' is stored as floating "
+                f"point, so values above {_EXACT_FLOAT_INTEGER} are rounded"
+            )
+
+
 def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
     """Writes mesh together with data to a file.
 
@@ -848,5 +891,6 @@ def write(filename, mesh: Mesh, file_format: Union[str, None] = None, **kwargs):
     # caller's own scope. See _provenance.begin_write().
     from ._provenance import begin_write
 
+    _warn_integer_precision(file_format, mesh)
     begin_write()
     return writer(filename, mesh, **kwargs)

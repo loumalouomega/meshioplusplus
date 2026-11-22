@@ -195,3 +195,8 @@ tests/python/meshes/cad_json/*.json -filter -diff -merge -text
 tests/python/meshes/vtx/*.bp/** binary
 tests/python/meshes/vtx/*.npz binary
 tests/python/meshes/szplt/*.szplt binary
+
+# Reference fixtures are compared byte for byte (tests/python/meshes/MANIFEST.json):
+# a Windows checkout must not convert their line endings.
+tests/python/meshes/** -text
+tests/python/input/** -text

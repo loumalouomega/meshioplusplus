@@ -30,14 +30,13 @@ from .._units import med_length_unit, med_unit_coords, set_length_unit
 from ._med import (
     MED_FLOAT64,
     _parse_med_field_name,
+    _read_cell_block,
     _read_data,
     _read_families,
-    _reorder_med_cells,
     _write_families,
     _write_field_step,
     _write_mesh_step,
     med_to_geo_type,
-    med_to_meshio_type,
     med_type_to_entity,
     meshio_to_med_type,
     numpy_to_med_type,
@@ -416,19 +415,9 @@ def _read_single_mesh(f, name):
     cell_types = []
     med_cells = mesh_grp["MAI"]
     for med_cell_type, med_cell_type_group in med_cells.items():
-        cell_type = med_to_meshio_type[med_cell_type]
+        cell_type, cell_block = _read_cell_block(med_cell_type, med_cell_type_group)
         cell_types.append(cell_type)
-        if med_cell_type in ("POG", "POG2"):
-            nod = med_cell_type_group["NOD"][()] - 1
-            inn = med_cell_type_group["INN"][()]
-            polygons = [nod[inn[i] - 1 : inn[i + 1] - 1] for i in range(len(inn) - 1)]
-            cells.append((cell_type, polygons))
-        else:
-            nod = med_cell_type_group["NOD"]
-            n_cells = nod.attrs["NBR"]
-            data = nod[()].reshape(n_cells, -1, order="F") - 1
-            data = _reorder_med_cells(cell_type, data)  # MED -> meshio order
-            cells += [(cell_type, data)]
+        cells.append(cell_block)
 
         if "FAM" in med_cell_type_group:
             cell_data.setdefault("cell_tags", []).append(med_cell_type_group["FAM"][()])

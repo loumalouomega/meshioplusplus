@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -49,7 +50,7 @@ namespace meshioplusplus {
 
 namespace {
 
-using RcsVec = std::array<double, 3>;
+using detail::Vec3;
 
 constexpr const char* kRcsPrefix = "meshio++: reconstruct_surface: ";
 
@@ -141,14 +142,14 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         rcs_fail("'" + rOptions.mNormalsName + "' must be a float (n, 3) array");
 
     // The samples: points with a finite, non-zero normal.
-    std::vector<RcsVec> pts;
-    std::vector<RcsVec> nrm;
+    std::vector<Vec3> pts;
+    std::vector<Vec3> nrm;
     pts.reserve(n);
     nrm.reserve(n);
     {
         const NDArray& points = rMesh.Points();
         for (std::size_t i = 0; i < n; ++i) {
-            RcsVec p{}, v{};
+            Vec3 p{}, v{};
             for (std::size_t a = 0; a < 3; ++a) {
                 p[a] = detail::read_double(points, i * 3 + a);
                 v[a] = detail::read_double(*p_normals, i * 3 + a);
@@ -168,8 +169,8 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         rcs_fail("needs at least three samples with a normal, not " + std::to_string(m));
 
     const detail::BoundingBox3 box = detail::BoundingBoxUtils::FromPoints(pts);
-    const RcsVec& lo = box.mMin;
-    const RcsVec ext = detail::BoundingBoxUtils::Extent(box);
+    const Vec3& lo = box.mMin;
+    const Vec3 ext = detail::BoundingBoxUtils::Extent(box);
     const double extent = detail::BoundingBoxUtils::MaxExtent(box);
     if (!(extent > 0.0))
         rcs_fail("the samples all coincide");
@@ -219,7 +220,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
 
     // The lattice: the samples' box grown by the band's reach and one cell.
     const auto reach = static_cast<std::int64_t>(std::ceil(sigma / h)) + 1;
-    RcsVec origin{};
+    Vec3 origin{};
     std::array<std::int64_t, 3> dims{};
     for (std::size_t a = 0; a < 3; ++a) {
         const double cells = std::ceil(ext[a] / h) + 2.0 * static_cast<double>(reach + 1);
@@ -229,7 +230,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         dims[a] = static_cast<std::int64_t>(cells);
         origin[a] = lo[a] - static_cast<double>(reach + 1) * h;
     }
-    const auto cell_of = [&](const RcsVec& rP, std::size_t A) {
+    const auto cell_of = [&](const Vec3& rP, std::size_t A) {
         const auto c = static_cast<std::int64_t>(std::floor((rP[A] - origin[A]) / h));
         return std::clamp<std::int64_t>(c, 0, dims[A] - 1);
     };
@@ -266,9 +267,8 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
     const auto node_pos = [&](std::int64_t V) {
         const std::int64_t i = V % ndims[0], j = (V / ndims[0]) % ndims[1],
                            k = V / (ndims[0] * ndims[1]);
-        return RcsVec{origin[0] + static_cast<double>(i) * h,
-                      origin[1] + static_cast<double>(j) * h,
-                      origin[2] + static_cast<double>(k) * h};
+        return Vec3{origin[0] + static_cast<double>(i) * h, origin[1] + static_cast<double>(j) * h,
+                    origin[2] + static_cast<double>(k) * h};
     };
 
     // The field at each node, or undefined.
@@ -282,22 +282,22 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
     // crossings at least this far from every node keep a triangle above it.
     const double nudge = std::max(1e-3 * h, 1e-4 * extent);
     parallel_for(nn, [&](std::size_t v) {
-        const RcsVec x = node_pos(nodes[v]);
+        const Vec3 x = node_pos(nodes[v]);
         std::vector<std::pair<double, std::int64_t>> near(k);
         const std::size_t got = knn.KNearest(x, k, near.data());
-        const RcsVec& p0 = pts[static_cast<std::size_t>(near[0].second)];
-        const RcsVec& n0 = nrm[static_cast<std::size_t>(near[0].second)];
-        const RcsVec d0{x[0] - p0[0], x[1] - p0[1], x[2] - p0[2]};
+        const Vec3& p0 = pts[static_cast<std::size_t>(near[0].second)];
+        const Vec3& n0 = nrm[static_cast<std::size_t>(near[0].second)];
+        const Vec3 d0{x[0] - p0[0], x[1] - p0[1], x[2] - p0[2]};
         const double f0 = detail::vec3_dot(d0, n0);
         // Hoppe's test: the projection onto the nearest plane, x - f0 n0,
         // lies within max_dist of p0 (its offset from p0 is d0 - f0 n0).
-        const RcsVec t{d0[0] - f0 * n0[0], d0[1] - f0 * n0[1], d0[2] - f0 * n0[2]};
+        const Vec3 t{d0[0] - f0 * n0[0], d0[1] - f0 * n0[1], d0[2] - f0 * n0[2]};
         if (detail::vec3_dot(t, t) > max_d2)
             return;
         double num = 0.0, den = 0.0;
         for (std::size_t j = 0; j < got; ++j) {
             const auto id = static_cast<std::size_t>(near[j].second);
-            const RcsVec d{x[0] - pts[id][0], x[1] - pts[id][1], x[2] - pts[id][2]};
+            const Vec3 d{x[0] - pts[id][0], x[1] - pts[id][1], x[2] - pts[id][2]};
             const double w = std::exp(-near[j].first * inv_s2);
             num += w * detail::vec3_dot(d, nrm[id]);
             den += w;
@@ -354,7 +354,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
             }
     }
     Mesh out;
-    std::vector<RcsVec> tri_pts;
+    std::vector<Vec3> tri_pts;
     std::vector<std::array<std::int64_t, 3>> tris;
     if (num_active > 0) {
         Mesh hexes;
@@ -362,7 +362,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         double* php = hp.As<double>();
         std::vector<double> hv(used.size());
         for (std::size_t u = 0; u < used.size(); ++u) {
-            const RcsVec x = node_pos(nodes[static_cast<std::size_t>(used[u])]);
+            const Vec3 x = node_pos(nodes[static_cast<std::size_t>(used[u])]);
             std::copy(x.begin(), x.end(), php + u * 3);
             hv[u] = value[static_cast<std::size_t>(used[u])];
         }
@@ -391,7 +391,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         // reached from several edges): equal coordinates take the lowest
         // index, and the survivors keep their order.
         const std::size_t cp = cut.NumPoints();
-        std::vector<RcsVec> cpts(cp);
+        std::vector<Vec3> cpts(cp);
         {
             const NDArray& p = cut.Points();
             for (std::size_t i = 0; i < cp; ++i)
@@ -401,8 +401,8 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
         std::vector<std::int64_t> order(cp);
         std::iota(order.begin(), order.end(), std::int64_t{0});
         std::sort(order.begin(), order.end(), [&](std::int64_t A, std::int64_t B) {
-            const RcsVec& a = cpts[static_cast<std::size_t>(A)];
-            const RcsVec& b = cpts[static_cast<std::size_t>(B)];
+            const Vec3& a = cpts[static_cast<std::size_t>(A)];
+            const Vec3& b = cpts[static_cast<std::size_t>(B)];
             return a != b ? a < b : A < B;
         });
         std::vector<std::int64_t> rep(cp);
@@ -446,7 +446,7 @@ ReconstructSurfaceResult reconstruct_surface(const Mesh& rMesh,
 
     // Points no triangle uses (a welded-away sliver's) are dropped.
     std::vector<std::int64_t> keep(tri_pts.size(), -1);
-    std::vector<RcsVec> final_pts;
+    std::vector<Vec3> final_pts;
     for (auto& t : tris)
         for (std::int64_t& id : t) {
             auto& r = keep[static_cast<std::size_t>(id)];

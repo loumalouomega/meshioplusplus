@@ -12,7 +12,7 @@ Gmsh 2.2/4.0/4.1 periodic links read natively via the format metadata channel an
 
 Exodus native/reference output now preserves Point/Side regions as node/side sets (including explicit ids and empty groups) and supports stateful fixed-grid series writing and sequence fan-in; see [Exodus](formats/exodus.md#stateful-series-writing).
 
-Each format name links to a detailed reference page (structure, options, data mapping, and the C++ vs Python behaviour). The **Round trip** column summarises what a write followed by a read keeps (cell types, point/cell/field data, region kinds), as checked by the [format conformance matrix](./conformance.md).
+Each format name links to a detailed reference page (structure, options, data mapping, and the C++ vs Python behaviour). The **Round trip** column summarises what a write followed by a read keeps (cell types, point/cell/field data, region kinds), as checked by the [format conformance matrix](./conformance.md). What each writer does with an integer above 2**31 is in [integer widths](./id_widths.md).
 
 | Format name | Extensions | Read | Write | Extra dependencies | Round trip |
 |---|---|---|---|---|---|

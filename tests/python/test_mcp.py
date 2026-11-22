@@ -2630,6 +2630,15 @@ _NOT_TOOLS = {
 }
 
 
+def test_doc_states_the_registry_tool_count():
+    text = (pathlib.Path(__file__).resolve().parents[2] / "doc" / "mcp.md").read_text(
+        encoding="utf-8"
+    )
+    assert (
+        f"\n{len(_tools.TOOL_REGISTRY)} tools;" in text
+    ), "doc/mcp.md must state the number of tools in TOOL_REGISTRY"
+
+
 def test_every_operation_has_a_tool():
     everything = meshioplusplus.__all__
     formats = set(everything[: everything.index("_cli")])

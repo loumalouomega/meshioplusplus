@@ -80,6 +80,7 @@ Core-private: no installed header names them, so they change freely. The general
 | Header | Contents |
 | --- | --- |
 | `math_utils.hpp`, `geometry_utils.hpp`, `bounding_box_utils.hpp` | The Kratos-style utility classes `MathUtils` (with the order statistics `MedianUpper`, `QuantileNearest` and `PercentileLinear`), `GeometryUtils` (with `PointInPolygon2D`, the even-odd test of a parameter-space trim), `BoundingBoxUtils` ([kernels](./geometry_kernels.md)). |
+| `integer_precision.hpp` | `warn_integer_precision(format, mesh)`: the once-per-array warning that a format with no integer data field (EnSight, FRD, GiD, glTF, Marc T19, the Radioss and XPLT animations, CAE) stores an integer array above 2**24 as floating point; called by the registry's writers and by `registry_write_ex`, with the Python twin `_helpers._warn_integer_precision` ([integer widths](./id_widths.md)). |
 | `splitmix.hpp` | `splitmix64_mix` (the finalizer) and `SplitMix64` (`Next`, `NextUnit`): the seeded generators of `box_points` and `refine_patches`, `eigenmodes`' start vectors and the bucket table's slot hash. |
 | `hash_utils.hpp` | `HashUtils::Combine`, the boost-style hash combiner, and `ArrayHash<N>` and `SizedVectorHash` built on it: the key hashes of `mfem`, `gltf`, `remesh_volume`, `refine` and `decimate_volume`, with the values of the loops they replaced. |
 | `fortran_number.hpp` | `fortran_exponent_to_e`: the `D` or `d` of a Fortran real turned into the exponent letter `parse_double` reads; the readers of `mff`, `adcirc`, `code_aster`, `abaqus_fil`, `dex`, `unv` and `plot3d` call it. The Python twin is `_common.fortran_exponent`. |
@@ -134,7 +135,7 @@ Under `src/python/meshioplusplus/`.
 
 | Module | Contents |
 | --- | --- |
-| `_helpers.py` | Format dispatch and registration (`register_format`, `read`, `write`, extension lookup). |
+| `_helpers.py` | Format dispatch and registration (`register_format`, `read`, `write`, extension lookup), and `_warn_integer_precision`, the Python twin of `integer_precision.hpp`. |
 | `_fallback.py` | Whether a declined C++ fast path may fall back to its Python twin: `core_declined`, `core_op_declined`; `MESHIOPLUSPLUS_STRICT_CORE=1` makes every fallback an error. |
 | `_shims.py` | `plain_shims` and `vtk_xml_shims`, the read and write shims of the format packages that only try one `_core` entry point. |
 | `_common.py`, `_vtk_common.py`, `vtk/_legacy_common.py`, `vti/_vti.py` | Cell-type tables, warnings and XML helpers; the VTK cell conversions (with `FIXED_LAGRANGE`, the fixed-order high types written as VTK Lagrange cells); the legacy VTK sections and writer pieces; the lattice reader and writer. |

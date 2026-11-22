@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -768,6 +769,12 @@ class AwOut {
 public:
     void Ints(const std::vector<std::int64_t>& rValues) {
         for (const std::int64_t v : rValues) {
+            // The file's integers are 32-bit: a wider id is an error, not a wrap
+            // to another number (roadmap 3.19).
+            if (v < std::numeric_limits<std::int32_t>::min() ||
+                v > std::numeric_limits<std::int32_t>::max())
+                throw WriteError("Radioss animation: the integer " + std::to_string(v) +
+                                 " is outside the 32-bit range of the file format");
             const std::uint32_t u = static_cast<std::uint32_t>(static_cast<std::int32_t>(v));
             Be32(u);
         }

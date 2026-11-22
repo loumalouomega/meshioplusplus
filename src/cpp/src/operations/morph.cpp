@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -43,7 +44,7 @@ namespace meshioplusplus {
 
 namespace {
 
-using MphVec = std::array<double, 3>;
+using detail::Vec3;
 
 /// The cell types `morph` moves: linear volume and surface cells, and the
 /// lower-dimensional ones it carries along.
@@ -123,10 +124,10 @@ std::vector<char> mph_boundary(const Mesh& rMesh, int D, std::size_t N) {
 /// surface cell's Newell normal (NaN when not measured).
 struct MphOrientation {
     std::vector<double> mVolume;
-    std::vector<MphVec> mNormal;
+    std::vector<Vec3> mNormal;
 };
 
-MphOrientation mph_orientation(const Mesh& rMesh, const std::vector<MphVec>& rXyz) {
+MphOrientation mph_orientation(const Mesh& rMesh, const std::vector<Vec3>& rXyz) {
     MphOrientation out;
     std::vector<std::int64_t> ring;
     std::vector<detail::Vec3> corners;
@@ -134,12 +135,12 @@ MphOrientation mph_orientation(const Mesh& rMesh, const std::vector<MphVec>& rXy
         const int d = mph_dimension(cb);
         for (std::size_t c = 0; c < cb.NumCells(); ++c) {
             double vol = std::numeric_limits<double>::quiet_NaN();
-            MphVec nrm{0.0, 0.0, 0.0};
+            Vec3 nrm{0.0, 0.0, 0.0};
             if (d == 3) {
                 const std::size_t npc = cb.NodesPerCell();
                 corners.resize(npc);
                 for (std::size_t k = 0; k < npc; ++k) {
-                    const MphVec& p =
+                    const Vec3& p =
                         rXyz[static_cast<std::size_t>(detail::read_int(cb.Conn(), c * npc + k))];
                     corners[k] = {p[0], p[1], p[2]};
                 }
@@ -148,8 +149,8 @@ MphOrientation mph_orientation(const Mesh& rMesh, const std::vector<MphVec>& rXy
             } else if (d == 2) {
                 mph_ring(cb, c, ring);
                 for (std::size_t k = 0; k < ring.size(); ++k) {
-                    const MphVec& a = rXyz[static_cast<std::size_t>(ring[k])];
-                    const MphVec& b = rXyz[static_cast<std::size_t>(ring[(k + 1) % ring.size()])];
+                    const Vec3& a = rXyz[static_cast<std::size_t>(ring[k])];
+                    const Vec3& b = rXyz[static_cast<std::size_t>(ring[(k + 1) % ring.size()])];
                     nrm[0] += (a[1] - b[1]) * (a[2] + b[2]);
                     nrm[1] += (a[2] - b[2]) * (a[0] + b[0]);
                     nrm[2] += (a[0] - b[0]) * (a[1] + b[1]);
@@ -164,9 +165,9 @@ MphOrientation mph_orientation(const Mesh& rMesh, const std::vector<MphVec>& rXy
 
 /// P1 stiffness of a simplex (D + 1 corners), times `Weight`, into triplets;
 /// returns its measure (0 when degenerate, nothing added).
-double mph_simplex_measure(const std::vector<MphVec>& rXyz, const std::int64_t* pNodes, int D) {
-    const MphVec& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
-    MphVec e[3];
+double mph_simplex_measure(const std::vector<Vec3>& rXyz, const std::int64_t* pNodes, int D) {
+    const Vec3& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
+    Vec3 e[3];
     for (int k = 0; k < D; ++k)
         e[k] = detail::vec3_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
     if (D == 2) {
@@ -175,18 +176,18 @@ double mph_simplex_measure(const std::vector<MphVec>& rXyz, const std::int64_t* 
         const double det = g00 * g11 - g01 * g01;
         return det > 0.0 ? 0.5 * std::sqrt(det) : 0.0;
     }
-    const MphVec x{e[1][1] * e[2][2] - e[1][2] * e[2][1], e[1][2] * e[2][0] - e[1][0] * e[2][2],
-                   e[1][0] * e[2][1] - e[1][1] * e[2][0]};
+    const Vec3 x{e[1][1] * e[2][2] - e[1][2] * e[2][1], e[1][2] * e[2][0] - e[1][0] * e[2][2],
+                 e[1][0] * e[2][1] - e[1][1] * e[2][0]};
     return std::abs(detail::vec3_dot(e[0], x)) / 6.0;
 }
 
-void mph_simplex_stiffness(const std::vector<MphVec>& rXyz, const std::int64_t* pNodes, int D,
+void mph_simplex_stiffness(const std::vector<Vec3>& rXyz, const std::int64_t* pNodes, int D,
                            double Measure, double Weight,
                            std::vector<detail::SparseTriplet>& rOut) {
     if (D != 2 && D != 3)
         return;  // triangles and tetrahedra only, which is all the caller passes
-    const MphVec& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
-    MphVec e[3];
+    const Vec3& p0 = rXyz[static_cast<std::size_t>(pNodes[0])];
+    Vec3 e[3];
     for (int k = 0; k < D; ++k)
         e[k] = detail::vec3_sub(rXyz[static_cast<std::size_t>(pNodes[k + 1])], p0);
     // G = E^T E, the gradients' Gram matrix is its inverse: K = |c| B G^-1 B^T.
@@ -288,8 +289,8 @@ MorphResult morph(const Mesh& rMesh, const MorphOptions& rOptions) {
     const std::size_t corners = static_cast<std::size_t>(top) + 1;
     const std::size_t num_simplices = simplices.size() / corners;
 
-    std::vector<MphVec> xyz(n, MphVec{0.0, 0.0, 0.0});
-    std::vector<MphVec> target(n, MphVec{0.0, 0.0, 0.0});
+    std::vector<Vec3> xyz(n, Vec3{0.0, 0.0, 0.0});
+    std::vector<Vec3> target(n, Vec3{0.0, 0.0, 0.0});
     for (std::size_t i = 0; i < n; ++i) {
         for (std::size_t k = 0; k < dim && k < 3; ++k)
             xyz[i][k] = detail::read_double(rMesh.Points(), i * dim + k);
@@ -298,7 +299,7 @@ MorphResult morph(const Mesh& rMesh, const MorphOptions& rOptions) {
             target[i][k] = k < dim ? v : 0.0;
         }
     }
-    const std::vector<MphVec> start = xyz;
+    const std::vector<Vec3> start = xyz;
 
     // Constrained: boundary, the masks, and every point no simplex uses.
     std::vector<char> fixed(n, 0);
@@ -413,8 +414,8 @@ MorphResult morph(const Mesh& rMesh, const MorphOptions& rOptions) {
         const double v0 = before.mVolume[c], v1 = after.mVolume[c];
         if (std::isfinite(v0) && std::isfinite(v1) && v0 != 0.0 && !(v0 * v1 > 0.0))
             ++result.mNumInverted;
-        const MphVec& n0 = before.mNormal[c];
-        const MphVec& n1 = after.mNormal[c];
+        const Vec3& n0 = before.mNormal[c];
+        const Vec3& n1 = after.mNormal[c];
         if (detail::vec3_dot(n0, n0) > 0.0 && !(detail::vec3_dot(n0, n1) > 0.0))
             ++result.mNumInverted;
     }

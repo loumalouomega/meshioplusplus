@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -33,6 +34,7 @@
 
 // Project includes
 #include "meshioplusplus/registry.hpp"
+#include "detail/integer_precision.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/compressed_input.hpp"
 #include "meshioplusplus/detail/provenance.hpp"
@@ -193,6 +195,18 @@ std::map<std::string, ReadFn> registry_guard_readers(std::map<std::string, ReadF
                 return detail::guarded_read(format.c_str(), [&] { return inner(plain.Path()); });
             }
             return detail::guarded_read(format.c_str(), [&] { return inner(rPath); });
+        };
+    }
+    return raw;
+}
+
+/// Wraps each writer so a format that stores integers as floating point says so
+/// (roadmap 3.19); the wrapped writer itself is unchanged.
+std::map<std::string, WriteFn> registry_guard_writers(std::map<std::string, WriteFn> raw) {
+    for (auto& [name, fn] : raw) {
+        fn = [format = name, inner = std::move(fn)](const std::string& rPath, const Mesh& rMesh) {
+            detail::warn_integer_precision(format, rMesh);
+            inner(rPath, rMesh);
         };
     }
     return raw;
@@ -930,8 +944,8 @@ const std::map<std::string, ReadFn>& registry_readers() {
 }
 
 const std::map<std::string, WriteFn>& registry_writers() {
-    static const std::map<std::string, WriteFn> m =
-        registry_collect<std::map<std::string, WriteFn>>(&RegistryRow::mWrite);
+    static const std::map<std::string, WriteFn> m = registry_guard_writers(
+        registry_collect<std::map<std::string, WriteFn>>(&RegistryRow::mWrite));
     return m;
 }
 

@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -37,23 +38,24 @@
 #include "../detail/geometry_utils.hpp"
 #include "../detail/predicates.hpp"
 #include "../detail/union_find.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 
 namespace {
 
-using HullVec = std::array<double, 3>;
+using detail::Vec3;
 
 /// Every point as three doubles (a 2-D point gets z = 0); refuses non-finite
 /// coordinates and 1-D points by name.
-std::vector<HullVec> hull_points(const Mesh& rMesh, const char* pOp) {
+std::vector<Vec3> hull_points(const Mesh& rMesh, const char* pOp) {
     const std::size_t n = rMesh.NumPoints();
     const std::size_t dim = rMesh.PointDim();
     if (n > 0 && dim < 2)
         throw std::invalid_argument(std::string("meshio++: ") + pOp +
                                     ": the points must have 2 or 3 coordinates, not " +
                                     std::to_string(dim));
-    std::vector<HullVec> out(n, HullVec{0.0, 0.0, 0.0});
+    std::vector<Vec3> out(n, Vec3{0.0, 0.0, 0.0});
     const NDArray& points = rMesh.Points();
     for (std::size_t i = 0; i < n; ++i)
         for (std::size_t k = 0; k < dim && k < 3; ++k) {
@@ -69,13 +71,13 @@ std::vector<HullVec> hull_points(const Mesh& rMesh, const char* pOp) {
 /// Andrew's monotone chain over (x, y): the strictly convex hull,
 /// counter-clockwise from the lowest-leftmost point, as input indices (the
 /// first of any coincident points). Fewer than three entries: collinear.
-std::vector<std::int64_t> hull_chain_2d(const std::vector<HullVec>& rP) {
+std::vector<std::int64_t> hull_chain_2d(const std::vector<Vec3>& rP) {
     std::vector<std::int64_t> order(rP.size());
     for (std::size_t i = 0; i < order.size(); ++i)
         order[i] = static_cast<std::int64_t>(i);
     std::sort(order.begin(), order.end(), [&](std::int64_t A, std::int64_t B) {
-        const HullVec& a = rP[static_cast<std::size_t>(A)];
-        const HullVec& b = rP[static_cast<std::size_t>(B)];
+        const Vec3& a = rP[static_cast<std::size_t>(A)];
+        const Vec3& b = rP[static_cast<std::size_t>(B)];
         if (a[0] != b[0])
             return a[0] < b[0];
         if (a[1] != b[1])
@@ -86,8 +88,8 @@ std::vector<std::int64_t> hull_chain_2d(const std::vector<HullVec>& rP) {
     unique.reserve(order.size());
     for (const std::int64_t i : order) {
         if (!unique.empty()) {
-            const HullVec& last = rP[static_cast<std::size_t>(unique.back())];
-            const HullVec& p = rP[static_cast<std::size_t>(i)];
+            const Vec3& last = rP[static_cast<std::size_t>(unique.back())];
+            const Vec3& p = rP[static_cast<std::size_t>(i)];
             if (last[0] == p[0] && last[1] == p[1])
                 continue;
         }
@@ -132,7 +134,7 @@ struct HullFace {
 
 class HullBuilder {
 public:
-    explicit HullBuilder(const std::vector<HullVec>& rP) : mP(rP) {}
+    explicit HullBuilder(const std::vector<Vec3>& rP) : mP(rP) {}
 
     /// Strictly outside the face's plane (exact).
     bool Sees(const HullFace& rF, std::int64_t P) const {
@@ -184,7 +186,7 @@ public:
     const std::vector<HullFace>& Faces() const { return mFaces; }
 
 private:
-    const std::vector<HullVec>& mP;
+    const std::vector<Vec3>& mP;
     std::vector<HullFace> mFaces;
 
     const double* At(std::int64_t I) const { return mP[static_cast<std::size_t>(I)].data(); }
@@ -217,7 +219,7 @@ private:
                 "meshio++: convex_hull: the points all coincide; they span no hull");
         const auto a = static_cast<std::int64_t>(lo), b = static_cast<std::int64_t>(hi);
         // The point farthest from the line (a, b) that is exactly off it.
-        const HullVec d = detail::MathUtils::Sub(mP[hi], mP[lo]);
+        const Vec3 d = detail::MathUtils::Sub(mP[hi], mP[lo]);
         std::int64_t c = -1;
         double best = -1.0;
         for (std::size_t i = 0; i < n; ++i) {
@@ -268,7 +270,7 @@ private:
         const double* a = At(start.mV[0]);
         const double* b = At(start.mV[1]);
         const double* c = At(start.mV[2]);
-        const HullVec nrm = detail::GeometryUtils::TriangleNormal(a, b, c);
+        const Vec3 nrm = detail::GeometryUtils::TriangleNormal(a, b, c);
         std::int64_t eye = -1;
         double best = -std::numeric_limits<double>::infinity();
         for (const std::int64_t p : start.mOutside) {
@@ -359,7 +361,7 @@ private:
 /// corners (a point inside it or on its edges, which quickhull may have made
 /// a vertex while the hull was still growing, is not extreme) and fanned
 /// into triangles, wound outward.
-std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>& rP,
+std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<Vec3>& rP,
                                                      const std::vector<HullFace>& rFaces) {
     detail::UnionFind<std::int64_t> sets(rFaces.size());
     const auto find = [&](std::int64_t F) { return sets.Find(F); };
@@ -408,9 +410,9 @@ std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>&
         const double* a = rP[static_cast<std::size_t>(first.mV[0])].data();
         const double* b = rP[static_cast<std::size_t>(first.mV[1])].data();
         const double* c = rP[static_cast<std::size_t>(first.mV[2])].data();
-        const HullVec n{(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
-                        (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
-                        (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])};
+        const Vec3 n{(b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]),
+                     (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]),
+                     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])};
         std::size_t k = 0;
         for (std::size_t j = 1; j < 3; ++j)
             if (std::abs(n[j]) > std::abs(n[k]))
@@ -418,9 +420,9 @@ std::vector<std::array<std::int64_t, 3>> hull_facets(const std::vector<HullVec>&
         std::size_t u = (k + 1) % 3, v = (k + 2) % 3;
         if (n[k] < 0.0)
             std::swap(u, v);
-        std::vector<HullVec> plane(verts.size());
+        std::vector<Vec3> plane(verts.size());
         for (std::size_t i = 0; i < verts.size(); ++i) {
-            const HullVec& q = rP[static_cast<std::size_t>(verts[i])];
+            const Vec3& q = rP[static_cast<std::size_t>(verts[i])];
             plane[i] = {q[u], q[v], 0.0};
         }
         const std::vector<std::int64_t> chain = hull_chain_2d(plane);
@@ -455,7 +457,7 @@ ConvexHullResult convex_hull(const Mesh& rMesh, const ConvexHullOptions& rOption
             "meshio++: convex_hull: dimension must be 0 (automatic), 2 "
             "or 3, not " +
             std::to_string(rOptions.mDimension));
-    const std::vector<HullVec> p = hull_points(rMesh, "convex_hull");
+    const std::vector<Vec3> p = hull_points(rMesh, "convex_hull");
     if (p.size() < 3)
         throw std::invalid_argument("meshio++: convex_hull: needs at least three points, not " +
                                     std::to_string(p.size()));
@@ -463,7 +465,7 @@ ConvexHullResult convex_hull(const Mesh& rMesh, const ConvexHullOptions& rOption
     if (dimension == 0) {
         dimension = 2;
         if (rMesh.PointDim() >= 3)
-            for (const HullVec& q : p)
+            for (const Vec3& q : p)
                 if (q[2] != p[0][2]) {
                     dimension = 3;
                     break;
@@ -494,8 +496,8 @@ ConvexHullResult convex_hull(const Mesh& rMesh, const ConvexHullOptions& rOption
             const std::int64_t a = chain[i], b = chain[(i + 1) % m];
             pc[2 * i] = local.at(a);
             pc[2 * i + 1] = local.at(b);
-            const HullVec& pa = p[static_cast<std::size_t>(a)];
-            const HullVec& pb = p[static_cast<std::size_t>(b)];
+            const Vec3& pa = p[static_cast<std::size_t>(a)];
+            const Vec3& pb = p[static_cast<std::size_t>(b)];
             result.mPerimeter += std::hypot(pb[0] - pa[0], pb[1] - pa[1]);
             twice_area += pa[0] * pb[1] - pb[0] * pa[1];
         }
@@ -520,16 +522,16 @@ ConvexHullResult convex_hull(const Mesh& rMesh, const ConvexHullOptions& rOption
         local[ids[i]] = static_cast<std::int64_t>(i);
     NDArray conn(DType::Int64, {tris.size(), std::size_t{3}});
     std::int64_t* pc = conn.As<std::int64_t>();
-    const HullVec& o = p[static_cast<std::size_t>(ids.front())];
+    const Vec3& o = p[static_cast<std::size_t>(ids.front())];
     double six_volume = 0.0;
     for (std::size_t t = 0; t < tris.size(); ++t) {
-        const HullVec& a = p[static_cast<std::size_t>(tris[t][0])];
-        const HullVec& b = p[static_cast<std::size_t>(tris[t][1])];
-        const HullVec& c = p[static_cast<std::size_t>(tris[t][2])];
+        const Vec3& a = p[static_cast<std::size_t>(tris[t][0])];
+        const Vec3& b = p[static_cast<std::size_t>(tris[t][1])];
+        const Vec3& c = p[static_cast<std::size_t>(tris[t][2])];
         for (int k = 0; k < 3; ++k)
             pc[3 * t + static_cast<std::size_t>(k)] =
                 local.at(tris[t][static_cast<std::size_t>(k)]);
-        const HullVec x = detail::GeometryUtils::TriangleNormal(a, b, c);
+        const Vec3 x = detail::GeometryUtils::TriangleNormal(a, b, c);
         result.mArea += 0.5 * detail::MathUtils::Norm(x);
         six_volume += detail::MathUtils::Dot(x, detail::MathUtils::Sub(a, o));
     }
@@ -542,7 +544,7 @@ ConvexHullResult convex_hull(const Mesh& rMesh, const ConvexHullOptions& rOption
 }
 
 Delaunay2dResult delaunay_2d(const Mesh& rMesh) {
-    const std::vector<HullVec> p = hull_points(rMesh, "delaunay_2d");
+    const std::vector<Vec3> p = hull_points(rMesh, "delaunay_2d");
     double lo[2] = {std::numeric_limits<double>::infinity(),
                     std::numeric_limits<double>::infinity()};
     double hi[2] = {-lo[0], -lo[1]};

@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -21,6 +22,7 @@
 #include <cctype>
 #include <charconv>
 #include <cstdint>
+#include <limits>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -324,7 +326,14 @@ Mesh read_adcirc(const std::string& rPath, const AdcircReadOptions& rOptions) {
         if (first) {
             times = r.mTimes;
             ReadOptions o;
-            o.mTimeStep = rOptions.mTimeStep;
+            // ReadOptions::mTimeStep is an int: a wider step is an error, not a wrap
+            // to some other dataset (roadmap 3.19).
+            if (rOptions.mTimeStep < std::numeric_limits<int>::min() ||
+                rOptions.mTimeStep > std::numeric_limits<int>::max())
+                throw ReadError("meshio++: adcirc: time step " +
+                                std::to_string(rOptions.mTimeStep) +
+                                " is outside the 32-bit range");
+            o.mTimeStep = static_cast<int>(rOptions.mTimeStep);
             step = o.ResolveTimeStep(times.size());
             first = false;
         } else if (r.mTimes.size() != times.size()) {

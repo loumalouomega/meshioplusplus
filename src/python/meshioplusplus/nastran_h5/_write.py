@@ -989,7 +989,9 @@ def _write_results(f, model, steps):
             empty = np.ones(len(eid), dtype=bool)
             for m, c in columns:
                 if m not in ("GRID", "PLY"):
-                    empty &= np.isnan(c).reshape(len(c), -1).all(axis=1)
+                    # an explicit width: reshape(len(c), -1) is ambiguous for zero rows
+                    width = int(np.prod(c.shape[1:]))
+                    empty &= np.isnan(c).reshape(len(c), width).all(axis=1)
             keep = np.nonzero(~empty)[0]
             provided = {"ID" if group == "ENERGY" else "EID": eid[keep]}
             provided.update({m: c[keep] for m, c in columns})

@@ -1,6 +1,6 @@
 # C++ API
 
-The full C++ core — `Mesh`, the [format registry](/formats), all [mesh operations](/operations) and [data operations](/data_operations), and the header-only [Kratos bridge](/cpp_backends#kratos) — installs as a normal CMake package with exported targets. It is the right entry point for a C++ consumer that wants more than the flat [C API](/c_api) can express: real `Mesh` objects, the operations layer, and `meshioplusplus::ModelPart`, none of which cross a C ABI.
+The full C++ core — `Mesh`, the [format registry](/formats), all [mesh operations](/architecture#the-operations-layer) and [data operations](/data_operations), and the header-only [Kratos bridge](/cpp_backends#kratos) — installs as a normal CMake package with exported targets. It is the right entry point for a C++ consumer that wants more than the flat [C API](/c_api) can express: real `Mesh` objects, the operations layer, and `meshioplusplus::ModelPart`, none of which cross a C ABI.
 
 ::: tip Which API do I want?
 Use the [C API](/c_api) if you are writing C or Fortran, want a stable ABI, or want the smallest possible dependency surface. Use this one if you are writing C++ and want the library's real types and operations.

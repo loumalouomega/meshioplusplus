@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -43,11 +44,11 @@ namespace meshioplusplus {
 
 namespace {
 
-using PtnVec = std::array<double, 3>;
+using detail::Vec3;
 
 /// The sign that makes the largest-magnitude component positive (the lowest
 /// axis on a tie).
-double ptn_canonical_sign(const PtnVec& rN) {
+double ptn_canonical_sign(const Vec3& rN) {
     std::size_t k = 0;
     for (std::size_t j = 1; j < 3; ++j)
         if (std::abs(rN[j]) > std::abs(rN[k]))
@@ -56,10 +57,10 @@ double ptn_canonical_sign(const PtnVec& rN) {
 }
 
 /// The plane fit of one neighbourhood: false when it spans no plane.
-bool ptn_fit(const std::vector<PtnVec>& rP, std::size_t Self, const std::int64_t* pNbrs,
-             std::size_t K, PtnVec& rNormal, double& rVariation) {
-    PtnVec c{0.0, 0.0, 0.0};
-    const auto add = [&](const PtnVec& rQ) {
+bool ptn_fit(const std::vector<Vec3>& rP, std::size_t Self, const std::int64_t* pNbrs,
+             std::size_t K, Vec3& rNormal, double& rVariation) {
+    Vec3 c{0.0, 0.0, 0.0};
+    const auto add = [&](const Vec3& rQ) {
         c[0] += rQ[0];
         c[1] += rQ[1];
         c[2] += rQ[2];
@@ -70,7 +71,7 @@ bool ptn_fit(const std::vector<PtnVec>& rP, std::size_t Self, const std::int64_t
     const double m = static_cast<double>(K + 1);
     c = {c[0] / m, c[1] / m, c[2] / m};
     double t[6] = {0, 0, 0, 0, 0, 0};  // xx yy zz xy yz zx
-    const auto acc = [&](const PtnVec& rQ) {
+    const auto acc = [&](const Vec3& rQ) {
         const double x = rQ[0] - c[0], y = rQ[1] - c[1], z = rQ[2] - c[2];
         t[0] += x * x;
         t[1] += y * y;
@@ -89,11 +90,11 @@ bool ptn_fit(const std::vector<PtnVec>& rP, std::size_t Self, const std::int64_t
     if (!(trace > 0.0) || !(l[1] - l[0] > 1e-12 * l[2]))
         return false;
     // The null vector of C - l0 I: the largest cross product of two rows.
-    const PtnVec r0{t[0] - l[0], t[3], t[5]};
-    const PtnVec r1{t[3], t[1] - l[0], t[4]};
-    const PtnVec r2{t[5], t[4], t[2] - l[0]};
-    const std::array<PtnVec, 3> cand{detail::vec3_cross(r0, r1), detail::vec3_cross(r0, r2),
-                                     detail::vec3_cross(r1, r2)};
+    const Vec3 r0{t[0] - l[0], t[3], t[5]};
+    const Vec3 r1{t[3], t[1] - l[0], t[4]};
+    const Vec3 r2{t[5], t[4], t[2] - l[0]};
+    const std::array<Vec3, 3> cand{detail::vec3_cross(r0, r1), detail::vec3_cross(r0, r2),
+                                   detail::vec3_cross(r1, r2)};
     std::size_t best = 0;
     for (std::size_t j = 1; j < 3; ++j)
         if (detail::vec3_dot(cand[j], cand[j]) > detail::vec3_dot(cand[best], cand[best]))
@@ -130,7 +131,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
     if (rOptions.mK < 2)
         throw std::invalid_argument("meshio++: estimate_normals: k must be at least 2, not " +
                                     std::to_string(rOptions.mK));
-    std::vector<PtnVec> p(n, PtnVec{0.0, 0.0, 0.0});
+    std::vector<Vec3> p(n, Vec3{0.0, 0.0, 0.0});
     NDArray coords(DType::Float64, {n, std::size_t{3}});
     double* pc = coords.As<double>();
     const NDArray& points = rMesh.Points();
@@ -168,11 +169,11 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
     if (pairs.mTarget.Size() != n * k)
         throw std::runtime_error("meshio++: estimate_normals: internal error: neighbour count");
 
-    std::vector<PtnVec> normal(n, PtnVec{0.0, 0.0, 0.0});
+    std::vector<Vec3> normal(n, Vec3{0.0, 0.0, 0.0});
     std::vector<double> variation(n, 0.0);
     std::vector<char> ok(n, 0);
     parallel_for(n, [&](std::size_t i) {
-        PtnVec v;
+        Vec3 v;
         ok[i] = ptn_fit(p, i, pTarget + i * k, k, v, variation[i]) ? 1 : 0;
         if (ok[i]) {
             const double s = ptn_canonical_sign(v);
@@ -183,8 +184,8 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
     PointNormalsResult result;
     if (rOptions.mOrientation == NormalOrientation::Viewpoint) {
         for (std::size_t i = 0; i < n; ++i) {
-            const PtnVec to{rOptions.mViewpoint[0] - p[i][0], rOptions.mViewpoint[1] - p[i][1],
-                            rOptions.mViewpoint[2] - p[i][2]};
+            const Vec3 to{rOptions.mViewpoint[0] - p[i][0], rOptions.mViewpoint[1] - p[i][1],
+                          rOptions.mViewpoint[2] - p[i][2]};
             if (ok[i] && detail::vec3_dot(normal[i], to) < 0.0)
                 normal[i] = {-normal[i][0], -normal[i][1], -normal[i][2]};
         }
@@ -286,7 +287,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
             }
             // The whole piece outward from its centroid, if that decides;
             // else its seed's normal up, else its canonical sign.
-            PtnVec c{0.0, 0.0, 0.0};
+            Vec3 c{0.0, 0.0, 0.0};
             for (const std::size_t m : members)
                 for (std::size_t a = 0; a < 3; ++a)
                     c[a] += p[m][a];
@@ -294,7 +295,7 @@ PointNormalsResult estimate_normals(const Mesh& rMesh, const PointNormalsOptions
                 c[a] /= static_cast<double>(members.size());
             double outward = 0.0, spread = 0.0;
             for (const std::size_t m : members) {
-                const PtnVec d{p[m][0] - c[0], p[m][1] - c[1], p[m][2] - c[2]};
+                const Vec3 d{p[m][0] - c[0], p[m][1] - c[1], p[m][2] - c[2]};
                 outward += detail::vec3_dot(normal[m], d);
                 spread += std::sqrt(detail::vec3_dot(d, d));
             }

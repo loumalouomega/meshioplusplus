@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -33,6 +34,7 @@
 #include "meshioplusplus/detail/length_unit.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -43,8 +45,7 @@ constexpr const char* kSwPrefix = "meshio++: step: ";
 constexpr double kSwPi = 3.14159265358979323846;
 
 std::array<double, 3> sw_cross(const std::array<double, 3>& rA, const std::array<double, 3>& rB) {
-    return {rA[1] * rB[2] - rA[2] * rB[1], rA[2] * rB[0] - rA[0] * rB[2],
-            rA[0] * rB[1] - rA[1] * rB[0]};
+    return vec3_cross(rA, rB);
 }
 
 double sw_dot(const std::array<double, 3>& rA, const std::array<double, 3>& rB) {

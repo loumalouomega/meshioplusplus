@@ -88,6 +88,12 @@ The third pass took C++ to 19,411 of 249,708 (7.8%) and Python to 6,500 of 132,4
 
 What remains at the top is mostly structure the report cannot tell apart from copying: the explicit `py::arg` signatures of `bindings/python/_core.cpp`, the `extern "C"` entry points of `bindings/c/c_api.cpp`, the argument tables of the native CLI and the typed MCP tool signatures. The rest is listed in roadmap 3.4.8 to 3.4.12.
 
+## Python API dump
+
+`tools/api/python_api.json` lists every name of `meshioplusplus.__all__` with its kind and, where Python can read one, its signature (parameters with their kinds and defaults; a class also lists its public methods). `python tools/gen_api_dump.py` rewrites it from an editable install with the extras the CI `test` job installs, and `--check` fails when it is stale; `tests/python/test_api_dump.py` checks the same when the extension is built. A pull request that changes a public name, parameter or default regenerates the dump in the same change.
+
+The `lint` job runs `tools/check_api_changes.py` against the merge base: a name removed from `__all__` or changing kind, a parameter removed, renamed or made required, a changed default, and the same for a class's public methods, count as incompatible and need a line containing `**Breaking:**` in `CHANGELOG.md`. Additions, including a new parameter with a default, pass.
+
 ## Clang-Tidy
 
 Two Clang-Tidy runs exist today:

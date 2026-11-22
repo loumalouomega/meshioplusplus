@@ -9,6 +9,7 @@
 //
 //
 //  License:         MIT License
+//                   SPDX-License-Identifier: MIT
 //                   meshio++ default license: LICENSE
 //
 //  Main authors:    Vicente Mataix Ferrandiz
@@ -44,6 +45,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/providers.hpp"
+#include "meshioplusplus/detail/geometry.hpp"
 
 // Project includes (private, not installed)
 #include "bounding_box_utils.hpp"
@@ -56,7 +58,7 @@ namespace meshioplusplus {
 
 namespace {
 
-using EmPoint = std::array<double, 3>;
+using detail::Vec3;
 
 // The run's directory, removed afterwards unless MESHIOPLUSPLUS_KEEP_TEMP is set.
 struct EmWorkDir {
@@ -117,8 +119,7 @@ void em_run(const std::string& rName, const std::vector<std::string>& rArgv,
  * points the mesher added. `mBoundaryPreserved` holds when every request
  * point came back and the tetrahedra's boundary is the request's triangles.
  */
-TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
-                                const std::vector<EmPoint>& rOut,
+TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest, const std::vector<Vec3>& rOut,
                                 const std::vector<std::array<std::int64_t, 4>>& rTets) {
     const std::size_t n_in = rRequest.mPoints.size();
     const double diag =
@@ -131,7 +132,7 @@ TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
                                             rK[2] * 83492791LL);
         }
     };
-    const auto key = [&](const EmPoint& rP) {
+    const auto key = [&](const Vec3& rP) {
         return std::array<std::int64_t, 3>{static_cast<std::int64_t>(std::floor(rP[0] / cell)),
                                            static_cast<std::int64_t>(std::floor(rP[1] / cell)),
                                            static_cast<std::int64_t>(std::floor(rP[2] / cell))};
@@ -218,7 +219,7 @@ TetMeshRegionResult em_assemble(const TetMeshRegionRequest& rRequest,
  */
 struct EmShells {
     std::vector<std::vector<std::size_t>> mShells;
-    std::vector<EmPoint> mHolePoints;
+    std::vector<Vec3> mHolePoints;
 };
 
 EmShells em_shells(const TetMeshRegionRequest& rRequest) {
@@ -249,7 +250,7 @@ EmShells em_shells(const TetMeshRegionRequest& rRequest) {
         out.mShells[it->second].push_back(t);
     }
     const auto extent = [&](const std::vector<std::size_t>& rShell) {
-        EmPoint lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+        Vec3 lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
         for (const std::size_t t : rShell)
             for (const std::int64_t v : rRequest.mTriangles[t])
                 for (std::size_t c = 0; c < 3; ++c) {
@@ -268,13 +269,13 @@ EmShells em_shells(const TetMeshRegionRequest& rRequest) {
         // The largest triangle of the shell, for a step well inside its size.
         std::size_t best = out.mShells[s][0];
         double best_area = -1.0;
-        EmPoint best_n{};
+        Vec3 best_n{};
         for (const std::size_t t : out.mShells[s]) {
             const auto& r_t = rRequest.mTriangles[t];
-            const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
-            const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
-            const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
-            const EmPoint n = detail::GeometryUtils::TriangleNormal(a, b, c);
+            const Vec3& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
+            const Vec3& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
+            const Vec3& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
+            const Vec3 n = detail::GeometryUtils::TriangleNormal(a, b, c);
             const double area = detail::MathUtils::Norm(n);
             if (area > best_area) {
                 best_area = area;
@@ -283,7 +284,7 @@ EmShells em_shells(const TetMeshRegionRequest& rRequest) {
             }
         }
         const auto& r_t = rRequest.mTriangles[best];
-        EmPoint centre{};
+        Vec3 centre{};
         for (const std::int64_t v : r_t)
             for (std::size_t c = 0; c < 3; ++c)
                 centre[c] += rRequest.mPoints[static_cast<std::size_t>(v)][c] / 3.0;
@@ -352,7 +353,7 @@ TetMeshRegionResult em_tetgen(const std::string& rExe, const TetMeshRegionReques
     }
     em_run("tetgen", {rExe, switches, in}, dir);
     const Mesh out = read_tetgen(dir.File("in.1.node"));
-    std::vector<EmPoint> pts(out.NumPoints());
+    std::vector<Vec3> pts(out.NumPoints());
     const NDArray& r_p = out.Points();
     for (std::size_t i = 0; i < pts.size(); ++i)
         for (std::size_t c = 0; c < 3; ++c)
@@ -384,14 +385,14 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
             stl << "solid region\n";
             for (const std::size_t t_index : r_shell) {
                 const auto& r_t = rRequest.mTriangles[t_index];
-                const EmPoint& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
-                const EmPoint& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
-                const EmPoint& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
-                const EmPoint n = detail::MathUtils::UnitByDivision(
+                const Vec3& a = rRequest.mPoints[static_cast<std::size_t>(r_t[0])];
+                const Vec3& b = rRequest.mPoints[static_cast<std::size_t>(r_t[1])];
+                const Vec3& c = rRequest.mPoints[static_cast<std::size_t>(r_t[2])];
+                const Vec3 n = detail::MathUtils::UnitByDivision(
                     detail::GeometryUtils::TriangleNormal(a, b, c));
                 stl << "facet normal " << em_num(n[0]) << " " << em_num(n[1]) << " " << em_num(n[2])
                     << "\n outer loop\n";
-                for (const EmPoint* p_v : {&a, &b, &c})
+                for (const Vec3* p_v : {&a, &b, &c})
                     stl << "  vertex " << em_num((*p_v)[0]) << " " << em_num((*p_v)[1]) << " "
                         << em_num((*p_v)[2]) << "\n";
                 stl << " endloop\nendfacet\n";
@@ -418,7 +419,7 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
     argv.push_back(dir.File("in.geo"));
     em_run("gmsh", argv, dir);
     const Mesh out = read_gmsh(dir.File("out.msh"));
-    std::vector<EmPoint> pts(out.NumPoints());
+    std::vector<Vec3> pts(out.NumPoints());
     const NDArray& r_p = out.Points();
     for (std::size_t i = 0; i < pts.size(); ++i)
         for (std::size_t c = 0; c < 3; ++c)
@@ -445,7 +446,7 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
 // The surface as a Wavefront OBJ at full precision.
 void em_write_obj(const std::string& rPath, const QuadRemeshRequest& rRequest) {
     auto obj = detail::make_classic_ofstream(rPath);
-    for (const EmPoint& r_p : rRequest.mPoints)
+    for (const Vec3& r_p : rRequest.mPoints)
         obj << "v " << em_num(r_p[0]) << " " << em_num(r_p[1]) << " " << em_num(r_p[2]) << "\n";
     for (const auto& r_t : rRequest.mTriangles)
         obj << "f " << r_t[0] + 1 << " " << r_t[1] + 1 << " " << r_t[2] + 1 << "\n";
@@ -480,7 +481,7 @@ QuadRemeshResult em_read_obj(const std::string& rPath, const char* pProgram) {
             if (tokens.size() < 3)
                 throw std::runtime_error(std::string(pProgram) +
                                          " wrote a vertex without 3 coordinates");
-            EmPoint p{};
+            Vec3 p{};
             for (std::size_t c = 0; c < 3; ++c) {
                 p[c] = detail::parse_double(tokens[c]);
                 if (!std::isfinite(p[c]))
