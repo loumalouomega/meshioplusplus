@@ -22,7 +22,7 @@ jobs:
         # setup, using CIBW_MANYLINUX_AARCH64_IMAGE (below) automatically.
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # Submodules: vendored Eigen (MED transpose). Fetched with retries, because GitLab (Eigen)
       # has failed whole runs by answering "unable to handle this request due to load".
       - name: Initialise submodules
@@ -38,7 +38,7 @@ jobs:
       # the script has no MSVC recipe yet.
       - name: Cache the static libraries
         if: runner.os != 'Windows'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/deps
           key: deps-wheels-${{ matrix.os }}-${{ hashFiles('build/build-permissive-libs.sh', 'build/deps-pins.sh') }}
@@ -66,7 +66,7 @@ jobs:
       # build/deps-pins.sh pins, without OpenMP, into the core DLL.
       - name: Cache CutCells (Windows)
         if: runner.os == 'Windows'
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/cutcells-win
           key: cutcells-wheels-windows-${{ hashFiles('build/build-cutcells.sh', 'build/deps-pins.sh', 'build/patches/cutcells-*.patch') }}
@@ -91,7 +91,7 @@ jobs:
         # directory" before the actual build ever started. v3.1.0 added _2_34 alias
         # support and v4.0.0 dropped cibuildwheel's own cp38 dependency; neither
         # change affects us since CIBW_BUILD never targets cp38 wheels.
-        uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55 # v4.1.0
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
         env:
           # Portable wheels: the native HDF5, netCDF, cgnslib, zstd, lz4, bzip2 and
           # KaHIP paths are linked from the static archives built above (Linux and
@@ -175,7 +175,7 @@ jobs:
             &&
             python {project}/tests/wheel_base_smoke.py
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -198,15 +198,15 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wheels-${{ matrix.os }}
           path: base-wheelhouse
 
       - name: Cache OpenCASCADE (shared)
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/occt-shared
           key: occt-shared-${{ matrix.os }}-${{ hashFiles('build/occt-recipe.sh', 'build/build-occt.sh', 'build/patches/OCCT-*.patch') }}
@@ -240,7 +240,7 @@ jobs:
           echo "BASE_WHEELHOUSE=$here/base-wheelhouse" >> "$GITHUB_ENV"
 
       - name: Build the add-on wheels
-        uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55 # v4.1.0
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
         with:
           package-dir: packages/python/meshioplusplus-occt
         env:
@@ -272,7 +272,7 @@ jobs:
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_occt_smoke.py"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: occt-wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -295,15 +295,15 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wheels-${{ matrix.os }}
           path: base-wheelhouse
 
       - name: Cache Netgen
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/netgen-prefix
           key: netgen-prefix-${{ matrix.os }}-${{ hashFiles('build/build-netgen.sh') }}
@@ -337,7 +337,7 @@ jobs:
           echo "BASE_WHEELHOUSE=$here/base-wheelhouse" >> "$GITHUB_ENV"
 
       - name: Build the add-on wheels
-        uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55 # v4.1.0
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
         with:
           package-dir: packages/python/meshioplusplus-netgen
         env:
@@ -371,7 +371,7 @@ jobs:
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_netgen_smoke.py"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: netgen-wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -395,15 +395,15 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: wheels-${{ matrix.os }}
           path: base-wheelhouse
 
       - name: Cache MMG
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: build/mmg-prefix
           key: mmg-prefix-${{ matrix.os }}-${{ hashFiles('build/build-mmg.sh') }}
@@ -437,7 +437,7 @@ jobs:
           echo "BASE_WHEELHOUSE=$here/base-wheelhouse" >> "$GITHUB_ENV"
 
       - name: Build the add-on wheels
-        uses: pypa/cibuildwheel@294735312765b09d24a2fbec22660ce817587d55 # v4.1.0
+        uses: pypa/cibuildwheel@f9b966cfadf4109556cadc5bb39ddb72d0ce664e # v4.3.5
         with:
           package-dir: packages/python/meshioplusplus-mmg
         env:
@@ -469,7 +469,7 @@ jobs:
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python {project}/tests/wheel_mmg_smoke.py"
 
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: mmg-wheels-${{ matrix.os }}
           path: ./wheelhouse/*.whl
@@ -478,10 +478,10 @@ jobs:
     name: Source distribution
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build sdist
         run: pipx run build --sdist
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sdist
           path: dist/*.tar.gz
@@ -516,12 +516,12 @@ jobs:
           - platform: macos-arm64
             wheel: "*cp311*macosx*arm64.whl"
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.11"
 
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: wheelhouse
           pattern: wheels-*
@@ -535,7 +535,7 @@ jobs:
             --local-wheel 'wheelhouse/${{ matrix.wheel }}' \
             --outdir dist
 
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: dist/*.zip
           generate_release_notes: true
@@ -565,11 +565,11 @@ jobs:
           - { platform: macos-x64, tag: "macosx*x86_64" }
           - { platform: macos-arm64, tag: "macosx*arm64" }
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: wheelhouse
           pattern: "{wheels,occt-wheels,netgen-wheels,mmg-wheels}-*"
@@ -585,7 +585,7 @@ jobs:
             --addon-wheel 'wheelhouse/meshioplusplus_netgen-*-cp${{ matrix.python }}-*${{ matrix.tag }}.whl' \
             --addon-wheel 'wheelhouse/meshioplusplus_mmg-*-cp${{ matrix.python }}-*${{ matrix.tag }}.whl' \
             --outdir dist
-      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
         with:
           files: dist/*.zip
 
@@ -600,7 +600,7 @@ jobs:
     permissions:
       id-token: write # OIDC trusted publishing
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           pattern: "{wheels-*,sdist}"
@@ -620,7 +620,7 @@ jobs:
     permissions:
       id-token: write # OIDC trusted publishing
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           pattern: occt-wheels-*
@@ -638,7 +638,7 @@ jobs:
     permissions:
       id-token: write # OIDC trusted publishing
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           pattern: netgen-wheels-*
@@ -656,7 +656,7 @@ jobs:
     permissions:
       id-token: write # OIDC trusted publishing
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: dist
           pattern: mmg-wheels-*
