@@ -3,8 +3,8 @@
  * Bundle the unit tests, then run them with `node --test`.
  *
  * `node --test` cannot import TypeScript before Node 22.6 and CI is on Node
- * 20, so the `.ts` modules under test are bundled first with esbuild (a Vite
- * dependency that is already installed — this adds no package).
+ * 20, so the `.ts` modules under test are bundled first with esbuild, a
+ * devDependency of src/viewer (vite 8 no longer brings it in transitively).
  *
  * This script lives under tests/viewer/, outside src/viewer/'s own
  * node_modules tree, so a bare `import 'esbuild'` cannot resolve -- Node's
