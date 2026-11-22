@@ -209,6 +209,58 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rS, const OctreeMeshOptions& r
     rOut.mNumMaterials = levels + 1;
 }
 
+// The point at arc length @p At along the polyline through the skin points
+// @p rChain (clamped to its ends).
+Vec3 octree_mesh_along_chain(const std::vector<Vec3>& rSkin,
+                             const std::vector<std::int64_t>& rChain, double At) {
+    for (std::size_t s = 0; s + 1 < rChain.size(); ++s) {
+        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[s])];
+        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[s + 1])];
+        const double l = vec3_norm(vec3_sub(b, a));
+        if (At <= l || s + 2 == rChain.size())
+            return l > 0.0 ? vec3_add(a, vec3_scale(vec3_sub(b, a), std::clamp(At / l, 0.0, 1.0)))
+                           : a;
+        At -= l;
+    }
+    return rSkin[static_cast<std::size_t>(rChain.front())];
+}
+
+// The feature graph without the chains shorter than a cell: on a scanned skin
+// a short crease is noise the boundary cannot follow, and pinning it holds
+// the hexahedra around it flat or inverted. A corner is kept when a kept chain
+// ends at it. @p Uniform is the uniform grid's edge (0: graded, where the
+// cell is the leaf's at the chain's midpoint). @p rDropped counts the chains
+// dropped.
+FeatureGraph octree_mesh_drop_short_chains(const OctreeMeshSetup& rS, const FeatureGraph& rGraph,
+                                           double Uniform, std::int64_t& rDropped) {
+    const std::vector<Vec3>& skin = rS.mSkin.mPoints;
+    FeatureGraph out;
+    rDropped = 0;
+    std::vector<std::int64_t> ends;
+    for (const auto& chain : rGraph.mChains) {
+        double length = 0.0;
+        for (std::size_t i = 0; i + 1 < chain.size(); ++i)
+            length += vec3_norm(vec3_sub(skin[static_cast<std::size_t>(chain[i + 1])],
+                                         skin[static_cast<std::size_t>(chain[i])]));
+        const double cell =
+            Uniform > 0.0
+                ? Uniform
+                : octree_mesh_local_size(rS, octree_mesh_along_chain(skin, chain, 0.5 * length));
+        if (length < cell) {
+            ++rDropped;
+            continue;
+        }
+        out.mChains.push_back(chain);
+        ends.push_back(chain.front());
+        ends.push_back(chain.back());
+    }
+    std::sort(ends.begin(), ends.end());
+    for (std::int64_t c : rGraph.mCorners)
+        if (std::binary_search(ends.begin(), ends.end(), c))
+            out.mCorners.push_back(c);
+    return out;
+}
+
 double octree_mesh_local_size(const OctreeMeshSetup& rS, const Vec3& rP) {
     const LinearOctree& tree = rS.mOctree.mTree;
     const double fine = rS.mFrame.Fine();
@@ -230,7 +282,12 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
     std::vector<std::array<std::int64_t, 2>> edges;
     for (const OctreeFeatureEdge& e : rS.mFeatures)
         edges.push_back({e.mA, e.mB});
-    const FeatureGraph graph = feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle);
+    // The chains shorter than the local leaf are noise the lattice cannot follow (a scan's
+    // creases); snapping them leaves slivers, so they are left out, as the hexahedral output
+    // does (roadmap 7.9.4).
+    std::int64_t short_chains = 0;
+    const FeatureGraph graph = octree_mesh_drop_short_chains(
+        rS, feature_graph(rS.mSkin.mPoints, edges, rO.mCornerAngle), 0.0, short_chains);
     std::vector<std::uint8_t> inside(rTets.mTets.size()), guarded(rTets.mTets.size());
     for (std::size_t t = 0; t < inside.size(); ++t) {
         inside[t] = rTets.mMaterial[t] > 0;
@@ -244,8 +301,8 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
         1e-12 * std::pow(rS.mFrame.mMinSize, 3.0), claimed, rTets.mFeature);
     rR.mNumCorners = rep.mNumCorners;
     rR.mNumCornersSnapped = rep.mNumCornersSnapped;
-    rR.mNumFeatureChains = rep.mNumChains;
-    rR.mNumFeatureChainsMissed = rep.mNumChainsMissed;
+    rR.mNumFeatureChains = rep.mNumChains + short_chains;
+    rR.mNumFeatureChainsMissed = rep.mNumChainsMissed + short_chains;
     rR.mNumFeatureMoves = rep.mNumMoved;
     rTets.mChainGaps = rep.mGaps;
     for (std::size_t p = 0; p < claimed.size(); ++p)
@@ -258,8 +315,13 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
                                  " feature corners not recovered");
     if (rep.mNumChainsMissed > 0)
         octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(rep.mNumChainsMissed) +
-                                 " of " + std::to_string(rep.mNumChains) +
+                                 " of " + std::to_string(rR.mNumFeatureChains) +
                                  " feature chains not recovered");
+    if (short_chains > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(short_chains) +
+                                 " of " + std::to_string(rR.mNumFeatureChains) +
+                                 " feature chains are shorter than a cell and were not "
+                                 "snapped, nor the corners only they end at");
 }
 
 void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,

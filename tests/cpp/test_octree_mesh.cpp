@@ -1085,6 +1085,40 @@ TEST(OctreeMeshHex, CreasesShorterThanACellAreNotSnapped) {
     EXPECT_GT(r.mNumFeatureChainsMissed, 0);
 }
 
+// The tetrahedral output drops the creases shorter than a cell too: the same
+// box with a face centre pushed out keeps its eight corners and twelve edges,
+// leaves the bump's four short creases out, says so, and keeps its tetrahedra
+// above the stuffing's angle near the bump.
+TEST(OctreeMeshTet, CreasesShorterThanACellAreNotSnapped) {
+    mio::Mesh box =
+        mio::convert_cells(
+            mio::extract_surface(mio::box({{8, 8, 8}}, {{1.0, 1.0, 1.0}}, {{-0.51, -0.53, -0.55}})),
+            {mio::ConvertCellsMode::Simplexify, false})
+            .mMesh;
+    {
+        const std::size_t np = box.NumPoints();
+        mio::NDArray pts = mio::NDArray::Uninit(mio::DType::Float64, {np, std::size_t{3}});
+        const double* src = box.Points().As<double>();
+        double* p = pts.As<double>();
+        std::copy(src, src + 3 * np, p);
+        for (std::size_t v = 0; v < np; ++v)
+            if (std::abs(p[3 * v] - 0.49) < 1e-9 && std::abs(p[3 * v + 1] + 0.03) < 1e-9 &&
+                std::abs(p[3 * v + 2] + 0.05) < 1e-9)
+                p[3 * v] += 0.1;
+        box.AssignPoints(std::move(pts));
+    }
+    const auto r = mio::octree_mesh(box, om_tet(0.5, 0.15, true));
+    const OmTetCheck c = om_check_tets(r.mMesh);
+    EXPECT_EQ(r.mNumCornersSnapped, 8);
+    EXPECT_GT(r.mNumFeatureChainsMissed, 0);
+    bool said = false;
+    for (const std::string& w : r.mWarnings)
+        said = said || w.find("shorter than a cell") != std::string::npos;
+    EXPECT_TRUE(said);
+    EXPECT_GT(c.mMinDihedral, 10.0);
+    EXPECT_EQ(r.mNumInverted, 0);
+}
+
 // ---- volume fixing and feature snapping on hand-made tetrahedra ----
 
 namespace {

@@ -25,7 +25,9 @@
 // full tests pin.
 
 // System includes
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <set>
@@ -345,4 +347,30 @@ TEST(QuickOctreeMeshTet, PostAdaptRemeshesTheTetrahedra) {
     const OmTetCheck c = om_check_tets(r.mMesh);
     EXPECT_NEAR(c.mVolume, om_enclosed(skin), 0.2 * om_enclosed(skin));
     EXPECT_EQ(r.mNumInverted, 0);
+}
+
+// A crease shorter than a cell (a pushed-out face centre of a box) is not snapped by the
+// tetrahedral output, while the box's corners are.
+TEST(QuickOctreeMeshTet, CreasesShorterThanACellAreNotSnapped) {
+    mio::Mesh box =
+        mio::convert_cells(
+            mio::extract_surface(mio::box({{4, 4, 4}}, {{1.0, 1.0, 1.0}}, {{-0.51, -0.53, -0.55}})),
+            {mio::ConvertCellsMode::Simplexify, false})
+            .mMesh;
+    {
+        const std::size_t np = box.NumPoints();
+        mio::NDArray pts = mio::NDArray::Uninit(mio::DType::Float64, {np, std::size_t{3}});
+        const double* src = box.Points().As<double>();
+        double* p = pts.As<double>();
+        std::copy(src, src + 3 * np, p);
+        for (std::size_t v = 0; v < np; ++v)
+            if (std::abs(p[3 * v] - 0.49) < 1e-9 && std::abs(p[3 * v + 1] + 0.03) < 1e-9 &&
+                std::abs(p[3 * v + 2] + 0.05) < 1e-9)
+                p[3 * v] += 0.1;
+        box.AssignPoints(std::move(pts));
+    }
+    const auto r = mio::octree_mesh(box, om_tet(0.5, 0.25, true));
+    om_check_tets(r.mMesh);
+    EXPECT_EQ(r.mNumCornersSnapped, 8);
+    EXPECT_GT(r.mNumFeatureChainsMissed, 0);
 }
