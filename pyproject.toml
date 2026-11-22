@@ -58,7 +58,7 @@ remote = ["fsspec", "aiohttp"]
 # Below 3.27: that wheel dies with an illegal instruction when imported on the
 # GitHub-hosted runners (3.25 imports and passes), so it is held back until a
 # release that imports there; see roadmap 3.22.
-kahip = ["kahip<3.27"]
+kahip = ["kahip<3.29"]
 # Polyscope (MIT): the desktop backend of `view()` and all of `screenshot()`.
 # Python-only and strictly optional -- it never reaches the C++/WASM/C/Fortran
 # core, and the browser backend of `view()` needs nothing from this extra.
