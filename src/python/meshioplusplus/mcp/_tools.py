@@ -6140,7 +6140,8 @@ def tool_tetrahedralize(
     (whether the Netgen backend is installed: the meshioplusplus-netgen
     package) and backends_available (every name backend takes besides auto:
     octree, netgen, and the installed tetgen and gmsh programs, run as
-    separate processes with the surface kept)."""
+    separate processes with the surface kept, and ftetwild, the installed
+    fTetWild program, which fits the boundary within its envelope)."""
     mesh = _load(input_path, input_format)
     out, report = tetrahedralize(
         mesh,

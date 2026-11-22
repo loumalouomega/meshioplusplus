@@ -1160,6 +1160,7 @@ jobs:
         run: |
           . build/deps-pins.sh
           echo "commit=$QUADRIFLOW_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "ftetwild=$FTETWILD_COMMIT" >> "$GITHUB_OUTPUT"
       - name: Cache the QuadriFlow build
         id: qf-cache
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
@@ -1179,6 +1180,23 @@ jobs:
           cp /tmp/qf-build/quadriflow ~/quadriflow-bin/
       - name: Put QuadriFlow on PATH
         run: echo "$HOME/quadriflow-bin" >> "$GITHUB_PATH"
+      - name: Cache the fTetWild build
+        id: ftw-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/ftetwild-bin
+          key: ftetwild-${{ steps.qfpin.outputs.ftetwild }}-${{ runner.os }}
+      - name: Build fTetWild from source
+        if: steps.ftw-cache.outputs.cache-hit != 'true'
+        run: |
+          git clone https://github.com/loumalouomega/fTetWild.git /tmp/ftw-src
+          git -C /tmp/ftw-src checkout "${{ steps.qfpin.outputs.ftetwild }}"
+          cmake -S /tmp/ftw-src -B /tmp/ftw-build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/ftw-build --target FloatTetwild_bin
+          mkdir -p ~/ftetwild-bin
+          cp /tmp/ftw-build/FloatTetwild_bin ~/ftetwild-bin/
+      - name: Point meshio++ at fTetWild
+        run: echo "MESHIOPLUSPLUS_FTETWILD=$HOME/ftetwild-bin/FloatTetwild_bin" >> "$GITHUB_ENV"
       - name: Configure C++ tests with Netgen
         run: >-
           cmake -S . -B build-netgen -G Ninja
@@ -1190,7 +1208,7 @@ jobs:
           -DMESHIOPLUSPLUS_WITH_NETGEN=ON
       - name: Build
         run: cmake --build build-netgen
-      - name: Run the tetrahedralize suite (Netgen, tetgen and gmsh live)
+      - name: Run the tetrahedralize suite (Netgen, tetgen, gmsh and ftetwild live)
         run: ctest --test-dir build-netgen -R "Tetrahedralize|RemeshQuads|Providers|Tetgen|CApi|Pipeline" --output-on-failure
       - name: Install meshioplusplus with Netgen
         run: >-
@@ -1200,7 +1218,7 @@ jobs:
         if: steps.lfs.outputs.available != 'false'
         run: |
           python -c "from meshioplusplus import _core; assert _core.__has_netgen__"
-          python -c "import meshioplusplus as m; b = m.tetrahedralize_backends(); assert {'tetgen', 'gmsh'} <= set(b), b"
+          python -c "import meshioplusplus as m; b = m.tetrahedralize_backends(); assert {'tetgen', 'gmsh', 'ftetwild'} <= set(b), b"
           python -c "import meshioplusplus as m; assert 'quadriflow' in m.remesh_quads_backends()"
           python -m pytest tests/python/test_tetrahedralize.py tests/python/test_tetgen.py tests/python/test_remesh_quads.py -v
 

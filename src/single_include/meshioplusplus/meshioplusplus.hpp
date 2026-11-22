@@ -128,7 +128,7 @@
  * supported opt-out.
  */
 
-#define MESHIOPLUSPLUS_ABI_VERSION 46
+#define MESHIOPLUSPLUS_ABI_VERSION 47
 // ===== end src/cpp/include/meshioplusplus/abi_version.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/cell_type.hpp =====
 /**
@@ -43523,13 +43523,18 @@ struct TetMeshRegionResult {
     bool mBoundaryPreserved = true;
 };
 
-/// A tetrahedral mesher that keeps the boundary: `tetrahedralize`'s Netgen backend.
+/// A tetrahedral mesher: `tetrahedralize`'s Netgen backend, or a named one.
 struct TetMesherProvider {
     /// The mesher's name ("netgen"), reported as the backend.
     std::string mName;
     std::string mVersion;
     /// Meshes one region; throws `std::runtime_error` when the mesher fails.
     std::function<TetMeshRegionResult(const TetMeshRegionRequest&)> mMeshRegion;
+    /// Whether the mesher keeps the request's triangles (checked, and refused
+    /// when moved). False for one that fits its own boundary within a
+    /// tolerance (fTetWild): its result's points are all its own, and
+    /// `tetrahedralize` reports the boundary's distance to the surface.
+    bool mKeepsBoundary = true;
 };
 
 /// A triangle surface handed to a quad remesher (roadmap 7.7.3): its points and
@@ -91606,6 +91611,39 @@ void em_run(const std::string& rName, const std::vector<std::string>& rArgv,
                                  "): " + em_log_tail(log));
 }
 
+// The points and the `tetra` blocks' tetrahedra of a mesh a program wrote.
+void em_read_tets(const Mesh& rOut, std::vector<Vec3>& rPts,
+                  std::vector<std::array<std::int64_t, 4>>& rTets) {
+    rPts.assign(rOut.NumPoints(), Vec3{});
+    const NDArray& r_p = rOut.Points();
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            rPts[i][c] = detail::read_double(r_p, 3 * i + c);
+    rTets.clear();
+    for (std::size_t b = 0; b < rOut.NumCellBlocks(); ++b) {
+        const auto cells = rOut.Cells(b);
+        if (cells.Type() != "tetra")
+            continue;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c)
+            rTets.push_back({detail::read_int(cells.Conn(), 4 * c),
+                             detail::read_int(cells.Conn(), 4 * c + 1),
+                             detail::read_int(cells.Conn(), 4 * c + 2),
+                             detail::read_int(cells.Conn(), 4 * c + 3)});
+    }
+}
+
+// A surface as a Wavefront OBJ at full precision.
+void em_write_obj(const std::string& rPath, const std::vector<Vec3>& rPoints,
+                  const std::vector<std::array<std::int64_t, 3>>& rTriangles) {
+    auto obj = detail::make_classic_ofstream(rPath);
+    for (const Vec3& r_p : rPoints)
+        obj << "v " << em_num(r_p[0]) << " " << em_num(r_p[1]) << " " << em_num(r_p[2]) << "\n";
+    for (const auto& r_t : rTriangles)
+        obj << "f " << r_t[0] + 1 << " " << r_t[1] + 1 << " " << r_t[2] + 1 << "\n";
+    if (!obj)
+        throw std::runtime_error("cannot write '" + rPath + "'");
+}
+
 /**
  * The region's result from the mesher's points and tetrahedra: the request's
  * points first, exactly as given, each matched to the mesher's copy of it
@@ -91846,23 +91884,9 @@ TetMeshRegionResult em_tetgen(const std::string& rExe, const TetMeshRegionReques
         switches += "a" + em_num(h * h * h / (6.0 * std::sqrt(2.0)));
     }
     em_run("tetgen", {rExe, switches, in}, dir);
-    const Mesh out = read_tetgen(dir.File("in.1.node"));
-    std::vector<Vec3> pts(out.NumPoints());
-    const NDArray& r_p = out.Points();
-    for (std::size_t i = 0; i < pts.size(); ++i)
-        for (std::size_t c = 0; c < 3; ++c)
-            pts[i][c] = detail::read_double(r_p, 3 * i + c);
+    std::vector<Vec3> pts;
     std::vector<std::array<std::int64_t, 4>> tets;
-    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
-        const auto cells = out.Cells(b);
-        if (cells.Type() != "tetra")
-            continue;
-        for (std::size_t c = 0; c < cells.NumCells(); ++c)
-            tets.push_back({detail::read_int(cells.Conn(), 4 * c),
-                            detail::read_int(cells.Conn(), 4 * c + 1),
-                            detail::read_int(cells.Conn(), 4 * c + 2),
-                            detail::read_int(cells.Conn(), 4 * c + 3)});
-    }
+    em_read_tets(read_tetgen(dir.File("in.1.node")), pts, tets);
     return em_assemble(rRequest, pts, tets);
 }
 
@@ -91912,41 +91936,45 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
     }
     argv.push_back(dir.File("in.geo"));
     em_run("gmsh", argv, dir);
-    const Mesh out = read_gmsh(dir.File("out.msh"));
-    std::vector<Vec3> pts(out.NumPoints());
-    const NDArray& r_p = out.Points();
-    for (std::size_t i = 0; i < pts.size(); ++i)
-        for (std::size_t c = 0; c < 3; ++c)
-            pts[i][c] = detail::read_double(r_p, 3 * i + c);
+    std::vector<Vec3> pts;
     std::vector<std::array<std::int64_t, 4>> tets;
-    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
-        const auto cells = out.Cells(b);
-        if (cells.Type() != "tetra")
-            continue;
-        for (std::size_t c = 0; c < cells.NumCells(); ++c)
-            tets.push_back({detail::read_int(cells.Conn(), 4 * c),
-                            detail::read_int(cells.Conn(), 4 * c + 1),
-                            detail::read_int(cells.Conn(), 4 * c + 2),
-                            detail::read_int(cells.Conn(), 4 * c + 3)});
-    }
+    em_read_tets(read_gmsh(dir.File("out.msh")), pts, tets);
     if (tets.empty())
         throw std::runtime_error("gmsh produced no tetrahedra: " +
                                  em_log_tail(dir.File("mesher.log")));
     return em_assemble(rRequest, pts, tets);
 }
 
-// --- quad remeshers (roadmap 7.7.3) ---------------------------------------------
-
-// The surface as a Wavefront OBJ at full precision.
-void em_write_obj(const std::string& rPath, const QuadRemeshRequest& rRequest) {
-    auto obj = detail::make_classic_ofstream(rPath);
-    for (const Vec3& r_p : rRequest.mPoints)
-        obj << "v " << em_num(r_p[0]) << " " << em_num(r_p[1]) << " " << em_num(r_p[2]) << "\n";
-    for (const auto& r_t : rRequest.mTriangles)
-        obj << "f " << r_t[0] + 1 << " " << r_t[1] + 1 << " " << r_t[2] + 1 << "\n";
-    if (!obj)
-        throw std::runtime_error("cannot write '" + rPath + "'");
+// fTetWild (Hu et al. 2020) meshes the volume inside an envelope around the
+// surface (an OBJ; its inner shells, inward, are holes by the winding number)
+// and writes MSH 2.2: `FloatTetwild_bin -i in.obj -o out.msh`, `-a` the ideal
+// edge length from `max_size`, `--max-its 0` when no optimisation is asked. It
+// does not keep the triangles, so every point it returns is its own and the
+// provider is registered as fitting its boundary.
+TetMeshRegionResult em_ftetwild(const std::string& rExe, const TetMeshRegionRequest& rRequest) {
+    const EmWorkDir dir("ftetwild");
+    em_write_obj(dir.File("in.obj"), rRequest.mPoints, rRequest.mTriangles);
+    std::vector<std::string> argv = {rExe,      "-i", dir.File("in.obj"), "-o", dir.File("out.msh"),
+                                     "--level", "6",  "--no-color"};
+    if (rRequest.mMaxSize > 0.0) {
+        argv.push_back("-a");
+        argv.push_back(em_num(rRequest.mMaxSize));
+    }
+    if (rRequest.mOptimizeSteps <= 0) {
+        argv.push_back("--max-its");
+        argv.push_back("0");
+    }
+    em_run("ftetwild", argv, dir);
+    TetMeshRegionResult result;
+    em_read_tets(read_gmsh(dir.File("out.msh")), result.mPoints, result.mTets);
+    if (result.mTets.empty())
+        throw std::runtime_error("ftetwild produced no tetrahedra: " +
+                                 em_log_tail(dir.File("mesher.log")));
+    result.mBoundaryPreserved = false;
+    return result;
 }
+
+// --- quad remeshers (roadmap 7.7.3) ---------------------------------------------
 
 // The `v` and `f` records of the program's OBJ (`f` corners as `i`, `i/t` or
 // `i/t/n`, negative indices relative): quads, and triangles where the program
@@ -92015,7 +92043,7 @@ QuadRemeshResult em_read_obj(const std::string& rPath, const char* pProgram) {
 // all-quad mesh.
 QuadRemeshResult em_quadriflow(const std::string& rExe, const QuadRemeshRequest& rRequest) {
     const EmWorkDir dir("quadriflow");
-    em_write_obj(dir.File("in.obj"), rRequest);
+    em_write_obj(dir.File("in.obj"), rRequest.mPoints, rRequest.mTriangles);
     std::vector<std::string> argv = {rExe};
     if (rRequest.mSharp)
         argv.push_back("-sharp");
@@ -92034,7 +92062,7 @@ QuadRemeshResult em_quadriflow(const std::string& rExe, const QuadRemeshRequest&
 // deterministic; `-D` quad-dominant, `-b` boundaries kept, `-c` creases.
 QuadRemeshResult em_instant_meshes(const std::string& rExe, const QuadRemeshRequest& rRequest) {
     const EmWorkDir dir("instant_meshes");
-    em_write_obj(dir.File("in.obj"), rRequest);
+    em_write_obj(dir.File("in.obj"), rRequest.mPoints, rRequest.mTriangles);
     std::vector<std::string> argv = {
         rExe, "-d", "-o", dir.File("out.obj"), "-f", std::to_string(rRequest.mTargetFaces)};
     if (rRequest.mDominant)
@@ -92078,6 +92106,20 @@ std::vector<TetMesherProvider> make_external_tet_meshers() {
         p.mVersion = "external: " + gmsh;
         p.mMeshRegion = [gmsh](const TetMeshRegionRequest& rRequest) {
             return em_gmsh(gmsh, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    std::string ftetwild = detail::find_executable("FloatTetwild_bin", "MESHIOPLUSPLUS_FTETWILD");
+    for (const char* p_alt : {"fTetWild", "ftetwild"})
+        if (ftetwild.empty())
+            ftetwild = detail::find_executable(p_alt);
+    if (!ftetwild.empty()) {
+        TetMesherProvider p;
+        p.mName = "ftetwild";
+        p.mVersion = "external: " + ftetwild;
+        p.mKeepsBoundary = false;
+        p.mMeshRegion = [ftetwild](const TetMeshRegionRequest& rRequest) {
+            return em_ftetwild(ftetwild, rRequest);
         };
         out.push_back(std::move(p));
     }
@@ -283145,7 +283187,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         else if (backend == "octree")
             o.mBackend = TetrahedralizeBackend::Octree;
         else if (!backend.empty()) {
-            // A named mesher (roadmap 7.7.2): the installed tetgen or gmsh.
+            // A named mesher (roadmap 7.7.2): the installed tetgen, gmsh or ftetwild.
             o.mBackend = TetrahedralizeBackend::Named;
             o.mProvider = backend;
         } else
@@ -312987,6 +313029,115 @@ bool tet_region_kept(const TetMeshRegionRequest& rRequest, const TetMeshRegionRe
     return got == want;
 }
 
+// A triangle mesh of @p rPoints and @p rTris, for a distance query.
+Mesh tet_triangle_mesh(const std::vector<Vec3>& rPoints,
+                       const std::vector<std::array<std::int64_t, 3>>& rTris) {
+    Mesh m;
+    NDArray p = NDArray::Uninit(DType::Float64, {rPoints.size(), std::size_t{3}});
+    for (std::size_t i = 0; i < rPoints.size(); ++i)
+        for (std::size_t k = 0; k < 3; ++k)
+            p.As<double>()[3 * i + k] = rPoints[i][k];
+    m.AssignPoints(std::move(p));
+    NDArray c = NDArray::Uninit(DType::Int64, {rTris.size(), std::size_t{3}});
+    for (std::size_t t = 0; t < rTris.size(); ++t)
+        for (std::size_t k = 0; k < 3; ++k)
+            c.As<std::int64_t>()[3 * t + k] = rTris[t][k];
+    m.AddCellBlock("triangle", std::move(c));
+    return m;
+}
+
+/**
+ * The boundary of a fitted mesh (the octree backend, or a mesher that does not
+ * keep the surface): the facets one tetrahedron has, outward, in @p rBnd, and
+ * in @p rBndFace each one's face_array value, the one of the surface triangle
+ * nearest its centroid (-1 without a face_array).
+ */
+void tet_fitted_boundary(const std::vector<Vec3>& rPoints,
+                         const std::vector<std::array<std::int64_t, 4>>& rTets,
+                         const std::vector<Vec3>& rX,
+                         const std::vector<std::array<std::int64_t, 3>>& rTris,
+                         const std::vector<std::int64_t>& rTriFace, bool HasFace,
+                         std::vector<std::array<std::int64_t, 3>>& rBnd,
+                         std::vector<std::int64_t>& rBndFace) {
+    const auto& points = rPoints;
+    const auto& tets = rTets;
+    const auto& x = rX;
+    const auto& tris = rTris;
+    const auto& tri_face = rTriFace;
+    const bool has_face = HasFace;
+    auto& bnd = rBnd;
+    auto& bnd_face = rBndFace;
+    // The boundary: the facets one tetrahedron has, outward, in the order
+    // of their tetrahedra.
+    static constexpr int kSide[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    std::map<std::array<std::int64_t, 3>, std::int64_t> uses;
+    for (const auto& r_t : tets)
+        for (const auto& r_k : kSide) {
+            std::array<std::int64_t, 3> k{r_t[static_cast<std::size_t>(r_k[0])],
+                                          r_t[static_cast<std::size_t>(r_k[1])],
+                                          r_t[static_cast<std::size_t>(r_k[2])]};
+            std::sort(k.begin(), k.end());
+            ++uses[k];
+        }
+    for (const auto& r_t : tets)
+        for (int f = 0; f < 4; ++f) {
+            std::array<std::int64_t, 3> v{r_t[static_cast<std::size_t>(kSide[f][0])],
+                                          r_t[static_cast<std::size_t>(kSide[f][1])],
+                                          r_t[static_cast<std::size_t>(kSide[f][2])]};
+            std::array<std::int64_t, 3> k = v;
+            std::sort(k.begin(), k.end());
+            if (uses.at(k) != 1)
+                continue;
+            // Facing away from the tetrahedron's fourth corner.
+            const Vec3& r_a = points[static_cast<std::size_t>(v[0])];
+            const Vec3 n =
+                detail::vec3_cross(detail::vec3_sub(points[static_cast<std::size_t>(v[1])], r_a),
+                                   detail::vec3_sub(points[static_cast<std::size_t>(v[2])], r_a));
+            if (detail::vec3_dot(
+                    n, detail::vec3_sub(
+                           points[static_cast<std::size_t>(r_t[static_cast<std::size_t>(f)])],
+                           r_a)) > 0.0)
+                std::swap(v[1], v[2]);
+            bnd.push_back(v);
+        }
+    // Each boundary triangle takes the face_array value of the surface
+    // triangle nearest its centroid (ties to the lower index).
+    if (has_face && !bnd.empty()) {
+        const Mesh surface = tet_triangle_mesh(x, tris);
+        const detail::TriangleSoup soup = detail::build_triangle_soup(surface, "");
+        const detail::DistanceQuery query =
+            detail::build_distance_query(soup, SurfaceDistanceOptions{});
+        std::vector<detail::Vec3> centres(bnd.size());
+        for (std::size_t t = 0; t < bnd.size(); ++t)
+            for (std::size_t k = 0; k < 3; ++k)
+                centres[t][k] = (points[static_cast<std::size_t>(bnd[t][0])][k] +
+                                 points[static_cast<std::size_t>(bnd[t][1])][k] +
+                                 points[static_cast<std::size_t>(bnd[t][2])][k]) /
+                                3.0;
+        const auto hits = detail::query_closest_points(query, centres);
+        bnd_face.resize(bnd.size(), -1);
+        for (std::size_t t = 0; t < bnd.size(); ++t)
+            if (hits[t].mFound && hits[t].mSourceCell >= 0)
+                bnd_face[t] = tri_face[static_cast<std::size_t>(hits[t].mSourceCell)];
+    } else {
+        bnd_face.assign(bnd.size(), -1);
+    }
+}
+
+// The two-sided Hausdorff distance between a fitted boundary and the surface,
+// sampled at the vertices and triangle centroids of both.
+double tet_boundary_hausdorff(const std::vector<Vec3>& rPoints,
+                              const std::vector<std::array<std::int64_t, 3>>& rBnd,
+                              const std::vector<Vec3>& rX,
+                              const std::vector<std::array<std::int64_t, 3>>& rTris) {
+    if (rBnd.empty())
+        return 0.0;
+    HausdorffOptions ho;
+    ho.mFaceSamples = 1;
+    return hausdorff_distance(tet_triangle_mesh(rPoints, rBnd), tet_triangle_mesh(rX, rTris), ho)
+        .mDistance;
+}
+
 }  // namespace
 
 bool tetrahedralize_has_netgen() {
@@ -313106,10 +313257,11 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                 std::string known;
                 for (const std::string& r_name : tetrahedralize_backends())
                     known += (known.empty() ? "" : ", ") + r_name;
-                throw Unsupported(std::string(kTetPrefix) + "no tetrahedral mesher named '" +
-                                  o.mProvider + "' (available: auto, " + known +
-                                  "; tetgen and gmsh are found on PATH, or through "
-                                  "MESHIOPLUSPLUS_TETGEN and MESHIOPLUSPLUS_GMSH)");
+                throw Unsupported(
+                    std::string(kTetPrefix) + "no tetrahedral mesher named '" + o.mProvider +
+                    "' (available: auto, " + known +
+                    "; tetgen, gmsh and ftetwild are found on PATH, or through "
+                    "MESHIOPLUSPLUS_TETGEN, MESHIOPLUSPLUS_GMSH and MESHIOPLUSPLUS_FTETWILD)");
             }
         }
     }
@@ -313213,14 +313365,20 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     std::vector<std::array<std::int64_t, 4>> tets;
     std::vector<std::int64_t> tet_region;
     // The result's triangles and their face_array values: the surface's own
-    // (Netgen), or the tetrahedra's boundary facets (octree).
+    // (Netgen and the meshers that keep it), or the tetrahedra's boundary
+    // facets (octree, and a mesher that fits its own boundary, fTetWild).
     std::vector<std::array<std::int64_t, 3>> bnd;
     std::vector<std::int64_t> bnd_face;
+    // A mesher that fits its own boundary within a tolerance: its points are
+    // all its own, its boundary is measured against the surface, not checked.
+    bool fitted_mesher = false;
     if (use_netgen) {
         const std::shared_ptr<const TetMesherProvider> p_mesher = p_named ? p_named : tet_mesher();
         result.mBackend = p_mesher->mName;
-        result.mBoundaryPreserved = true;
-        points.assign(x.begin(), x.end());
+        fitted_mesher = !p_mesher->mKeepsBoundary;
+        result.mBoundaryPreserved = !fitted_mesher;
+        if (!fitted_mesher)
+            points.assign(x.begin(), x.end());
         for (std::size_t s = 0; s < ns; ++s) {
             // The region's triangles; the points they use, ascending.
             const std::vector<std::array<std::int64_t, 3>> faces = region_faces(s);
@@ -313250,14 +313408,16 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             if (static_cast<std::int64_t>(tets.size() + region.mTets.size()) > o.mMaxCells)
                 throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
                                         std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
-            if (!region.mBoundaryPreserved || !tet_region_kept(request, region))
+            if (!fitted_mesher && (!region.mBoundaryPreserved || !tet_region_kept(request, region)))
                 result.mBoundaryPreserved = false;
             // New points, after every earlier region's: the request's own map
-            // back to the surface's.
+            // back to the surface's (none for a fitting mesher, whose points
+            // are all new).
+            const std::size_t kept = fitted_mesher ? 0 : used.size();
             std::vector<std::int64_t> global(region.mPoints.size(), -1);
-            for (std::size_t i = 0; i < used.size() && i < global.size(); ++i)
+            for (std::size_t i = 0; i < kept && i < global.size(); ++i)
                 global[i] = used[i];
-            for (std::size_t i = used.size(); i < region.mPoints.size(); ++i) {
+            for (std::size_t i = kept; i < region.mPoints.size(); ++i) {
                 global[i] = static_cast<std::int64_t>(points.size());
                 points.push_back(region.mPoints[i]);
             }
@@ -313278,11 +313438,22 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                 tet_region.push_back(static_cast<std::int64_t>(s));
             }
         }
-        if (!result.mBoundaryPreserved)
-            throw std::runtime_error(std::string(kTetPrefix) + "the " + p_mesher->mName +
-                                     " mesher moved the surface's points or triangles");
-        bnd = tris;
-        bnd_face = tri_face;
+        if (fitted_mesher) {
+            tet_fitted_boundary(points, tets, x, tris, tri_face, has_face, bnd, bnd_face);
+            result.mHausdorffToSurface = tet_boundary_hausdorff(points, bnd, x, tris);
+            if (ns > 1)
+                result.mWarnings.push_back(
+                    "the " + p_mesher->mName + " mesher meshes each of the " + std::to_string(ns) +
+                    " regions on its own: they do not share points across their interfaces");
+            for (const std::string& r_w : result.mWarnings)
+                log::warn("{}{}", kTetPrefix, r_w);
+        } else {
+            if (!result.mBoundaryPreserved)
+                throw std::runtime_error(std::string(kTetPrefix) + "the " + p_mesher->mName +
+                                         " mesher moved the surface's points or triangles");
+            bnd = tris;
+            bnd_face = tri_face;
+        }
     } else {
         // The native route (octree_mesh's isosurface stuffing, Labelle and
         // Shewchuk 2007), region by region from the same faces Netgen takes:
@@ -313386,71 +313557,7 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
                 throw std::length_error(std::string(kTetPrefix) + "the mesh would have more than " +
                                         std::to_string(o.mMaxCells) + " tetrahedra (max_cells)");
         }
-        // The boundary: the facets one tetrahedron has, outward, in the order
-        // of their tetrahedra.
-        static constexpr int kSide[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
-        std::map<std::array<std::int64_t, 3>, std::int64_t> uses;
-        for (const auto& r_t : tets)
-            for (const auto& r_k : kSide) {
-                std::array<std::int64_t, 3> k{r_t[static_cast<std::size_t>(r_k[0])],
-                                              r_t[static_cast<std::size_t>(r_k[1])],
-                                              r_t[static_cast<std::size_t>(r_k[2])]};
-                std::sort(k.begin(), k.end());
-                ++uses[k];
-            }
-        for (const auto& r_t : tets)
-            for (int f = 0; f < 4; ++f) {
-                std::array<std::int64_t, 3> v{r_t[static_cast<std::size_t>(kSide[f][0])],
-                                              r_t[static_cast<std::size_t>(kSide[f][1])],
-                                              r_t[static_cast<std::size_t>(kSide[f][2])]};
-                std::array<std::int64_t, 3> k = v;
-                std::sort(k.begin(), k.end());
-                if (uses.at(k) != 1)
-                    continue;
-                // Facing away from the tetrahedron's fourth corner.
-                const Vec3& r_a = points[static_cast<std::size_t>(v[0])];
-                const Vec3 n = detail::vec3_cross(
-                    detail::vec3_sub(points[static_cast<std::size_t>(v[1])], r_a),
-                    detail::vec3_sub(points[static_cast<std::size_t>(v[2])], r_a));
-                if (detail::vec3_dot(
-                        n, detail::vec3_sub(
-                               points[static_cast<std::size_t>(r_t[static_cast<std::size_t>(f)])],
-                               r_a)) > 0.0)
-                    std::swap(v[1], v[2]);
-                bnd.push_back(v);
-            }
-        // Each boundary triangle takes the face_array value of the surface
-        // triangle nearest its centroid (ties to the lower index).
-        if (has_face && !bnd.empty()) {
-            Mesh surface;
-            NDArray p = NDArray::Uninit(DType::Float64, {np, std::size_t{3}});
-            for (std::size_t i = 0; i < np; ++i)
-                for (std::size_t k = 0; k < 3; ++k)
-                    p.As<double>()[3 * i + k] = x[i][k];
-            surface.AssignPoints(std::move(p));
-            NDArray c = NDArray::Uninit(DType::Int64, {nt, std::size_t{3}});
-            for (std::size_t t = 0; t < nt; ++t)
-                for (std::size_t k = 0; k < 3; ++k)
-                    c.As<std::int64_t>()[3 * t + k] = tris[t][k];
-            surface.AddCellBlock("triangle", std::move(c));
-            const detail::TriangleSoup soup = detail::build_triangle_soup(surface, "");
-            const detail::DistanceQuery query =
-                detail::build_distance_query(soup, SurfaceDistanceOptions{});
-            std::vector<detail::Vec3> centres(bnd.size());
-            for (std::size_t t = 0; t < bnd.size(); ++t)
-                for (std::size_t k = 0; k < 3; ++k)
-                    centres[t][k] = (points[static_cast<std::size_t>(bnd[t][0])][k] +
-                                     points[static_cast<std::size_t>(bnd[t][1])][k] +
-                                     points[static_cast<std::size_t>(bnd[t][2])][k]) /
-                                    3.0;
-            const auto hits = detail::query_closest_points(query, centres);
-            bnd_face.resize(bnd.size(), -1);
-            for (std::size_t t = 0; t < bnd.size(); ++t)
-                if (hits[t].mFound && hits[t].mSourceCell >= 0)
-                    bnd_face[t] = tri_face[static_cast<std::size_t>(hits[t].mSourceCell)];
-        } else {
-            bnd_face.assign(bnd.size(), -1);
-        }
+        tet_fitted_boundary(points, tets, x, tris, tri_face, has_face, bnd, bnd_face);
         if (o.mBackend == TetrahedralizeBackend::Auto)
             result.mWarnings.push_back(
                 "no Netgen backend is built in: the native octree backend fits the boundary "
@@ -313470,8 +313577,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
     // The measures.
     result.mNumTetrahedra = static_cast<std::int64_t>(tets.size());
     result.mNumPoints = static_cast<std::int64_t>(points.size());
-    result.mNumNewPoints =
-        static_cast<std::int64_t>(points.size()) - (use_netgen ? static_cast<std::int64_t>(np) : 0);
+    result.mNumNewPoints = static_cast<std::int64_t>(points.size()) -
+                           (use_netgen && !fitted_mesher ? static_cast<std::int64_t>(np) : 0);
     double lo = 180.0, hi = 0.0;
     for (const auto& r_t : tets) {
         const std::array<Vec3, 4> c{

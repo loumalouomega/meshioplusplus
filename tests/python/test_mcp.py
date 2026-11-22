@@ -2871,6 +2871,12 @@ def test_tetrahedralize_tool(tmp_path):
                 str(skin), str(out), backend=name, max_size=0.3
             )
             assert kept["backend"] == name and kept["boundary_preserved"]
+    if "ftetwild" in backends:  # the installed fTetWild: the skin fitted, measured
+        fit = _tools.tool_tetrahedralize(
+            str(skin), str(out), backend="ftetwild", max_size=0.3
+        )
+        assert fit["backend"] == "ftetwild" and not fit["boundary_preserved"]
+        assert fit["num_tetrahedra"] > 0 and fit["hausdorff_to_surface"] >= 0.0
     if not meshioplusplus.has_netgen():
         with pytest.raises(NotImplementedError, match="MESHIOPLUSPLUS_WITH_NETGEN"):
             _tools.tool_tetrahedralize(str(skin), str(out), backend="netgen")

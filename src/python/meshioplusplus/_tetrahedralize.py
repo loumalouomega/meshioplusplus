@@ -17,7 +17,10 @@ surface within the reported ``hausdorff_to_surface``. ``backend="auto"`` takes
 Netgen when ``meshioplusplus._core.__has_netgen__`` and the octree backend
 otherwise, with a warning. The installed TetGen and Gmsh programs are named
 meshers too (``backend="tetgen"``, ``"gmsh"``; :func:`tetrahedralize_backends`),
-run as separate processes with the surface kept. See ``doc/tetrahedralize.md``.
+run as separate processes with the surface kept, and so is the installed
+fTetWild (``backend="ftetwild"``; Hu et al., *Fast Tetrahedral Meshing in the
+Wild*, 2020), whose boundary is fitted within its envelope instead, the
+distance reported. See ``doc/tetrahedralize.md``.
 
 The C++ core does the work; there is no numpy twin.
 """
@@ -39,9 +42,11 @@ _BACKENDS = ("auto", "netgen", "octree")
 def tetrahedralize_backends() -> list:
     """The ``backend`` names :func:`tetrahedralize` accepts besides ``"auto"``,
     sorted: ``"octree"``, then every registered tetrahedral mesher --
-    ``"netgen"`` when built in or added, and the installed ``"tetgen"`` and
-    ``"gmsh"`` programs, found on ``PATH`` (or through ``MESHIOPLUSPLUS_TETGEN``
-    and ``MESHIOPLUSPLUS_GMSH``) and run as separate processes."""
+    ``"netgen"`` when built in or added, and the installed ``"tetgen"``,
+    ``"gmsh"`` and ``"ftetwild"`` (fTetWild's ``FloatTetwild_bin``) programs,
+    found on ``PATH`` (or through ``MESHIOPLUSPLUS_TETGEN``,
+    ``MESHIOPLUSPLUS_GMSH`` and ``MESHIOPLUSPLUS_FTETWILD``) and run as
+    separate processes."""
     try:
         from . import _core
     except ImportError:
@@ -112,7 +117,9 @@ def tetrahedralize(
         native backend, the boundary fitted), or another name of
         :func:`tetrahedralize_backends`: ``"tetgen"`` and ``"gmsh"`` run the
         installed programs on the surface as separate processes, the surface
-        kept (checked); never in WebAssembly.
+        kept (checked); ``"ftetwild"`` runs fTetWild the same way, its
+        boundary fitted within its envelope (``boundary_preserved`` false,
+        ``hausdorff_to_surface`` measured); never in WebAssembly.
     :param max_size: the largest edge asked of the tetrahedra (0, the
         default, is none: the surface's triangles size the inside).
     :param max_volume: the largest volume asked of a tetrahedron (0 is none);

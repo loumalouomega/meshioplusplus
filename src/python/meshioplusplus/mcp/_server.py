@@ -3896,7 +3896,9 @@ def _register_operations(server: FastMCP) -> None:
         within the reported hausdorff_to_surface; "auto" (default) takes
         Netgen when built in, else octree with a warning; "tetgen" and "gmsh"
         run those installed programs on the surface as separate processes,
-        its triangles kept (checked). Each shell bounds a
+        its triangles kept (checked); "ftetwild" runs the installed fTetWild
+        the same way, its boundary fitted within its envelope and the
+        distance reported (boundary_preserved false). Each shell bounds a
         region (a box inside a box gives two), meshed on its own. max_size and max_volume (0: none) bound the
         tetrahedra, grading (0 to 1) is how fast the size grows inward,
         optimize_steps the backend's volume optimisation passes; face_array

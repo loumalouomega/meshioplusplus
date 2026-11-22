@@ -100,13 +100,18 @@ struct TetMeshRegionResult {
     bool mBoundaryPreserved = true;
 };
 
-/// A tetrahedral mesher that keeps the boundary: `tetrahedralize`'s Netgen backend.
+/// A tetrahedral mesher: `tetrahedralize`'s Netgen backend, or a named one.
 struct TetMesherProvider {
     /// The mesher's name ("netgen"), reported as the backend.
     std::string mName;
     std::string mVersion;
     /// Meshes one region; throws `std::runtime_error` when the mesher fails.
     std::function<TetMeshRegionResult(const TetMeshRegionRequest&)> mMeshRegion;
+    /// Whether the mesher keeps the request's triangles (checked, and refused
+    /// when moved). False for one that fits its own boundary within a
+    /// tolerance (fTetWild): its result's points are all its own, and
+    /// `tetrahedralize` reports the boundary's distance to the surface.
+    bool mKeepsBoundary = true;
 };
 
 /// A triangle surface handed to a quad remesher (roadmap 7.7.3): its points and

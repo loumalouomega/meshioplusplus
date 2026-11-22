@@ -39,6 +39,7 @@
 #include "meshioplusplus/operations/boundary_layer.hpp"
 #include "meshioplusplus/operations/mesh_cad.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
+#include "meshioplusplus/providers.hpp"
 
 namespace {
 
@@ -338,6 +339,79 @@ TEST(Tetrahedralize, ExternalMeshersKeepTheSkin) {
     }
     if (!ran)
         GTEST_SKIP() << "neither tetgen nor gmsh is installed";
+}
+
+// A named mesher that fits its own boundary (`mKeepsBoundary` false, as
+// fTetWild): a fan of tetrahedra from the region's centroid to its triangles
+// pushed out by 0.1%. Its points are all new, its boundary is the tetrahedra's
+// facets, and the distance to the skin is measured instead of refused.
+TEST(Tetrahedralize, AFittingMesherIsMeasuredNotRefused) {
+    mio::TetMesherProvider p;
+    p.mName = "test_fitting";
+    p.mKeepsBoundary = false;
+    p.mMeshRegion = [](const mio::TetMeshRegionRequest& rRequest) {
+        mio::TetMeshRegionResult r;
+        std::array<double, 3> c{0.0, 0.0, 0.0};
+        for (const auto& r_p : rRequest.mPoints)
+            for (std::size_t k = 0; k < 3; ++k)
+                c[k] += r_p[k] / static_cast<double>(rRequest.mPoints.size());
+        for (const auto& r_p : rRequest.mPoints)
+            r.mPoints.push_back({c[0] + 1.001 * (r_p[0] - c[0]), c[1] + 1.001 * (r_p[1] - c[1]),
+                                 c[2] + 1.001 * (r_p[2] - c[2])});
+        const auto centre = static_cast<std::int64_t>(r.mPoints.size());
+        r.mPoints.push_back(c);
+        for (const auto& r_t : rRequest.mTriangles)
+            r.mTets.push_back({centre, r_t[0], r_t[1], r_t[2]});
+        r.mBoundaryPreserved = false;
+        return r;
+    };
+    mio::add_tet_mesher(p);
+    const mio::Mesh s = skin(brep_solids::sphere(1.0), 0.25);
+    mio::TetrahedralizeOptions o;
+    o.mBackend = mio::TetrahedralizeBackend::Named;
+    o.mProvider = "test_fitting";
+    const auto r = mio::tetrahedralize(s, o);
+    mio::remove_tet_mesher("test_fitting");
+    EXPECT_EQ(r.mBackend, "test_fitting");
+    EXPECT_FALSE(r.mBoundaryPreserved);
+    EXPECT_EQ(r.mNumPoints, static_cast<std::int64_t>(s.NumPoints()) + 1);
+    EXPECT_EQ(r.mNumNewPoints, r.mNumPoints);
+    EXPECT_GT(r.mHausdorffToSurface, 0.0);
+    EXPECT_LT(r.mHausdorffToSurface, 2e-3);
+    std::size_t n_tri = 0;
+    for (std::size_t b = 0; b < s.NumCellBlocks(); ++b)
+        if (std::string(s.Cells(b).Type()) == "triangle")
+            n_tri += s.Cells(b).NumCells();
+    EXPECT_EQ(r.mNumBoundaryTriangles, static_cast<std::int64_t>(n_tri));
+    EXPECT_EQ(r.mNumTetrahedra, static_cast<std::int64_t>(n_tri));
+    EXPECT_NEAR(r.mVolume, 4.0 / 3.0 * kPi, 0.1);
+}
+
+// The installed fTetWild (FloatTetwild_bin) as a named mesher: the boundary
+// fitted within its envelope, the distance measured, the volume close.
+TEST(Tetrahedralize, FTetWildFitsTheSkin) {
+    const auto names = mio::tetrahedralize_backends();
+    if (std::find(names.begin(), names.end(), "ftetwild") == names.end())
+        GTEST_SKIP() << "fTetWild (FloatTetwild_bin) is not installed";
+    const mio::Mesh s = skin(brep_solids::sphere(1.0), 0.25);
+    mio::TetrahedralizeOptions o;
+    o.mBackend = mio::TetrahedralizeBackend::Named;
+    o.mProvider = "ftetwild";
+    o.mMaxSize = 0.25;
+    const auto r = mio::tetrahedralize(s, o);
+    EXPECT_EQ(r.mBackend, "ftetwild");
+    EXPECT_FALSE(r.mBoundaryPreserved);
+    EXPECT_GT(r.mNumTetrahedra, 0);
+    EXPECT_LT(r.mHausdorffToSurface, 0.02);
+    EXPECT_NEAR(r.mVolume, 4.0 / 3.0 * kPi, 0.1);
+    EXPECT_GT(r.mMinDihedralDeg, 0.0);
+    std::vector<double> x;
+    std::vector<std::int64_t> t;
+    add_box(x, t, 0.0, 3.0);
+    add_box(x, t, 1.0, 2.0);
+    const auto two = mio::tetrahedralize(triangles(x, t), o);
+    EXPECT_EQ(two.mNumRegions, 2);
+    EXPECT_NEAR(two.mVolume, 27.0, 0.27);
 }
 
 // Roadmap 6.7.4 and 6.7.6: a box inside a box gives two cell regions that
