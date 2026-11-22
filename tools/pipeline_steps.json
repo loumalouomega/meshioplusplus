@@ -1108,6 +1108,7 @@
       {"name": "MaxVolume"},
       {"name": "Grading"},
       {"name": "OptimizeSteps"},
+      {"name": "PostOptimize"},
       {"name": "MaxCells"},
       {"name": "FaceArray"}
     ]},

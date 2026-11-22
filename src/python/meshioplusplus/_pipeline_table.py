@@ -1118,9 +1118,9 @@ OP_TABLE = {
         "MaxVolume",
         "Grading",
         "OptimizeSteps",
+        "PostOptimize",
         "MaxCells",
         "FaceArray",
-        "PostOptimize",
     ),
     "RemeshQuads": (
         "TargetFaces",
