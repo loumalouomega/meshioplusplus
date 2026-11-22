@@ -65,45 +65,55 @@ On Netgen's raw output the energy objective halves the slivers; after Netgen's t
 
 ## Backend comparison
 
-[`72_tetrahedralize_backends.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/72_tetrahedralize_backends.ipynb) meshes four skins with every backend, the native octree backend plain and with `post_adapt=True` ([`adapt_volume`](./adapt_volume.md) on its tetrahedra with every `adapt_*` keyword at its default, v20.1.0; the same `octree_mesh` call as the plain backend, so the two differ only by the remeshing pass), Netgen, TetGen and Gmsh, and measures each result with [`compute_quality`](./mesh_quality.md) and the report (November 2026, Ubuntu 24.04 with its packaged Netgen, TetGen 1.5.0 and Gmsh; `h` is `max_size`, times are the best of three). The skins are the unit sphere (1,280 triangles, `h` 0.2), the unit cube (300, 0.2), a cylinder of radius 0.5 and height 1 (800, 0.2) and the Stanford bunny scan of `example/data`, remeshed to 2,996 triangles by `remesh` and oriented by `repair` (bounding box about 108 units, `h` 5.97), a complex skin with thin ears and concave folds. "SJ" is the scaled Jacobian, "AR" the aspect ratio, "slivers" the tetrahedra whose smallest dihedral angle is under 15 degrees, and the distance is the report's `hausdorff_to_surface` (`hausdorff_to_skin` for the adapted octree); "kept" says whether the skin's triangles are the result's boundary. No backend produced an inverted tetrahedron.
+[`72_tetrahedralize_backends.ipynb`](https://github.com/loumalouomega/meshioplusplus/blob/main/example/python/72_tetrahedralize_backends.ipynb) meshes four skins with every backend, the native octree backend plain and with `post_adapt=True` ([`adapt_volume`](./adapt_volume.md) on its tetrahedra with every `adapt_*` keyword at its default, v20.1.0; the same `octree_mesh` call as the plain backend, so the two differ only by the remeshing pass), the octree backend again at a count matched to the others (`octree (matched)`, below), Netgen, TetGen, Gmsh and fTetWild, and measures each result with [`compute_quality`](./mesh_quality.md) and the report (November 2026, Ubuntu 24.04 with its packaged Netgen, TetGen 1.5.0 and Gmsh, and fTetWild built from [its fork](https://github.com/loumalouomega/fTetWild) with TBB; `h` is `max_size`, times are the best of three). The skins are the unit sphere (1,280 triangles, `h` 0.2), the unit cube (300, 0.2), a cylinder of radius 0.5 and height 1 (800, 0.2) and the Stanford bunny scan of `example/data`, remeshed to 2,996 triangles by `remesh` and oriented by `repair` (bounding box about 108 units, `h` 5.97), a complex skin with thin ears and concave folds. At equal `h` the plain octree's count is set by the skin's own edge length and comes out two to four times the others', so `octree (matched)` is the same `octree_mesh` call with its skin size and largest leaf both scaled by one factor, found by a few secant steps on the count, until the count is within 15% of the median of Netgen, TetGen and Gmsh on that skin: a factor of 1.44 gives 5,112 tetrahedra on the sphere against a target of 5,193, 1.24 gives 960 on the cube (941), 1.47 gives 1,880 on the cylinder (1,677) and 1.39 gives 11,907 on the bunny (11,566). fTetWild runs at its defaults with `max_size = h` as its ideal edge. "SJ" is the scaled Jacobian, "AR" the aspect ratio, "slivers" the tetrahedra whose smallest dihedral angle is under 15 degrees, and the distance is the report's `hausdorff_to_surface` (`hausdorff_to_skin` for the adapted and matched octree); "kept" says whether the skin's triangles are the result's boundary. No backend produced an inverted tetrahedron.
 
 ![Counts, time and slivers by backend and skin](/images/tetrahedralize_backends_counts.png)
 
 | skin | backend | tets | time s | kept | distance | volume error % | dihedral min - max | slivers | SJ < 0.2 | SJ min / mean | AR max / mean |
 |---|---|---:|---:|:-:|---:|---:|---|---:|---:|---|---|
 | sphere | octree | 15,480 | 0.20 | no | 0.0072 | -1.50 | 31.9 - 121.5 | 0 | 0 | 0.327 / 0.848 | 2.22 / 1.11 |
-| sphere | octree + adapt | 13,433 | 3.19 | no | 0.0076 | -1.60 | 36.7 - 131.4 | 0 | 0 | 0.225 / 0.664 | 2.61 / 1.24 |
-| sphere | netgen | 4,070 | 0.15 | yes | 0 | -0.86 | 22.3 - 142.8 | 0 | 0 | 0.217 / 0.611 | 3.05 / 1.29 |
-| sphere | tetgen | 8,307 | 0.08 | yes | 0 | -0.86 | 9.0 - 164.6 | 86 | 48 | 0.117 / 0.637 | 5.53 / 1.34 |
+| sphere | octree (matched) | 5,112 | 0.09 | no | 0.0112 | -2.19 | 35.7 - 117.8 | 0 | 0 | 0.450 / 0.815 | 2.57 / 1.13 |
+| sphere | octree + adapt | 13,433 | 2.82 | no | 0.0076 | -1.60 | 36.7 - 131.4 | 0 | 0 | 0.225 / 0.664 | 2.61 / 1.24 |
+| sphere | netgen | 4,070 | 0.17 | yes | 0 | -0.86 | 22.3 - 142.8 | 0 | 0 | 0.217 / 0.611 | 3.05 / 1.29 |
+| sphere | tetgen | 8,307 | 0.10 | yes | 0 | -0.86 | 9.0 - 164.6 | 86 | 48 | 0.117 / 0.637 | 5.53 / 1.34 |
 | sphere | gmsh | 5,193 | 0.13 | yes | 0 | -0.86 | 13.6 - 155.5 | 10 | 0 | 0.205 / 0.598 | 3.33 / 1.34 |
+| sphere | ftetwild | 5,671 | 0.47 | no | 0.0020 | -0.93 | 25.1 - 139.5 | 0 | 0 | 0.310 / 0.712 | 2.09 / 1.21 |
 | cube | octree | 1,800 | 0.04 | no | 0 | 0 | 45.0 - 90.0 | 0 | 0 | 0.577 / 0.821 | 1.43 / 1.18 |
-| cube | octree + adapt | 1,800 | 0.08 | no | 0 | 0 | 45.0 - 100.5 | 0 | 0 | 0.577 / 0.804 | 1.53 / 1.17 |
-| cube | netgen | 941 | 0.08 | yes | 0 | 0 | 27.0 - 139.2 | 0 | 0 | 0.394 / 0.657 | 1.97 / 1.22 |
-| cube | tetgen | 1,436 | 0.03 | yes | 0 | 0 | 9.2 - 164.5 | 26 | 16 | 0.118 / 0.578 | 5.80 / 1.45 |
-| cube | gmsh | 641 | 0.09 | yes | 0 | 0 | 9.7 - 159.8 | 3 | 11 | 0.099 / 0.548 | 4.25 / 1.49 |
+| cube | octree (matched) | 960 | 0.03 | no | 0 | 0 | 45.0 - 90.8 | 0 | 0 | 0.575 / 0.794 | 1.43 / 1.20 |
+| cube | octree + adapt | 1,800 | 0.07 | no | 0 | 0 | 45.0 - 100.5 | 0 | 0 | 0.577 / 0.804 | 1.53 / 1.17 |
+| cube | netgen | 941 | 0.09 | yes | 0 | 0 | 27.0 - 139.2 | 0 | 0 | 0.394 / 0.657 | 1.97 / 1.22 |
+| cube | tetgen | 1,436 | 0.02 | yes | 0 | 0 | 9.2 - 164.5 | 26 | 16 | 0.118 / 0.578 | 5.80 / 1.45 |
+| cube | gmsh | 641 | 0.07 | yes | 0 | 0 | 9.7 - 159.8 | 3 | 11 | 0.099 / 0.548 | 4.25 / 1.49 |
+| cube | ftetwild | 2,489 | 1.53 | no | 0.0007 | 0 | 19.9 - 146.2 | 0 | 0 | 0.223 / 0.588 | 3.89 / 1.34 |
 | cylinder | octree | 3,744 | 0.07 | no | 0.0054 | -0.88 | 27.1 - 127.8 | 0 | 0 | 0.360 / 0.819 | 1.85 / 1.13 |
-| cylinder | octree + adapt | 3,602 | 0.42 | no | 0.0054 | -0.93 | 38.3 - 134.9 | 0 | 0 | 0.326 / 0.717 | 2.36 / 1.21 |
-| cylinder | netgen | 1,677 | 0.20 | yes | 0 | -0.42 | 5.9 - 170.2 | 36 | 126 | 0.065 / 0.449 | 45.99 / 1.89 |
-| cylinder | tetgen | 1,966 | 0.06 | yes | 0 | -0.42 | 2.0 - 174.2 | 128 | 196 | 0.019 / 0.432 | 95.48 / 2.22 |
-| cylinder | gmsh | 1,503 | 0.11 | yes | 0 | -0.42 | 1.2 - 175.3 | 112 | 219 | 0.027 / 0.355 | 150.76 / 2.66 |
-| bunny | octree | 30,786 | 0.65 | no | 2.54 | -0.50 | 0.2 - 179.7 | 91 | 147 | 0.002 / 0.815 | 50,405 / 3.94 |
-| bunny | octree + adapt | 29,061 | 7.98 | no | 2.54 | -0.59 | 8.6 - 176.7 | 28 | 92 | 0.002 / 0.636 | 444 / 1.33 |
-| bunny | netgen | 11,566 | 1.21 | yes | 0 | 0 | 0.0 - 179.9 | 775 | 1,322 | 0.000 / 0.469 | 973,746 / 119.6 |
-| bunny | tetgen | 17,330 | 0.22 | yes | 0 | 0 | 0.0 - 179.1 | 586 | 803 | 0.000 / 0.595 | 75,532 / 9.59 |
-| bunny | gmsh | 9,335 | 0.34 | yes | 0 | 0 | 0.0 - 177.3 | 220 | 370 | 0.000 / 0.527 | 79,834 / 12.32 |
+| cylinder | octree (matched) | 1,880 | 0.05 | no | 0.0133 | -1.32 | 25.1 - 132.6 | 0 | 0 | 0.250 / 0.662 | 2.25 / 1.28 |
+| cylinder | octree + adapt | 3,602 | 0.35 | no | 0.0054 | -0.93 | 38.3 - 134.9 | 0 | 0 | 0.326 / 0.717 | 2.36 / 1.21 |
+| cylinder | netgen | 1,677 | 0.14 | yes | 0 | -0.42 | 5.9 - 170.2 | 36 | 126 | 0.065 / 0.449 | 45.99 / 1.89 |
+| cylinder | tetgen | 1,966 | 0.04 | yes | 0 | -0.42 | 2.0 - 174.2 | 128 | 196 | 0.019 / 0.432 | 95.48 / 2.22 |
+| cylinder | gmsh | 1,503 | 0.09 | yes | 0 | -0.42 | 1.2 - 175.3 | 112 | 219 | 0.027 / 0.355 | 150.76 / 2.66 |
+| cylinder | ftetwild | 2,168 | 2.21 | no | 0.0009 | -0.47 | 11.7 - 142.5 | 7 | 5 | 0.127 / 0.595 | 4.69 / 1.33 |
+| bunny | octree | 30,786 | 0.64 | no | 2.5368 | -0.50 | 0.2 - 179.7 | 91 | 147 | 0.002 / 0.815 | 50,405 / 3.94 |
+| bunny | octree (matched) | 11,907 | 0.26 | no | 3.5069 | -1.12 | 0.4 - 179.0 | 143 | 243 | 0.002 / 0.755 | 6,225 / 2.34 |
+| bunny | octree + adapt | 29,061 | 7.72 | no | 2.5368 | -0.59 | 8.6 - 176.7 | 28 | 92 | 0.002 / 0.636 | 444.34 / 1.33 |
+| bunny | netgen | 11,566 | 1.14 | yes | 0 | 0 | 0.0 - 179.9 | 775 | 1,322 | 0.000 / 0.469 | 973,746 / 119.6 |
+| bunny | tetgen | 17,330 | 0.15 | yes | 0 | 0 | 0.0 - 179.1 | 586 | 803 | 0.000 / 0.595 | 75,532 / 9.59 |
+| bunny | gmsh | 9,335 | 0.28 | yes | 0 | 0 | 0.0 - 177.3 | 220 | 370 | 0.000 / 0.527 | 79,834 / 12.32 |
+| bunny | ftetwild | 18,818 | 8.84 | no | 0.1355 | -0.09 | 11.0 - 155.7 | 14 | 22 | 0.110 / 0.704 | 7.24 / 1.20 |
 
 ![Scaled Jacobian and dihedral-angle distributions](/images/tetrahedralize_backends_quality.png)
 
 What the numbers say:
 
 - **Skin kept or fitted.** The three backends that keep the skin conform to it exactly (distance 0, the same volume error, the skin's own chordal error); the octree backends trade that for the best element shapes on the primitives: plain octree has no sliver and a scaled Jacobian of at least 0.33 on the sphere, cube and cylinder, and on the cube it reproduces the skin exactly with angles of 45 to 90 degrees. Of the three that keep the skin Netgen has the best shapes on the sphere, cube and cylinder (its optimisation passes), TetGen's constrained tetrahedralisation is the fastest and leaves the most slivers on the primitives, Gmsh sits between them.
+- **At a comparable count** the octree still has the best shapes on the primitives: matched to Gmsh's count on the sphere (5,112 against 5,193) its scaled Jacobian floor rises to 0.45 and its dihedral angles stay within 35.7 and 117.8 degrees, against 0.21 and 13.6 to 155.5 for Gmsh, and on the cube it matches Netgen's count (960 against 941) with angles of 45 to 91 degrees against Netgen's 27 to 139. What the coarser lattice costs is the boundary: the distance to the skin grows by 1.4 to 2.5 times (0.0072 to 0.0112 on the sphere, 2.54 to 3.51 on the bunny) and the volume error with it (-2.2 percent on the sphere, -1.1 on the bunny), and on the bunny the slivers rise from 91 to 143, since the lattice resolves the ears more coarsely. The plain octree's extra elements buy a closer boundary, not better shapes.
+- **fTetWild** fits the skin within its envelope (1e-3 of the bounding box diagonal by default): the distance is 0.002 on the sphere, under 0.001 on the cube and cylinder and 0.14 on the bunny (0.13 percent of its size, against the octree's 2.54), and the volume within 0.1 percent of the skin's on the bunny. It has the best worst elements of every backend on the bunny, by far: smallest dihedral angle 11 degrees, 14 slivers and a worst aspect ratio of 7 where the meshers that keep the skin reach 0 degrees, 220 to 775 slivers and aspect ratios of 75,000 to 970,000, since it is free to move the boundary off the scan's creases. On the sphere and the cylinder its worst shapes sit between the octree's and Netgen's (scaled Jacobian floor 0.31 and 0.13, against Netgen's 0.22 and 0.07), on the cube below Netgen's (0.22 against 0.39), with more tetrahedra than Netgen (5,671 against 4,070 on the sphere, 2,489 against 941 on the cube), and it is the slowest backend on the primitives (0.5 to 2.2 s) and on the bunny (8.8 s), where its envelope checks dominate. Its counts move by about one percent from run to run, since its parallel passes are not deterministic.
 - **Count against quality.** Fewer elements is not better by itself: Gmsh and Netgen use 30 to 60 percent fewer tetrahedra than TetGen on the sphere and cube, with fewer bad ones. The plain octree's interior is the finest at equal `h` (3.8 times Netgen's count on the sphere) and so the most expensive for a solver.
 - **The adapted octree** never has more elements than the plain one on the same lattice (0.87 of the plain count on the sphere, 1.00 on the cube, whose lattice is already minimal, 0.96 on the cylinder, 0.94 on the bunny) and leaves the boundary where it was (the distance to the skin is unchanged to the fourth digit). What it buys is shape at the extremes: the smallest dihedral angle rises from 27.1 to 38.3 degrees on the cylinder, 31.9 to 36.7 on the sphere and 0.2 to 8.6 on the bunny, whose slivers fall from 91 to 28 and worst aspect ratio from 50,405 to 444. The mean scaled Jacobian falls (0.85 to 0.66 on the sphere), since the lattice's regular cells are the best a mesh can have and any remeshing moves away from them, and the call costs 2 to 13 times as long (3.2 s against 0.22 s on the sphere). It coarsens only a little because the plain octree already sits at the target size; a coarser target is what reduces the count, and `adapt_boundary_sizing="geometry"` can coarsen a flat or gently curved boundary further (0.45 of the plain count on the sphere in a trial) but refined the cylinder's (1.47), so it is not a default.
 - **The complex skin** separates the backends. The scan's thin ears and creases leave slivers everywhere: with the skin kept every mesher makes flat tetrahedra (dihedral angles up to 177-180 degrees, 220 to 775 slivers, Netgen the most); the plain octree has 91 slivers and a scaled Jacobian floor of 0.002, but moves the boundary by 2.54 units (2.4 percent of the size) and loses 0.5 percent of the volume. A skin like this is better prepared first ([`repair`](./repair.md), `remesh`, a coarser `h` near the ears) when the skin has to be kept.
 
 ![Cut-away views of the sphere's and the bunny's tetrahedra, coloured by scaled Jacobian](/images/tetrahedralize_backends_cutaway.png)
 
-The figures are the notebook's matplotlib fallback, since the machine that executed it had no off-screen GL; the notebook uses PyVista renders where GL is available. TetGen and Gmsh appear only when their programs are installed and Netgen when built in or added, so a run elsewhere has the columns it can. The timings are a single machine's wall clock and the sizes come from one run each, so read the ordering, not the third digit.
+The figures are the notebook's matplotlib fallback, since the machine that executed it had no off-screen GL; the notebook uses PyVista renders where GL is available. TetGen, Gmsh and fTetWild appear only when their programs are installed and Netgen when built in or added, so a run elsewhere has the columns it can. The timings are a single machine's wall clock and the sizes come from one run each, so read the ordering, not the third digit.
 
 ## Options and report
 
