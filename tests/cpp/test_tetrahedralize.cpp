@@ -559,3 +559,80 @@ TEST(Tetrahedralize, RefusalsAreByName) {
         EXPECT_THROW((void)mio::tetrahedralize(triangles(x, t), o), std::length_error);
     }
 }
+
+// post_optimize: optimize_volume on each region after the backend. The worst
+// tetrahedron is no worse, the volume and the boundary are unchanged, the
+// points stay where they were on the boundary, and two regions still share
+// their interface; with a mesher that keeps the skin, it still keeps it.
+TEST(Tetrahedralize, PostOptimizeRaisesTheWorstAndKeepsTheSkin) {
+    const mio::Mesh s = skin(brep_solids::sphere(1.0), 0.3);
+    mio::TetrahedralizeOptions o;
+    o.mBackend = mio::TetrahedralizeBackend::Octree;
+    o.mMaxSize = 0.3;
+    const auto plain = mio::tetrahedralize(s, o);
+    o.mPostOptimize = true;
+    const auto opt = mio::tetrahedralize(s, o);
+    EXPECT_GE(opt.mMinDihedralDeg, plain.mMinDihedralDeg - 1e-9);
+    EXPECT_NEAR(opt.mVolume, plain.mVolume, 1e-12 * plain.mVolume);
+    EXPECT_EQ(opt.mNumPoints, plain.mNumPoints);
+    EXPECT_EQ(opt.mNumBoundaryTriangles, plain.mNumBoundaryTriangles);
+    EXPECT_EQ(opt.mHausdorffToSurface, plain.mHausdorffToSurface);
+    // The boundary facets, as point coordinates, are the same set.
+    const auto boundary = [](const mio::Mesh& rM) {
+        std::set<std::array<double, 9>> out;
+        const double* p = rM.Points().As<double>();
+        for (std::size_t b = 0; b < rM.NumCellBlocks(); ++b) {
+            const auto cells = rM.Cells(b);
+            if (std::string(cells.Type()) != "triangle")
+                continue;
+            for (std::size_t t = 0; t < cells.NumCells(); ++t) {
+                std::array<std::array<double, 3>, 3> v{};
+                for (std::size_t k = 0; k < 3; ++k)
+                    for (std::size_t d = 0; d < 3; ++d)
+                        v[k][d] = p[3 * mio::detail::read_int(cells.Conn(), 3 * t + k) + d];
+                std::sort(v.begin(), v.end());
+                out.insert({v[0][0], v[0][1], v[0][2], v[1][0], v[1][1], v[1][2], v[2][0], v[2][1],
+                            v[2][2]});
+            }
+        }
+        return out;
+    };
+    EXPECT_EQ(boundary(opt.mMesh), boundary(plain.mMesh));
+    // Two regions: each optimised on its own, their interface kept.
+    std::vector<double> x;
+    std::vector<std::int64_t> t;
+    add_box(x, t, 0.0, 3.0);
+    add_box(x, t, 1.0, 2.0);
+    const auto two = mio::tetrahedralize(triangles(x, t), o);
+    EXPECT_EQ(two.mNumRegions, 2);
+    EXPECT_NEAR(two.mVolume, 27.0, 1e-9);
+    std::map<std::array<std::int64_t, 3>, int> uses;
+    const auto tets = two.mMesh.Cells(0);
+    ASSERT_EQ(std::string(tets.Type()), "tetra");
+    static constexpr int kFace[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
+    for (std::size_t c = 0; c < tets.NumCells(); ++c)
+        for (const auto& r_f : kFace) {
+            std::array<std::int64_t, 3> f{};
+            for (std::size_t k = 0; k < 3; ++k)
+                f[k] = mio::detail::read_int(tets.Conn(), 4 * c + static_cast<std::size_t>(r_f[k]));
+            std::sort(f.begin(), f.end());
+            ++uses[f];
+        }
+    for (const auto& [f, n] : uses)
+        EXPECT_LE(n, 2) << "a facet in three tetrahedra";
+    // A mesher that keeps the skin still keeps it.
+    const auto names = mio::tetrahedralize_backends();
+    for (const char* p_name : {"netgen", "tetgen"}) {
+        if (std::find(names.begin(), names.end(), p_name) == names.end())
+            continue;
+        mio::TetrahedralizeOptions k;
+        k.mBackend = mio::TetrahedralizeBackend::Named;
+        k.mProvider = p_name;
+        k.mMaxSize = 0.3;
+        k.mPostOptimize = true;
+        const auto r = mio::tetrahedralize(s, k);
+        EXPECT_TRUE(r.mBoundaryPreserved) << p_name;
+        k.mPostOptimize = false;
+        EXPECT_GE(r.mMinDihedralDeg, mio::tetrahedralize(s, k).mMinDihedralDeg - 1e-9) << p_name;
+    }
+}

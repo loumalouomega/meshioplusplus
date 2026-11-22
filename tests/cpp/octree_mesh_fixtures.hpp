@@ -25,6 +25,7 @@
 // System includes
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -283,6 +284,34 @@ inline mio::Mesh om_nested_spheres(const std::vector<double>& rRadii, int Level 
     for (const auto& m : parts)
         ptrs.push_back(&m);
     return mio::merge(ptrs, mio::MergeOptions{}).mMesh;
+}
+
+// A box of `N` squares a side whose face x = 0.49 has a patch of points pushed
+// out by up to `Amplitude`, by an integer hash (the same on every platform): a
+// scan's noisy creases on a part with real edges.
+inline mio::Mesh om_jittered_bump_box(int N, double Amplitude) {
+    mio::Mesh box =
+        mio::convert_cells(
+            mio::extract_surface(mio::box({{N, N, N}}, {{1.0, 1.0, 1.0}}, {{-0.51, -0.53, -0.55}})),
+            {mio::ConvertCellsMode::Simplexify, false})
+            .mMesh;
+    const std::size_t np = box.NumPoints();
+    mio::NDArray pts = mio::NDArray::Uninit(mio::DType::Float64, {np, std::size_t{3}});
+    const double* src = box.Points().As<double>();
+    double* p = pts.As<double>();
+    std::copy(src, src + 3 * np, p);
+    std::uint64_t h = 0x9e3779b97f4a7c15ull;
+    for (std::size_t v = 0; v < np; ++v) {
+        if (!(std::abs(p[3 * v] - 0.49) < 1e-9 && std::abs(p[3 * v + 1] + 0.03) < 0.4 &&
+              std::abs(p[3 * v + 2] + 0.05) < 0.4))
+            continue;
+        h ^= h >> 33;
+        h *= 0xff51afd7ed558ccdull;
+        h ^= h >> 33;
+        p[3 * v] += Amplitude * static_cast<double>(h % 1000003u) / 1000003.0;
+    }
+    box.AssignPoints(std::move(pts));
+    return box;
 }
 
 }  // namespace omfix

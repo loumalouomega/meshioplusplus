@@ -22,6 +22,7 @@
 
 // System includes
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -322,6 +323,62 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
                                  " of " + std::to_string(rR.mNumFeatureChains) +
                                  " feature chains are shorter than a cell and were not "
                                  "snapped, nor the corners only they end at");
+}
+
+std::int64_t octree_mesh_release_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
+                                          OctreeMeshResult& rR, OctreeMeshTets& rTets) {
+    // The slivers' bound of the comparison notebooks; a higher one released the
+    // nodes of real creases too (the bunny's distance to its skin grew by a fifth
+    // at 20 degrees, and not at 15).
+    constexpr double kReleaseBelowDeg = 15.0;
+    // A release frees the nodes beside the worst cells; the next optimisation
+    // can leave a neighbour under the bound in turn, so a second round (a third
+    // moved the bunny's boundary a tenth further from its skin).
+    constexpr int kReleaseRounds = 2;
+    // `OctreeMeshTets::mFeature`: 1 a corner, 2 a chain node.
+    constexpr std::uint8_t kFeatureCorner = 1;
+    if (rTets.mFeature.empty())
+        return 0;
+    // Internal test hook: "0" switches the release off, so a test can compare.
+    if (const char* p_off = std::getenv("MESHIOPLUSPLUS_OCTREE_MESH_RELEASE");
+        p_off != nullptr && std::string(p_off) == "0")
+        return 0;
+    std::int64_t released = 0;
+    for (int round = 0; round < kReleaseRounds; ++round) {
+        std::int64_t now = 0;
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            if (rTets.mMaterial[t] <= 0 && !rO.mKeepOutside)
+                continue;
+            const auto& q = rTets.mTets[t];
+            const auto a = tet_dihedral_angles(rTets.mPoints[static_cast<std::size_t>(q[0])],
+                                               rTets.mPoints[static_cast<std::size_t>(q[1])],
+                                               rTets.mPoints[static_cast<std::size_t>(q[2])],
+                                               rTets.mPoints[static_cast<std::size_t>(q[3])]);
+            if (!(a[0] < kReleaseBelowDeg))
+                continue;
+            for (const std::int64_t v : q) {
+                const auto i = static_cast<std::size_t>(v);
+                // Corners only: a chain node released slides off a real edge
+                // and rounds it (a skew box's distance to its skin tripled),
+                // where a corner snapped onto a scan's noise is what pins the
+                // flat cells beside it.
+                if (i < rTets.mFeature.size() && rTets.mFeature[i] == kFeatureCorner) {
+                    rTets.mFeature[i] = 0;
+                    ++now;
+                }
+            }
+        }
+        if (now == 0)
+            break;
+        released += now;
+        octree_mesh_optimize(rS, rO, rR, rTets);
+    }
+    if (released > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(released) +
+                                 " feature corners beside tetrahedra under " +
+                                 std::to_string(static_cast<int>(kReleaseBelowDeg)) +
+                                 " degrees were released to optimise them");
+    return released;
 }
 
 void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,

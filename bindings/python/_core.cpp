@@ -4613,7 +4613,7 @@ PYBIND11_MODULE(_core, m) {
         "tetrahedralize",
         [](py::object pymesh, const std::string& backend, double max_size, double max_volume,
            double grading, int optimize_steps, std::int64_t max_cells,
-           const std::string& face_array) {
+           const std::string& face_array, bool post_optimize) {
             auto mesh_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = mesh_in.mRefs;
             auto& mesh = mesh_in.mMesh;
@@ -4640,6 +4640,7 @@ PYBIND11_MODULE(_core, m) {
             o.mOptimizeSteps = optimize_steps;
             o.mMaxCells = max_cells;
             o.mFaceArray = face_array;
+            o.mPostOptimize = post_optimize;
             meshioplusplus::TetrahedralizeResult r =
                 core_nogil([&] { return meshioplusplus::tetrahedralize(mesh, o); });
             py::dict out;
@@ -4660,7 +4661,8 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("backend") = "auto", py::arg("max_size") = 0.0,
         py::arg("max_volume") = 0.0, py::arg("grading") = 0.3, py::arg("optimize_steps") = 3,
-        py::arg("max_cells") = std::int64_t{50000000}, py::arg("face_array") = "cad:face");
+        py::arg("max_cells") = std::int64_t{50000000}, py::arg("face_array") = "cad:face",
+        py::arg("post_optimize") = false);
     m.def(
         "tetrahedralize_backends", [] { return meshioplusplus::tetrahedralize_backends(); },
         "The backend names tetrahedralize accepts besides auto (roadmap 7.7.2).");

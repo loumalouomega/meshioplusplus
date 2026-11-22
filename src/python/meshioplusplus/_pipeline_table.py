@@ -1120,6 +1120,7 @@ OP_TABLE = {
         "OptimizeSteps",
         "MaxCells",
         "FaceArray",
+        "PostOptimize",
     ),
     "RemeshQuads": (
         "TargetFaces",

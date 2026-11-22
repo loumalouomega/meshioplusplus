@@ -46,6 +46,12 @@ def add_args(parser):
         help="the cell data naming each triangle's CAD face (default cad:face)",
     )
     parser.add_argument(
+        "--post-optimize",
+        action="store_true",
+        help="run optimize_volume on each region after the backend, the boundary "
+        "and the points kept",
+    )
+    parser.add_argument(
         "--backend",
         type=str,
         default="auto",
@@ -73,6 +79,7 @@ def tetrahedralize_cmd(args):
         optimize_steps=args.optimize_steps,
         max_cells=args.max_cells,
         face_array=args.face_array,
+        post_optimize=args.post_optimize,
         return_report=True,
     )
     if args.json:

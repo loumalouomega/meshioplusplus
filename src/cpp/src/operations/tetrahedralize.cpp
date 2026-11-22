@@ -40,6 +40,7 @@
 #include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
+#include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/region.hpp"
@@ -143,6 +144,73 @@ Mesh tet_triangle_mesh(const std::vector<Vec3>& rPoints,
             c.As<std::int64_t>()[3 * t + k] = rTris[t][k];
     m.AddCellBlock("triangle", std::move(c));
     return m;
+}
+
+// optimize_volume on the tetrahedra of each region, in place: the region's
+// points compacted into a mesh of their own, the moved points and the new
+// connectivity written back. The point set and the boundary are invariant.
+void tet_post_optimize(std::vector<Vec3>& rPoints, std::vector<std::array<std::int64_t, 4>>& rTets,
+                       std::vector<std::int64_t>& rRegion, std::size_t NumRegions) {
+    std::vector<std::array<std::int64_t, 4>> out_tets;
+    std::vector<std::int64_t> out_region;
+    out_tets.reserve(rTets.size());
+    out_region.reserve(rTets.size());
+    std::vector<std::int64_t> local(rPoints.size(), -1);
+    for (std::size_t s = 0; s < NumRegions; ++s) {
+        std::vector<std::int64_t> used;
+        std::vector<std::array<std::int64_t, 4>> mine;
+        for (std::size_t t = 0; t < rTets.size(); ++t) {
+            if (rRegion[t] != static_cast<std::int64_t>(s))
+                continue;
+            std::array<std::int64_t, 4> l{};
+            for (std::size_t k = 0; k < 4; ++k) {
+                const auto g = static_cast<std::size_t>(rTets[t][k]);
+                if (local[g] < 0) {
+                    local[g] = static_cast<std::int64_t>(used.size());
+                    used.push_back(rTets[t][k]);
+                }
+                l[k] = local[g];
+            }
+            mine.push_back(l);
+        }
+        if (mine.empty())
+            continue;
+        Mesh m;
+        NDArray p = NDArray::Uninit(DType::Float64, {used.size(), std::size_t{3}});
+        for (std::size_t i = 0; i < used.size(); ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                p.As<double>()[3 * i + k] = rPoints[static_cast<std::size_t>(used[i])][k];
+        m.AssignPoints(std::move(p));
+        NDArray c = NDArray::Uninit(DType::Int64, {mine.size(), std::size_t{4}});
+        for (std::size_t t = 0; t < mine.size(); ++t)
+            for (std::size_t k = 0; k < 4; ++k)
+                c.As<std::int64_t>()[4 * t + k] = mine[t][k];
+        m.AddCellBlock("tetra", std::move(c));
+        const OptimizeVolumeResult r = optimize_volume(m, OptimizeVolumeOptions{});
+        const Mesh& om = r.mMesh;
+        if (om.NumPoints() != used.size())
+            throw std::logic_error(std::string(kTetPrefix) +
+                                   "post_optimize changed the point set (an internal error)");
+        for (std::size_t i = 0; i < used.size(); ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                rPoints[static_cast<std::size_t>(used[i])][k] =
+                    detail::read_double(om.Points(), 3 * i + k);
+        for (std::size_t b = 0; b < om.NumCellBlocks(); ++b) {
+            const auto cells = om.Cells(b);
+            for (std::size_t t = 0; t < cells.NumCells(); ++t) {
+                std::array<std::int64_t, 4> g{};
+                for (std::size_t k = 0; k < 4; ++k)
+                    g[k] =
+                        used[static_cast<std::size_t>(detail::read_int(cells.Conn(), 4 * t + k))];
+                out_tets.push_back(g);
+                out_region.push_back(static_cast<std::int64_t>(s));
+            }
+        }
+        for (const std::int64_t g : used)
+            local[static_cast<std::size_t>(g)] = -1;
+    }
+    rTets = std::move(out_tets);
+    rRegion = std::move(out_region);
 }
 
 /**
@@ -672,6 +740,14 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             log::warn("{}{}", kTetPrefix, r_w);
     }
     result.mNumBoundaryTriangles = static_cast<std::int64_t>(bnd.size());
+
+    // The post-optimisation: optimize_volume on each region on its own (it
+    // knows no materials, so a region's interface, part of its boundary, stays
+    // pinned and the regions keep conforming). It moves interior points and
+    // reconnects interior faces only, so the boundary and every count above
+    // are unchanged.
+    if (o.mPostOptimize && !tets.empty())
+        tet_post_optimize(points, tets, tet_region, ns);
 
     // The measures.
     result.mNumTetrahedra = static_cast<std::int64_t>(tets.size());

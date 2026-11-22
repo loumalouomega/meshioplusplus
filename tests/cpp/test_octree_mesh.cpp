@@ -1119,6 +1119,52 @@ TEST(OctreeMeshTet, CreasesShorterThanACellAreNotSnapped) {
     EXPECT_EQ(r.mNumInverted, 0);
 }
 
+// A box whose face carries a patch of scan-like noise: snapping its corners
+// leaves slivers beside them, so those corners are released and the
+// optimisation runs again. No tetrahedron stays under the sliver bound, the
+// box's own corners are still snapped, and a warning counts the corners.
+namespace {
+
+// Switch the feature release off (the internal test hook) for a scope.
+struct OmNoRelease {
+    OmNoRelease() { om_setenv("0"); }
+    ~OmNoRelease() { om_setenv(nullptr); }
+    static void om_setenv(const char* pValue) {
+#ifdef _WIN32
+        _putenv_s("MESHIOPLUSPLUS_OCTREE_MESH_RELEASE", pValue != nullptr ? pValue : "");
+#else
+        if (pValue != nullptr)
+            setenv("MESHIOPLUSPLUS_OCTREE_MESH_RELEASE", pValue, 1);
+        else
+            unsetenv("MESHIOPLUSPLUS_OCTREE_MESH_RELEASE");
+#endif
+    }
+};
+
+}  // namespace
+
+TEST(OctreeMeshTet, FeatureCornersBesideSliversAreReleased) {
+    const mio::Mesh box = om_jittered_bump_box(8, 0.1);
+    for (double size : {0.1, 0.15}) {
+        SCOPED_TRACE(size);
+        double without = 0.0;
+        {
+            const OmNoRelease off;
+            without =
+                om_check_tets(mio::octree_mesh(box, om_tet(0.5, size, true)).mMesh).mMinDihedral;
+        }
+        EXPECT_LT(without, 15.0) << "the fixture is supposed to leave slivers by its creases";
+        const auto r = mio::octree_mesh(box, om_tet(0.5, size, true));
+        const OmTetCheck c = om_check_tets(r.mMesh);
+        EXPECT_GE(c.mMinDihedral, 15.0);
+        EXPECT_GE(r.mNumCornersSnapped, 8);
+        bool said = false;
+        for (const std::string& w : r.mWarnings)
+            said = said || w.find("feature corners beside tetrahedra") != std::string::npos;
+        EXPECT_TRUE(said);
+    }
+}
+
 // ---- volume fixing and feature snapping on hand-made tetrahedra ----
 
 namespace {
@@ -1155,7 +1201,8 @@ OctreeMeshTets fix_test_tets(const std::vector<std::array<double, 3>>& rPoints,
 }  // namespace
 
 TEST(OctreeMeshFixVolumes, UntanglesAFreeNode) {
-    // Node 3 lies below the triangle 0-1-2 although its tetrahedron stands above it; the centroid of its neighbours (0, 1, 2 and 4) puts it back above
+    // Node 3 lies below the triangle 0-1-2 although its tetrahedron stands above it; the centroid
+    // of its neighbours (0, 1, 2 and 4) puts it back above
     OctreeMeshTets tets = fix_test_tets(
         {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.33, 0.33, -0.1}, {0.33, 0.33, 0.4}},
         {{0, 1, 2, 3}, {0, 1, 2, 4}, {1, 2, 3, 4}});
@@ -1171,10 +1218,15 @@ TEST(OctreeMeshFixVolumes, UntanglesAFreeNode) {
 }
 
 TEST(OctreeMeshFixVolumes, SplitsAFlatSliver) {
-    // A flat tetrahedron 0-1-2-3 whose opposite edges 0-1 and 2-3 cross at (0.5, 0, 0), with all its nodes on features so that no collapse can remove it
-    OctreeMeshTets tets = fix_test_tets(
-        {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.5, -0.5, 0.0}, {0.5, 0.5, 0.0}, {0.5, 0.2, 1.0}, {0.8, -0.2, 2.0}},
-        {{0, 1, 2, 3}, {0, 1, 4, 5}, {2, 3, 4, 5}});
+    // A flat tetrahedron 0-1-2-3 whose opposite edges 0-1 and 2-3 cross at (0.5, 0, 0), with all
+    // its nodes on features so that no collapse can remove it
+    OctreeMeshTets tets = fix_test_tets({{0.0, 0.0, 0.0},
+                                         {1.0, 0.0, 0.0},
+                                         {0.5, -0.5, 0.0},
+                                         {0.5, 0.5, 0.0},
+                                         {0.5, 0.2, 1.0},
+                                         {0.8, -0.2, 2.0}},
+                                        {{0, 1, 2, 3}, {0, 1, 4, 5}, {2, 3, 4, 5}});
     // The neighbours around the two edges are positive
     for (std::size_t t = 1; t < 3; ++t)
         if (fix_test_volume(tets, tets.mTets[t]) < 0.0)
@@ -1194,7 +1246,8 @@ TEST(OctreeMeshFixVolumes, SplitsAFlatSliver) {
 }
 
 TEST(OctreeMeshFeatureSnap, KeepsGuardedTetrahedraPositive) {
-    // A cube of 6x6x6 cells, each split in six tetrahedra around its diagonal, and a ridge that runs along the edge x = y = 0 slightly inside it
+    // A cube of 6x6x6 cells, each split in six tetrahedra around its diagonal, and a ridge that
+    // runs along the edge x = y = 0 slightly inside it
     constexpr int n = 6;
     const double h = 1.0 / n;
     const auto id = [&](const int I, const int J, const int K) {
@@ -1234,9 +1287,11 @@ TEST(OctreeMeshFeatureSnap, KeepsGuardedTetrahedraPositive) {
     std::vector<std::uint8_t> feature(m.mPoints.size(), 0);
     const double min_volume = 1.0e-12 * h * h * h;
     meshioplusplus::detail::feature_snap(
-        m.mPoints, m.mTets, inside, inside, graph, ridge, [&](const std::array<double, 3>&) { return h; },
-        min_volume, pinned, feature);
-    EXPECT_GT(std::count(feature.begin(), feature.end(), 2) + std::count(feature.begin(), feature.end(), 1), 0);
+        m.mPoints, m.mTets, inside, inside, graph, ridge,
+        [&](const std::array<double, 3>&) { return h; }, min_volume, pinned, feature);
+    EXPECT_GT(std::count(feature.begin(), feature.end(), 2) +
+                  std::count(feature.begin(), feature.end(), 1),
+              0);
     // However the moves went, no tetrahedron the snap was told to guard may end up flat or inverted
     for (const auto& t : m.mTets)
         EXPECT_GT(fix_test_volume(m, t), min_volume);

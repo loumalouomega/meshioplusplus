@@ -172,7 +172,7 @@ extern SEXP R_mio_conservative_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_undo_green(SEXP, SEXP);
 extern SEXP R_mio_boundary_layer(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                                  SEXP);
-extern SEXP R_mio_tetrahedralize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_tetrahedralize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_has_netgen(void);
 extern SEXP R_mio_tetrahedralize_backends(void);
 extern SEXP R_mio_remesh_quads(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -442,7 +442,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_conservative_interpolate, 5),
                                               CALLDEF(R_mio_undo_green, 2),
                                               CALLDEF(R_mio_boundary_layer, 11),
-                                              CALLDEF(R_mio_tetrahedralize, 8),
+                                              CALLDEF(R_mio_tetrahedralize, 9),
                                               CALLDEF(R_mio_has_netgen, 0),
                                               CALLDEF(R_mio_tetrahedralize_backends, 0),
                                               CALLDEF(R_mio_remesh_quads, 9),

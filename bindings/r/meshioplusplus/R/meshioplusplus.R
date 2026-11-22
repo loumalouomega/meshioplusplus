@@ -4481,6 +4481,8 @@ mio_metric_from_hessian <- function(mesh, hessian, error = 1e-2, hmin = 1e-3, hm
 #'   100).
 #' @param max_cells Refuse a result of more tetrahedra.
 #' @param face_array The cell data naming each triangle's CAD face.
+#' @param post_optimize `TRUE` runs `optimize_volume` on each region after the
+#'   backend, the boundary and the points kept.
 #' @return A list: `mesh`, `num_tetrahedra`, `num_points`, `num_new_points`,
 #'   `num_regions`, `num_boundary_triangles`, `boundary_preserved`,
 #'   `hausdorff_to_surface`, `min_dihedral_deg`, `max_dihedral_deg`, `volume`
@@ -4488,10 +4490,10 @@ mio_metric_from_hessian <- function(mesh, hessian, error = 1e-2, hmin = 1e-3, hm
 #' @export
 mio_tetrahedralize <- function(mesh, backend = "auto", max_size = 0, max_volume = 0,
                                grading = 0.3, optimize_steps = 3, max_cells = 5e7,
-                               face_array = "cad:face") {
+                               face_array = "cad:face", post_optimize = FALSE) {
   .Call(R_mio_tetrahedralize, mesh, as.character(backend), as.numeric(max_size),
         as.numeric(max_volume), as.numeric(grading), as.integer(optimize_steps),
-        as.numeric(max_cells), as.character(face_array))
+        as.numeric(max_cells), as.character(face_array), as.logical(post_optimize))
 }
 
 #' Move a mesh's points back onto its CAD model

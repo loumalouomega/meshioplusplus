@@ -42373,6 +42373,12 @@ struct TetrahedralizeOptions {
     double mGrading = 0.3;
     /// Passes of the backend's volume optimisation (0 to 100).
     std::int32_t mOptimizeSteps = 3;
+    /// After the backend, run `optimize_volume` (the worst-element objective,
+    /// the boundary pinned) on each region's tetrahedra: the points and the
+    /// boundary stay exactly as the backend left them, so a mesher that keeps
+    /// the skin still does, and the regions still conform (ABI 47, in the
+    /// padding after `mOptimizeSteps`).
+    bool mPostOptimize = false;
     /// Refuse a result of more tetrahedra (by `std::length_error`).
     std::int64_t mMaxCells = 50000000;
     /// The cell data naming each triangle's CAD face, carried to the
@@ -64864,6 +64870,16 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rSetup, const OctreeMeshOption
 void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                                OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
+/// After the optimisation: the feature corners of every kept tetrahedron whose
+/// least dihedral angle is under the sliver bound (15 degrees) are released
+/// (they still slide on the skin) and the optimisation runs again, twice at
+/// most. On a scan the corners the boundary was snapped to are mostly noise
+/// and pin the flat cells beside them; chain nodes stay, since releasing one
+/// rounds a real edge. Returns the corners released.
+std::int64_t octree_mesh_release_features(OctreeMeshSetup& rSetup,
+                                          const OctreeMeshOptions& rOptions,
+                                          OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
 /// Fit the skin's nodes along it and optimise the tetrahedra (ODT relocation,
 /// flips) under the dihedral-floor guard.
 void octree_mesh_optimize(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
@@ -65220,7 +65236,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Point", "Normal", "Plane", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
-         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
+         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray",
+          "PostOptimize"}},
         {"RemeshQuads",
          {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
           "MaxCells"}},
@@ -277105,6 +277122,8 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             detail::octree_mesh_snap_features(*setup, rOptions, result, tets);
             clock.Lap(result, "features");
             detail::octree_mesh_optimize(*setup, rOptions, result, tets);
+            if (rOptions.mPreserveFeatures && rOptions.mFitIterations > 0)
+                detail::octree_mesh_release_features(*setup, rOptions, result, tets);
             clock.Lap(result, "optimize");
             detail::octree_mesh_fill_chain_gaps(*setup, rOptions, result, tets);
             if (rOptions.mVolumeFix)
@@ -279165,6 +279184,7 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
 // ===== end src/cpp/src/operations/octree_mesh_optimize.cpp =====
 // ===== begin src/cpp/src/operations/octree_mesh_tetra.cpp =====
 #include <algorithm>
+#include <cstdlib>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -279454,6 +279474,62 @@ void octree_mesh_snap_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
                                  " of " + std::to_string(rR.mNumFeatureChains) +
                                  " feature chains are shorter than a cell and were not "
                                  "snapped, nor the corners only they end at");
+}
+
+std::int64_t octree_mesh_release_features(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
+                                          OctreeMeshResult& rR, OctreeMeshTets& rTets) {
+    // The slivers' bound of the comparison notebooks; a higher one released the
+    // nodes of real creases too (the bunny's distance to its skin grew by a fifth
+    // at 20 degrees, and not at 15).
+    constexpr double kReleaseBelowDeg = 15.0;
+    // A release frees the nodes beside the worst cells; the next optimisation
+    // can leave a neighbour under the bound in turn, so a second round (a third
+    // moved the bunny's boundary a tenth further from its skin).
+    constexpr int kReleaseRounds = 2;
+    // `OctreeMeshTets::mFeature`: 1 a corner, 2 a chain node.
+    constexpr std::uint8_t kFeatureCorner = 1;
+    if (rTets.mFeature.empty())
+        return 0;
+    // Internal test hook: "0" switches the release off, so a test can compare.
+    if (const char* p_off = std::getenv("MESHIOPLUSPLUS_OCTREE_MESH_RELEASE");
+        p_off != nullptr && std::string(p_off) == "0")
+        return 0;
+    std::int64_t released = 0;
+    for (int round = 0; round < kReleaseRounds; ++round) {
+        std::int64_t now = 0;
+        for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
+            if (rTets.mMaterial[t] <= 0 && !rO.mKeepOutside)
+                continue;
+            const auto& q = rTets.mTets[t];
+            const auto a = tet_dihedral_angles(rTets.mPoints[static_cast<std::size_t>(q[0])],
+                                               rTets.mPoints[static_cast<std::size_t>(q[1])],
+                                               rTets.mPoints[static_cast<std::size_t>(q[2])],
+                                               rTets.mPoints[static_cast<std::size_t>(q[3])]);
+            if (!(a[0] < kReleaseBelowDeg))
+                continue;
+            for (const std::int64_t v : q) {
+                const auto i = static_cast<std::size_t>(v);
+                // Corners only: a chain node released slides off a real edge
+                // and rounds it (a skew box's distance to its skin tripled),
+                // where a corner snapped onto a scan's noise is what pins the
+                // flat cells beside it.
+                if (i < rTets.mFeature.size() && rTets.mFeature[i] == kFeatureCorner) {
+                    rTets.mFeature[i] = 0;
+                    ++now;
+                }
+            }
+        }
+        if (now == 0)
+            break;
+        released += now;
+        octree_mesh_optimize(rS, rO, rR, rTets);
+    }
+    if (released > 0)
+        octree_mesh_warn(rR, std::string(kOctreeMeshPrefix) + std::to_string(released) +
+                                 " feature corners beside tetrahedra under " +
+                                 std::to_string(static_cast<int>(kReleaseBelowDeg)) +
+                                 " degrees were released to optimise them");
+    return released;
 }
 
 void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& rO,
@@ -283228,6 +283304,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         o.mMaxCells = static_cast<std::int64_t>(
             pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
         o.mFaceArray = pipe_text(rStep, "FaceArray", o.mFaceArray.c_str());
+        o.mPostOptimize = pipe_flag(rStep, "PostOptimize", false);
         TetrahedralizeResult r = tetrahedralize(mesh, o);
         for (const std::string& w : r.mWarnings)
             rReport.mWarnings.push_back("Tetrahedralize: " + w);
@@ -313180,6 +313257,73 @@ Mesh tet_triangle_mesh(const std::vector<Vec3>& rPoints,
     return m;
 }
 
+// optimize_volume on the tetrahedra of each region, in place: the region's
+// points compacted into a mesh of their own, the moved points and the new
+// connectivity written back. The point set and the boundary are invariant.
+void tet_post_optimize(std::vector<Vec3>& rPoints, std::vector<std::array<std::int64_t, 4>>& rTets,
+                       std::vector<std::int64_t>& rRegion, std::size_t NumRegions) {
+    std::vector<std::array<std::int64_t, 4>> out_tets;
+    std::vector<std::int64_t> out_region;
+    out_tets.reserve(rTets.size());
+    out_region.reserve(rTets.size());
+    std::vector<std::int64_t> local(rPoints.size(), -1);
+    for (std::size_t s = 0; s < NumRegions; ++s) {
+        std::vector<std::int64_t> used;
+        std::vector<std::array<std::int64_t, 4>> mine;
+        for (std::size_t t = 0; t < rTets.size(); ++t) {
+            if (rRegion[t] != static_cast<std::int64_t>(s))
+                continue;
+            std::array<std::int64_t, 4> l{};
+            for (std::size_t k = 0; k < 4; ++k) {
+                const auto g = static_cast<std::size_t>(rTets[t][k]);
+                if (local[g] < 0) {
+                    local[g] = static_cast<std::int64_t>(used.size());
+                    used.push_back(rTets[t][k]);
+                }
+                l[k] = local[g];
+            }
+            mine.push_back(l);
+        }
+        if (mine.empty())
+            continue;
+        Mesh m;
+        NDArray p = NDArray::Uninit(DType::Float64, {used.size(), std::size_t{3}});
+        for (std::size_t i = 0; i < used.size(); ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                p.As<double>()[3 * i + k] = rPoints[static_cast<std::size_t>(used[i])][k];
+        m.AssignPoints(std::move(p));
+        NDArray c = NDArray::Uninit(DType::Int64, {mine.size(), std::size_t{4}});
+        for (std::size_t t = 0; t < mine.size(); ++t)
+            for (std::size_t k = 0; k < 4; ++k)
+                c.As<std::int64_t>()[4 * t + k] = mine[t][k];
+        m.AddCellBlock("tetra", std::move(c));
+        const OptimizeVolumeResult r = optimize_volume(m, OptimizeVolumeOptions{});
+        const Mesh& om = r.mMesh;
+        if (om.NumPoints() != used.size())
+            throw std::logic_error(std::string(kTetPrefix) +
+                                   "post_optimize changed the point set (an internal error)");
+        for (std::size_t i = 0; i < used.size(); ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                rPoints[static_cast<std::size_t>(used[i])][k] =
+                    detail::read_double(om.Points(), 3 * i + k);
+        for (std::size_t b = 0; b < om.NumCellBlocks(); ++b) {
+            const auto cells = om.Cells(b);
+            for (std::size_t t = 0; t < cells.NumCells(); ++t) {
+                std::array<std::int64_t, 4> g{};
+                for (std::size_t k = 0; k < 4; ++k)
+                    g[k] =
+                        used[static_cast<std::size_t>(detail::read_int(cells.Conn(), 4 * t + k))];
+                out_tets.push_back(g);
+                out_region.push_back(static_cast<std::int64_t>(s));
+            }
+        }
+        for (const std::int64_t g : used)
+            local[static_cast<std::size_t>(g)] = -1;
+    }
+    rTets = std::move(out_tets);
+    rRegion = std::move(out_region);
+}
+
 /**
  * The boundary of a fitted mesh (the octree backend, or a mesher that does not
  * keep the surface): the facets one tetrahedron has, outward, in @p rBnd, and
@@ -313707,6 +313851,14 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             log::warn("{}{}", kTetPrefix, r_w);
     }
     result.mNumBoundaryTriangles = static_cast<std::int64_t>(bnd.size());
+
+    // The post-optimisation: optimize_volume on each region on its own (it
+    // knows no materials, so a region's interface, part of its boundary, stays
+    // pinned and the regions keep conforming). It moves interior points and
+    // reconnects interior faces only, so the boundary and every count above
+    // are unchanged.
+    if (o.mPostOptimize && !tets.empty())
+        tet_post_optimize(points, tets, tet_region, ns);
 
     // The measures.
     result.mNumTetrahedra = static_cast<std::int64_t>(tets.size());

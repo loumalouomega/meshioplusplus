@@ -162,6 +162,16 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rSetup, const OctreeMeshOption
 void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                                OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
+/// After the optimisation: the feature corners of every kept tetrahedron whose
+/// least dihedral angle is under the sliver bound (15 degrees) are released
+/// (they still slide on the skin) and the optimisation runs again, twice at
+/// most. On a scan the corners the boundary was snapped to are mostly noise
+/// and pin the flat cells beside them; chain nodes stay, since releasing one
+/// rounds a real edge. Returns the corners released.
+std::int64_t octree_mesh_release_features(OctreeMeshSetup& rSetup,
+                                          const OctreeMeshOptions& rOptions,
+                                          OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
 /// Fit the skin's nodes along it and optimise the tetrahedra (ODT relocation,
 /// flips) under the dihedral-floor guard.
 void octree_mesh_optimize(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,

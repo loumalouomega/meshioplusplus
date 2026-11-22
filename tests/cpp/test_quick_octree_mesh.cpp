@@ -50,6 +50,7 @@
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/primitives.hpp"
 #include "meshioplusplus/operations/surface.hpp"
+#include "meshioplusplus/operations/tetrahedralize.hpp"
 
 namespace {
 
@@ -373,4 +374,25 @@ TEST(QuickOctreeMeshTet, CreasesShorterThanACellAreNotSnapped) {
     om_check_tets(r.mMesh);
     EXPECT_EQ(r.mNumCornersSnapped, 8);
     EXPECT_GT(r.mNumFeatureChainsMissed, 0);
+}
+
+// tetrahedralize's post_optimize on a small sphere: no worse worst angle, the same volume.
+TEST(QuickOctreeMeshTet, TetrahedralizePostOptimizeKeepsTheSkin) {
+    mio::TetrahedralizeOptions o;
+    o.mBackend = mio::TetrahedralizeBackend::Octree;
+    o.mMaxSize = 0.5;
+    const auto plain = mio::tetrahedralize(quick_sphere(), o);
+    o.mPostOptimize = true;
+    const auto opt = mio::tetrahedralize(quick_sphere(), o);
+    EXPECT_GE(opt.mMinDihedralDeg, plain.mMinDihedralDeg - 1e-9);
+    EXPECT_NEAR(opt.mVolume, plain.mVolume, 1e-12 * plain.mVolume);
+    EXPECT_EQ(opt.mNumBoundaryTriangles, plain.mNumBoundaryTriangles);
+}
+
+// Feature corners beside slivers are released and optimised (the full test's box, one size).
+TEST(QuickOctreeMeshTet, FeatureCornersBesideSliversAreReleased) {
+    const auto r = mio::octree_mesh(om_jittered_bump_box(8, 0.1), om_tet(0.5, 0.15, true));
+    const OmTetCheck c = om_check_tets(r.mMesh);
+    EXPECT_GE(c.mMinDihedral, 15.0);
+    EXPECT_GE(r.mNumCornersSnapped, 8);
 }

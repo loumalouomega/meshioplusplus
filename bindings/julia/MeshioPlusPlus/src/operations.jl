@@ -2056,7 +2056,8 @@ See `doc/tetrahedralize.md`.
 """
 function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Real=0.0,
                         max_volume::Real=0.0, grading::Real=0.3, optimize_steps::Integer=3,
-                        max_cells::Integer=50_000_000, face_array::AbstractString="cad:face")
+                        max_cells::Integer=50_000_000, face_array::AbstractString="cad:face",
+                        post_optimize::Bool=false)
     isempty(backend) &&
         throw(ArgumentError("meshio++: tetrahedralize: backend must be \"auto\", \"netgen\", \"octree\" or a mesher's name"))
     # Any other name is a named mesher (3); the library refuses an unknown one,
@@ -2073,7 +2074,7 @@ function tetrahedralize(mesh::Mesh; backend::AbstractString="auto", max_size::Re
                                     Int64(max_cells), pointer(fname), backend_c,
                                     Int32(optimize_steps),
                                     backend_c == 3 ? pointer(pname) : Ptr{UInt8}(C_NULL),
-                                    (0, 0, 0))
+                                    Int32(post_optimize), Int32(0), (0, 0))
         ccall(_sym(:mio_tetrahedralize), Ptr{Cvoid},
               (Ptr{Cvoid}, Ref{_CTetrahedralizeOpts}, Ref{_CTetrahedralizeReport}),
               _handle(mesh), Ref(opts), report)

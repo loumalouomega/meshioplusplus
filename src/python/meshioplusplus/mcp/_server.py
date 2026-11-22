@@ -3888,6 +3888,7 @@ def _register_operations(server: FastMCP) -> None:
         optimize_steps: int = 3,
         max_cells: int = 50_000_000,
         face_array: str = "cad:face",
+        post_optimize: bool = False,
     ) -> dict:
         """Fill a closed, manifold, consistently oriented triangle surface
         (a mesh_cad_surface result, a boundary layer's cap) with tetrahedra
@@ -3902,7 +3903,9 @@ def _register_operations(server: FastMCP) -> None:
         region (a box inside a box gives two), meshed on its own. max_size and max_volume (0: none) bound the
         tetrahedra, grading (0 to 1) is how fast the size grows inward,
         optimize_steps the backend's volume optimisation passes; face_array
-        (cad:face) is carried to the triangles. backend "netgen" in a build
+        (cad:face) is carried to the triangles; post_optimize runs
+        optimize_volume on each region afterwards (worst-element objective,
+        the boundary and the points kept). backend "netgen" in a build
         without it (the meshioplusplus-netgen package, or
         -DMESHIOPLUSPLUS_WITH_NETGEN in a source build) returns an error naming
         both. Reports num_tetrahedra, num_points,

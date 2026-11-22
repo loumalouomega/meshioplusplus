@@ -104,6 +104,7 @@ def tetrahedralize(
     optimize_steps: int = 3,
     max_cells: int = 50_000_000,
     face_array: str = "cad:face",
+    post_optimize: bool = False,
     return_report: bool = False,
 ):
     """Fill the closed triangle surface ``mesh`` with tetrahedra.
@@ -131,6 +132,11 @@ def tetrahedralize(
     :param max_cells: refuse a result of more tetrahedra.
     :param face_array: the cell data naming each triangle's CAD face, carried
         to the triangles and made ``face:<v>`` Side regions when present.
+    :param post_optimize: after the backend, run :func:`optimize_volume` (the
+        worst-element objective, the boundary pinned) on each region's
+        tetrahedra: the points and the boundary stay as the backend left them
+        (a mesher that keeps the skin still does, the regions still conform)
+        and the worst tetrahedra improve.
     :param return_report: also return the report.
     :returns: the mesh (a ``tetra`` block and a ``triangle`` block: with
         Netgen the input's points first and unchanged and the surface's
@@ -166,6 +172,8 @@ def tetrahedralize(
         raise ValueError(f"{_PREFIX}grading must lie in [0, 1]")
     optimize_steps = _int_option("optimize_steps", optimize_steps, 0, 100)
     max_cells = _int_option("max_cells", max_cells, 1, 2**63 - 1)
+    if not isinstance(post_optimize, bool):
+        raise ValueError(f"{_PREFIX}post_optimize must be True or False")
     _core = _core_or_raise("tetrahedralize")
     res = _core.tetrahedralize(
         mesh,
@@ -176,6 +184,7 @@ def tetrahedralize(
         optimize_steps=optimize_steps,
         max_cells=max_cells,
         face_array=str(face_array),
+        post_optimize=post_optimize,
     )
     out = res["mesh"]
     found = [str(w) for w in res["warnings"]]
