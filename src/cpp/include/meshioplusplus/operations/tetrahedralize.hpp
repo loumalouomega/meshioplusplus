@@ -98,6 +98,12 @@ struct TetrahedralizeOptions {
     double mGrading = 0.3;
     /// Passes of the backend's volume optimisation (0 to 100).
     std::int32_t mOptimizeSteps = 3;
+    /// After the backend, run `optimize_volume` (the worst-element objective,
+    /// the boundary pinned) on each region's tetrahedra: the points and the
+    /// boundary stay exactly as the backend left them, so a mesher that keeps
+    /// the skin still does, and the regions still conform (ABI 47, in the
+    /// padding after `mOptimizeSteps`).
+    bool mPostOptimize = false;
     /// Refuse a result of more tetrahedra (by `std::length_error`).
     std::int64_t mMaxCells = 50000000;
     /// The cell data naming each triangle's CAD face, carried to the

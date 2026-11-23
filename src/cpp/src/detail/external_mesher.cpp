@@ -15,10 +15,12 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-// The external tetrahedral meshers (roadmap 7.7.2) and quad remeshers (7.7.3): TetGen and Gmsh,
-// when installed, run as separate processes on a region's surface and read back, registered by name
-// (`tetrahedralize(..., backend="tetgen")`). Running them as programs, never linking them, is the
-// route the licence decision on TetGen (AGPL) and Gmsh (GPL) leaves open. Never in WebAssembly.
+// The external tetrahedral meshers (roadmap 7.7.2) and quad remeshers (7.7.3): TetGen, Gmsh and
+// fTetWild, when installed, run as separate processes on a region's surface and read back,
+// registered by name (`tetrahedralize(..., backend="tetgen")`). Running them as programs, never
+// linking them, is the route the licence decision on TetGen (AGPL) and Gmsh (GPL) leaves open;
+// fTetWild (MPL-2.0) runs the same way, which keeps its Geogram, libigl and TBB out of the build.
+// Never in WebAssembly.
 
 // System includes
 #include <algorithm>
@@ -110,6 +112,39 @@ void em_run(const std::string& rName, const std::vector<std::string>& rArgv,
     if (code != 0)
         throw std::runtime_error(rName + " failed (exit code " + std::to_string(code) +
                                  "): " + em_log_tail(log));
+}
+
+// The points and the `tetra` blocks' tetrahedra of a mesh a program wrote.
+void em_read_tets(const Mesh& rOut, std::vector<Vec3>& rPts,
+                  std::vector<std::array<std::int64_t, 4>>& rTets) {
+    rPts.assign(rOut.NumPoints(), Vec3{});
+    const NDArray& r_p = rOut.Points();
+    for (std::size_t i = 0; i < rPts.size(); ++i)
+        for (std::size_t c = 0; c < 3; ++c)
+            rPts[i][c] = detail::read_double(r_p, 3 * i + c);
+    rTets.clear();
+    for (std::size_t b = 0; b < rOut.NumCellBlocks(); ++b) {
+        const auto cells = rOut.Cells(b);
+        if (cells.Type() != "tetra")
+            continue;
+        for (std::size_t c = 0; c < cells.NumCells(); ++c)
+            rTets.push_back({detail::read_int(cells.Conn(), 4 * c),
+                             detail::read_int(cells.Conn(), 4 * c + 1),
+                             detail::read_int(cells.Conn(), 4 * c + 2),
+                             detail::read_int(cells.Conn(), 4 * c + 3)});
+    }
+}
+
+// A surface as a Wavefront OBJ at full precision.
+void em_write_obj(const std::string& rPath, const std::vector<Vec3>& rPoints,
+                  const std::vector<std::array<std::int64_t, 3>>& rTriangles) {
+    auto obj = detail::make_classic_ofstream(rPath);
+    for (const Vec3& r_p : rPoints)
+        obj << "v " << em_num(r_p[0]) << " " << em_num(r_p[1]) << " " << em_num(r_p[2]) << "\n";
+    for (const auto& r_t : rTriangles)
+        obj << "f " << r_t[0] + 1 << " " << r_t[1] + 1 << " " << r_t[2] + 1 << "\n";
+    if (!obj)
+        throw std::runtime_error("cannot write '" + rPath + "'");
 }
 
 /**
@@ -352,23 +387,9 @@ TetMeshRegionResult em_tetgen(const std::string& rExe, const TetMeshRegionReques
         switches += "a" + em_num(h * h * h / (6.0 * std::sqrt(2.0)));
     }
     em_run("tetgen", {rExe, switches, in}, dir);
-    const Mesh out = read_tetgen(dir.File("in.1.node"));
-    std::vector<Vec3> pts(out.NumPoints());
-    const NDArray& r_p = out.Points();
-    for (std::size_t i = 0; i < pts.size(); ++i)
-        for (std::size_t c = 0; c < 3; ++c)
-            pts[i][c] = detail::read_double(r_p, 3 * i + c);
+    std::vector<Vec3> pts;
     std::vector<std::array<std::int64_t, 4>> tets;
-    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
-        const auto cells = out.Cells(b);
-        if (cells.Type() != "tetra")
-            continue;
-        for (std::size_t c = 0; c < cells.NumCells(); ++c)
-            tets.push_back({detail::read_int(cells.Conn(), 4 * c),
-                            detail::read_int(cells.Conn(), 4 * c + 1),
-                            detail::read_int(cells.Conn(), 4 * c + 2),
-                            detail::read_int(cells.Conn(), 4 * c + 3)});
-    }
+    em_read_tets(read_tetgen(dir.File("in.1.node")), pts, tets);
     return em_assemble(rRequest, pts, tets);
 }
 
@@ -418,41 +439,45 @@ TetMeshRegionResult em_gmsh(const std::string& rExe, const TetMeshRegionRequest&
     }
     argv.push_back(dir.File("in.geo"));
     em_run("gmsh", argv, dir);
-    const Mesh out = read_gmsh(dir.File("out.msh"));
-    std::vector<Vec3> pts(out.NumPoints());
-    const NDArray& r_p = out.Points();
-    for (std::size_t i = 0; i < pts.size(); ++i)
-        for (std::size_t c = 0; c < 3; ++c)
-            pts[i][c] = detail::read_double(r_p, 3 * i + c);
+    std::vector<Vec3> pts;
     std::vector<std::array<std::int64_t, 4>> tets;
-    for (std::size_t b = 0; b < out.NumCellBlocks(); ++b) {
-        const auto cells = out.Cells(b);
-        if (cells.Type() != "tetra")
-            continue;
-        for (std::size_t c = 0; c < cells.NumCells(); ++c)
-            tets.push_back({detail::read_int(cells.Conn(), 4 * c),
-                            detail::read_int(cells.Conn(), 4 * c + 1),
-                            detail::read_int(cells.Conn(), 4 * c + 2),
-                            detail::read_int(cells.Conn(), 4 * c + 3)});
-    }
+    em_read_tets(read_gmsh(dir.File("out.msh")), pts, tets);
     if (tets.empty())
         throw std::runtime_error("gmsh produced no tetrahedra: " +
                                  em_log_tail(dir.File("mesher.log")));
     return em_assemble(rRequest, pts, tets);
 }
 
-// --- quad remeshers (roadmap 7.7.3) ---------------------------------------------
-
-// The surface as a Wavefront OBJ at full precision.
-void em_write_obj(const std::string& rPath, const QuadRemeshRequest& rRequest) {
-    auto obj = detail::make_classic_ofstream(rPath);
-    for (const Vec3& r_p : rRequest.mPoints)
-        obj << "v " << em_num(r_p[0]) << " " << em_num(r_p[1]) << " " << em_num(r_p[2]) << "\n";
-    for (const auto& r_t : rRequest.mTriangles)
-        obj << "f " << r_t[0] + 1 << " " << r_t[1] + 1 << " " << r_t[2] + 1 << "\n";
-    if (!obj)
-        throw std::runtime_error("cannot write '" + rPath + "'");
+// fTetWild (Hu et al. 2020) meshes the volume inside an envelope around the
+// surface (an OBJ; its inner shells, inward, are holes by the winding number)
+// and writes MSH 2.2: `FloatTetwild_bin -i in.obj -o out.msh`, `-a` the ideal
+// edge length from `max_size`, `--max-its 0` when no optimisation is asked. It
+// does not keep the triangles, so every point it returns is its own and the
+// provider is registered as fitting its boundary.
+TetMeshRegionResult em_ftetwild(const std::string& rExe, const TetMeshRegionRequest& rRequest) {
+    const EmWorkDir dir("ftetwild");
+    em_write_obj(dir.File("in.obj"), rRequest.mPoints, rRequest.mTriangles);
+    std::vector<std::string> argv = {rExe,      "-i", dir.File("in.obj"), "-o", dir.File("out.msh"),
+                                     "--level", "6",  "--no-color"};
+    if (rRequest.mMaxSize > 0.0) {
+        argv.push_back("-a");
+        argv.push_back(em_num(rRequest.mMaxSize));
+    }
+    if (rRequest.mOptimizeSteps <= 0) {
+        argv.push_back("--max-its");
+        argv.push_back("0");
+    }
+    em_run("ftetwild", argv, dir);
+    TetMeshRegionResult result;
+    em_read_tets(read_gmsh(dir.File("out.msh")), result.mPoints, result.mTets);
+    if (result.mTets.empty())
+        throw std::runtime_error("ftetwild produced no tetrahedra: " +
+                                 em_log_tail(dir.File("mesher.log")));
+    result.mBoundaryPreserved = false;
+    return result;
 }
+
+// --- quad remeshers (roadmap 7.7.3) ---------------------------------------------
 
 // The `v` and `f` records of the program's OBJ (`f` corners as `i`, `i/t` or
 // `i/t/n`, negative indices relative): quads, and triangles where the program
@@ -521,7 +546,7 @@ QuadRemeshResult em_read_obj(const std::string& rPath, const char* pProgram) {
 // all-quad mesh.
 QuadRemeshResult em_quadriflow(const std::string& rExe, const QuadRemeshRequest& rRequest) {
     const EmWorkDir dir("quadriflow");
-    em_write_obj(dir.File("in.obj"), rRequest);
+    em_write_obj(dir.File("in.obj"), rRequest.mPoints, rRequest.mTriangles);
     std::vector<std::string> argv = {rExe};
     if (rRequest.mSharp)
         argv.push_back("-sharp");
@@ -540,7 +565,7 @@ QuadRemeshResult em_quadriflow(const std::string& rExe, const QuadRemeshRequest&
 // deterministic; `-D` quad-dominant, `-b` boundaries kept, `-c` creases.
 QuadRemeshResult em_instant_meshes(const std::string& rExe, const QuadRemeshRequest& rRequest) {
     const EmWorkDir dir("instant_meshes");
-    em_write_obj(dir.File("in.obj"), rRequest);
+    em_write_obj(dir.File("in.obj"), rRequest.mPoints, rRequest.mTriangles);
     std::vector<std::string> argv = {
         rExe, "-d", "-o", dir.File("out.obj"), "-f", std::to_string(rRequest.mTargetFaces)};
     if (rRequest.mDominant)
@@ -584,6 +609,20 @@ std::vector<TetMesherProvider> make_external_tet_meshers() {
         p.mVersion = "external: " + gmsh;
         p.mMeshRegion = [gmsh](const TetMeshRegionRequest& rRequest) {
             return em_gmsh(gmsh, rRequest);
+        };
+        out.push_back(std::move(p));
+    }
+    std::string ftetwild = detail::find_executable("FloatTetwild_bin", "MESHIOPLUSPLUS_FTETWILD");
+    for (const char* p_alt : {"fTetWild", "ftetwild"})
+        if (ftetwild.empty())
+            ftetwild = detail::find_executable(p_alt);
+    if (!ftetwild.empty()) {
+        TetMesherProvider p;
+        p.mName = "ftetwild";
+        p.mVersion = "external: " + ftetwild;
+        p.mKeepsBoundary = false;
+        p.mMeshRegion = [ftetwild](const TetMeshRegionRequest& rRequest) {
+            return em_ftetwild(ftetwild, rRequest);
         };
         out.push_back(std::move(p));
     }

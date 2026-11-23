@@ -7771,7 +7771,8 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
                                           {"grading", {}, true},
                                           {"optimize-steps", {}, true},
                                           {"max-cells", {}, true},
-                                          {"face-array", {}, true}},
+                                          {"face-array", {}, true},
+                                          {"post-optimize", {}, false}},
                                          report_flag_specs()}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("tetrahedralize requires exactly INFILE and OUTFILE");
@@ -7798,6 +7799,7 @@ int cmd_tetrahedralize(const std::vector<std::string>& rArgs) {
     cli_opt_int(p, "optimize-steps", o.mOptimizeSteps);
     cli_opt_int64(p, "max-cells", o.mMaxCells);
     cli_opt_string(p, "face-array", o.mFaceArray);
+    o.mPostOptimize = has_flag(p, "post-optimize");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     auto r = meshioplusplus::tetrahedralize(mesh, o);
     if (has_flag(p, "json")) {
@@ -10683,8 +10685,8 @@ const CliVerb kCliVerbs[] = {
      "                            its triangles kept (Netgen): [--max-size H]\n"
      "                            [--max-volume V] [--grading G]\n"
      "                            [--optimize-steps N] [--max-cells N]\n"
-     "                            [--face-array NAME]\n"
-     "                            [--backend auto|netgen|octree|tetgen|gmsh]\n"
+     "                            [--face-array NAME] [--post-optimize]\n"
+     "                            [--backend auto|netgen|octree|tetgen|gmsh|ftetwild]\n"
      "                            [--json]\n",
      &cmd_tetrahedralize},
     {"remesh-quads", nullptr,

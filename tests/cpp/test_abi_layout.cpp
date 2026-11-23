@@ -303,7 +303,11 @@ MIO_ABI_LAYOUT(meshioplusplus::CadStepCheck, 32, 8);
 // bool and an int sharing 8 bytes, four `std::function`s).
 MIO_ABI_LAYOUT(meshioplusplus::TetMeshRegionRequest, 72, 8);
 MIO_ABI_LAYOUT(meshioplusplus::TetMeshRegionResult, 56, 8);
-MIO_ABI_LAYOUT(meshioplusplus::TetMesherProvider, 96, 8);
+// ABI 47: `mKeepsBoundary` (`bool`) appended, 96 -> 104, offset 96 pinned.
+MIO_ABI_LAYOUT(meshioplusplus::TetMesherProvider, 104, 8);
+static_assert(
+    offsetof(meshioplusplus::TetMesherProvider, mKeepsBoundary) == 96,
+    "meshio++ ABI: TetMesherProvider::mKeepsBoundary moved (ABI 47 placed it at offset 96)");
 // ABI 38 (roadmap 7.7.3): the quad remesher (two strings and a function), its
 // request (two vectors, the target, four flags and the seed) and result (three
 // vectors).
@@ -852,6 +856,9 @@ MIO_ABI_LAYOUT(meshioplusplus::RemeshQuadsOptions, 56, 8);
 // ABI 38 (roadmap 7.7.2): `mProvider` (a `std::string`) appended, 80 -> 112 bytes;
 // `TetrahedralizeOptions` is passed by const-ref through the exported `tetrahedralize()`.
 MIO_ABI_LAYOUT(meshioplusplus::TetrahedralizeOptions, 112, 8);
+// ABI 47: `mPostOptimize` took the padding after `mOptimizeSteps` (offset 36).
+static_assert(offsetof(meshioplusplus::TetrahedralizeOptions, mPostOptimize) == 36,
+              "meshio++ ABI: TetrahedralizeOptions::mPostOptimize moved (ABI 47 placed it at 36)");
 // ABI 38 (doc/cut.md): the level-set cut's options, passed by const-ref through
 // the exported cut_level_set() and cut_quadrature().
 MIO_ABI_LAYOUT(meshioplusplus::CutPlane, 48, 8);

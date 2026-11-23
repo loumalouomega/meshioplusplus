@@ -34,6 +34,10 @@ MMG_COMMIT="4d8232c8aebfed877935d75d4d4a67e850962422"
 # (roadmap 7.7.3). Never linked or shipped: CI builds the executable from this
 # commit to test the backend. It has no release tags.
 QUADRIFLOW_COMMIT="810b7a0967c35b0dc85b4464e3835e26a756c967"
+# fTetWild (MPL-2.0), the tetrahedral mesher tetrahedralize(backend="ftetwild")
+# runs as a separate program (doc/tetrahedralize.md). Never linked or shipped:
+# CI builds FloatTetwild_bin from this commit of loumalouomega/fTetWild.
+FTETWILD_COMMIT="b6362a34f9eff68c25c47eccbde2ed3420b02e26"
 # CutCells (MIT), the backend of cut_level_set and cut_quadrature (doc/cut.md):
 # a clone of this commit (the release-0.5.0 merge; CutCells has no release
 # tags), built static by build/build-cutcells.sh for the wheels and CI.

@@ -302,7 +302,10 @@ struct RemeshOptions {
     /// Uniform `refine` passes applied to the input before clustering, each
     /// multiplying the triangle count by four. `-1` (the default) picks the
     /// smallest count reaching `mSubsampleRatio` items per cluster, capped at
-    /// `mMaxSubdivide`; `0` disables subdivision entirely.
+    /// `mMaxSubdivide`, then splits (red-green, round by round) every triangle
+    /// still longer than half the cluster spacing, so needles spanning several
+    /// clusters (a scan's hole caps) do not survive the clustering; an
+    /// explicit count, `0` included, applies that many uniform passes only.
     int mSubdivide = -1;
 
     /// Items per cluster targeted by automatic subdivision. Higher is a finer

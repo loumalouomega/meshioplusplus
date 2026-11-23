@@ -732,6 +732,8 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             detail::octree_mesh_snap_features(*setup, rOptions, result, tets);
             clock.Lap(result, "features");
             detail::octree_mesh_optimize(*setup, rOptions, result, tets);
+            if (rOptions.mPreserveFeatures && rOptions.mFitIterations > 0)
+                detail::octree_mesh_release_features(*setup, rOptions, result, tets);
             clock.Lap(result, "optimize");
             detail::octree_mesh_fill_chain_gaps(*setup, rOptions, result, tets);
             if (rOptions.mVolumeFix)

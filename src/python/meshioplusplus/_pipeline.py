@@ -990,6 +990,7 @@ def _tetrahedralize_step(mesh, step, entry, warnings):
             optimize_steps=int(_number(step, "OptimizeSteps", 3)),
             max_cells=int(_number(step, "MaxCells", 50_000_000)),
             face_array=_text(step, "FaceArray", "cad:face"),
+            post_optimize=_flag(step, "PostOptimize", False),
             return_report=True,
         )
     warnings.extend("Tetrahedralize: " + w for w in report["warnings"])

@@ -16,6 +16,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -45,18 +46,18 @@ namespace {
 /// easy.
 Mesh icosahedron() {
     const double t = (1.0 + std::sqrt(5.0)) / 2.0;
-    std::vector<std::vector<double>> p = {
-        {-1, t, 0}, {1, t, 0},  {-1, -t, 0}, {1, -t, 0}, {0, -1, t},  {0, 1, t},
-        {0, -1, -t}, {0, 1, -t}, {t, 0, -1},  {t, 0, 1},  {-t, 0, -1}, {-t, 0, 1}};
+    std::vector<std::vector<double>> p = {{-1, t, 0}, {1, t, 0}, {-1, -t, 0}, {1, -t, 0},
+                                          {0, -1, t}, {0, 1, t}, {0, -1, -t}, {0, 1, -t},
+                                          {t, 0, -1}, {t, 0, 1}, {-t, 0, -1}, {-t, 0, 1}};
     for (auto& v : p) {
         const double n = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
         for (auto& x : v)
             x /= n;
     }
     std::vector<std::vector<std::int64_t>> f = {
-        {0, 11, 5}, {0, 5, 1},  {0, 1, 7},   {0, 7, 10}, {0, 10, 11}, {1, 5, 9},  {5, 11, 4},
-        {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},   {3, 2, 6},  {3, 6, 8},
-        {3, 8, 9},  {4, 9, 5},  {2, 4, 11},  {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
+        {0, 11, 5},  {0, 5, 1},  {0, 1, 7},  {0, 7, 10}, {0, 10, 11}, {1, 5, 9}, {5, 11, 4},
+        {11, 10, 2}, {10, 7, 6}, {7, 1, 8},  {3, 9, 4},  {3, 4, 2},   {3, 2, 6}, {3, 6, 8},
+        {3, 8, 9},   {4, 9, 5},  {2, 4, 11}, {6, 2, 10}, {8, 6, 7},   {9, 8, 1}};
     return mt::make_mesh(p, "triangle", f);
 }
 
@@ -77,8 +78,8 @@ Mesh cube_mesh(int per_edge) {
         if (it != id_of.end())
             return it->second;
         const std::int64_t id = static_cast<std::int64_t>(p.size());
-        p.push_back({static_cast<double>(i) / n, static_cast<double>(j) / n,
-                    static_cast<double>(k) / n});
+        p.push_back(
+            {static_cast<double>(i) / n, static_cast<double>(j) / n, static_cast<double>(k) / n});
         id_of.emplace(key, id);
         return id;
     };
@@ -92,8 +93,8 @@ Mesh cube_mesh(int per_edge) {
                 const auto [i1, j1, k1] = grid_to_xyz(a + 1, b);
                 const auto [i2, j2, k2] = grid_to_xyz(a + 1, b + 1);
                 const auto [i3, j3, k3] = grid_to_xyz(a, b + 1);
-                const std::int64_t v0 = vid(i0, j0, k0), v1 = vid(i1, j1, k1),
-                                   v2 = vid(i2, j2, k2), v3 = vid(i3, j3, k3);
+                const std::int64_t v0 = vid(i0, j0, k0), v1 = vid(i1, j1, k1), v2 = vid(i2, j2, k2),
+                                   v3 = vid(i3, j3, k3);
                 f.push_back({v0, v1, v2});
                 f.push_back({v0, v2, v3});
             }
@@ -210,8 +211,8 @@ double max_deviation_from_cube(const Mesh& rM) {
     const NDArray& pts = rM.Points();
     for (std::size_t i = 0; i < rM.NumPoints(); ++i)
         worst = std::max(worst, dist_to_cube_surface(detail::read_double(pts, i * 3),
-                                                      detail::read_double(pts, i * 3 + 1),
-                                                      detail::read_double(pts, i * 3 + 2)));
+                                                     detail::read_double(pts, i * 3 + 1),
+                                                     detail::read_double(pts, i * 3 + 2)));
     return worst;
 }
 
@@ -287,6 +288,105 @@ TEST(Remesh, IsDeterministic) {
     for (std::size_t i = 0; i < a.mMesh.NumPoints() * 3; ++i)
         EXPECT_EQ(detail::read_double(pa, i), detail::read_double(pb, i))
             << "coordinate " << i << " differs between two identical runs";
+}
+
+/// A closed cube of `per_edge` squares a side whose bottom face is one fan of
+/// needles from its centre, as `repair` caps a scan's hole: the fan's
+/// triangles span half the face, many clusters long.
+Mesh cube_with_capped_bottom(int per_edge) {
+    const Mesh cube = cube_mesh(per_edge);
+    std::vector<std::vector<double>> p;
+    const NDArray& pts = cube.Points();
+    for (std::size_t v = 0; v < cube.NumPoints(); ++v)
+        p.push_back({detail::read_double(pts, 3 * v), detail::read_double(pts, 3 * v + 1),
+                     detail::read_double(pts, 3 * v + 2)});
+    std::vector<std::vector<std::int64_t>> f;
+    const NDArray& c = cube.Cells(0).Conn();
+    for (std::size_t t = 0; t < cube.Cells(0).NumCells(); ++t) {
+        const std::int64_t a = detail::read_int(c, 3 * t), b = detail::read_int(c, 3 * t + 1),
+                           d = detail::read_int(c, 3 * t + 2);
+        if (p[a][2] == 0.0 && p[b][2] == 0.0 && p[d][2] == 0.0)
+            continue;  // the bottom face, replaced below
+        f.push_back({a, b, d});
+    }
+    // The bottom face's boundary loop, in the cube's own winding (z = 0 was
+    // added as (a, b) -> (a, b, 0)), and a fan from the face's centre.
+    const auto id = [&](double X, double Y) {
+        for (std::size_t v = 0; v < p.size(); ++v)
+            if (p[v][0] == X && p[v][1] == Y && p[v][2] == 0.0)
+                return static_cast<std::int64_t>(v);
+        return std::int64_t{-1};
+    };
+    const int n = per_edge;
+    std::vector<std::int64_t> loop;
+    for (int i = 0; i < n; ++i)
+        loop.push_back(id(static_cast<double>(i) / n, 0.0));
+    for (int i = 0; i < n; ++i)
+        loop.push_back(id(1.0, static_cast<double>(i) / n));
+    for (int i = n; i > 0; --i)
+        loop.push_back(id(static_cast<double>(i) / n, 1.0));
+    for (int i = n; i > 0; --i)
+        loop.push_back(id(0.0, static_cast<double>(i) / n));
+    const auto centre = static_cast<std::int64_t>(p.size());
+    p.push_back({0.5, 0.5, 0.0});
+    for (std::size_t i = 0; i < loop.size(); ++i)
+        f.push_back({centre, loop[(i + 1) % loop.size()], loop[i]});
+    return mt::make_mesh(p, "triangle", f);
+}
+
+/// The largest triangle aspect, longest edge squared over twice the area.
+double max_aspect(const Mesh& rM) {
+    const NDArray& pts = rM.Points();
+    const NDArray& c = rM.Cells(0).Conn();
+    double worst = 0.0;
+    for (std::size_t t = 0; t < rM.Cells(0).NumCells(); ++t) {
+        double x[3][3];
+        for (int k = 0; k < 3; ++k)
+            for (int d = 0; d < 3; ++d)
+                x[k][d] = detail::read_double(
+                    pts, 3 * static_cast<std::size_t>(detail::read_int(c, 3 * t + k)) + d);
+        double l2 = 0.0;
+        for (int k = 0; k < 3; ++k) {
+            double e = 0.0;
+            for (int d = 0; d < 3; ++d)
+                e += (x[(k + 1) % 3][d] - x[k][d]) * (x[(k + 1) % 3][d] - x[k][d]);
+            l2 = std::max(l2, e);
+        }
+        const double u[3] = {x[1][0] - x[0][0], x[1][1] - x[0][1], x[1][2] - x[0][2]};
+        const double w[3] = {x[2][0] - x[0][0], x[2][1] - x[0][1], x[2][2] - x[0][2]};
+        const double n[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2],
+                             u[0] * w[1] - u[1] * w[0]};
+        const double area2 = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        worst = std::max(worst, area2 > 0.0 ? l2 / area2 : 1e300);
+    }
+    return worst;
+}
+
+// The automatic subdivision also splits the triangles longer than half the
+// cluster spacing, so a needle fan spanning many clusters (a scan's hole cap)
+// does not survive the clustering; a fixed subdivision count keeps the old
+// behaviour, and the run is deterministic.
+TEST(Remesh, AutoSubdivisionSplitsNeedles) {
+    const Mesh in = cube_with_capped_bottom(32);
+    ASSERT_GT(max_aspect(in), 20.0) << "the fixture is supposed to have needles";
+    // Clusters a few times smaller than the fan's triangles, and a ratio the
+    // input's own points already meet, so the count rule asks for no pass: the
+    // situation of a fine scan whose holes were capped.
+    RemeshOptions o;
+    o.mNumClusters = 3000;
+    o.mSubsampleRatio = 1.0;
+    const RemeshResult r = remesh(in, o);
+    EXPECT_EQ(r.mSubdivideApplied, 0);
+    EXPECT_LT(max_aspect(r.mMesh), 10.0);
+    RemeshOptions fixed = o;
+    fixed.mSubdivide = r.mSubdivideApplied;
+    EXPECT_GT(max_aspect(remesh(in, fixed).mMesh), 10.0)
+        << "without the length rule a needle survives";
+    const RemeshResult again = remesh(in, o);
+    ASSERT_EQ(again.mMesh.NumPoints(), r.mMesh.NumPoints());
+    for (std::size_t i = 0; i < 3 * r.mMesh.NumPoints(); ++i)
+        ASSERT_EQ(detail::read_double(again.mMesh.Points(), i),
+                  detail::read_double(r.mMesh.Points(), i));
 }
 
 TEST(Remesh, SubdivideZeroSkipsRefinement) {
@@ -462,8 +562,7 @@ Mesh cylinder_mesh(int n_circ, int n_axial, double radius, double height) {
     for (int j = 0; j <= n_axial; ++j)
         for (int i = 0; i < n_circ; ++i) {
             const double theta = 2.0 * M_PI * i / n_circ;
-            p.push_back(
-                {radius * std::cos(theta), radius * std::sin(theta), height * j / n_axial});
+            p.push_back({radius * std::cos(theta), radius * std::sin(theta), height * j / n_axial});
         }
     std::vector<std::vector<std::int64_t>> f;
     auto vid = [&](int i, int j) { return j * n_circ + (i % n_circ); };
@@ -544,8 +643,8 @@ TEST(Remesh, CurvatureGradationConcentratesClustersNearHighCurvature) {
     const std::size_t n_uniform = count_near_center(uniform.mMesh, radius);
     const std::size_t n_curved = count_near_center(curved.mMesh, radius);
     EXPECT_GT(n_curved, n_uniform)
-        << "gradation did not concentrate clusters near the curved region: " << n_curved
-        << " vs " << n_uniform << " (uniform)";
+        << "gradation did not concentrate clusters near the curved region: " << n_curved << " vs "
+        << n_uniform << " (uniform)";
 }
 
 TEST(Remesh, PreservesBoundaryOfAnOpenPatch) {
@@ -625,12 +724,10 @@ TEST(Remesh, AnisotropicMetricElongatesClustersAlongTheLowCurvatureAxis) {
     const double clamped_ratio =
         axial_over_circumferential_ratio(remesh(cyl, aniso_clamped).mMesh, radius);
 
-    EXPECT_GT(aniso_ratio, iso_ratio * 1.3)
-        << "anisotropic axial/circumferential ratio " << aniso_ratio << " vs isotropic "
-        << iso_ratio;
+    EXPECT_GT(aniso_ratio, iso_ratio * 1.3) << "anisotropic axial/circumferential ratio "
+                                            << aniso_ratio << " vs isotropic " << iso_ratio;
     EXPECT_LT(clamped_ratio, iso_ratio * 1.3)
-        << "max_anisotropy=1.0 still elongated: " << clamped_ratio << " vs isotropic "
-        << iso_ratio;
+        << "max_anisotropy=1.0 still elongated: " << clamped_ratio << " vs isotropic " << iso_ratio;
 }
 
 TEST(Remesh, AnisotropicMetricStaysExactlyFlatOnAFlatSurface) {
@@ -696,8 +793,7 @@ TEST(Remesh, AnisotropicMetricKeepsClustersOnACurvedSurface) {
     // pulls whole clusters toward the surrounding near-flat height instead
     // of the cap's own local height, blows through it -- verified by
     // sabotage (dropping the tensor's n*n^T term).
-    EXPECT_LT(dev, amplitude * 0.5)
-        << "max vertical deviation from the true bump surface: " << dev;
+    EXPECT_LT(dev, amplitude * 0.5) << "max vertical deviation from the true bump surface: " << dev;
 }
 
 TEST(Remesh, AnisotropicModeIsDeterministic) {

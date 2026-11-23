@@ -2937,7 +2937,8 @@ SEXP R_mio_metric_from_hessian(SEXP mesh, SEXP hessian, SEXP error, SEXP hmin, S
 /* tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface.
  * Returns list(mesh, num_tetrahedra, ..., backend). */
 SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volume, SEXP grading,
-                          SEXP optimize_steps, SEXP max_cells, SEXP face_array) {
+                          SEXP optimize_steps, SEXP max_cells, SEXP face_array,
+                          SEXP post_optimize) {
     mio_tetrahedralize_opts opts;
     mio_tetrahedralize_opts_init(&opts);
     {
@@ -2963,6 +2964,7 @@ SEXP R_mio_tetrahedralize(SEXP mesh, SEXP backend, SEXP max_size, SEXP max_volum
     opts.optimize_steps = (int32_t)mio_r_int(optimize_steps, "optimize_steps");
     opts.max_cells = (int64_t)mio_r_double(max_cells, "max_cells");
     opts.face_array = mio_r_string(face_array, "face_array");
+    opts.post_optimize = mio_r_bool(post_optimize, "post_optimize") ? 1 : 0;
     mio_tetrahedralize_report report;
     mio_mesh *out = mio_tetrahedralize(mio_r_mesh(mesh), &opts, &report);
     if (out == NULL) mio_r_fail("tetrahedralize");

@@ -79,8 +79,12 @@ def remesh(
     :param subdivide: uniform :func:`refine` passes applied before
         clustering (each multiplies the triangle count by four). ``None``
         (the default) picks the smallest count reaching ``subsample_ratio``
-        items per cluster, capped at ``max_subdivide``; ``0`` disables
-        subdivision.
+        items per cluster, capped at ``max_subdivide``, then splits (red-green
+        :func:`refine` of the selected triangles, round by round) every
+        triangle still longer than half the cluster spacing, so needles that
+        span several clusters (a scan's hole caps) do not survive the
+        clustering; an explicit count, ``0`` included, applies that many
+        uniform passes and nothing else.
     :param subsample_ratio: items per cluster targeted by automatic
         subdivision.
     :param max_subdivide: ceiling on automatically chosen subdivision.

@@ -10725,7 +10725,9 @@ static_assert(offsetof(mio_tetrahedralize_opts, face_array) == 32,
               "mio_tetrahedralize_opts layout");
 static_assert(offsetof(mio_tetrahedralize_opts, backend) == 40, "mio_tetrahedralize_opts layout");
 static_assert(offsetof(mio_tetrahedralize_opts, provider) == 48, "mio_tetrahedralize_opts layout");
-static_assert(offsetof(mio_tetrahedralize_opts, reserved) == 56, "mio_tetrahedralize_opts layout");
+static_assert(offsetof(mio_tetrahedralize_opts, post_optimize) == 56,
+              "mio_tetrahedralize_opts layout");
+static_assert(offsetof(mio_tetrahedralize_opts, reserved) == 64, "mio_tetrahedralize_opts layout");
 static_assert(sizeof(mio_tetrahedralize_report) == 128, "mio_tetrahedralize_report layout");
 static_assert(offsetof(mio_tetrahedralize_report, boundary_preserved) == 72,
               "mio_tetrahedralize_report layout");
@@ -10804,6 +10806,7 @@ mio_mesh* mio_tetrahedralize(const mio_mesh* mesh, const mio_tetrahedralize_opts
         o.mGrading = r_in.grading;
         o.mOptimizeSteps = r_in.optimize_steps;
         o.mMaxCells = r_in.max_cells;
+        o.mPostOptimize = r_in.post_optimize != 0;
         if (r_in.face_array)
             o.mFaceArray = r_in.face_array;
         if (r_in.backend == MIO_TETRAHEDRALIZE_BACKEND_NAMED && r_in.provider)

@@ -51,9 +51,10 @@ coverage:
         threshold: 1%
         # Informational: a pull request's instrumented C++ run skips the slowest
         # families (FitCad, OctreeMesh, MeshCad, PatchNetwork, HexDualSchemes) to
-        # fit its time budget, while the base commit on master ran them, so the
-        # project delta is not like for like. The patch status below still gates
-        # the lines a change adds.
+        # fit its time budget, running their small Quick* versions instead, while
+        # the base commit on master ran the full suites, so the project delta is
+        # not like for like. The patch status below still gates the lines a change
+        # adds.
         informational: true
     # The lines a pull request adds or changes. Advisory-sized: a refactor that
     # moves covered lines should not fail on a few uncovered branches.
