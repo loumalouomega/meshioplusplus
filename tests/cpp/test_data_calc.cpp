@@ -249,6 +249,44 @@ TEST(DataCalc, MatmulOuterAndInv) {
     EXPECT_NEAR(read_double(i6.PointData("o"), 1 * 6 + 2), 0.2, 1e-14);
 }
 
+TEST(DataCalc, CoordinatesAtThePoints) {
+    Mesh in = mt::data_mesh();  // T = x + 10 y
+    const Mesh d = data_calc(in, "x + 10 * y - T", point_opts("o"));
+    for (int i = 0; i < 6; ++i)
+        EXPECT_NEAR(read_double(d.PointData("o"), i), 0.0, 1e-12) << i;
+    const Mesh c = data_calc(in, "coords", point_opts("o"));
+    ASSERT_EQ(meshioplusplus::data_num_components(c.PointData("o")), 3u);
+    EXPECT_NEAR(read_double(c.PointData("o"), 5 * 3 + 0), 2.0, 1e-12);
+    EXPECT_NEAR(read_double(c.PointData("o"), 5 * 3 + 1), 1.0, 1e-12);
+    const Mesh n = data_calc(in, "norm(coords)", point_opts("o"));
+    EXPECT_NEAR(read_double(n.PointData("o"), 5), std::sqrt(5.0), 1e-12);
+}
+
+TEST(DataCalc, CoordinatesAtTheCellsAreTheCentroids) {
+    Mesh in = mt::data_mesh();
+    DataCalcOptions o;
+    o.location = DataLocation::Cell;
+    o.output = "c";
+    const Mesh out = data_calc(in, "coords", o);
+    ASSERT_EQ(out.CellDataNumBlocks("c"), 2u);
+    // The first triangle (0,1,2): centroid (2/3, 1/3, 0); the quad (1,4,5,2): (1.5, 0.5, 0).
+    EXPECT_NEAR(read_double(out.CellData("c", 0), 0), 2.0 / 3.0, 1e-12);
+    EXPECT_NEAR(read_double(out.CellData("c", 0), 1), 1.0 / 3.0, 1e-12);
+    EXPECT_NEAR(read_double(out.CellData("c", 1), 0), 1.5, 1e-12);
+    EXPECT_NEAR(read_double(out.CellData("c", 1), 1), 0.5, 1e-12);
+    const Mesh s = data_calc(in, "x + y", o);
+    EXPECT_NEAR(read_double(s.CellData("c", 0), 1), 1.0, 1e-12);
+    EXPECT_NEAR(read_double(s.CellData("c", 1), 0), 2.0, 1e-12);
+}
+
+TEST(DataCalc, ADataArrayNamedLikeACoordinateShadowsIt) {
+    Mesh in = mt::data_mesh();
+    in.AddPointData("x", mt::data_array({100, 200, 300, 400, 500, 600}));
+    const Mesh out = data_calc(in, "x + y", point_opts("o"));
+    EXPECT_NEAR(read_double(out.PointData("o"), 1), 200.0, 1e-12);  // 200 + y(0)
+    EXPECT_NEAR(read_double(out.PointData("o"), 2), 301.0, 1e-12);  // 300 + y(1)
+}
+
 TEST(DataCalc, ScalarBroadcastAgainstAVector) {
     Mesh in = mt::data_mesh();
     Mesh out = data_calc(in, "v * 2", point_opts("v2"));
@@ -329,6 +367,11 @@ void expect_message(const std::string& rExpr, const std::string& rNeedle) {
 TEST(DataCalc, UnknownArrayNameListsAvailableKeys) {
     expect_message("temp + 1", "unknown point_data array 'temp'");
     expect_message("temp + 1", "available:");
+    // field_data has no geometry: a coordinate name is just an unknown array.
+    DataCalcOptions fo;
+    fo.location = DataLocation::Field;
+    fo.output = "o";
+    EXPECT_THROW(data_calc(mt::data_mesh(), "x + 1", fo), std::invalid_argument);
 }
 
 TEST(DataCalc, UnknownFunctionListsKnownOnes) {

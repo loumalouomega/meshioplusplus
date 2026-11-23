@@ -39,6 +39,9 @@ from ._fallback import core_op_declined
 MAX_COMPONENTS = 16
 MAX_DEPTH = 64
 
+#: The coordinate names, and the column of ``(x, y, z)`` each one is.
+_COORDS = {"x": 0, "y": 1, "z": 2, "coords": slice(0, 3)}
+
 _FUNCS = {
     "abs": 1,
     "sqrt": 1,
@@ -448,7 +451,14 @@ def _calc_py(mesh, expression, location, output, overwrite):
     referenced = set()
     _collect_names(tree, referenced)
     source = location_map(mesh, loc)
-    for name in sorted(referenced):
+    # A name that no data array has but that is `x`, `y`, `z` or `coords` is a
+    # coordinate (a point's, or a cell's centroid); an array of that name wins.
+    coord_names = (
+        {n for n in referenced if n in _COORDS and n not in source}
+        if loc != "field_data"
+        else set()
+    )
+    for name in sorted(referenced - coord_names):
         if name not in source:
             keys = available_keys(mesh, loc)
             detail = (
@@ -459,7 +469,11 @@ def _calc_py(mesh, expression, location, output, overwrite):
     out = copy.deepcopy(mesh)
 
     def run(rows, fetch):
-        arrays = {n: _as_2d(fetch(n), rows) for n in referenced}
+        arrays = {n: _as_2d(fetch(n), rows) for n in referenced - coord_names}
+        for n in coord_names:
+            xyz = fetch(n)
+            arrays[n] = xyz[:, _COORDS[n]] if n != "coords" else xyz
+            arrays[n] = _as_2d(arrays[n], rows)
         for n, a in arrays.items():
             if a.shape[1] > MAX_COMPONENTS:
                 _fail(
@@ -471,11 +485,18 @@ def _calc_py(mesh, expression, location, output, overwrite):
 
     if loc == "point_data":
         rows = len(mesh.points)
-        for name in referenced:
+        for name in referenced - coord_names:
             got = len(np.asarray(source[name]))
             if got != rows:
                 _fail(f"array '{name}' has {got} rows but point_data needs {rows}")
-        out.point_data[output] = run(rows, lambda n: source[n])
+        xyz = None
+        if coord_names:
+            pts = np.asarray(mesh.points, dtype=float)
+            xyz = np.zeros((rows, 3))
+            xyz[:, : min(pts.shape[1], 3)] = pts[:, :3]
+        out.point_data[output] = run(
+            rows, lambda n: xyz if n in coord_names else source[n]
+        )
         return out
 
     if loc == "field_data":
@@ -489,16 +510,27 @@ def _calc_py(mesh, expression, location, output, overwrite):
         return out
 
     nblocks = len(mesh.cells)
-    for name in referenced:
+    for name in referenced - coord_names:
         if len(source[name]) != nblocks:
             _fail(
                 f"cell_data '{name}' has {len(source[name])} block(s) but the "
                 f"mesh has {nblocks} cell block(s)"
             )
+    centroids = None
+    if coord_names:
+        from ._partition import _centroids
+
+        total = sum(len(block.data) for block in mesh.cells)
+        centroids = _centroids(mesh, total)
     blocks = []
+    base = 0
     for b, block in enumerate(mesh.cells):
         rows = len(block.data)
-        blocks.append(run(rows, lambda n, b=b: source[n][b]))
+        cent = centroids[base : base + rows] if centroids is not None else None
+        blocks.append(
+            run(rows, lambda n, b=b, c=cent: c if n in coord_names else source[n][b])
+        )
+        base += rows
     out.cell_data[output] = blocks
     return out
 

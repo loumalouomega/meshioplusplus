@@ -71,6 +71,21 @@ A name containing spaces or operator characters can be written between backticks
 mp.data_calc(mesh, "`my array` * 2", location="point", output="doubled")
 ```
 
+### Coordinates
+
+`x`, `y` and `z` (one component each) and `coords` (all three) name the geometry when no data array of that name exists:
+
+```python
+# A point field built from the coordinates, and from a cell's centroid:
+mp.data_calc(mesh, "sqrt(x * x + y * y)", location="point", output="radius")
+mp.data_calc(mesh, "z", location="cell", output="height")
+```
+
+- At `location="point"` they are the points' coordinates (a 2-D mesh has `z = 0`); at `location="cell"` they are the **centroid** of each cell, the mean of its nodes (the one [`partition`](/partition) and [`interpolate`](/interpolate) use), evaluated per cell block like every other cell operand.
+- A **data array of that name wins**: an existing `x` array is read as an array, so no expression written before coordinates existed changes meaning. Backtick-quote nothing; rename the array or take the coordinate from `coords`.
+- `location="field"` has no geometry to take them from: there `x` is an unknown array, as before.
+- The numpy twin takes cell centroids from `partition`'s helper, which handles rectangular blocks only; a ragged or polyhedron block needs the C++ core.
+
 ## Values and broadcasting
 
 Every operand is either a scalar (1 component) or a vector/tensor of up to 16 components. Binary operators require matching component counts, except that a **scalar broadcasts** against a wider operand:

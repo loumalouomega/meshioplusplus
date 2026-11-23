@@ -406,6 +406,71 @@ def test_matmul_outer_inv_width_errors():
             mp.data_calc(m, expr, location="point", output="o")
 
 
+def test_coordinates_at_points():
+    m, _ = tensor_mesh()
+    # The fixture has T = x + 10 y at every point.
+    out = mp.data_calc(m, "x + 10 * y - T", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 0.0, atol=1e-12)
+    out = mp.data_calc(m, "coords", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], m.points)
+    out = mp.data_calc(
+        m, "norm(coords) - sqrt(x * x + y * y + z * z)", location="point", output="o"
+    )
+    np.testing.assert_allclose(out.point_data["o"], 0.0, atol=1e-12)
+    out = mp.data_calc(m, "z", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 0.0)
+
+
+def test_coordinates_at_cells_are_the_centroids():
+    m, _ = tensor_mesh()
+    out = mp.data_calc(m, "coords", location="cell", output="c")
+    np.testing.assert_allclose(
+        out.cell_data["c"][0], [[2 / 3, 1 / 3, 0], [1 / 3, 2 / 3, 0]], atol=1e-12
+    )
+    np.testing.assert_allclose(out.cell_data["c"][1], [[1.5, 0.5, 0]], atol=1e-12)
+    out = mp.data_calc(m, "x + y", location="cell", output="s")
+    np.testing.assert_allclose(out.cell_data["s"][0], [1.0, 1.0], atol=1e-12)
+    np.testing.assert_allclose(out.cell_data["s"][1], [2.0], atol=1e-12)
+
+
+def test_a_data_array_named_like_a_coordinate_shadows_it():
+    m, _ = tensor_mesh()
+    m.point_data["x"] = np.arange(6.0) * 100
+    out = mp.data_calc(m, "x + y", location="point", output="o")
+    np.testing.assert_allclose(
+        out.point_data["o"], np.arange(6.0) * 100 + m.points[:, 1]
+    )
+
+
+def test_coordinates_are_not_available_in_field_data():
+    m, _ = tensor_mesh()
+    with pytest.raises(ValueError, match="unknown field_data array 'x'"):
+        mp.data_calc(m, "x + 1", location="field", output="o")
+
+
+def test_coordinates_of_a_two_dimensional_mesh():
+    pts = np.array([[0.0, 0.0], [2.0, 0.0], [0.0, 3.0]])
+    m = mp.Mesh(pts, [("triangle", np.array([[0, 1, 2]]))])
+    out = mp.data_calc(m, "x + 10 * y + 100 * z", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], [0.0, 2.0, 30.0])
+
+
+def test_coordinates_match_between_the_core_and_the_twin():
+    pytest.importorskip("meshioplusplus._core")
+    m, _ = tensor_mesh()
+    for loc, key in (("point", "point_data"), ("cell", "cell_data")):
+        for expr in ["x", "y + z", "coords", "norm(coords) * 2", "dot(coords, coords)"]:
+            cpp = mp.data_calc(m, expr, location=loc, output="o")
+            py = _calc_py(m, expr, key, "o", False)
+            if loc == "point":
+                np.testing.assert_allclose(
+                    cpp.point_data["o"], py.point_data["o"], rtol=1e-12, err_msg=expr
+                )
+            else:
+                for a, b in zip(cpp.cell_data["o"], py.cell_data["o"]):
+                    np.testing.assert_allclose(a, b, rtol=1e-12, err_msg=expr)
+
+
 def test_mag_is_norm():
     m, _ = tensor_mesh()
     a = mp.data_calc(m, "mag(v)", location="point", output="o")

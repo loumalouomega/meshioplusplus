@@ -249649,10 +249649,28 @@ private:
 struct CalcOperand {
     std::string mName;
     std::size_t mWidth = 1;
+    /// -1 for a data array; 0, 1, 2 for the coordinate `x`, `y`, `z` and 3 for
+    /// `coords` (the three together), which no data array of that name shadows.
+    int mCoord = -1;
     /// Values widened to double, laid out row-major as row * mWidth + k.
     /// Filled per cell block for the Cell location.
     std::vector<double> mValues;
 };
+
+/// The coordinate operand a name stands for when no data array has it: `x`, `y`,
+/// `z` (a point's coordinate, or a cell's centroid at the cell location) and
+/// `coords` (all three). -1 for any other name.
+int calc_coord_index(const std::string& rName) {
+    if (rName == "x")
+        return 0;
+    if (rName == "y")
+        return 1;
+    if (rName == "z")
+        return 2;
+    if (rName == "coords")
+        return 3;
+    return -1;
+}
 
 const char* calc_node_op_name(CalcNodeType t) {
     switch (t) {
@@ -249712,7 +249730,13 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
                 n.mWidth = 1;
                 break;
             case CalcNodeType::Array: {
-                if (!data_has(rMesh, location, n.mName))
+                // A data array named like a coordinate shadows it, so no
+                // existing expression changes meaning; field_data has no
+                // geometry to take a coordinate from.
+                const bool has_array = data_has(rMesh, location, n.mName);
+                const int coord = has_array ? -1 : calc_coord_index(n.mName);
+                const bool is_coord = coord >= 0 && location != DataLocation::Field;
+                if (!is_coord && !has_array)
                     calc_fail_at(
                         "unknown " + std::string(data_location_name(location)) + " array '" +
                             n.mName + "' (" +
@@ -249735,6 +249759,17 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
                 if (it != seen.end()) {
                     n.mOperand = it->second;
                     n.mWidth = rOperands[it->second].mWidth;
+                    break;
+                }
+                if (is_coord) {
+                    CalcOperand cop;
+                    cop.mName = n.mName;
+                    cop.mCoord = coord;
+                    cop.mWidth = coord == 3 ? 3 : 1;
+                    n.mOperand = rOperands.size();
+                    n.mWidth = cop.mWidth;
+                    seen.emplace(n.mName, rOperands.size());
+                    rOperands.push_back(std::move(cop));
                     break;
                 }
                 const NDArray& arr = location == DataLocation::Point  ? rMesh.PointData(n.mName)
@@ -250130,6 +250165,8 @@ template <class TSource>
 void calc_load_operands(std::vector<CalcOperand>& rOperands, std::size_t rows, TSource&& rSource,
                         const char* pWhat) {
     for (CalcOperand& op : rOperands) {
+        if (op.mCoord >= 0)
+            continue;  // filled from the geometry by calc_fill_coordinates
         const NDArray& arr = rSource(op.mName);
         const std::size_t got = detail::rows(arr);
         if (got != rows)
@@ -250143,6 +250180,30 @@ void calc_load_operands(std::vector<CalcOperand>& rOperands, std::size_t rows, T
         parallel_for_bw(rows * op.mWidth,
                         [&](std::size_t i) { dst[i] = detail::read_double(arr, i); });
     }
+}
+
+/// Fills the coordinate operands from @p pXyz, three doubles per row.
+void calc_fill_coordinates(std::vector<CalcOperand>& rOperands, std::size_t rows,
+                           const double* pXyz) {
+    for (CalcOperand& op : rOperands) {
+        if (op.mCoord < 0)
+            continue;
+        op.mValues.resize(rows * op.mWidth);
+        double* dst = op.mValues.data();
+        const int c = op.mCoord;
+        if (op.mWidth == 3) {
+            parallel_for_bw(rows * 3, [&](std::size_t i) { dst[i] = pXyz[i]; });
+        } else {
+            parallel_for_bw(rows, [&](std::size_t r) { dst[r] = pXyz[r * 3 + c]; });
+        }
+    }
+}
+
+bool calc_has_coordinates(const std::vector<CalcOperand>& rOperands) {
+    for (const CalcOperand& op : rOperands)
+        if (op.mCoord >= 0)
+            return true;
+    return false;
 }
 
 /// Runs the element loop over `rows` entries into a fresh array.
@@ -250194,6 +250255,16 @@ Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalc
             operands, rows,
             [&](const std::string& n) -> const NDArray& { return rMesh.PointData(n); },
             "point_data");
+        if (calc_has_coordinates(operands)) {
+            // The points as three doubles per row, a 2D point padded with z = 0.
+            const NDArray& pts = rMesh.Points();
+            const std::size_t pdim = rMesh.PointDim();
+            std::vector<double> xyz(rows * 3, 0.0);
+            for (std::size_t r = 0; r < rows; ++r)
+                for (std::size_t c = 0; c < pdim && c < 3; ++c)
+                    xyz[r * 3 + c] = detail::read_double(pts, r * pdim + c);
+            calc_fill_coordinates(operands, rows, xyz.data());
+        }
         out.AddPointData(rOpts.output, calc_run(pool, root, operands, rows, width, rOpts.dtype));
         return out;
     }
@@ -250222,15 +250293,28 @@ Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalc
     // cell block as the uniform API requires.
     const std::size_t nblocks = rMesh.NumCellBlocks();
     for (const CalcOperand& op : operands)
-        if (rMesh.CellDataNumBlocks(op.mName) != nblocks)
+        if (op.mCoord < 0 && rMesh.CellDataNumBlocks(op.mName) != nblocks)
             calc_fail("cell_data '" + op.mName + "' has " +
                       std::to_string(rMesh.CellDataNumBlocks(op.mName)) +
                       " block(s) but the mesh has " + std::to_string(nblocks) + " cell block(s)");
 
+    // At the cell location a coordinate is the cell's centroid.
+    std::vector<double> centroids;
+    const bool has_coords = calc_has_coordinates(operands);
+    if (has_coords) {
+        std::size_t total = 0;
+        for (std::size_t b = 0; b < nblocks; ++b)
+            total += rMesh.Cells(b).NumCells();
+        centroids = detail::cell_centroids(rMesh, total);
+    }
+    std::size_t cell_base = 0;
     std::vector<NDArray> blocks;
     blocks.reserve(nblocks);
     for (std::size_t b = 0; b < nblocks; ++b) {
         const std::size_t rows = rMesh.Cells(b).NumCells();
+        if (has_coords)
+            calc_fill_coordinates(operands, rows, centroids.data() + cell_base * 3);
+        cell_base += rows;
         calc_load_operands(
             operands, rows,
             [&](const std::string& n) -> const NDArray& { return rMesh.CellData(n, b); },
