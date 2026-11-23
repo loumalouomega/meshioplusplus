@@ -44,7 +44,14 @@ from collections import OrderedDict
 
 import numpy as np
 
-from .. import GeometryGuard, GridArray, GridSpec, adapt, adapt_volume, agglomerate
+from .. import (
+    GeometryGuard,
+    GridArray,
+    GridSpec,
+    adapt,
+    adapt_volume,
+    agglomerate,
+)
 from .. import align_datums as _align_datums_op
 from .. import (
     annulus,
@@ -124,7 +131,6 @@ from .. import (
 from .. import fit_cad_iterate as _fit_cad_iterate_op
 from .. import fit_curves as _fit_curves_op
 from .. import fit_primitives
-from .. import streamlines
 from .. import flip_normals as _flip_normals_op
 from .. import (
     geo_sphere,
@@ -231,6 +237,7 @@ from .. import (
     spherical_shell,
     split,
     split_interface,
+    streamlines,
     subdivide,
     subsample_points,
     surface_watertight_check,

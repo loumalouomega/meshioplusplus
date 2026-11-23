@@ -42,8 +42,8 @@ from .._data_calc import data_calc
 from .._data_condition import data_condition
 from .._data_info import data_info
 from .._data_integrate import data_integrate
-from .._data_statistics import data_statistics
 from .._data_manage import data_drop, data_keep, data_rename
+from .._data_statistics import data_statistics
 from .._error import estimate_error
 from .._error_size import error_size
 from .._gradient import gradient

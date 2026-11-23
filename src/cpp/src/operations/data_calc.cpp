@@ -614,7 +614,7 @@ CalcOperand calc_precompute_call(const CalcNode& rNode, const Mesh& rMesh, DataL
                        : rNode.mType == CalcNodeType::Divergence ? GradientOperator::Divergence
                                                                  : GradientOperator::Curl;
         go.mLocation = location == DataLocation::Point ? DataLocation::Point : DataLocation::Cell;
-        go.mOutputName = "\x01calc";
+        go.mOutputName = "\001calc";
         go.mOverwrite = true;
         Mesh res;
         try {
