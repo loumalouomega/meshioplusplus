@@ -162,6 +162,7 @@ if TYPE_CHECKING:
     from ._fit_primitives import fit_primitives
     from ._flip_normals import flip_normals
     from ._geodesic import geodesic_distance
+    from ._data_statistics import data_statistics
     from ._sequence_stats import sequence_derivative, sequence_statistics
     from ._streamlines import streamlines
     from ._gpu import (
@@ -397,6 +398,7 @@ _LAZY_ATTRS = {
     "adjacency": "_adjacency",
     "geodesic_distance": "_geodesic",
     "streamlines": "_streamlines",
+    "data_statistics": "_data_statistics",
     "sequence_statistics": "_sequence_stats",
     "sequence_derivative": "_sequence_stats",
     "parameterize": "_parameterize",
@@ -844,6 +846,7 @@ __all__ = [
     "write_graph",
     "geodesic_distance",
     "streamlines",
+    "data_statistics",
     "sequence_statistics",
     "sequence_derivative",
     "parameterize",

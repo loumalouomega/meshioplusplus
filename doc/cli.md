@@ -1009,6 +1009,16 @@ meshioplusplus poly-to-tet domain_poly.vtu domain_tets.vtu --json
 
 ---
 
+## meshioplusplus data stats
+
+Variance, quantiles and histograms of data arrays, whole mesh and per region ([statistics per region](/data_statistics)). Python CLI only.
+
+```
+meshioplusplus data stats [options] INFILE
+```
+
+`--arrays`, `--location point|cell`, `--quantiles 0.05,0.5,0.95` (empty for none), `--bins N`, `--ddof`, `--weighted` (cell location), `--no-regions` and `--json`.
+
 ## meshioplusplus sequence-stats
 
 Per-point (or per-cell) statistics of data arrays over the steps of a sequence, one step in memory at a time (see [statistics over time](/sequence_stats)).

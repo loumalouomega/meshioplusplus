@@ -1085,6 +1085,38 @@ def tool_data_integrate(input_path, file_format=None, arrays=None):
     return _json_safe({"arrays": data_integrate(mesh, arrays=arrays)})
 
 
+def tool_data_statistics(
+    input_path,
+    file_format=None,
+    arrays=None,
+    location="point",
+    per_region=True,
+    quantiles=None,
+    bins=0,
+    ddof=0,
+    weighted=False,
+):
+    """Variance, std, sum, quantiles and histograms of data arrays, whole mesh
+    and per named region."""
+    from .. import data_statistics
+
+    mesh = _load(input_path, file_format, readonly=True)
+    return _json_safe(
+        {
+            "arrays": data_statistics(
+                mesh,
+                arrays=arrays,
+                location=location,
+                per_region=per_region,
+                quantiles=(0.05, 0.5, 0.95) if quantiles is None else quantiles,
+                bins=bins,
+                ddof=ddof,
+                weighted=weighted,
+            )
+        }
+    )
+
+
 def tool_regions(input_path, file_format=None):
     """List the mesh's named regions (point/cell/side groups)."""
     mesh = _load(input_path, file_format, readonly=True)
@@ -7937,6 +7969,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "data_integrate",
             {"fn": tool_data_integrate, "wraps": ("data_integrate",), "gated": None},
+        ),
+        (
+            "data_statistics",
+            {
+                "fn": tool_data_statistics,
+                "wraps": ("data_statistics",),
+                "gated": None,
+            },
         ),
         ("regions", {"fn": tool_regions, "wraps": (), "gated": None}),
         (

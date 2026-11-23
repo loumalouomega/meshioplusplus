@@ -173,6 +173,26 @@ def _register_inspection(server: FastMCP) -> None:
         min/max/mean (whole-array and per component), NaN/Inf counts."""
 
     @server.tool()
+    @_forward(_tools.tool_data_statistics)
+    def data_statistics(
+        input_path: str,
+        file_format: Optional[str] = None,
+        arrays: Optional[List[str]] = None,
+        location: str = "point",
+        per_region: bool = True,
+        quantiles: Optional[List[float]] = None,
+        bins: int = 0,
+        ddof: int = 0,
+        weighted: bool = False,
+    ) -> dict:
+        """Descriptive statistics of point or cell data arrays, whole mesh and
+        per named region: per component the count, NaN/Inf counts, sum, mean,
+        variance, std, min, max, quantiles (default 0.05, 0.5, 0.95) and, with
+        bins, a histogram. A cell region also covers point data through its
+        cells' nodes. weighted (cell location) weights mean/variance by cell
+        measure so the mean equals data_integrate's."""
+
+    @server.tool()
     @_forward(_tools.tool_data_integrate)
     def data_integrate(
         input_path: str,

@@ -1171,13 +1171,12 @@ def roadmap_map():
         (
             "§15 math on meshes",
             [
-                ("descriptive statistics", "S"),
                 ("integrals: quadrature", "S"),
                 ("operator export · field smoothing", "M"),
                 ("high-order fields (design first)", "L"),
                 ("streamlines: flat bindings", "M"),
             ],
-            [(1, 2)],
+            [(0, 1)],
         ),
     ]
     per_row = 4

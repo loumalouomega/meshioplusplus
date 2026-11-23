@@ -42,6 +42,7 @@ from .._data_calc import data_calc
 from .._data_condition import data_condition
 from .._data_info import data_info
 from .._data_integrate import data_integrate
+from .._data_statistics import data_statistics
 from .._data_manage import data_drop, data_keep, data_rename
 from .._error import estimate_error
 from .._error_size import error_size
@@ -90,6 +91,69 @@ def _split_assignment(value):
     if not name or not expr:
         raise ValueError(f"data calc: expected 'NAME = EXPRESSION', got '{value}'")
     return name, expr
+
+
+# --- data stats ------------------------------------------------------------
+
+
+def add_stats_args(parser):
+    _add_io_args(parser, with_output=False)
+    parser.add_argument("--arrays", type=str, default=None, metavar="NAME[,NAME...]")
+    parser.add_argument(
+        "--location", type=str, default="point", choices=["point", "cell"]
+    )
+    parser.add_argument(
+        "--quantiles",
+        type=str,
+        default="0.05,0.5,0.95",
+        help="comma-separated quantiles in [0, 1] (empty for none)",
+    )
+    parser.add_argument("--bins", type=int, default=0, help="histogram bins (0: none)")
+    parser.add_argument("--ddof", type=int, default=0)
+    parser.add_argument(
+        "--weighted",
+        action="store_true",
+        help="weight mean/variance by cell measure (cell location)",
+    )
+    parser.add_argument(
+        "--no-regions", action="store_true", help="whole mesh only, no per-region rows"
+    )
+    parser.add_argument(
+        "--json", action="store_true", help="emit the statistics as JSON"
+    )
+
+
+def stats_cmd(args):
+    mesh = read(args.infile, file_format=args.input_format)
+    result = data_statistics(
+        mesh,
+        split_csv(args.arrays) if args.arrays else None,
+        location=args.location,
+        per_region=not args.no_regions,
+        quantiles=(
+            [float(q) for q in split_csv(args.quantiles)] if args.quantiles else []
+        ),
+        bins=args.bins,
+        ddof=args.ddof,
+        weighted=args.weighted,
+    )
+    if args.json:
+        emit_json(result)
+        return
+    print("<meshio++ data statistics>")
+    if not result:
+        print("  (no numeric arrays at this location)")
+        return
+    for a in result:
+        for label, st in [("(mesh)", a["domain"])] + [
+            (r["name"], r) for r in a["regions"]
+        ]:
+            for c in range(a["num_components"]):
+                print(
+                    f"  {a['name']}[{c}] {label:<14} n={st['count'][c]:<7} "
+                    f"mean={st['mean'][c]:<12.6g} std={st['std'][c]:<12.6g} "
+                    f"min={st['min'][c]:<12.6g} max={st['max'][c]:<12.6g}"
+                )
 
 
 # --- data info -------------------------------------------------------------
@@ -1109,6 +1173,12 @@ _VERBS = (
         "Summarize every data array (dtype, shape, min/max/mean, NaN/inf)",
         add_info_args,
         info_cmd,
+    ),
+    (
+        "stats",
+        "Variance, quantiles and histograms of data arrays, per region",
+        add_stats_args,
+        stats_cmd,
     ),
     ("rename", "Rename data arrays", add_rename_args, rename_cmd),
     ("drop", "Drop data arrays by name", add_drop_args, drop_cmd),
