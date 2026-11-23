@@ -156,7 +156,13 @@ export default defineConfig({
         : [checkWasmPackage(), injectCoiServiceWorker()],
     define: { __VIEWER_EMBEDDED__: JSON.stringify(embedded) },
     resolve: {
-        alias: embedded
+        alias: {
+            // xmlbuilder2 (pulled in by vtk.js 38) extends Node's EventEmitter.
+            // Vite externalises `events` for the browser, so the base class is
+            // undefined and the whole bundle fails at load. The npm `events`
+            // package is the browser implementation.
+            events: 'events',
+            ...(embedded
             ? {
                   // Replace the WASM client with a stub so the worker chunk is
                   // never emitted. Dead-code elimination is not enough here:
@@ -172,7 +178,8 @@ export default defineConfig({
                       new URL('./src/worker/client.embedded.ts', import.meta.url)
                   ),
               }
-            : {},
+            : {}),
+        },
     },
     // The embedded build must be exactly one file; the samples belong to the
     // public demo only.
