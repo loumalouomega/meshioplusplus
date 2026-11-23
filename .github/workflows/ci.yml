@@ -1191,7 +1191,10 @@ jobs:
         run: |
           git clone https://github.com/loumalouomega/fTetWild.git /tmp/ftw-src
           git -C /tmp/ftw-src checkout "${{ steps.qfpin.outputs.ftetwild }}"
-          cmake -S /tmp/ftw-src -B /tmp/ftw-build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          # fTetWild's libigl still calls FetchContent_Populate with details and
+          # an old minimum CMake version; the runner's CMake 4 refuses both.
+          cmake -S /tmp/ftw-src -B /tmp/ftw-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POLICY_DEFAULT_CMP0169=OLD -DCMAKE_POLICY_VERSION_MINIMUM=3.5
           cmake --build /tmp/ftw-build --target FloatTetwild_bin
           mkdir -p ~/ftetwild-bin
           cp /tmp/ftw-build/FloatTetwild_bin ~/ftetwild-bin/
