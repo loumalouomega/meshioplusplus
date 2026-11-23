@@ -2019,7 +2019,8 @@ export type GradientOperator =
   | 'q_criterion'
   | 'lambda2'
   | 'strain_rate'
-  | 'green_lagrange';
+  | 'green_lagrange'
+  | 'helicity';
 
 /** Which cells `voxelize` keeps. See doc/voxelize.md. */
 export type VoxelFill = 'all' | 'surface' | 'inside';
@@ -3822,7 +3823,8 @@ export interface MeshioPlusPlusModule {
    * or 3-component field, as do the quantities built from the gradient:
    * `vorticity_magnitude`, `q_criterion` and `lambda2` give 1 component, and
    * `strain_rate` and `green_lagrange` the six of a symmetric tensor
-   * (`xx yy zz xy yz zx`). The width travels with the array in the returned
+   * (`xx yy zz xy yz zx`); `helicity` is `u . curl u` with `u` the cell's
+   * corner-mean value, one component. The width travels with the array in the returned
    * mesh's `point_data_components` / `cell_data_components` maps.
    *
    * `component` is negative for EVERY component — the opposite of

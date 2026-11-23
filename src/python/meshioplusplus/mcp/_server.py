@@ -1996,7 +1996,7 @@ def _register_operations(server: FastMCP) -> None:
         """Gradient, divergence or curl of a point_data field.
 
         operator: gradient|divergence|curl|vorticity_magnitude|q_criterion|lambda2|
-        strain_rate|green_lagrange (the last two give six components xx yy zz xy yz zx;
+        strain_rate|green_lagrange|helicity (strain_rate and green_lagrange give six components xx yy zz xy yz zx;
         all but gradient need a 2- or 3-component field). method: green-gauss|least-squares.
         location: cell|point. The result is named <array>:<operator> unless
         `output` overrides it; a gradient of an nc-component field has 3*nc

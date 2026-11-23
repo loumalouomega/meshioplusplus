@@ -227,6 +227,7 @@ _DERIVED = {
     "vorticity_magnitude": {"rot": [3.0], "shear": [2.0], "stretch": [0.0]},
     "q_criterion": {"rot": [2.25], "shear": [0.0], "stretch": [-19.0]},
     "lambda2": {"rot": [-2.25], "shear": [0.0], "stretch": [9.0]},
+    "helicity": {"rot": [0.0], "shear": [0.0], "stretch": [0.0]},
     "strain_rate": {
         "rot": [0, 0, 0, 0, 0, 0],
         "shear": [0, 0, 0, 1.0, 0, 0],
@@ -258,6 +259,16 @@ def test_derived_quantities_match_the_closed_forms(operator, field):
     np.testing.assert_allclose(got, _DERIVED[operator][field], atol=1e-10)
 
 
+def test_helicity_of_a_rotation_with_axial_stretch():
+    """u = (-w y, w x, a z): curl = (0, 0, 2w), corner-mean z = 0.5 -> w * a."""
+    w, a = 1.5, 2.0
+    mesh = _tapered_hex()
+    mesh.point_data["u"] = _linear_vector(mesh, [[0, -w, 0], [w, 0, 0], [0, 0, a]])
+    out = mp.gradient(mesh, "u", operator="helicity")
+    got = np.asarray(out.cell_data["u:helicity"][0]).ravel()
+    np.testing.assert_allclose(got, [w * a], atol=1e-12)
+
+
 def test_derived_quantity_names_and_refusals():
     mesh = _tapered_hex()
     mesh.point_data["u"] = _linear_vector(mesh, _STRETCH)
@@ -269,7 +280,7 @@ def test_derived_quantity_names_and_refusals():
     with pytest.raises(ValueError, match="2 or 3"):
         mp.gradient(mesh, "f", operator="lambda2")
     with pytest.raises(ValueError, match="unknown operator"):
-        mp.gradient(mesh, "u", operator="helicity")
+        mp.gradient(mesh, "u", operator="vortex")
     with pytest.raises(ValueError, match="component selection"):
         mp.gradient(mesh, "u", operator="q_criterion", component=0)
 

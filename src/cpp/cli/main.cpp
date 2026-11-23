@@ -9994,7 +9994,7 @@ void print_data_usage(std::ostream& rOut) {
             "  normalize   Rescale to --to LO,HI (or --zero-mean)\n"
             "  gradient    Differentiate a point_data field (--array NAME --op "
             "gradient|divergence|curl|vorticity_magnitude|q_criterion|lambda2|strain_rate|"
-            "green_lagrange)\n"
+            "green_lagrange|helicity)\n"
             "  hessian     Second derivative of a scalar point_data field "
             "(--array NAME), gradient's companion one order further\n"
             "  integrate   Cell-measure-weighted total/mean of a cell_data field, "

@@ -146,8 +146,9 @@ enum class GradientOperator {
     QCriterion,  ///< `Q = (|Omega|^2 - |S|^2) / 2`, `S`/`Omega` the symmetric/skew parts of `G`.
     Lambda2,     ///< The middle eigenvalue of `S^2 + Omega^2` (Jeong and Hussain 1995).
     StrainRate,  ///< `S = (G + G^T) / 2`; six components `xx yy zz xy yz zx`.
-    GreenLagrangeStrain  ///< `E = (F^T F - I) / 2`, `F = I + G`, for a displacement; six
-                         ///< components.
+    GreenLagrangeStrain,  ///< `E = (F^T F - I) / 2`, `F = I + G`, for a displacement; six
+                          ///< components.
+    Helicity              ///< `u . curl u`, `u` the cell's corner-mean field value; one component.
 };
 
 /// How the per-cell derivative is reconstructed.
@@ -165,6 +166,7 @@ inline constexpr const char* kQCriterionSuffix = ":q_criterion";
 inline constexpr const char* kLambda2Suffix = ":lambda2";
 inline constexpr const char* kStrainRateSuffix = ":strain_rate";
 inline constexpr const char* kGreenLagrangeStrainSuffix = ":green_lagrange";
+inline constexpr const char* kHelicitySuffix = ":helicity";
 
 /// The default output-name suffix of an operator (`":gradient"`, `":curl"`, ...).
 inline const char* gradient_suffix(GradientOperator Op) {
@@ -183,6 +185,8 @@ inline const char* gradient_suffix(GradientOperator Op) {
             return kStrainRateSuffix;
         case GradientOperator::GreenLagrangeStrain:
             return kGreenLagrangeStrainSuffix;
+        case GradientOperator::Helicity:
+            return kHelicitySuffix;
         default:
             return kGradientSuffix;
     }

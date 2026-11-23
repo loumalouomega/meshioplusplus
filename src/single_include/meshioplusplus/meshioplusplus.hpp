@@ -32498,8 +32498,9 @@ enum class GradientOperator {
     QCriterion,  ///< `Q = (|Omega|^2 - |S|^2) / 2`, `S`/`Omega` the symmetric/skew parts of `G`.
     Lambda2,     ///< The middle eigenvalue of `S^2 + Omega^2` (Jeong and Hussain 1995).
     StrainRate,  ///< `S = (G + G^T) / 2`; six components `xx yy zz xy yz zx`.
-    GreenLagrangeStrain  ///< `E = (F^T F - I) / 2`, `F = I + G`, for a displacement; six
-                         ///< components.
+    GreenLagrangeStrain,  ///< `E = (F^T F - I) / 2`, `F = I + G`, for a displacement; six
+                          ///< components.
+    Helicity              ///< `u . curl u`, `u` the cell's corner-mean field value; one component.
 };
 
 /// How the per-cell derivative is reconstructed.
@@ -32517,6 +32518,7 @@ inline constexpr const char* kQCriterionSuffix = ":q_criterion";
 inline constexpr const char* kLambda2Suffix = ":lambda2";
 inline constexpr const char* kStrainRateSuffix = ":strain_rate";
 inline constexpr const char* kGreenLagrangeStrainSuffix = ":green_lagrange";
+inline constexpr const char* kHelicitySuffix = ":helicity";
 
 /// The default output-name suffix of an operator (`":gradient"`, `":curl"`, ...).
 inline const char* gradient_suffix(GradientOperator Op) {
@@ -32535,6 +32537,8 @@ inline const char* gradient_suffix(GradientOperator Op) {
             return kStrainRateSuffix;
         case GradientOperator::GreenLagrangeStrain:
             return kGreenLagrangeStrainSuffix;
+        case GradientOperator::Helicity:
+            return kHelicitySuffix;
         default:
             return kGradientSuffix;
     }
@@ -260130,6 +260134,7 @@ std::size_t grad_out_components(GradientOperator Op, std::size_t NumComp) {
         case GradientOperator::VorticityMagnitude:
         case GradientOperator::QCriterion:
         case GradientOperator::Lambda2:
+        case GradientOperator::Helicity:
             return 1;
         case GradientOperator::Curl:
             return 3;
@@ -260152,8 +260157,10 @@ void grad_sym6(const double* pM, double* pOut) {
 }
 
 /// Reduces a full `[component][derivative]` block to the requested operator.
-void grad_apply_operator(GradientOperator Op, const double* pGrad, std::size_t NumComp,
-                         double* pOut) {
+/// @p pValue is the cell's corner-mean field value (`NumComp` doubles), which
+/// only helicity reads.
+void grad_apply_operator(GradientOperator Op, const double* pGrad, const double* pValue,
+                         std::size_t NumComp, double* pOut) {
     if (Op == GradientOperator::Gradient) {
         for (std::size_t i = 0; i < NumComp * 3; ++i)
             pOut[i] = pGrad[i];
@@ -260176,6 +260183,13 @@ void grad_apply_operator(GradientOperator Op, const double* pGrad, std::size_t N
         pOut[0] = cx;
         pOut[1] = cy;
         pOut[2] = cz;
+        return;
+    }
+    if (Op == GradientOperator::Helicity) {
+        double u[3] = {0.0, 0.0, 0.0};
+        for (std::size_t k = 0; k < NumComp && k < 3; ++k)
+            u[k] = pValue[k];
+        pOut[0] = u[0] * cx + u[1] * cy + u[2] * cz;
         return;
     }
     if (Op == GradientOperator::VorticityMagnitude) {
@@ -260292,10 +260306,12 @@ GradientOperator gradient_operator_from_name(const std::string& rName) {
         return GradientOperator::StrainRate;
     if (n == "green_lagrange" || n == "green_lagrange_strain")
         return GradientOperator::GreenLagrangeStrain;
+    if (n == "helicity")
+        return GradientOperator::Helicity;
     throw std::invalid_argument(std::string(kGradPrefix) + "unknown operator '" + rName +
                                 "' (expected 'gradient', 'divergence', 'curl', "
                                 "'vorticity_magnitude', 'q_criterion', 'lambda2', "
-                                "'strain_rate' or 'green_lagrange')");
+                                "'strain_rate', 'green_lagrange' or 'helicity')");
 }
 
 GradientMethod gradient_method_from_name(const std::string& rName) {
@@ -260592,7 +260608,8 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 flag_skipped[c] = 1;
                 return;
             }
-            grad_apply_operator(rOptions.mOperator, grad.data(), work_comp, pdst + c * out_comp);
+            grad_apply_operator(rOptions.mOperator, grad.data(), cell.mValue0.data(), work_comp,
+                                pdst + c * out_comp);
         });
 
         for (std::size_t c = 0; c < ncells; ++c) {

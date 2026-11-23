@@ -692,6 +692,7 @@ def add_gradient_args(parser):
             "lambda2",
             "strain_rate",
             "green_lagrange",
+            "helicity",
         ),
         help="which differential operator to apply (default: gradient)",
     )
@@ -1123,7 +1124,7 @@ _VERBS = (
     ("clamp", "Clamp values into [min, max]", add_clamp_args, clamp_cmd),
     (
         "gradient",
-        "Differentiate a point_data field (gradient, divergence, curl, Q, lambda2, strain)",
+        "Differentiate a point_data field (gradient, divergence, curl, Q, lambda2, strain, helicity)",
         add_gradient_args,
         gradient_cmd,
     ),

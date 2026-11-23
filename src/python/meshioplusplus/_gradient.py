@@ -76,6 +76,7 @@ _SUFFIX = {
     "lambda2": ":lambda2",
     "strain_rate": ":strain_rate",
     "green_lagrange": ":green_lagrange",
+    "helicity": ":helicity",
 }
 
 _OPERATOR_ALIASES = {
@@ -100,6 +101,7 @@ _OPERATOR_ALIASES = {
     "green-lagrange": "green_lagrange",
     "green_lagrange_strain": "green_lagrange",
     "green-lagrange-strain": "green_lagrange",
+    "helicity": "helicity",
 }
 
 _METHOD_ALIASES = {
@@ -491,7 +493,7 @@ def _validate(mesh, array, operator, method, location, output, component, overwr
         raise ValueError(
             f"{_PREFIX}unknown operator '{operator}' "
             "(expected 'gradient', 'divergence', 'curl', 'vorticity_magnitude', "
-            "'q_criterion', 'lambda2', 'strain_rate' or 'green_lagrange')"
+            "'q_criterion', 'lambda2', 'strain_rate', 'green_lagrange' or 'helicity')"
         )
     if method not in _METHOD_ALIASES:
         raise ValueError(
@@ -565,6 +567,7 @@ _OUT_COMPONENTS = {
     "vorticity_magnitude": 1,
     "q_criterion": 1,
     "lambda2": 1,
+    "helicity": 1,
     "curl": 3,
     "strain_rate": 6,
     "green_lagrange": 6,
@@ -583,8 +586,11 @@ def _sym6(m):
     )
 
 
-def _apply_operator(operator, grad, ncomp):
-    """Reduce a ``(ncells, ncomp, 3)`` gradient block to the requested operator."""
+def _apply_operator(operator, grad, ncomp, value0=None):
+    """Reduce a ``(ncells, ncomp, 3)`` gradient block to the requested operator.
+
+    ``value0`` is the ``(ncells, ncomp)`` corner-mean field value, read by
+    helicity only."""
     n = grad.shape[0]
     if operator == "gradient":
         return grad.reshape(n, ncomp * 3)
@@ -601,6 +607,13 @@ def _apply_operator(operator, grad, ncomp):
     curl[:, 2] = g[:, 1, 0] - g[:, 0, 1]
     if operator == "curl":
         return curl
+    if operator == "helicity":
+        u = np.zeros((n, 3), dtype=np.float64)
+        for k in range(min(ncomp, 3)):
+            u[:, k] = value0[:, k]
+        return (
+            u[:, 0] * curl[:, 0] + u[:, 1] * curl[:, 1] + u[:, 2] * curl[:, 2]
+        ).reshape(n, 1)
     if operator == "vorticity_magnitude":
         return np.sqrt(curl[:, 0] ** 2 + curl[:, 1] ** 2 + curl[:, 2] ** 2).reshape(
             n, 1
@@ -751,7 +764,7 @@ def _gradient_py(
         else:
             grad, ok = gg, gg_ok
 
-        values = _apply_operator(operator, grad, work_comp)
+        values = _apply_operator(operator, grad, work_comp, _value0)
         values = np.where(ok[:, None], values, np.nan)
         skipped += int(np.count_nonzero(~ok))
         blocks.append(values.reshape(_shape(ncells, out_comp)))
@@ -796,8 +809,9 @@ def gradient(
     :param array: name of the ``point_data`` array to differentiate.
     :param operator: ``"gradient"`` (default), ``"divergence"``, ``"curl"``,
         ``"vorticity_magnitude"``, ``"q_criterion"``, ``"lambda2"``,
-        ``"strain_rate"`` (six components ``xx yy zz xy yz zx``) or
-        ``"green_lagrange"`` (the same layout); hyphens work for underscores.
+        ``"strain_rate"`` (six components ``xx yy zz xy yz zx``),
+        ``"green_lagrange"`` (the same layout) or ``"helicity"`` (``u . curl u``,
+        ``u`` the cell's corner-mean value); hyphens work for underscores.
     :param method: ``"green-gauss"`` (default) or ``"least-squares"``.
     :param location: ``"cell"`` (default) or ``"point"`` for the result.
     :param output: output array name; ``None`` uses ``<array>:<operator>``.

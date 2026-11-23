@@ -389,6 +389,22 @@ TEST(Gradient, DerivedQuantitiesOfAnAnisotropicStretch) {
         EXPECT_NEAR(e[k], expect_e[k], kTight) << k;
 }
 
+TEST(Gradient, HelicityOfARotationWithAxialStretch) {
+    // u = (-w y, w x, a z): curl = (0, 0, 2w) and the tapered hex's corner-mean
+    // z is 0.5, so u . curl u = (a * 0.5) * 2w = w * a = 3.
+    const double w = 1.5;
+    const double a = 2.0;
+    const double C[9] = {0.0, -w, 0.0, w, 0.0, 0.0, 0.0, 0.0, a};
+    EXPECT_NEAR(derived(C, GradientOperator::Helicity, ":helicity", 1)[0], w * a, kTight);
+    // A planar rotation has u perpendicular to its curl, a shear has no u_z.
+    const double R[9] = {0.0, -w, 0.0, w, 0.0, 0.0, 0.0, 0.0, 0.0};
+    EXPECT_NEAR(derived(R, GradientOperator::Helicity, ":helicity", 1)[0], 0.0, kTight);
+    const double S[9] = {0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    EXPECT_NEAR(derived(S, GradientOperator::Helicity, ":helicity", 1)[0], 0.0, kTight);
+    EXPECT_EQ(gradient_operator_from_name("helicity"), GradientOperator::Helicity);
+    EXPECT_STREQ(meshioplusplus::gradient_suffix(GradientOperator::Helicity), ":helicity");
+}
+
 TEST(Gradient, DerivedQuantityNamesAndRefusals) {
     EXPECT_EQ(gradient_operator_from_name("q-criterion"), GradientOperator::QCriterion);
     EXPECT_EQ(gradient_operator_from_name("q_criterion"), GradientOperator::QCriterion);
@@ -396,7 +412,7 @@ TEST(Gradient, DerivedQuantityNamesAndRefusals) {
     EXPECT_EQ(gradient_operator_from_name("green-lagrange"), GradientOperator::GreenLagrangeStrain);
     EXPECT_EQ(gradient_operator_from_name("vorticity"), GradientOperator::VorticityMagnitude);
     EXPECT_STREQ(meshioplusplus::gradient_suffix(GradientOperator::Lambda2), ":lambda2");
-    EXPECT_THROW(gradient_operator_from_name("helicity"), std::invalid_argument);
+    EXPECT_THROW(gradient_operator_from_name("vortex"), std::invalid_argument);
 
     // A scalar field has no velocity gradient tensor.
     const auto pts = tapered_hex_points();
