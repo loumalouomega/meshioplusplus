@@ -5447,16 +5447,17 @@ MIO_API mio_mesh* mio_data_condition(const mio_mesh* mesh, mio_data_location loc
 
 /** Which invariant(s) mio_tensor_invariants computes; OR together. */
 typedef enum mio_tensor_invariant {
-    MIO_TINV_MISES = 1,       /**< von Mises equivalent */
-    MIO_TINV_PRINCIPAL = 2,   /**< eigenvalues, ascending */
-    MIO_TINV_HYDROSTATIC = 4, /**< mean of the diagonal */
-    MIO_TINV_DEVIATORIC = 8,  /**< input minus hydrostatic on the diagonal */
-    MIO_TINV_ALL = 15,        /**< the four flags above (also 0 defaults to this) */
-    MIO_TINV_TRACE = 16,      /**< xx + yy + zz of the tensor as given (opt-in) */
+    MIO_TINV_MISES = 1,        /**< von Mises equivalent */
+    MIO_TINV_PRINCIPAL = 2,    /**< eigenvalues, ascending */
+    MIO_TINV_HYDROSTATIC = 4,  /**< mean of the diagonal */
+    MIO_TINV_DEVIATORIC = 8,   /**< input minus hydrostatic on the diagonal */
+    MIO_TINV_ALL = 15,         /**< the four flags above (also 0 defaults to this) */
+    MIO_TINV_TRACE = 16,       /**< xx + yy + zz of the tensor as given (opt-in) */
     MIO_TINV_DETERMINANT = 32, /**< det of the 3x3 as given (opt-in) */
-    MIO_TINV_INVARIANTS = 64, /**< I1, I2, I3, three components (opt-in) */
-    MIO_TINV_INVERSE = 128,   /**< adj(A)/det(A) in the input's width; NaN if det == 0 (opt-in) */
-    MIO_TINV_EIGENVECTORS = 256 /**< unit eigenvectors of the symmetric part, 9 components (opt-in) */
+    MIO_TINV_INVARIANTS = 64,  /**< I1, I2, I3, three components (opt-in) */
+    MIO_TINV_INVERSE = 128,    /**< adj(A)/det(A) in the input's width; NaN if det == 0 (opt-in) */
+    MIO_TINV_EIGENVECTORS =
+        256 /**< unit eigenvectors of the symmetric part, 9 components (opt-in) */
 } mio_tensor_invariant;
 
 /**
