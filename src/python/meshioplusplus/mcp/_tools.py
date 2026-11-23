@@ -5119,6 +5119,59 @@ def tool_streamlines(
     )
 
 
+def tool_mesh_operator(input_path, output_path, kind="laplacian", file_format=None):
+    """Export a P1 operator of a triangle surface (laplacian, mass_lumped,
+    mass_consistent, gradient) as a sparse matrix in an .npz file."""
+    from .._mesh_operator import mesh_operator
+
+    mesh = _load(input_path, file_format, readonly=True)
+    (indptr, indices, values, shape), report = mesh_operator(
+        mesh, kind, sparse=False, return_report=True
+    )
+    resolved_out = _resolve(output_path, for_write=True)
+    np.savez(
+        resolved_out,
+        indptr=indptr,
+        indices=indices,
+        values=values,
+        shape=np.asarray(shape),
+    )
+    return _json_safe(
+        {
+            "output": str(resolved_out),
+            "kind": kind,
+            "shape": list(shape),
+            "nnz": int(len(values)),
+            "num_degenerate": report["num_degenerate"],
+        }
+    )
+
+
+def tool_smooth_field(
+    input_path,
+    output_path,
+    array,
+    length,
+    output_name=None,
+    input_format=None,
+    output_format=None,
+):
+    """Smooth a point array over a triangle surface on a length scale
+    (screened Poisson); writes <array>:smooth."""
+    from .._smooth_field import smooth_field
+
+    mesh = _load(input_path, input_format)
+    out, report = smooth_field(
+        mesh, array, length, output=output_name, return_report=True
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        iterations=int(report["iterations"]),
+        num_degenerate=int(report["num_degenerate"]),
+    )
+
+
 def tool_geodesic_distance(
     input_path,
     output_path,
@@ -7977,6 +8030,14 @@ TOOL_REGISTRY = OrderedDict(
                 "wraps": ("data_statistics",),
                 "gated": None,
             },
+        ),
+        (
+            "smooth_field",
+            {"fn": tool_smooth_field, "wraps": ("smooth_field",), "gated": None},
+        ),
+        (
+            "mesh_operator",
+            {"fn": tool_mesh_operator, "wraps": ("mesh_operator",), "gated": None},
         ),
         ("regions", {"fn": tool_regions, "wraps": (), "gated": None}),
         (

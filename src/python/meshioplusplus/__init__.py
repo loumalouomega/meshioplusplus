@@ -163,6 +163,8 @@ if TYPE_CHECKING:
     from ._flip_normals import flip_normals
     from ._geodesic import geodesic_distance
     from ._data_statistics import data_statistics
+    from ._mesh_operator import mesh_operator
+    from ._smooth_field import smooth_field
     from ._sequence_stats import sequence_derivative, sequence_statistics
     from ._streamlines import streamlines
     from ._gpu import (
@@ -399,6 +401,8 @@ _LAZY_ATTRS = {
     "geodesic_distance": "_geodesic",
     "streamlines": "_streamlines",
     "data_statistics": "_data_statistics",
+    "mesh_operator": "_mesh_operator",
+    "smooth_field": "_smooth_field",
     "sequence_statistics": "_sequence_stats",
     "sequence_derivative": "_sequence_stats",
     "parameterize": "_parameterize",
@@ -847,6 +851,8 @@ __all__ = [
     "geodesic_distance",
     "streamlines",
     "data_statistics",
+    "mesh_operator",
+    "smooth_field",
     "sequence_statistics",
     "sequence_derivative",
     "parameterize",

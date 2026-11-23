@@ -175,6 +175,8 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/mesh_operator.hpp"
+#include "meshioplusplus/operations/smooth_field.hpp"
 #include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
@@ -7495,6 +7497,56 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("sources") = std::vector<std::int64_t>{},
         py::arg("source_region") = "", py::arg("time_factor") = 1.0, py::arg("tolerance") = 1e-10,
         py::arg("max_iterations") = 0);
+
+    // The mesh's P1 operators (cotangent Laplacian, masses, per-triangle
+    // gradient) as a compressed-row matrix. See operations/mesh_operator.hpp.
+    m.def(
+        "mesh_operator",
+        [](py::object pymesh, int kind) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::MeshOperatorOptions options;
+            options.mKind = static_cast<meshioplusplus::MeshOperatorKind>(kind);
+            meshioplusplus::MeshOperatorResult r =
+                core_nogil([&] { return meshioplusplus::mesh_operator(cpp, options); });
+            py::dict out;
+            out["rows"] = r.mRows;
+            out["cols"] = r.mCols;
+            out["indptr"] = py::array_t<std::int64_t>(r.mIndptr.size(), r.mIndptr.data());
+            out["indices"] = py::array_t<std::int64_t>(r.mIndices.size(), r.mIndices.data());
+            out["values"] = py::array_t<double>(r.mValues.size(), r.mValues.data());
+            out["num_degenerate"] = r.mNumDegenerate;
+            return out;
+        },
+        py::arg("mesh"), py::arg("kind") = 0);
+
+    // Screened-Poisson smoothing of a point field on a triangle surface.
+    // {mesh, counters}. See operations/smooth_field.hpp.
+    m.def(
+        "smooth_field",
+        [](py::object pymesh, const std::string& array, double length, const std::string& output,
+           double tolerance, std::int64_t max_iterations) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::SmoothFieldOptions options;
+            options.mArray = array;
+            options.mLength = length;
+            options.mOutput = output;
+            options.mTolerance = tolerance;
+            options.mMaxIterations = max_iterations;
+            meshioplusplus::SmoothFieldResult r =
+                core_nogil([&] { return meshioplusplus::smooth_field(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_degenerate"] = r.mNumDegenerate;
+            out["iterations"] = r.mIterations;
+            out["converged"] = r.mConverged;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("length"), py::arg("output") = "",
+        py::arg("tolerance") = 1e-12, py::arg("max_iterations") = 0);
 
     // Streamlines of a point vector field as a mesh of line segments.
     // {mesh, counters, per-line seed ids and end reasons}. See

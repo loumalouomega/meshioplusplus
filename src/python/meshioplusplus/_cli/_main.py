@@ -295,6 +295,18 @@ _VERBS = (
         "Surface distance from source points (heat method)",
     ),
     _Verb(
+        "mesh-operator",
+        "_mesh_operator",
+        "mesh_operator_cmd",
+        "Export a P1 operator (Laplacian, mass, gradient) as a sparse matrix",
+    ),
+    _Verb(
+        "smooth-field",
+        "_smooth_field",
+        "smooth_field_cmd",
+        "Smooth a point array over a triangle surface on a length scale",
+    ),
+    _Verb(
         "streamlines",
         "_streamlines",
         "streamlines_cmd",

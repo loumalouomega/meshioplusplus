@@ -34463,6 +34463,81 @@ triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>>& rL
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/mesh_cad.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/mesh_operator.hpp =====
+/**
+ * @file operations/mesh_operator.hpp
+ * @brief The mesh's own finite-element operators exported as sparse matrices:
+ * the cotangent Laplacian, the lumped and the consistent mass, and the
+ * per-triangle gradient of a triangle surface (roadmap 15.2.1).
+ *
+ * The same P1 operators `geodesic_distance`, `laplacian_eigenmodes` and
+ * `sobolev_deform` solve with, returned as data so an application can build its
+ * own systems on them. Nothing is solved here and no physics is assembled.
+ *
+ * | Kind | Matrix | Shape |
+ * | --- | --- | --- |
+ * | `Laplacian` | `K_ij = ∫ ∇φ_i · ∇φ_j dA`, the cotangent stiffness: symmetric, positive
+ * semidefinite, rows summing to 0, the natural (Neumann) boundary | `n × n` | | `MassLumped` |
+ * `M_ii = Σ A_t / 3` over the triangles at `i`, diagonal | `n × n` | | `MassConsistent` | `M_ij = ∫
+ * φ_i φ_j dA`, `A_t / 12 (1 + δ_ij)` per triangle | `n × n` | | `Gradient` | row `3 t + k` is
+ * component `k` of the gradient of the P1 field on triangle `t`, so `G f` is the per-triangle
+ * gradient, laid out `(t, k)` | `3 T × n` |
+ *
+ * `n` is the point count and `T` the number of triangles of the mesh's
+ * `triangle` blocks in input order (the `Gradient` rows of a zero-area
+ * triangle are empty). The matrices are compressed rows with ascending,
+ * unique columns, built serially, so they are the same on every backend.
+ *
+ * **Scope.** The surface is the mesh's `triangle` blocks, as for
+ * `geodesic_distance`: a volume cell, a quad, a polygon or a higher-order
+ * surface cell is refused naming the operation that fixes it. Tetrahedra wait
+ * on the shared simplex kernels (roadmap 3.4.4).
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which operator `mesh_operator` returns.
+enum class MeshOperatorKind : std::int32_t {
+    Laplacian = 0,
+    MassLumped = 1,
+    MassConsistent = 2,
+    Gradient = 3,
+};
+
+/// What `mesh_operator` builds.
+struct MeshOperatorOptions {
+    MeshOperatorKind mKind = MeshOperatorKind::Laplacian;
+};
+
+/// A compressed-row sparse matrix.
+struct MeshOperatorResult {
+    std::int64_t mRows = 0;
+    std::int64_t mCols = 0;
+    /// `mRows + 1` row starts into `mIndices` and `mValues`.
+    std::vector<std::int64_t> mIndptr;
+    std::vector<std::int64_t> mIndices;
+    std::vector<double> mValues;
+    /// Zero-area triangles left out.
+    std::int64_t mNumDegenerate = 0;
+};
+
+/**
+ * @brief The operator of @p rOptions over the triangle surface of @p rMesh.
+ * @throws std::invalid_argument on a cell type outside the scope, a triangle
+ *         naming a point outside the mesh, no triangle or every triangle
+ *         degenerate.
+ */
+MESHIOPLUSPLUS_API MeshOperatorResult mesh_operator(const Mesh& rMesh,
+                                                    const MeshOperatorOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/mesh_operator.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/metric.hpp =====
 /**
  * @file operations/metric.hpp
@@ -41428,6 +41503,72 @@ MESHIOPLUSPLUS_API SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/smooth.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/smooth_field.hpp =====
+/**
+ * @file operations/smooth_field.hpp
+ * @brief Screened-Poisson smoothing of a point field on a triangle surface
+ * (roadmap 15.2.2): the field `g` solving `(M + l^2 K) g = M f` over the
+ * lumped mass `M` and the cotangent stiffness `K` of `mesh_operator`, `l` a
+ * length. A field varying on a scale much shorter than `l` is flattened, one
+ * varying on a longer scale passes nearly unchanged; the mean (the `M`-weighted
+ * average) is preserved exactly, and `l = 0` returns the field. The points do
+ * not move (that is `sobolev_deform`'s job).
+ *
+ * `smooth_field(mesh, {array, length})` adds `point_data["<array>:smooth"]`
+ * (or `mOutput`), each component solved on its own by Jacobi-preconditioned
+ * conjugate gradients, serially and in input order: the same on every backend.
+ * A point in no triangle keeps its value. The surface is the mesh's `triangle`
+ * blocks, with `mesh_operator`'s scope and refusals.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The suffix of the smoothed array's default name (`<array>:smooth`).
+inline constexpr const char* kSmoothFieldSuffix = ":smooth";
+
+/// What `smooth_field` smooths, and how much.
+struct SmoothFieldOptions {
+    /// The point array to smooth: Float64-convertible, `(n,)` or `(n, k)`.
+    std::string mArray;
+    /// The smoothing length, in the mesh's units; 0 returns the field.
+    double mLength = 0.0;
+    /// The output name; empty takes `<mArray>:smooth`.
+    std::string mOutput;
+    /// Relative residual tolerance of the solve.
+    double mTolerance = 1e-12;
+    /// The iteration cap of each component's solve; 0 takes the point count plus 100.
+    std::int64_t mMaxIterations = 0;
+};
+
+/// What `smooth_field` did.
+struct SmoothFieldResult {
+    /// The input mesh with the smoothed array.
+    Mesh mMesh;
+    /// Zero-area triangles left out.
+    std::int64_t mNumDegenerate = 0;
+    /// Conjugate-gradient iterations, summed over the components.
+    std::int64_t mIterations = 0;
+    /// False when a solve hit its cap; the last iterate is still used.
+    bool mConverged = true;
+};
+
+/**
+ * @brief Smooth @p rOptions.mArray over the triangle surface of @p rMesh.
+ * @throws std::invalid_argument on an unknown or non-numeric array, one whose
+ *         rows are not the point count, a negative length or tolerance, or a
+ *         mesh outside `mesh_operator`'s scope.
+ */
+MESHIOPLUSPLUS_API SmoothFieldResult smooth_field(const Mesh& rMesh,
+                                                  const SmoothFieldOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/smooth_field.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/sniff.hpp =====
 /**
  * @file operations/sniff.hpp
@@ -58914,6 +59055,9 @@ struct SurfaceFemTriangle {
     std::array<std::int64_t, 3> mNodes;
     std::array<double, 3> mCot;
     double mDoubleArea;
+    /// The triangle's position among the triangle blocks' cells, in input order
+    /// (a degenerate triangle left out keeps its neighbours' numbers).
+    std::int64_t mIndex = 0;
 };
 
 struct SurfaceFem {
@@ -58921,6 +59065,8 @@ struct SurfaceFem {
     std::vector<std::array<double, 3>> mPoints;
     /// The non-degenerate triangles, in input order.
     std::vector<SurfaceFemTriangle> mTriangles;
+    /// Every triangle of the triangle blocks, kept or not.
+    std::int64_t mNumInput = 0;
     /// Triangles left out for (near) zero area.
     std::int64_t mNumDegenerate = 0;
     /// The mean edge length of the kept triangles (each edge once per triangle).
@@ -123334,9 +123480,12 @@ SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
 
     // --- cotangents, areas, the mean edge length ---------------------------
     fem.mTriangles.reserve(tris.size());
+    fem.mNumInput = static_cast<std::int64_t>(tris.size());
     double edge_sum = 0.0;
     std::size_t edge_count = 0;
+    std::int64_t input_index = -1;
     for (SurfaceFemTriangle t : tris) {
+        t.mIndex = ++input_index;
         const Vec3& a = fem.mPoints[t.mNodes[0]];
         const Vec3& b = fem.mPoints[t.mNodes[1]];
         const Vec3& c = fem.mPoints[t.mNodes[2]];
@@ -274747,6 +274896,88 @@ Mesh triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/mesh_cad.cpp =====
+// ===== begin src/cpp/src/operations/mesh_operator.cpp =====
+#include <array>
+#include <stdexcept>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+MeshOperatorResult mesh_operator(const Mesh& rMesh, const MeshOperatorOptions& rOptions) {
+    using detail::SparseTriplet;
+    using detail::Vec3;
+    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "mesh_operator");
+    const std::size_t n = fem.mPoints.size();
+
+    std::size_t rows = n;
+    std::vector<SparseTriplet> triplets;
+    switch (rOptions.mKind) {
+        case MeshOperatorKind::Laplacian: {
+            std::vector<double> mass;
+            detail::surface_fem_assemble(fem, mass, triplets);
+            break;
+        }
+        case MeshOperatorKind::MassLumped: {
+            std::vector<double> mass;
+            std::vector<SparseTriplet> stiffness;
+            detail::surface_fem_assemble(fem, mass, stiffness);
+            for (std::size_t i = 0; i < n; ++i)
+                if (mass[i] != 0.0)
+                    triplets.push_back({i, i, mass[i]});
+            break;
+        }
+        case MeshOperatorKind::MassConsistent: {
+            for (const detail::SurfaceFemTriangle& t : fem.mTriangles)
+                for (std::size_t a = 0; a < 3; ++a)
+                    for (std::size_t b = 0; b < 3; ++b)
+                        triplets.push_back({static_cast<std::size_t>(t.mNodes[a]),
+                                            static_cast<std::size_t>(t.mNodes[b]),
+                                            t.mDoubleArea / 24.0 * (a == b ? 2.0 : 1.0)});
+            break;
+        }
+        case MeshOperatorKind::Gradient: {
+            rows = 3 * static_cast<std::size_t>(fem.mNumInput);
+            for (const detail::SurfaceFemTriangle& t : fem.mTriangles) {
+                const std::array<Vec3, 3> p = {fem.mPoints[t.mNodes[0]], fem.mPoints[t.mNodes[1]],
+                                               fem.mPoints[t.mNodes[2]]};
+                const Vec3 normal =
+                    detail::vec3_cross(detail::vec3_sub(p[1], p[0]), detail::vec3_sub(p[2], p[0]));
+                // The unit normal; |normal| is the doubled area.
+                const Vec3 unit = {normal[0] / t.mDoubleArea, normal[1] / t.mDoubleArea,
+                                   normal[2] / t.mDoubleArea};
+                for (std::size_t i = 0; i < 3; ++i) {
+                    // grad(phi_i) = n x e_i / (2 A), e_i the opposite edge, counter-clockwise.
+                    const Vec3 edge = detail::vec3_sub(p[(i + 2) % 3], p[(i + 1) % 3]);
+                    const Vec3 g = detail::vec3_cross(unit, edge);
+                    for (std::size_t k = 0; k < 3; ++k)
+                        triplets.push_back({3 * static_cast<std::size_t>(t.mIndex) + k,
+                                            static_cast<std::size_t>(t.mNodes[i]),
+                                            g[k] / t.mDoubleArea});
+                }
+            }
+            break;
+        }
+        default:
+            throw std::invalid_argument("mesh_operator: unknown kind");
+    }
+
+    const detail::SparseCsr csr = detail::csr_from_triplets(rows, n, std::move(triplets));
+    MeshOperatorResult out;
+    out.mRows = static_cast<std::int64_t>(csr.mRows);
+    out.mCols = static_cast<std::int64_t>(csr.mCols);
+    out.mIndptr.assign(csr.mStart.begin(), csr.mStart.end());
+    out.mIndices.assign(csr.mCol.begin(), csr.mCol.end());
+    out.mValues = csr.mValue;
+    out.mNumDegenerate = fem.mNumDegenerate;
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/mesh_operator.cpp =====
 // ===== begin src/cpp/src/operations/metric.cpp =====
 #include <algorithm>
 #include <array>
@@ -310042,6 +310273,79 @@ std::int64_t smooth_odt_pass(std::vector<double>& rXyz,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/smooth.cpp =====
+// ===== begin src/cpp/src/operations/smooth_field.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+SmoothFieldResult smooth_field(const Mesh& rMesh, const SmoothFieldOptions& rOptions) {
+    const auto fail = [](const std::string& rMessage) {
+        throw std::invalid_argument("meshio++: smooth_field: " + rMessage);
+    };
+    if (rOptions.mArray.empty())
+        fail("an array name is required");
+    if (!rMesh.HasPointData(rOptions.mArray))
+        fail(data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArray));
+    if (!(rOptions.mLength >= 0.0) || !std::isfinite(rOptions.mLength))
+        fail("the length must be finite and not negative");
+    if (!(rOptions.mTolerance > 0.0))
+        fail("the tolerance must be positive");
+    const NDArray& field = rMesh.PointData(rOptions.mArray);
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t comps = data_num_components(field);
+    if (detail::rows(field) != n)
+        fail("'" + rOptions.mArray + "' has " + std::to_string(detail::rows(field)) +
+             " rows on a mesh of " + std::to_string(n) + " points");
+
+    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "smooth_field");
+    std::vector<double> mass;
+    std::vector<detail::SparseTriplet> triplets;
+    detail::surface_fem_assemble(fem, mass, triplets);
+    const double l2 = rOptions.mLength * rOptions.mLength;
+    for (detail::SparseTriplet& t : triplets)
+        t.mValue *= l2;
+    for (std::size_t i = 0; i < n; ++i)
+        // A point in no triangle has no mass and no stiffness: an identity row keeps it.
+        triplets.push_back({i, i, mass[i] > 0.0 ? mass[i] : 1.0});
+    const detail::SparseCsr a = detail::csr_from_triplets(n, n, std::move(triplets));
+
+    NDArray out(DType::Float64, field.Shape());
+    double* po = out.As<double>();
+    std::vector<double> rhs(n), x(n);
+    SmoothFieldResult result;
+    const std::size_t cap =
+        rOptions.mMaxIterations > 0 ? static_cast<std::size_t>(rOptions.mMaxIterations) : n + 100;
+    for (std::size_t c = 0; c < comps; ++c) {
+        for (std::size_t i = 0; i < n; ++i) {
+            const double f = detail::read_double(field, i * comps + c);
+            rhs[i] = (mass[i] > 0.0 ? mass[i] : 1.0) * f;
+            x[i] = f;
+        }
+        const detail::SparseSolveReport report =
+            detail::csr_pcg(a, rhs.data(), x.data(), rOptions.mTolerance, cap);
+        result.mIterations += static_cast<std::int64_t>(report.mIterations);
+        result.mConverged = result.mConverged && report.mConverged;
+        for (std::size_t i = 0; i < n; ++i)
+            po[i * comps + c] = x[i];
+    }
+    result.mNumDegenerate = fem.mNumDegenerate;
+    result.mMesh = detail::clone_mesh(rMesh);
+    result.mMesh.AddPointData(
+        rOptions.mOutput.empty() ? rOptions.mArray + kSmoothFieldSuffix : rOptions.mOutput,
+        std::move(out));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/smooth_field.cpp =====
 // ===== begin src/cpp/src/operations/sniff.cpp =====
 #include <algorithm>
 #include <bit>

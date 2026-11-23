@@ -282,7 +282,7 @@
 <text x="30" y="1807" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">integrals: quadrature</text>
 <text x="30" y="1821" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">S</text>
 <rect x="24" y="1840" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="30" y="1857" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">operator export · field smoothing</text>
+<text x="30" y="1857" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">operators: tetrahedra · bindings</text>
 <text x="30" y="1871" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <rect x="24" y="1890" width="176" height="40" rx="5" fill="#1c5cab" fill-opacity="0.9" stroke="#1c5cab" stroke-width="1.2" stroke-dasharray="5 3"/>
 <text x="30" y="1907" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">high-order fields (design first)</text>

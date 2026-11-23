@@ -7197,6 +7197,32 @@
     ]
    }
   },
+  "mesh_operator": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'laplacian'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "kind"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "sparse"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "meshes_equal": {
    "kind": "function",
    "signature": {
@@ -10437,6 +10463,45 @@
      {
       "default": "False",
       "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "smooth_field": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "length"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "output"
+     },
+     {
+      "default": "1e-12",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_iterations"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
       "name": "return_report"
      }
     ]

@@ -240,6 +240,7 @@ export default defineConfig({
           { text: "Sequences (transient)", link: "/sequences" },
           { text: "Statistics over time", link: "/sequence_stats" },
           { text: "Statistics per region", link: "/data_statistics" },
+          { text: "Mesh operators", link: "/mesh_operator" },
           { text: "CLI reference", link: "/cli" },
           { text: "MCP server", link: "/mcp" },
           { text: "Interactive viewer", link: "/viewer" },

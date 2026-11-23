@@ -193,6 +193,36 @@ def _register_inspection(server: FastMCP) -> None:
         measure so the mean equals data_integrate's."""
 
     @server.tool()
+    @_forward(_tools.tool_smooth_field)
+    def smooth_field(
+        input_path: str,
+        output_path: str,
+        array: str,
+        length: float,
+        output_name: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Smooth a numeric point array over a triangle surface on a length scale
+        by solving (M + length^2 K) g = M f (lumped mass, cotangent stiffness):
+        features shorter than length are flattened, the mass-weighted mean is
+        kept, the points do not move. Writes <array>:smooth (or output_name)."""
+
+    @server.tool()
+    @_forward(_tools.tool_mesh_operator)
+    def mesh_operator(
+        input_path: str,
+        output_path: str,
+        kind: str = "laplacian",
+        file_format: Optional[str] = None,
+    ) -> dict:
+        """Export a P1 finite-element operator of a triangle surface as a sparse
+        matrix in an .npz file (indptr, indices, values, shape): kind is
+        laplacian (cotangent stiffness), mass_lumped, mass_consistent or gradient
+        (3T x n, row 3t+k is component k of the gradient on triangle t). Reports
+        the shape and the entry count."""
+
+    @server.tool()
     @_forward(_tools.tool_data_integrate)
     def data_integrate(
         input_path: str,

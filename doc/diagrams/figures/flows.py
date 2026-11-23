@@ -1172,7 +1172,7 @@ def roadmap_map():
             "§15 math on meshes",
             [
                 ("integrals: quadrature", "S"),
-                ("operator export · field smoothing", "M"),
+                ("operators: tetrahedra · bindings", "M"),
                 ("high-order fields (design first)", "L"),
                 ("streamlines: flat bindings", "M"),
             ],
