@@ -65236,8 +65236,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Point", "Normal", "Plane", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
-         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray",
-          "PostOptimize"}},
+         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "PostOptimize", "MaxCells",
+          "FaceArray"}},
         {"RemeshQuads",
          {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
           "MaxCells"}},
@@ -297009,36 +297009,36 @@ std::vector<std::uint8_t> remesh_detect_nonmanifold_vertices(
 int remesh_split_long_triangles(Mesh& rWork, std::int64_t Clusters, std::int64_t MaxTriangles) {
     constexpr int kMaxRounds = 8;
     // Per triangle (block-major) its longest edge squared; with @p pArea, the
-    // surface's area too. Typed pointers where the arrays are the usual
-    // float64 points and int64 connectivity, the generic readers otherwise.
-    const auto scan = [](const Mesh& rM, std::vector<double>& rLongest2, double* pArea) {
+    // surface's area too. Typed pointers over float64 points and int32 or
+    // int64 connectivity; false for any other type (nothing is split then).
+    const auto scan = [](const Mesh& rM, std::vector<double>& rLongest2, double* pArea) -> bool {
         rLongest2.clear();
         std::size_t total = 0;
         for (std::size_t b = 0; b < rM.NumCellBlocks(); ++b)
             total += rM.Cells(b).NumCells();
         rLongest2.reserve(total);
         const NDArray& pts = rM.Points();
-        std::vector<double> copy;
-        const double* x = nullptr;
-        if (pts.Dtype() == DType::Float64) {
-            x = pts.As<double>();
-        } else {
-            copy.resize(3 * rM.NumPoints());
-            for (std::size_t i = 0; i < copy.size(); ++i)
-                copy[i] = detail::read_double(pts, i);
-            x = copy.data();
-        }
+        if (pts.Dtype() != DType::Float64)
+            return false;
+        const double* x = pts.As<double>();
         double area = 0.0;
         for (std::size_t b = 0; b < rM.NumCellBlocks(); ++b) {
             const auto cells = rM.Cells(b);
             const NDArray& conn = cells.Conn();
-            const std::int64_t* c =
+            // Only the 32- and 64-bit index types are scanned: another type
+            // would need detail::read_int, whose weak out-of-line copy then
+            // comes from this file and shifts every other row's instruction
+            // count (the linker keeps the first one it sees).
+            const std::int64_t* c64 =
                 conn.Dtype() == DType::Int64 ? conn.As<std::int64_t>() : nullptr;
+            const std::int32_t* c32 =
+                conn.Dtype() == DType::Int32 ? conn.As<std::int32_t>() : nullptr;
+            if (c64 == nullptr && c32 == nullptr)
+                return false;
             for (std::size_t t = 0; t < cells.NumCells(); ++t) {
                 const double* q[3];
                 for (std::size_t k = 0; k < 3; ++k)
-                    q[k] = x + 3 * static_cast<std::size_t>(c ? c[3 * t + k]
-                                                              : detail::read_int(conn, 3 * t + k));
+                    q[k] = x + 3 * static_cast<std::size_t>(c64 ? c64[3 * t + k] : c32[3 * t + k]);
                 const double u[3] = {q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2]};
                 const double v[3] = {q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2]};
                 const double w[3] = {q[2][0] - q[1][0], q[2][1] - q[1][1], q[2][2] - q[1][2]};
@@ -297054,19 +297054,19 @@ int remesh_split_long_triangles(Mesh& rWork, std::int64_t Clusters, std::int64_t
         }
         if (pArea)
             *pArea = area;
+        return true;
     };
     std::vector<double> longest2;
     double area = 0.0;
-    scan(rWork, longest2, &area);
-    if (!(area > 0.0) || Clusters <= 0)
+    if (!scan(rWork, longest2, &area) || !(area > 0.0) || Clusters <= 0)
         return 0;
     const double limit =
         0.5 * std::sqrt(2.0 * area / (std::sqrt(3.0) * static_cast<double>(Clusters)));
     const double limit2 = limit * limit;
     int rounds = 0;
     for (; rounds < kMaxRounds; ++rounds) {
-        if (rounds > 0)
-            scan(rWork, longest2, nullptr);
+        if (rounds > 0 && !scan(rWork, longest2, nullptr))
+            break;
         RefineOptions ro;
         ro.mLevels = 1;
         ro.mClosure = RefineClosure::RedGreen;

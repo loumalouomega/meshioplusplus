@@ -2161,7 +2161,8 @@ if(MESHIOPLUSPLUS_BUILD_TESTS)
   file(GLOB MESHIOPLUSPLUS_TEST_SOURCES tests/cpp/*.cpp)
   if(NOT MESHIOPLUSPLUS_BUILD_C_API)
     list(REMOVE_ITEM MESHIOPLUSPLUS_TEST_SOURCES
-         ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp/test_c_api.cpp)
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp/test_c_api.cpp
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp/test_quick_offset_decimate.cpp)
   endif()
   add_executable(meshioplusplus_tests ${MESHIOPLUSPLUS_TEST_SOURCES})
   target_include_directories(meshioplusplus_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests/cpp)
