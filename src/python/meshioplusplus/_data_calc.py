@@ -18,7 +18,8 @@ Grammar::
 
 Functions: ``abs``, ``sqrt``, ``min``, ``max``, ``norm``, ``exp``, ``log``,
 ``log10``, ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``atan2``,
-``sinh``, ``cosh``, ``tanh``, ``floor``, ``ceil``, ``sign`` and ``pow``. Identifiers may
+``sinh``, ``cosh``, ``tanh``, ``floor``, ``ceil``, ``sign``, ``pow`` and the
+tuple functions ``dot``, ``cross``, ``det``, ``trace``, ``transpose``, ``mag``. Identifiers may
 contain ``:`` and ``.`` after the first character (so ``gmsh:physical`` works),
 and a name with spaces or operator characters can be backtick-quoted.
 
@@ -61,6 +62,12 @@ _FUNCS = {
     "ceil": 1,
     "sign": 1,
     "pow": 2,
+    "dot": 2,
+    "cross": 2,
+    "det": 1,
+    "trace": 1,
+    "transpose": 1,
+    "mag": 1,
 }
 
 #: The unary math functions beyond ``abs``/``sqrt``/``norm``, width-preserving.
@@ -293,11 +300,65 @@ def _eval(node, arrays, rows):
     if kind in _UNARY:
         with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
             return _UNARY[kind](_eval(lhs, arrays, rows))
-    if kind == "norm":
+    if kind in ("norm", "mag"):
         v = _eval(lhs, arrays, rows)
         return np.sqrt((v * v).sum(axis=1)).reshape(rows, 1)
+    if kind in ("det", "trace", "transpose"):
+        v = _eval(lhs, arrays, rows)
+        if v.shape[1] not in (6, 9) or (kind == "transpose" and v.shape[1] != 9):
+            need = (
+                "a 9-component (3x3) operand"
+                if kind == "transpose"
+                else "a 6-component (symmetric) or 9-component (3x3) operand"
+            )
+            _fail(f"'{kind}' needs {need} (got {v.shape[1]})", pos)
+        if v.shape[1] == 6:
+            m = [
+                v[:, 0],
+                v[:, 3],
+                v[:, 5],
+                v[:, 3],
+                v[:, 1],
+                v[:, 4],
+                v[:, 5],
+                v[:, 4],
+                v[:, 2],
+            ]
+        else:
+            m = [v[:, k] for k in range(9)]
+        if kind == "trace":
+            return (m[0] + m[4] + m[8]).reshape(rows, 1)
+        if kind == "det":
+            det = (
+                m[0] * (m[4] * m[8] - m[5] * m[7])
+                + m[1] * (m[5] * m[6] - m[3] * m[8])
+                + m[2] * (m[3] * m[7] - m[4] * m[6])
+            )
+            return det.reshape(rows, 1)
+        return np.stack([m[j * 3 + i] for i in range(3) for j in range(3)], axis=1)
     a = _eval(lhs, arrays, rows)
     b = _eval(rhs, arrays, rows)
+    if kind in ("dot", "cross"):
+        if kind == "dot" and a.shape[1] != b.shape[1]:
+            _fail(
+                f"'dot' needs two operands of the same width (got {a.shape[1]} and {b.shape[1]})",
+                pos,
+            )
+        if kind == "cross" and (a.shape[1] != 3 or b.shape[1] != 3):
+            _fail(
+                f"'cross' needs two 3-component operands (got {a.shape[1]} and {b.shape[1]})",
+                pos,
+            )
+        if kind == "dot":
+            return (a * b).sum(axis=1).reshape(rows, 1)
+        return np.stack(
+            [
+                a[:, 1] * b[:, 2] - a[:, 2] * b[:, 1],
+                a[:, 2] * b[:, 0] - a[:, 0] * b[:, 2],
+                a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0],
+            ],
+            axis=1,
+        )
     a, b = _combine(a, b, kind, pos)
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
         if kind == "atan2":

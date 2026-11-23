@@ -266,6 +266,113 @@ def test_math_functions_match_between_the_core_and_the_twin():
         )
 
 
+def tensor_mesh():
+    m = data_mesh()
+    t9 = np.array(
+        [
+            [1, 2, 3, 0, 1, 4, 5, 6, 0],
+            [2, 0, 0, 0, 3, 0, 0, 0, 5],
+            [1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [0, 1, 0, -1, 0, 0, 0, 0, 2],
+            [4, 1, 2, 1, 5, 3, 2, 3, 6],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ],
+        dtype=float,
+    )
+    m.point_data["t9"] = t9
+    # The same symmetric tensors as 6 components: xx yy zz xy yz zx.
+    m.point_data["t6"] = (
+        np.array([[2, 3, 5, 0.5, 0.25, 0.75]] * 6, dtype=float)
+        * np.arange(1, 7)[:, None]
+    )
+    return m, t9
+
+
+def test_dot_and_cross_match_numpy():
+    m, _ = tensor_mesh()
+    v = m.point_data["v"]
+    out = mp.data_calc(m, "dot(v, v)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], (v * v).sum(axis=1))
+    out = mp.data_calc(m, "cross(v, v * 0 + 1)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.cross(v, np.ones((6, 3))))
+    out = mp.data_calc(m, "dot(cross(v, 1 + v), v)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 0.0, atol=1e-12)  # a x b . a = 0
+
+
+def test_det_trace_and_transpose_of_a_nine_component_tensor():
+    m, t9 = tensor_mesh()
+    a = t9.reshape(-1, 3, 3)
+    out = mp.data_calc(m, "det(t9)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.linalg.det(a), atol=1e-10)
+    assert out.point_data["o"][0] == pytest.approx(1.0)  # the integer-inverse matrix
+    out = mp.data_calc(m, "trace(t9)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.trace(a, axis1=1, axis2=2))
+    out = mp.data_calc(m, "transpose(t9)", location="point", output="o")
+    assert out.point_data["o"].shape == (6, 9)
+    np.testing.assert_allclose(out.point_data["o"], a.transpose(0, 2, 1).reshape(-1, 9))
+    out = mp.data_calc(m, "transpose(transpose(t9))", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], t9)
+
+
+def test_det_and_trace_of_a_symmetric_six_component_tensor():
+    m, _ = tensor_mesh()
+    s = m.point_data["t6"]
+    full = np.zeros((6, 3, 3))
+    full[:, 0, 0], full[:, 1, 1], full[:, 2, 2] = s[:, 0], s[:, 1], s[:, 2]
+    full[:, 0, 1] = full[:, 1, 0] = s[:, 3]
+    full[:, 1, 2] = full[:, 2, 1] = s[:, 4]
+    full[:, 0, 2] = full[:, 2, 0] = s[:, 5]
+    out = mp.data_calc(m, "det(t6)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.linalg.det(full), rtol=1e-10)
+    out = mp.data_calc(m, "trace(t6)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.trace(full, axis1=1, axis2=2))
+
+
+def test_mag_is_norm():
+    m, _ = tensor_mesh()
+    a = mp.data_calc(m, "mag(v)", location="point", output="o")
+    b = mp.data_calc(m, "norm(v)", location="point", output="o")
+    np.testing.assert_array_equal(a.point_data["o"], b.point_data["o"])
+
+
+def test_tuple_function_width_errors():
+    m, _ = tensor_mesh()
+    for expr, needle in [
+        ("dot(v, t9)", "same width"),
+        ("cross(v, t9)", "3-component"),
+        ("det(v)", "6-component"),
+        ("trace(T)", "6-component"),
+        ("transpose(t6)", "9-component"),
+    ]:
+        with pytest.raises(ValueError, match=needle):
+            mp.data_calc(m, expr, location="point", output="o")
+
+
+def test_tuple_functions_match_between_the_core_and_the_twin():
+    pytest.importorskip("meshioplusplus._core")
+    m, _ = tensor_mesh()
+    for expr in [
+        "dot(v, v * 2)",
+        "cross(v, 1 + v)",
+        "det(t9)",
+        "trace(t9) * 2",
+        "transpose(t9)",
+        "det(t6)",
+        "trace(t6)",
+        "mag(cross(v, 2 + v))",
+        "dot(transpose(t9), t9)",
+    ]:
+        cpp = mp.data_calc(m, expr, location="point", output="o")
+        py = _calc_py(m, expr, "point_data", "o", False)
+        np.testing.assert_allclose(
+            cpp.point_data["o"],
+            py.point_data["o"],
+            rtol=1e-12,
+            equal_nan=True,
+            err_msg=expr,
+        )
+
+
 def test_cpp_matches_python():
     pytest.importorskip("meshioplusplus._core")
     m = data_mesh()

@@ -28807,7 +28807,11 @@ MESHIOPLUSPLUS_API CellPointWeight cell_point_weight_from_name(const std::string
  * Euclidean magnitude of a vector, then the elementwise math functions `exp`,
  * `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`,
  * `tanh`, `floor`, `ceil`, `sign` (all width-preserving) and `atan2(y,x)`,
- * `pow(a,b)` (scalar-broadcasting, like `min`). Exponentiation is a function,
+ * `pow(a,b)` (scalar-broadcasting, like `min`), then the tuple functions that read
+ * a whole row: `dot(a,b)` (equal widths, a scalar), `cross(a,b)` (3-component
+ * operands), `det(t)` and `trace(t)` (a 6-component symmetric `xx yy zz xy yz zx`
+ * or 9-component row-major 3x3 tensor, a scalar), `transpose(t)` (9 components)
+ * and `mag(v)` (an alias of `norm`). Exponentiation is a function,
  * `pow`, not an operator, so the grammar's precedence is unchanged; a domain
  * error (`log(-1)`, `asin(2)`) is a NaN, as division by zero is an infinity.
  *
@@ -249404,6 +249408,13 @@ enum class CalcNodeType {
     // ... and binary (scalar-broadcasting, like min and max).
     Atan2,
     Pow,
+    // Tuple functions: they read a whole row, so each checks its widths.
+    Dot,
+    Cross,
+    Det,
+    Trace,
+    Transpose,
+    Mag,
 };
 
 struct CalcNode {
@@ -249425,17 +249436,34 @@ struct CalcFuncDef {
 };
 
 const CalcFuncDef CALC_FUNCS[] = {
-    {"abs", CalcNodeType::Abs, 1},     {"sqrt", CalcNodeType::Sqrt, 1},
-    {"min", CalcNodeType::Min, 2},     {"max", CalcNodeType::Max, 2},
-    {"norm", CalcNodeType::Norm, 1},   {"exp", CalcNodeType::Exp, 1},
-    {"log", CalcNodeType::Log, 1},     {"log10", CalcNodeType::Log10, 1},
-    {"sin", CalcNodeType::Sin, 1},     {"cos", CalcNodeType::Cos, 1},
-    {"tan", CalcNodeType::Tan, 1},     {"asin", CalcNodeType::Asin, 1},
-    {"acos", CalcNodeType::Acos, 1},   {"atan", CalcNodeType::Atan, 1},
-    {"atan2", CalcNodeType::Atan2, 2}, {"sinh", CalcNodeType::Sinh, 1},
-    {"cosh", CalcNodeType::Cosh, 1},   {"tanh", CalcNodeType::Tanh, 1},
-    {"floor", CalcNodeType::Floor, 1}, {"ceil", CalcNodeType::Ceil, 1},
-    {"sign", CalcNodeType::Sign, 1},   {"pow", CalcNodeType::Pow, 2},
+    {"abs", CalcNodeType::Abs, 1},
+    {"sqrt", CalcNodeType::Sqrt, 1},
+    {"min", CalcNodeType::Min, 2},
+    {"max", CalcNodeType::Max, 2},
+    {"norm", CalcNodeType::Norm, 1},
+    {"exp", CalcNodeType::Exp, 1},
+    {"log", CalcNodeType::Log, 1},
+    {"log10", CalcNodeType::Log10, 1},
+    {"sin", CalcNodeType::Sin, 1},
+    {"cos", CalcNodeType::Cos, 1},
+    {"tan", CalcNodeType::Tan, 1},
+    {"asin", CalcNodeType::Asin, 1},
+    {"acos", CalcNodeType::Acos, 1},
+    {"atan", CalcNodeType::Atan, 1},
+    {"atan2", CalcNodeType::Atan2, 2},
+    {"sinh", CalcNodeType::Sinh, 1},
+    {"cosh", CalcNodeType::Cosh, 1},
+    {"tanh", CalcNodeType::Tanh, 1},
+    {"floor", CalcNodeType::Floor, 1},
+    {"ceil", CalcNodeType::Ceil, 1},
+    {"sign", CalcNodeType::Sign, 1},
+    {"pow", CalcNodeType::Pow, 2},
+    {"dot", CalcNodeType::Dot, 2},
+    {"cross", CalcNodeType::Cross, 2},
+    {"det", CalcNodeType::Det, 1},
+    {"trace", CalcNodeType::Trace, 1},
+    {"transpose", CalcNodeType::Transpose, 1},
+    {"mag", CalcNodeType::Mag, 1},
 };
 
 std::string calc_known_funcs() {
@@ -249635,6 +249663,10 @@ const char* calc_node_op_name(CalcNodeType t) {
             return "atan2";
         case CalcNodeType::Pow:
             return "pow";
+        case CalcNodeType::Dot:
+            return "dot";
+        case CalcNodeType::Cross:
+            return "cross";
         default:
             return "?";
     }
@@ -249730,7 +249762,42 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
                 n.mWidth = rPool[n.mLhs].mWidth;
                 break;
             case CalcNodeType::Norm:
+            case CalcNodeType::Mag:
                 n.mWidth = 1;
+                break;
+            case CalcNodeType::Dot:
+                if (rPool[n.mLhs].mWidth != rPool[n.mRhs].mWidth)
+                    calc_fail_at("'dot' needs two operands of the same width (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + " and " +
+                                     std::to_string(rPool[n.mRhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 1;
+                break;
+            case CalcNodeType::Cross:
+                if (rPool[n.mLhs].mWidth != 3 || rPool[n.mRhs].mWidth != 3)
+                    calc_fail_at("'cross' needs two 3-component operands (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + " and " +
+                                     std::to_string(rPool[n.mRhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 3;
+                break;
+            case CalcNodeType::Det:
+            case CalcNodeType::Trace:
+                if (rPool[n.mLhs].mWidth != 6 && rPool[n.mLhs].mWidth != 9)
+                    calc_fail_at(std::string("'") +
+                                     (n.mType == CalcNodeType::Det ? "det" : "trace") +
+                                     "' needs a 6-component (symmetric) or 9-component (3x3) "
+                                     "operand (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 1;
+                break;
+            case CalcNodeType::Transpose:
+                if (rPool[n.mLhs].mWidth != 9)
+                    calc_fail_at("'transpose' needs a 9-component (3x3) operand (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 9;
                 break;
             case CalcNodeType::Add:
             case CalcNodeType::Sub:
@@ -249844,7 +249911,8 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
                 pOut[k] = calc_unary(n.mType, pOut[k]);
             return w;
         }
-        case CalcNodeType::Norm: {
+        case CalcNodeType::Norm:
+        case CalcNodeType::Mag: {
             double buf[DATA_CALC_MAX_COMPONENTS];
             const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, buf);
             double acc = 0.0;
@@ -249852,6 +249920,62 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
                 acc += buf[k] * buf[k];
             pOut[0] = std::sqrt(acc);
             return 1;
+        }
+        case CalcNodeType::Dot: {
+            double a[DATA_CALC_MAX_COMPONENTS];
+            double b[DATA_CALC_MAX_COMPONENTS];
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, a);
+            calc_eval(rPool, n.mRhs, rOperands, row, b);
+            double acc = 0.0;
+            for (std::size_t k = 0; k < w; ++k)
+                acc += a[k] * b[k];
+            pOut[0] = acc;
+            return 1;
+        }
+        case CalcNodeType::Cross: {
+            double a[DATA_CALC_MAX_COMPONENTS];
+            double b[DATA_CALC_MAX_COMPONENTS];
+            calc_eval(rPool, n.mLhs, rOperands, row, a);
+            calc_eval(rPool, n.mRhs, rOperands, row, b);
+            pOut[0] = a[1] * b[2] - a[2] * b[1];
+            pOut[1] = a[2] * b[0] - a[0] * b[2];
+            pOut[2] = a[0] * b[1] - a[1] * b[0];
+            return 3;
+        }
+        case CalcNodeType::Det:
+        case CalcNodeType::Trace:
+        case CalcNodeType::Transpose: {
+            double buf[DATA_CALC_MAX_COMPONENTS];
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, buf);
+            // The row-major 3x3: a 6-component row is the symmetric
+            // `xx yy zz xy yz zx`, a 9-component row is `xx xy xz yx yy yz zx zy zz`.
+            double m[9];
+            if (w == 6) {
+                m[0] = buf[0];
+                m[1] = buf[3];
+                m[2] = buf[5];
+                m[3] = buf[3];
+                m[4] = buf[1];
+                m[5] = buf[4];
+                m[6] = buf[5];
+                m[7] = buf[4];
+                m[8] = buf[2];
+            } else {
+                for (int k = 0; k < 9; ++k)
+                    m[k] = buf[k];
+            }
+            if (n.mType == CalcNodeType::Trace) {
+                pOut[0] = m[0] + m[4] + m[8];
+                return 1;
+            }
+            if (n.mType == CalcNodeType::Det) {
+                pOut[0] = detail::det3({m[0], m[1], m[2]}, {m[3], m[4], m[5]}, {m[6], m[7], m[8]});
+                return 1;
+            }
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    pOut[i * 3 + j] = m[j * 3 + i];
+            return 9;
         }
         default:
             break;

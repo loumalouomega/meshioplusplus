@@ -38,7 +38,11 @@
  * Euclidean magnitude of a vector, then the elementwise math functions `exp`,
  * `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`,
  * `tanh`, `floor`, `ceil`, `sign` (all width-preserving) and `atan2(y,x)`,
- * `pow(a,b)` (scalar-broadcasting, like `min`). Exponentiation is a function,
+ * `pow(a,b)` (scalar-broadcasting, like `min`), then the tuple functions that read
+ * a whole row: `dot(a,b)` (equal widths, a scalar), `cross(a,b)` (3-component
+ * operands), `det(t)` and `trace(t)` (a 6-component symmetric `xx yy zz xy yz zx`
+ * or 9-component row-major 3x3 tensor, a scalar), `transpose(t)` (9 components)
+ * and `mag(v)` (an alias of `norm`). Exponentiation is a function,
  * `pow`, not an operator, so the grammar's precedence is unchanged; a domain
  * error (`log(-1)`, `asin(2)`) is a NaN, as division by zero is an infinity.
  *

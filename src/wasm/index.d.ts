@@ -5642,7 +5642,8 @@ export interface MeshioPlusPlusModule {
    * Evaluate an elementwise expression (`+ - * /`, parens, numbers, array
    * names, `abs`/`sqrt`/`min`/`max`/`norm` and the math functions `exp`, `log`,
    * `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`,
-   * `tanh`, `floor`, `ceil`, `sign` and `pow`) and store the result as a new
+   * `tanh`, `floor`, `ceil`, `sign` and `pow`, and the tuple functions `dot`,
+   * `cross`, `det`, `trace`, `transpose` and `mag`) and store the result as a new
    * array at `location`.
    * @throws {Error} on any lexical, syntactic, or name-resolution error.
    */

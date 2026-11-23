@@ -153,6 +153,63 @@ TEST(DataCalc, BinaryMathFunctionsBroadcastAScalar) {
         read_double(data_calc(in, "pow(0 - T, 0.5)", point_opts("o")).PointData("o"), 1)));
 }
 
+Mesh tuple_mesh() {
+    Mesh in = mt::data_mesh();  // v: (1,0,0) (0,1,0) (0,0,1) (1,1,0) (2,0,0) (0,2,0)
+    in.AddPointData("t9", mt::data_array({1, 2, 3, 0,  1, 4, 5, 6, 0,  //
+                                          2, 0, 0, 0,  3, 0, 0, 0, 5,  //
+                                          1, 0, 0, 0,  1, 0, 0, 0, 1,  //
+                                          0, 1, 0, -1, 0, 0, 0, 0, 2,  //
+                                          4, 1, 2, 1,  5, 3, 2, 3, 6,  //
+                                          1, 1, 1, 1,  1, 1, 1, 1, 1},
+                                         9));
+    in.AddPointData("t6", mt::data_array({2, 3, 5, 0.5, 0.25, 0.75,  //
+                                          2, 3, 5, 0.0, 0.0,  0.0,   //
+                                          1, 1, 1, 0.0, 0.0,  0.0,   //
+                                          1, 2, 3, 0.1, 0.2,  0.3,   //
+                                          4, 5, 6, 1.0, 1.0,  1.0,   //
+                                          1, 1, 1, 1.0, 1.0,  1.0},
+                                         6));
+    return in;
+}
+
+TEST(DataCalc, DotAndCross) {
+    Mesh in = tuple_mesh();
+    const Mesh d = data_calc(in, "dot(v, v * 2)", point_opts("o"));
+    EXPECT_EQ(meshioplusplus::data_num_components(d.PointData("o")), 1u);
+    EXPECT_NEAR(read_double(d.PointData("o"), 4), 8.0, 1e-12);  // v = (2,0,0)
+    const Mesh c = data_calc(in, "cross(v, 1 + v)", point_opts("o"));
+    EXPECT_EQ(meshioplusplus::data_num_components(c.PointData("o")), 3u);
+    // v = (1,0,0): (1,0,0) x (2,1,1) = (0*1-0*1, 0*2-1*1, 1*1-0*2) = (0,-1,1)
+    EXPECT_NEAR(read_double(c.PointData("o"), 0), 0.0, 1e-12);
+    EXPECT_NEAR(read_double(c.PointData("o"), 1), -1.0, 1e-12);
+    EXPECT_NEAR(read_double(c.PointData("o"), 2), 1.0, 1e-12);
+}
+
+TEST(DataCalc, DetTraceAndTranspose) {
+    Mesh in = tuple_mesh();
+    const Mesh det = data_calc(in, "det(t9)", point_opts("o"));
+    EXPECT_NEAR(read_double(det.PointData("o"), 0), 1.0, 1e-12);   // [[1,2,3],[0,1,4],[5,6,0]]
+    EXPECT_NEAR(read_double(det.PointData("o"), 1), 30.0, 1e-12);  // diag(2,3,5)
+    EXPECT_NEAR(read_double(det.PointData("o"), 5), 0.0, 1e-12);   // all ones
+    const Mesh tr = data_calc(in, "trace(t9)", point_opts("o"));
+    EXPECT_NEAR(read_double(tr.PointData("o"), 0), 2.0, 1e-12);
+    EXPECT_NEAR(read_double(tr.PointData("o"), 1), 10.0, 1e-12);
+    const Mesh tp = data_calc(in, "transpose(t9)", point_opts("o"));
+    EXPECT_EQ(meshioplusplus::data_num_components(tp.PointData("o")), 9u);
+    // Row 0 is [[1,2,3],[0,1,4],[5,6,0]]; its transpose is [[1,0,5],[2,1,6],[3,4,0]].
+    const double expect[9] = {1, 0, 5, 2, 1, 6, 3, 4, 0};
+    for (int k = 0; k < 9; ++k)
+        EXPECT_NEAR(read_double(tp.PointData("o"), k), expect[k], 1e-12) << k;
+    // A symmetric 6-component tensor: diag(2,3,5) has det 30 and trace 10.
+    const Mesh d6 = data_calc(in, "det(t6)", point_opts("o"));
+    EXPECT_NEAR(read_double(d6.PointData("o"), 1), 30.0, 1e-12);
+    const Mesh t6 = data_calc(in, "trace(t6)", point_opts("o"));
+    EXPECT_NEAR(read_double(t6.PointData("o"), 1), 10.0, 1e-12);
+    // mag is norm.
+    const Mesh mg = data_calc(in, "mag(v)", point_opts("o"));
+    EXPECT_NEAR(read_double(mg.PointData("o"), 4), 2.0, 1e-12);
+}
+
 TEST(DataCalc, ScalarBroadcastAgainstAVector) {
     Mesh in = mt::data_mesh();
     Mesh out = data_calc(in, "v * 2", point_opts("v2"));
@@ -245,6 +302,10 @@ TEST(DataCalc, ArityErrors) {
     expect_message("min(T)", "takes exactly 2 arguments");
     expect_message("pow(T)", "takes exactly 2 arguments");
     expect_message("sin(T, T)", "takes exactly 1 argument");
+    expect_message("dot(v, T)", "'dot' needs two operands of the same width");
+    expect_message("cross(v, T)", "'cross' needs two 3-component operands");
+    expect_message("det(v)", "'det' needs a 6-component");
+    expect_message("transpose(v)", "'transpose' needs a 9-component");
 }
 
 TEST(DataCalc, SyntaxErrors) {

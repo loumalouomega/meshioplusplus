@@ -38,6 +38,18 @@ Functions: `abs(x)`, `sqrt(x)`, `min(a,b)`, `max(a,b)`, and `norm(v)` for the Eu
 | `floor`, `ceil`, `sign` | one | the same width (`sign` is −1, 0 or 1; NaN stays NaN) |
 | `atan2(y, x)`, `pow(a, b)` | two | scalar-broadcasting, like `min` and `max` |
 
+The **tuple functions** read a whole row and check its width, naming the function when it is wrong:
+
+| Function | Operands | Result |
+| --- | --- | --- |
+| `dot(a, b)` | two of the same width | a scalar, `Σ aₖ·bₖ` |
+| `cross(a, b)` | two 3-component | 3 components |
+| `det(t)`, `trace(t)` | a 6-component symmetric `xx yy zz xy yz zx` or a 9-component row-major 3x3 | a scalar |
+| `transpose(t)` | a 9-component 3x3 | 9 components |
+| `mag(v)` | any | a scalar, the same as `norm(v)` |
+
+Together with `pow` and `exp` they write most derived quantities in one call, for instance the helicity density `dot(U, curl)` from `gradient`'s `U:curl`, or `det(F)` of a deformation gradient. A 6-component tensor and a 9-component one are read as in [`tensor_invariants`](/tensor_invariants), and the determinant is the same triple product of rows.
+
 Exponentiation is a **function**, `pow`, not an operator, so the grammar's precedence is unchanged. A domain error is a `NaN`, not an exception (`log(-1)`, `asin(2)`, `pow(-8, 0.5)`), and `log(0)` is `-inf`, the way division by zero is an infinity. There is no warning channel to count them in.
 
 `abs`, `sqrt`, `floor`, `ceil`, `sign`, `min`, `max` and `norm` are exact, and the core and its Python twin agree on them bit for bit. `exp`, `log`, `log10`, the trigonometric and hyperbolic functions and `pow` come from the platform's libm in the core and from NumPy in the twin: they agree to about a relative `1e-12`, and may differ in the last bit between platforms, so do not compare their results for equality across engines or machines.
@@ -82,8 +94,10 @@ unexpected end of expression
 expected ')' at position 12
 trailing input after the expression at position 9
 unknown point_data array 'temp' at position 5 (available: T, p, u)
-unknown function 'foo' at position 0 (known: abs, sqrt, min, max, norm, exp, log, log10, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, floor, ceil, sign, pow)
+unknown function 'foo' at position 0 (known: abs, sqrt, min, max, norm, exp, log, log10, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, floor, ceil, sign, pow, dot, cross, det, trace, transpose, mag)
 'norm' takes exactly 1 argument (got 2) at position 0
+'dot' needs two operands of the same width (got 3 and 9) at position 0
+'det' needs a 6-component (symmetric) or 9-component (3x3) operand (got 3) at position 0
 'min' takes exactly 2 arguments (got 1) at position 3
 cannot combine a 3-component array with a 9-component array in '*' at position 12
 array 'u' has 42 rows but point_data needs 100
