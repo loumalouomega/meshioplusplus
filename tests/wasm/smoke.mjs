@@ -709,7 +709,7 @@ step('dataCalc evaluates an expression', () => {
 
 step('dataCalc rejects an unknown function with a catchable Error', () => {
     assert.throws(
-        () => m.dataCalc(tetv, 'log(temperature)', 'point', 'bad', false),
+        () => m.dataCalc(tetv, 'foo(temperature)', 'point', 'bad', false),
         (err) => err instanceof Error && err.message.length > 0,
     );
 });

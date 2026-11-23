@@ -16,7 +16,9 @@ Grammar::
     unary   := ('-'|'+') unary | primary
     primary := number | ident | ident '(' expr (',' expr)* ')' | '(' expr ')'
 
-Functions: ``abs``, ``sqrt``, ``min``, ``max``, ``norm``. Identifiers may
+Functions: ``abs``, ``sqrt``, ``min``, ``max``, ``norm``, ``exp``, ``log``,
+``log10``, ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``atan2``,
+``sinh``, ``cosh``, ``tanh``, ``floor``, ``ceil``, ``sign`` and ``pow``. Identifiers may
 contain ``:`` and ``.`` after the first character (so ``gmsh:physical`` works),
 and a name with spaces or operator characters can be backtick-quoted.
 
@@ -36,7 +38,49 @@ from ._fallback import core_op_declined
 MAX_COMPONENTS = 16
 MAX_DEPTH = 64
 
-_FUNCS = {"abs": 1, "sqrt": 1, "min": 2, "max": 2, "norm": 1}
+_FUNCS = {
+    "abs": 1,
+    "sqrt": 1,
+    "min": 2,
+    "max": 2,
+    "norm": 1,
+    "exp": 1,
+    "log": 1,
+    "log10": 1,
+    "sin": 1,
+    "cos": 1,
+    "tan": 1,
+    "asin": 1,
+    "acos": 1,
+    "atan": 1,
+    "atan2": 2,
+    "sinh": 1,
+    "cosh": 1,
+    "tanh": 1,
+    "floor": 1,
+    "ceil": 1,
+    "sign": 1,
+    "pow": 2,
+}
+
+#: The unary math functions beyond ``abs``/``sqrt``/``norm``, width-preserving.
+_UNARY = {
+    "exp": np.exp,
+    "log": np.log,
+    "log10": np.log10,
+    "sin": np.sin,
+    "cos": np.cos,
+    "tan": np.tan,
+    "asin": np.arcsin,
+    "acos": np.arccos,
+    "atan": np.arctan,
+    "sinh": np.sinh,
+    "cosh": np.cosh,
+    "tanh": np.tanh,
+    "floor": np.floor,
+    "ceil": np.ceil,
+    "sign": np.sign,
+}
 
 
 def _fail(message: str, pos: int | None = None):
@@ -246,13 +290,20 @@ def _eval(node, arrays, rows):
     if kind == "sqrt":
         with np.errstate(invalid="ignore"):
             return np.sqrt(_eval(lhs, arrays, rows))
+    if kind in _UNARY:
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            return _UNARY[kind](_eval(lhs, arrays, rows))
     if kind == "norm":
         v = _eval(lhs, arrays, rows)
         return np.sqrt((v * v).sum(axis=1)).reshape(rows, 1)
     a = _eval(lhs, arrays, rows)
     b = _eval(rhs, arrays, rows)
     a, b = _combine(a, b, kind, pos)
-    with np.errstate(divide="ignore", invalid="ignore"):
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        if kind == "atan2":
+            return np.arctan2(a, b)
+        if kind == "pow":
+            return np.power(a, b)
         if kind == "+":
             return a + b
         if kind == "-":

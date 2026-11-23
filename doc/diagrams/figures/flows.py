@@ -596,7 +596,7 @@ def data_locations():
         (
             "data_calc",
             "expression → new array",
-            "own parser: + − * / abs sqrt min max norm",
+            "own parser: + − * / and math functions",
             P.FORMATS,
             [0, 1],
         ),

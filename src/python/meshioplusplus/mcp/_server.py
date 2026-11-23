@@ -4619,8 +4619,9 @@ def _register_data(server: FastMCP) -> None:
         overwrite: bool = False,
     ) -> dict:
         """Evaluate an arithmetic expression over data arrays into a new array
-        (operators + - * /, functions abs/sqrt/min/max/norm; back-tick-quote
-        names with spaces, e.g. "speed = norm(velocity)")."""
+        (operators + - * /, functions abs/sqrt/min/max/norm and exp/log/log10/
+        sin/cos/tan/asin/acos/atan/atan2/sinh/cosh/tanh/floor/ceil/sign/pow;
+        back-tick-quote names with spaces, e.g. "speed = norm(velocity)")."""
 
     @server.tool()
     @_forward(_tools.tool_data_condition)

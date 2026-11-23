@@ -1386,7 +1386,7 @@ TEST(CApi, DataCalc) {
 
 TEST(CApi, DataCalcRejectsBadExpressions) {
     mio_mesh* m = build_data_mesh();
-    EXPECT_EQ(mio_data_calc(m, "log(T)", MIO_DATA_POINT, "o", 0), nullptr);
+    EXPECT_EQ(mio_data_calc(m, "foo(T)", MIO_DATA_POINT, "o", 0), nullptr);
     EXPECT_STRNE(mio_last_error(), "");
     EXPECT_EQ(mio_data_calc(m, "nope + 1", MIO_DATA_POINT, "o", 0), nullptr);
     EXPECT_STRNE(mio_last_error(), "");

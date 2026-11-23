@@ -28804,7 +28804,12 @@ MESHIOPLUSPLUS_API CellPointWeight cell_point_weight_from_name(const std::string
  * @endcode
  *
  * Functions: `abs(x)`, `sqrt(x)`, `min(a,b)`, `max(a,b)`, and `norm(v)` for the
- * Euclidean magnitude of a vector. Exponentiation is deliberately absent.
+ * Euclidean magnitude of a vector, then the elementwise math functions `exp`,
+ * `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`,
+ * `tanh`, `floor`, `ceil`, `sign` (all width-preserving) and `atan2(y,x)`,
+ * `pow(a,b)` (scalar-broadcasting, like `min`). Exponentiation is a function,
+ * `pow`, not an operator, so the grammar's precedence is unchanged; a domain
+ * error (`log(-1)`, `asin(2)`) is a NaN, as division by zero is an infinity.
  *
  * Identifiers may contain `:` and `.` after their first character, so a mesh's
  * own conventional names (`gmsh:physical`, `quality:scaled_jacobian`) can be
@@ -249380,6 +249385,25 @@ enum class CalcNodeType {
     Min,
     Max,
     Norm,
+    // Elementwise math functions: unary (width-preserving) ...
+    Exp,
+    Log,
+    Log10,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Sinh,
+    Cosh,
+    Tanh,
+    Floor,
+    Ceil,
+    Sign,
+    // ... and binary (scalar-broadcasting, like min and max).
+    Atan2,
+    Pow,
 };
 
 struct CalcNode {
@@ -249401,8 +249425,17 @@ struct CalcFuncDef {
 };
 
 const CalcFuncDef CALC_FUNCS[] = {
-    {"abs", CalcNodeType::Abs, 1}, {"sqrt", CalcNodeType::Sqrt, 1}, {"min", CalcNodeType::Min, 2},
-    {"max", CalcNodeType::Max, 2}, {"norm", CalcNodeType::Norm, 1},
+    {"abs", CalcNodeType::Abs, 1},     {"sqrt", CalcNodeType::Sqrt, 1},
+    {"min", CalcNodeType::Min, 2},     {"max", CalcNodeType::Max, 2},
+    {"norm", CalcNodeType::Norm, 1},   {"exp", CalcNodeType::Exp, 1},
+    {"log", CalcNodeType::Log, 1},     {"log10", CalcNodeType::Log10, 1},
+    {"sin", CalcNodeType::Sin, 1},     {"cos", CalcNodeType::Cos, 1},
+    {"tan", CalcNodeType::Tan, 1},     {"asin", CalcNodeType::Asin, 1},
+    {"acos", CalcNodeType::Acos, 1},   {"atan", CalcNodeType::Atan, 1},
+    {"atan2", CalcNodeType::Atan2, 2}, {"sinh", CalcNodeType::Sinh, 1},
+    {"cosh", CalcNodeType::Cosh, 1},   {"tanh", CalcNodeType::Tanh, 1},
+    {"floor", CalcNodeType::Floor, 1}, {"ceil", CalcNodeType::Ceil, 1},
+    {"sign", CalcNodeType::Sign, 1},   {"pow", CalcNodeType::Pow, 2},
 };
 
 std::string calc_known_funcs() {
@@ -249598,6 +249631,10 @@ const char* calc_node_op_name(CalcNodeType t) {
             return "min";
         case CalcNodeType::Max:
             return "max";
+        case CalcNodeType::Atan2:
+            return "atan2";
+        case CalcNodeType::Pow:
+            return "pow";
         default:
             return "?";
     }
@@ -249675,6 +249712,21 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
             case CalcNodeType::Neg:
             case CalcNodeType::Abs:
             case CalcNodeType::Sqrt:
+            case CalcNodeType::Exp:
+            case CalcNodeType::Log:
+            case CalcNodeType::Log10:
+            case CalcNodeType::Sin:
+            case CalcNodeType::Cos:
+            case CalcNodeType::Tan:
+            case CalcNodeType::Asin:
+            case CalcNodeType::Acos:
+            case CalcNodeType::Atan:
+            case CalcNodeType::Sinh:
+            case CalcNodeType::Cosh:
+            case CalcNodeType::Tanh:
+            case CalcNodeType::Floor:
+            case CalcNodeType::Ceil:
+            case CalcNodeType::Sign:
                 n.mWidth = rPool[n.mLhs].mWidth;
                 break;
             case CalcNodeType::Norm:
@@ -249686,6 +249738,8 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
             case CalcNodeType::Div:
             case CalcNodeType::Min:
             case CalcNodeType::Max:
+            case CalcNodeType::Atan2:
+            case CalcNodeType::Pow:
                 n.mWidth =
                     calc_combine_width(rPool[n.mLhs].mWidth, rPool[n.mRhs].mWidth, n.mType, n.mPos);
                 break;
@@ -249696,6 +249750,45 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
 // ---------------------------------------------------------------------------
 // Pass C: the element evaluator
 // ---------------------------------------------------------------------------
+
+/// One unary math function of the libm. A domain error is a NaN (and `log(0)`
+/// an infinity), per the policy in `operations/data_common.hpp`.
+double calc_unary(CalcNodeType t, double x) {
+    switch (t) {
+        case CalcNodeType::Exp:
+            return std::exp(x);
+        case CalcNodeType::Log:
+            return std::log(x);
+        case CalcNodeType::Log10:
+            return std::log10(x);
+        case CalcNodeType::Sin:
+            return std::sin(x);
+        case CalcNodeType::Cos:
+            return std::cos(x);
+        case CalcNodeType::Tan:
+            return std::tan(x);
+        case CalcNodeType::Asin:
+            return std::asin(x);
+        case CalcNodeType::Acos:
+            return std::acos(x);
+        case CalcNodeType::Atan:
+            return std::atan(x);
+        case CalcNodeType::Sinh:
+            return std::sinh(x);
+        case CalcNodeType::Cosh:
+            return std::cosh(x);
+        case CalcNodeType::Tanh:
+            return std::tanh(x);
+        case CalcNodeType::Floor:
+            return std::floor(x);
+        case CalcNodeType::Ceil:
+            return std::ceil(x);
+        case CalcNodeType::Sign:
+            return std::isnan(x) ? x : (x > 0.0 ? 1.0 : (x < 0.0 ? -1.0 : 0.0));
+        default:
+            return x;
+    }
+}
 
 /// Evaluates node `idx` for row `row`, writing up to DATA_CALC_MAX_COMPONENTS
 /// values into `pOut`. Returns the width actually produced.
@@ -249729,6 +249822,26 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
             const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, pOut);
             for (std::size_t k = 0; k < w; ++k)
                 pOut[k] = std::sqrt(pOut[k]);
+            return w;
+        }
+        case CalcNodeType::Exp:
+        case CalcNodeType::Log:
+        case CalcNodeType::Log10:
+        case CalcNodeType::Sin:
+        case CalcNodeType::Cos:
+        case CalcNodeType::Tan:
+        case CalcNodeType::Asin:
+        case CalcNodeType::Acos:
+        case CalcNodeType::Atan:
+        case CalcNodeType::Sinh:
+        case CalcNodeType::Cosh:
+        case CalcNodeType::Tanh:
+        case CalcNodeType::Floor:
+        case CalcNodeType::Ceil:
+        case CalcNodeType::Sign: {
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, pOut);
+            for (std::size_t k = 0; k < w; ++k)
+                pOut[k] = calc_unary(n.mType, pOut[k]);
             return w;
         }
         case CalcNodeType::Norm: {
@@ -249770,6 +249883,12 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
                 break;
             case CalcNodeType::Max:
                 pOut[k] = a > b ? a : b;
+                break;
+            case CalcNodeType::Atan2:
+                pOut[k] = std::atan2(a, b);
+                break;
+            case CalcNodeType::Pow:
+                pOut[k] = std::pow(a, b);
                 break;
             default:
                 pOut[k] = 0.0;

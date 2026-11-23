@@ -28,7 +28,19 @@ unary   := ('-'|'+') unary | primary
 primary := number | ident | ident '(' expr (',' expr)* ')' | '(' expr ')'
 ```
 
-Functions: `abs(x)`, `sqrt(x)`, `min(a,b)`, `max(a,b)`, and `norm(v)` for the Euclidean magnitude of a vector. Exponentiation is deliberately absent.
+Functions: `abs(x)`, `sqrt(x)`, `min(a,b)`, `max(a,b)`, and `norm(v)` for the Euclidean magnitude of a vector, then the elementwise math functions:
+
+| Function | Arguments | Result |
+| --- | --- | --- |
+| `exp`, `log`, `log10` | one | the same width as the argument |
+| `sin`, `cos`, `tan`, `asin`, `acos`, `atan` | one (radians) | the same width |
+| `sinh`, `cosh`, `tanh` | one | the same width |
+| `floor`, `ceil`, `sign` | one | the same width (`sign` is −1, 0 or 1; NaN stays NaN) |
+| `atan2(y, x)`, `pow(a, b)` | two | scalar-broadcasting, like `min` and `max` |
+
+Exponentiation is a **function**, `pow`, not an operator, so the grammar's precedence is unchanged. A domain error is a `NaN`, not an exception (`log(-1)`, `asin(2)`, `pow(-8, 0.5)`), and `log(0)` is `-inf`, the way division by zero is an infinity. There is no warning channel to count them in.
+
+`abs`, `sqrt`, `floor`, `ceil`, `sign`, `min`, `max` and `norm` are exact, and the core and its Python twin agree on them bit for bit. `exp`, `log`, `log10`, the trigonometric and hyperbolic functions and `pow` come from the platform's libm in the core and from NumPy in the twin: they agree to about a relative `1e-12`, and may differ in the last bit between platforms, so do not compare their results for equality across engines or machines.
 
 ## Names
 
@@ -70,7 +82,7 @@ unexpected end of expression
 expected ')' at position 12
 trailing input after the expression at position 9
 unknown point_data array 'temp' at position 5 (available: T, p, u)
-unknown function 'log' at position 0 (known: abs, sqrt, min, max, norm)
+unknown function 'foo' at position 0 (known: abs, sqrt, min, max, norm, exp, log, log10, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, floor, ceil, sign, pow)
 'norm' takes exactly 1 argument (got 2) at position 0
 'min' takes exactly 2 arguments (got 1) at position 3
 cannot combine a 3-component array with a 9-component array in '*' at position 12

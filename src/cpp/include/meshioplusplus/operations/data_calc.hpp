@@ -35,7 +35,12 @@
  * @endcode
  *
  * Functions: `abs(x)`, `sqrt(x)`, `min(a,b)`, `max(a,b)`, and `norm(v)` for the
- * Euclidean magnitude of a vector. Exponentiation is deliberately absent.
+ * Euclidean magnitude of a vector, then the elementwise math functions `exp`,
+ * `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`,
+ * `tanh`, `floor`, `ceil`, `sign` (all width-preserving) and `atan2(y,x)`,
+ * `pow(a,b)` (scalar-broadcasting, like `min`). Exponentiation is a function,
+ * `pow`, not an operator, so the grammar's precedence is unchanged; a domain
+ * error (`log(-1)`, `asin(2)`) is a NaN, as division by zero is an infinity.
  *
  * Identifiers may contain `:` and `.` after their first character, so a mesh's
  * own conventional names (`gmsh:physical`, `quality:scaled_jacobian`) can be

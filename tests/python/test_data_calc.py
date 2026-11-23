@@ -118,9 +118,9 @@ def test_unknown_array_name_raises():
 def test_unknown_function_raises_and_lists_known_ones():
     m = data_mesh()
     with pytest.raises(ValueError) as exc:
-        mp.data_calc(m, "log(T)", location="point", output="o")
+        mp.data_calc(m, "foo(T)", location="point", output="o")
     msg = str(exc.value)
-    assert "log" in msg
+    assert "foo" in msg
     assert "sqrt" in msg
 
 
@@ -165,6 +165,105 @@ def test_existing_output_name_needs_overwrite():
         mp.data_calc(m, "T * 2", location="point", output="T")
     out = mp.data_calc(m, "T * 2", location="point", output="T", overwrite=True)
     assert out.point_data["T"] == pytest.approx(m.point_data["T"] * 2)
+
+
+_MATH = {
+    "exp": np.exp,
+    "log": np.log,
+    "log10": np.log10,
+    "sin": np.sin,
+    "cos": np.cos,
+    "tan": np.tan,
+    "atan": np.arctan,
+    "sinh": np.sinh,
+    "cosh": np.cosh,
+    "tanh": np.tanh,
+    "floor": np.floor,
+    "ceil": np.ceil,
+    "sign": np.sign,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_MATH))
+def test_unary_math_functions_match_numpy(name):
+    m = data_mesh()
+    # T - 5.5 spans negative, zero-adjacent and positive values; exp stays finite.
+    out = mp.data_calc(m, f"{name}((T - 5.5) / 4)", location="point", output="o")
+    t = (m.point_data["T"] - 5.5) / 4
+    with np.errstate(all="ignore"):
+        expect = _MATH[name](t)
+    np.testing.assert_allclose(out.point_data["o"], expect, rtol=1e-12, equal_nan=True)
+
+
+def test_inverse_trigonometric_functions_and_their_domain():
+    m = data_mesh()
+    out = mp.data_calc(m, "asin(T / 12)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.arcsin(m.point_data["T"] / 12))
+    out = mp.data_calc(m, "acos(T / 6)", location="point", output="o")
+    got = out.point_data["o"]
+    # |T / 6| > 1 for T = 11, 10, 12: a domain error is NaN, not an exception.
+    assert np.isnan(got[[2, 3, 5]]).all() and np.isfinite(got[[0, 1, 4]]).all()
+
+
+def test_log_of_zero_and_of_a_negative():
+    m = data_mesh()
+    out = mp.data_calc(m, "log(T)", location="point", output="o")
+    got = out.point_data["o"]
+    assert got[0] == -np.inf
+    out = mp.data_calc(m, "log(-T)", location="point", output="o")
+    assert np.isnan(out.point_data["o"][1])
+
+
+def test_binary_math_functions_broadcast_like_min_and_max():
+    m = data_mesh()
+    out = mp.data_calc(m, "pow(T, 2)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], m.point_data["T"] ** 2)
+    out = mp.data_calc(m, "pow(2, T / 4)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 2.0 ** (m.point_data["T"] / 4))
+    out = mp.data_calc(m, "atan2(v, 2)", location="point", output="o")
+    assert out.point_data["o"].shape == (6, 3)
+    np.testing.assert_allclose(out.point_data["o"], np.arctan2(m.point_data["v"], 2.0))
+    # pow of a negative base to a fractional exponent is a domain error: NaN.
+    out = mp.data_calc(m, "pow(0 - T, 0.5)", location="point", output="o")
+    assert np.isnan(out.point_data["o"][1])
+
+
+def test_math_functions_keep_a_vector_a_vector():
+    m = data_mesh()
+    out = mp.data_calc(m, "exp(v)", location="point", output="o")
+    assert out.point_data["o"].shape == (6, 3)
+    np.testing.assert_allclose(out.point_data["o"], np.exp(m.point_data["v"]))
+
+
+def test_math_function_arity():
+    m = data_mesh()
+    with pytest.raises(ValueError, match="takes exactly 2 arguments"):
+        mp.data_calc(m, "pow(T)", location="point", output="o")
+    with pytest.raises(ValueError, match="takes exactly 1 argument"):
+        mp.data_calc(m, "sin(T, T)", location="point", output="o")
+
+
+def test_math_functions_match_between_the_core_and_the_twin():
+    pytest.importorskip("meshioplusplus._core")
+    m = data_mesh()
+    exprs = [f"{n}((T - 5.5) / 4)" for n in sorted(_MATH)] + [
+        "asin(T / 12)",
+        "acos(T / 6)",
+        "atan2(T - 5, v)",
+        "pow(T, 0.5)",
+        "pow(T - 5, 2)",
+        "log10(T + 1) * exp(-T / 8)",
+    ]
+    for expr in exprs:
+        cpp = mp.data_calc(m, expr, location="point", output="o")
+        py = _calc_py(m, expr, "point_data", "o", False)
+        np.testing.assert_allclose(
+            cpp.point_data["o"],
+            py.point_data["o"],
+            rtol=1e-12,
+            equal_nan=True,
+            err_msg=expr,
+        )
 
 
 def test_cpp_matches_python():

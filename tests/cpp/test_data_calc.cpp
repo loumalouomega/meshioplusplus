@@ -96,6 +96,63 @@ TEST(DataCalc, Functions) {
     EXPECT_NEAR(read_double(d.PointData("d"), 0), 5.0, 1e-12);
 }
 
+TEST(DataCalc, MathFunctionsMatchTheLibm) {
+    Mesh in = mt::data_mesh();  // T = {0, 1, 11, 10, 2, 12}
+    const double t[6] = {0.0, 1.0, 11.0, 10.0, 2.0, 12.0};
+    struct Case {
+        const char* mExpr;
+        double (*mFn)(double);
+    };
+    const Case cases[] = {
+        {"exp(T / 8)", [](double x) { return std::exp(x / 8); }},
+        {"log(T + 1)", [](double x) { return std::log(x + 1); }},
+        {"log10(T + 1)", [](double x) { return std::log10(x + 1); }},
+        {"sin(T)", [](double x) { return std::sin(x); }},
+        {"cos(T)", [](double x) { return std::cos(x); }},
+        {"tan(T / 8)", [](double x) { return std::tan(x / 8); }},
+        {"atan(T)", [](double x) { return std::atan(x); }},
+        {"sinh(T / 8)", [](double x) { return std::sinh(x / 8); }},
+        {"cosh(T / 8)", [](double x) { return std::cosh(x / 8); }},
+        {"tanh(T / 8)", [](double x) { return std::tanh(x / 8); }},
+        {"floor(T / 3)", [](double x) { return std::floor(x / 3); }},
+        {"ceil(T / 3)", [](double x) { return std::ceil(x / 3); }},
+        {"sign(T - 5)", [](double x) { return x - 5 > 0 ? 1.0 : (x - 5 < 0 ? -1.0 : 0.0); }},
+    };
+    for (const Case& c : cases) {
+        const Mesh out = data_calc(in, c.mExpr, point_opts("o"));
+        for (int i = 0; i < 6; ++i)
+            EXPECT_NEAR(read_double(out.PointData("o"), i), c.mFn(t[i]), 1e-12) << c.mExpr << i;
+    }
+    // asin and acos on [-1, 1]; outside it the answer is NaN, not an error.
+    const Mesh as = data_calc(in, "asin(T / 12)", point_opts("o"));
+    EXPECT_NEAR(read_double(as.PointData("o"), 3), std::asin(10.0 / 12), 1e-12);
+    const Mesh ac = data_calc(in, "acos(T / 6)", point_opts("o"));
+    EXPECT_TRUE(std::isnan(read_double(ac.PointData("o"), 2)));
+    EXPECT_NEAR(read_double(ac.PointData("o"), 4), std::acos(2.0 / 6), 1e-12);
+}
+
+TEST(DataCalc, LogOfZeroIsAnInfinityAndOfANegativeANaN) {
+    Mesh in = mt::data_mesh();
+    EXPECT_TRUE(
+        std::isinf(read_double(data_calc(in, "log(T)", point_opts("o")).PointData("o"), 0)));
+    EXPECT_TRUE(
+        std::isnan(read_double(data_calc(in, "log(-T)", point_opts("o")).PointData("o"), 1)));
+}
+
+TEST(DataCalc, BinaryMathFunctionsBroadcastAScalar) {
+    Mesh in = mt::data_mesh();
+    const Mesh p = data_calc(in, "pow(T, 2)", point_opts("o"));
+    EXPECT_NEAR(read_double(p.PointData("o"), 2), 121.0, 1e-12);
+    const Mesh q = data_calc(in, "pow(2, T / 4)", point_opts("o"));
+    EXPECT_NEAR(read_double(q.PointData("o"), 4), std::pow(2.0, 0.5), 1e-12);
+    const Mesh a = data_calc(in, "atan2(v, 2)", point_opts("o"));
+    EXPECT_EQ(meshioplusplus::data_num_components(a.PointData("o")), 3u);
+    EXPECT_NEAR(read_double(a.PointData("o"), 1 * 3 + 1), std::atan2(1.0, 2.0), 1e-12);
+    // A fractional power of a negative base is a domain error: NaN.
+    EXPECT_TRUE(std::isnan(
+        read_double(data_calc(in, "pow(0 - T, 0.5)", point_opts("o")).PointData("o"), 1)));
+}
+
 TEST(DataCalc, ScalarBroadcastAgainstAVector) {
     Mesh in = mt::data_mesh();
     Mesh out = data_calc(in, "v * 2", point_opts("v2"));
@@ -179,13 +236,15 @@ TEST(DataCalc, UnknownArrayNameListsAvailableKeys) {
 }
 
 TEST(DataCalc, UnknownFunctionListsKnownOnes) {
-    expect_message("log(T)", "unknown function 'log'");
-    expect_message("log(T)", "abs, sqrt, min, max, norm");
+    expect_message("foo(T)", "unknown function 'foo'");
+    expect_message("foo(T)", "abs, sqrt, min, max, norm, exp, log");
 }
 
 TEST(DataCalc, ArityErrors) {
     expect_message("norm(v, T)", "takes exactly 1 argument");
     expect_message("min(T)", "takes exactly 2 arguments");
+    expect_message("pow(T)", "takes exactly 2 arguments");
+    expect_message("sin(T, T)", "takes exactly 1 argument");
 }
 
 TEST(DataCalc, SyntaxErrors) {
