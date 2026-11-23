@@ -1009,6 +1009,43 @@ meshioplusplus poly-to-tet domain_poly.vtu domain_tets.vtu --json
 
 ---
 
+## meshioplusplus sequence-stats
+
+Per-point (or per-cell) statistics of data arrays over the steps of a sequence, one step in memory at a time (see [statistics over time](/sequence_stats)).
+
+```
+meshioplusplus sequence-stats [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--arrays NAME[,NAME...]` | The arrays to reduce (default: every numeric array of the first step) |
+| `--stats mean,std,min,max,sum` | The statistics (default `mean,std`) |
+| `--ddof N` | Delta degrees of freedom of `std`: `0` population, `1` sample (default `0`) |
+| `--location point\|cell` | `point_data` or `cell_data` (default `point`) |
+| `--time-from auto\|file\|filename\|index` | Where the step times come from |
+| `--json` | Emit the report: `output`, `num_steps`, `first_time`, `last_time`, `arrays` |
+
+A Python CLI verb only. The output carries `<array>:<statistic>` and the first step's geometry.
+
+## meshioplusplus sequence-derivative
+
+The time derivative of an array over a sequence, written as a sequence (see [statistics over time](/sequence_stats)).
+
+```
+meshioplusplus sequence-derivative [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The array to differentiate (required) |
+| `--scheme central\|forward` | Second-order central (one-sided at the ends) or forward (default `central`) |
+| `--output-name NAME` | The derivative's name (default `<array>:dt`) |
+| `--location`, `--time-from` | As for `sequence-stats` |
+| `--json` | Emit `output`, `num_steps` and `files` |
+
+`OUTFILE` is a `{step}`/`{index}` pattern or a series file. A Python CLI verb only.
+
 ## meshioplusplus resample
 
 Resample a transient sequence onto new times, holding at most two source steps in memory (see [Resampling onto new times](./sequences.md#resampling-onto-new-times)).

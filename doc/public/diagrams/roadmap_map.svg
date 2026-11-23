@@ -291,7 +291,7 @@
 <text x="30" y="1957" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#ffffff">high-order fields (design first)</text>
 <text x="30" y="1971" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#ffffff">L</text>
 <rect x="24" y="1990" width="176" height="40" rx="5" fill="#3987e5" fill-opacity="0.55" stroke="#3987e5" stroke-width="1.2"/>
-<text x="30" y="2007" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">streamlines · time statistics</text>
+<text x="30" y="2007" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif" font-size="9.5" font-weight="600" fill="#0b0b0b">streamlines: flat bindings</text>
 <text x="30" y="2021" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="9" fill="#52514e">M</text>
 <line x1="188" y1="1880" x2="188" y2="1890" stroke="#0b0b0b" stroke-width="1.4" marker-end="url(#arrow-0b0b0b)"/>
 <rect x="24" y="2056" width="12" height="12" rx="2" fill="#86b6ef" fill-opacity="0.36" stroke="#86b6ef" stroke-width="1"/>

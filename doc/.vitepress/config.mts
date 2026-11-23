@@ -238,6 +238,7 @@ export default defineConfig({
         items: [
           { text: "Settings pipeline", link: "/pipeline" },
           { text: "Sequences (transient)", link: "/sequences" },
+          { text: "Statistics over time", link: "/sequence_stats" },
           { text: "CLI reference", link: "/cli" },
           { text: "MCP server", link: "/mcp" },
           { text: "Interactive viewer", link: "/viewer" },

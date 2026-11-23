@@ -1175,7 +1175,7 @@ def roadmap_map():
                 ("integrals: quadrature", "S"),
                 ("operator export · field smoothing", "M"),
                 ("high-order fields (design first)", "L"),
-                ("streamlines · time statistics", "M"),
+                ("streamlines: flat bindings", "M"),
             ],
             [(1, 2)],
         ),

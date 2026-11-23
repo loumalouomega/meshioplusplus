@@ -3409,6 +3409,49 @@ def _register_operations(server: FastMCP) -> None:
         heat_iterations, poisson_iterations and converged."""
 
     @server.tool()
+    @_forward(_tools.tool_sequence_statistics)
+    def sequence_statistics(
+        output_path: str,
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        arrays: Optional[List[str]] = None,
+        stats: Optional[List[str]] = None,
+        location: str = "point",
+        ddof: int = 0,
+        time_from: str = "auto",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Statistics of data arrays over the steps of a sequence, streaming one
+        step at a time: for each array a and statistic s in stats (mean, std,
+        min, max, sum; default mean and std), writes <a>:<s> at the location
+        (point or cell) of a mesh with the first step's geometry. std is the
+        population one (ddof 0) unless ddof is 1. Every step must have the same
+        points, cells and array shapes. Give the sequence as input_pattern (a
+        glob) or input_paths. Reports num_steps, first_time, last_time and the
+        arrays."""
+
+    @server.tool()
+    @_forward(_tools.tool_sequence_derivative)
+    def sequence_derivative(
+        output_path: str,
+        array: str,
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        location: str = "point",
+        scheme: str = "central",
+        output_name: Optional[str] = None,
+        time_from: str = "auto",
+        input_format: Optional[str] = None,
+    ) -> dict:
+        """The time derivative of an array over a sequence, from the step times:
+        scheme central (second order inside, one-sided at the two ends) or
+        forward. Writes a sequence (output_path a {step}/{index} pattern or a
+        series file) of the steps' meshes with <array>:dt (or output_name) added
+        at the location. Holds at most three steps. Needs at least two steps
+        with increasing times and one topology."""
+
+    @server.tool()
     @_forward(_tools.tool_streamlines)
     def streamlines(
         input_path: str,

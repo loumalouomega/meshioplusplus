@@ -742,6 +742,20 @@ _VERBS = (
         ),
     ),
     _Verb(
+        "sequence-stats",
+        "_sequence_stats",
+        "sequence_stats_cmd",
+        "Per-point or per-cell statistics of data arrays over a sequence",
+        add_args="add_stats_args",
+    ),
+    _Verb(
+        "sequence-derivative",
+        "_sequence_stats",
+        "sequence_derivative_cmd",
+        "The time derivative of an array over a sequence, as a sequence",
+        add_args="add_derivative_args",
+    ),
+    _Verb(
         "refine",
         "_refine",
         "refine_cmd",

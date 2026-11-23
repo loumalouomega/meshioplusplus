@@ -4972,6 +4972,79 @@ def tool_delaunay_2d(input_path, output_path, input_format=None, output_format=N
     )
 
 
+def tool_sequence_statistics(
+    output_path,
+    input_pattern=None,
+    input_paths=None,
+    arrays=None,
+    stats=None,
+    location="point",
+    ddof=0,
+    time_from="auto",
+    input_format=None,
+    output_format=None,
+):
+    """Per-point or per-cell statistics (mean, std, min, max, sum) of data
+    arrays over the steps of a sequence; writes one mesh with <array>:<stat>."""
+    from .. import sequence_statistics
+
+    resolved_in, resolved_out = _resolve_sequence_io(
+        input_pattern, input_paths, output_path
+    )
+    out, report = sequence_statistics(
+        resolved_in,
+        list(arrays) if arrays else None,
+        tuple(stats) if stats else ("mean", "std"),
+        location=location,
+        ddof=ddof,
+        file_format=input_format,
+        time_from=time_from,
+        return_report=True,
+    )
+    write(resolved_out, out, file_format=output_format)
+    _cache_invalidate(resolved_out)
+    return _result(
+        resolved_out,
+        out,
+        num_steps=int(report["num_steps"]),
+        first_time=float(report["first_time"]),
+        last_time=float(report["last_time"]),
+        arrays=list(report["arrays"]),
+    )
+
+
+def tool_sequence_derivative(
+    output_path,
+    array,
+    input_pattern=None,
+    input_paths=None,
+    location="point",
+    scheme="central",
+    output_name=None,
+    time_from="auto",
+    input_format=None,
+):
+    """The time derivative of an array over a sequence (central or forward
+    difference from the step times); writes a sequence with <array>:dt."""
+    from .. import sequence_derivative
+    from .._sequence import write_sequence
+
+    resolved_in, resolved_out = _resolve_sequence_io(
+        input_pattern, input_paths, output_path
+    )
+    steps = sequence_derivative(
+        resolved_in,
+        array,
+        location=location,
+        scheme=scheme,
+        output=output_name,
+        file_format=input_format,
+        time_from=time_from,
+    )
+    written = write_sequence(resolved_out, steps)
+    return {"output_path": resolved_out, "num_steps": len(written), "files": written}
+
+
 def tool_streamlines(
     input_path,
     output_path,
@@ -8261,6 +8334,22 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_streamlines,
                 "wraps": ("streamlines",),
+                "gated": None,
+            },
+        ),
+        (
+            "sequence_statistics",
+            {
+                "fn": tool_sequence_statistics,
+                "wraps": ("sequence_statistics",),
+                "gated": None,
+            },
+        ),
+        (
+            "sequence_derivative",
+            {
+                "fn": tool_sequence_derivative,
+                "wraps": ("sequence_derivative",),
                 "gated": None,
             },
         ),

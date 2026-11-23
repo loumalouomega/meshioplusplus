@@ -10048,6 +10048,60 @@
     ]
    }
   },
+  "sequence_derivative": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "source"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "default": "'point'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
+     },
+     {
+      "default": "'central'",
+      "kind": "KEYWORD_ONLY",
+      "name": "scheme"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "output"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "file_format"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "times"
+     },
+     {
+      "default": "'auto'",
+      "kind": "KEYWORD_ONLY",
+      "name": "time_from"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "sort"
+     },
+     {
+      "kind": "VAR_KEYWORD",
+      "name": "read_kwargs"
+     }
+    ]
+   }
+  },
   "sequence_entries": {
    "kind": "function",
    "signature": {
@@ -10075,6 +10129,66 @@
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "sort"
+     }
+    ]
+   }
+  },
+  "sequence_statistics": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "source"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "arrays"
+     },
+     {
+      "default": "('mean', 'std')",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "stats"
+     },
+     {
+      "default": "'point'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "ddof"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "file_format"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "times"
+     },
+     {
+      "default": "'auto'",
+      "kind": "KEYWORD_ONLY",
+      "name": "time_from"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "sort"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     },
+     {
+      "kind": "VAR_KEYWORD",
+      "name": "read_kwargs"
      }
     ]
    }
