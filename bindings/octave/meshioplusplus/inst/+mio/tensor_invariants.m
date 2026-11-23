@@ -8,14 +8,16 @@ function out = tensor_invariants(mesh, location, varargin)
 %   _deviatoric. Options:
 %     'names'      tensor arrays ([] or {} for every 6- or 9-component array)
 %     'outputs'    any of 'mises', 'principal', 'hydrostatic', 'deviatoric'
-%                  ([] or {} for all four)
+%                  ([] or {} for these four) and the opt-in 'trace',
+%                  'determinant', 'invariants' (I1, I2, I3) and 'inverse'
 %     'prefix'     prepended to every output name ([] for none)
 %     'suffix'     appended after the invariant's name ([] for none)
 %     'overwrite'  replace existing output arrays (true)
 
     o = mio.internal.opts(varargin, {'names', [], 'outputs', [], 'prefix', [], ...
         'suffix', [], 'overwrite', true}, 'mio.tensor_invariants');
-    flags = {'mises', 'principal', 'hydrostatic', 'deviatoric'};
+    flags = {'mises', 'principal', 'hydrostatic', 'deviatoric', 'trace', ...
+             'determinant', 'invariants', 'inverse'};
     outputs = mio.internal.cellstr_arg(o.outputs, 'outputs');
     if isempty(outputs)
         mask = 15;
@@ -25,7 +27,8 @@ function out = tensor_invariants(mesh, location, varargin)
             hit = find(strcmp(outputs{k}, flags), 1);
             if isempty(hit)
                 error('meshioplusplus:argument', ['`outputs` entries must be ''mises'', ' ...
-                      '''principal'', ''hydrostatic'' or ''deviatoric'', got ''%s'''], outputs{k});
+                      '''principal'', ''hydrostatic'', ''deviatoric'', ''trace'', ' ...
+                      '''determinant'', ''invariants'' or ''inverse'', got ''%s'''], outputs{k});
             end
             mask = bitor(mask, 2 ^ (hit - 1));
         end

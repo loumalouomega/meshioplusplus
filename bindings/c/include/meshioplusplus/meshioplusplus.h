@@ -5451,11 +5451,16 @@ typedef enum mio_tensor_invariant {
     MIO_TINV_PRINCIPAL = 2,   /**< eigenvalues, ascending */
     MIO_TINV_HYDROSTATIC = 4, /**< mean of the diagonal */
     MIO_TINV_DEVIATORIC = 8,  /**< input minus hydrostatic on the diagonal */
-    MIO_TINV_ALL = 15         /**< every invariant above (also 0 defaults to this) */
+    MIO_TINV_ALL = 15,        /**< the four flags above (also 0 defaults to this) */
+    MIO_TINV_TRACE = 16,      /**< xx + yy + zz of the tensor as given (opt-in) */
+    MIO_TINV_DETERMINANT = 32, /**< det of the 3x3 as given (opt-in) */
+    MIO_TINV_INVARIANTS = 64, /**< I1, I2, I3, three components (opt-in) */
+    MIO_TINV_INVERSE = 128    /**< adj(A)/det(A) in the input's width; NaN if det == 0 (opt-in) */
 } mio_tensor_invariant;
 
 /**
- * von Mises / principal / hydrostatic / deviatoric fields of a symmetric
+ * von Mises / principal / hydrostatic / deviatoric fields (and, opt-in, trace,
+ * determinant, invariants and inverse) of a symmetric
  * (6-component, `xx yy zz xy yz zx`) or general 3x3 (9-component, row-major)
  * tensor array. `mises`/`principal` use the symmetric part of a 9-component
  * input. `count == 0` processes every 6- or 9-component array at `location`

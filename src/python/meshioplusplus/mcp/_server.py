@@ -4659,7 +4659,8 @@ def _register_data(server: FastMCP) -> None:
     ) -> dict:
         """von Mises / principal / hydrostatic / deviatoric of a symmetric
         (6-component) or general 3x3 (9-component) tensor array. outputs: any
-        of mises | principal | hydrostatic | deviatoric (default: all four)."""
+        of mises | principal | hydrostatic | deviatoric (default: these four) or the
+        opt-in trace | determinant | invariants | inverse."""
 
 
 # --------------------------------------------------------------------------- #

@@ -77,12 +77,21 @@
 namespace meshioplusplus {
 
 /// Which invariants to compute; combine with `|`.
+///
+/// `All` is the four original flags and stays so: the algebraic flags below
+/// (`Trace` to `Inverse`) are opt-in, so a default call writes the same arrays
+/// it always did. They read the tensor as given (a 9-component input is not
+/// symmetrised, like `Hydrostatic` and `Deviatoric`).
 enum class TensorInvariant : unsigned {
     Mises = 1u << 0,
     Principal = 1u << 1,
     Hydrostatic = 1u << 2,
     Deviatoric = 1u << 3,
     All = Mises | Principal | Hydrostatic | Deviatoric,
+    Trace = 1u << 4,        ///< `xx + yy + zz`; one component.
+    Determinant = 1u << 5,  ///< `det A`; one component.
+    Invariants = 1u << 6,   ///< `I1 = trace`, `I2 = sum of the principal 2x2 minors`, `I3 = det`.
+    Inverse = 1u << 7,      ///< `adj(A) / det(A)`, in the input's shape; NaN where `det == 0`.
 };
 
 /// `a | b` for `TensorInvariant` flags.
@@ -117,8 +126,8 @@ struct TensorInvariantsOptions {
 };
 
 /**
- * @brief Computes von Mises, principal, hydrostatic and/or deviatoric fields
- * for the selected tensor arrays.
+ * @brief Computes von Mises, principal, hydrostatic, deviatoric, trace,
+ * determinant, invariant and/or inverse fields for the selected tensor arrays.
  * @param rMesh the source mesh (unmodified).
  * @param rOpts which arrays, which outputs, and how to name them.
  * @return a new mesh with the source data plus the requested invariant arrays;

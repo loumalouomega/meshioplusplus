@@ -141,7 +141,7 @@ function t_tensor()
     names = mio.point_data_names(all4);
     assert(any(strcmp('p_stress_principal', names)));
     assert(any(strcmp('p_stress_deviatoric', names)));
-    expect_error(@() mio.tensor_invariants(m, 'point', 'outputs', 'trace'), 'outputs');
+    expect_error(@() mio.tensor_invariants(m, 'point', 'outputs', 'bogus'), 'outputs');
     expect_error(@() mio.tensor_invariants(m, 'field'), 'field_data');
 end
 

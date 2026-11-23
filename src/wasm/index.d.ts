@@ -2086,7 +2086,15 @@ export type CellPointWeight = 'uniform' | 'measure';
 export type NanPolicy = 'ignore' | 'replace' | 'fail';
 
 /** `tensorInvariants`' selectable outputs. See doc/tensor_invariants.md. */
-export type TensorInvariantOutput = 'mises' | 'principal' | 'hydrostatic' | 'deviatoric';
+export type TensorInvariantOutput =
+  | 'mises'
+  | 'principal'
+  | 'hydrostatic'
+  | 'deviatoric'
+  | 'trace'
+  | 'determinant'
+  | 'invariants'
+  | 'inverse';
 
 /** Cell-keeping rule for the crop operations: every node inside, or any. */
 export type CropMode = 'all' | 'any';
@@ -5659,7 +5667,8 @@ export interface MeshioPlusPlusModule {
    * von Mises / principal / hydrostatic / deviatoric fields of a symmetric
    * (6-component, `xx yy zz xy yz zx`) or general 3x3 (9-component,
    * row-major) tensor array. `mises`/`principal` use the symmetric part of a
-   * 9-component input. `names` empty processes every 6- or 9-component array
+   * 9-component input; the opt-in `trace`, `determinant`, `invariants` (I1, I2,
+   * I3) and `inverse` read the tensor as given. `names` empty processes every 6- or 9-component array
    * at `location` (`'field'` throws). `outputs` empty means all four.
    */
   tensorInvariants(

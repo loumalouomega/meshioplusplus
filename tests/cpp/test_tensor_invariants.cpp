@@ -228,6 +228,144 @@ TEST(TensorInvariants, PrefixAndSuffix) {
     EXPECT_TRUE(out.HasPointData("p_s_mises_q"));
 }
 
+// A mesh with the tensors the algebraic flags are checked against:
+//   row 0: diag(2, 3, 5)                    (9 components)
+//   row 1: [[1,2,3],[0,1,4],[5,6,0]]        (det 1, an all-integer inverse)
+//   row 2: a singular matrix                 (det 0)
+//   row 3: one NaN component
+Mesh algebra_mesh() {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    m.AddPointData("a", mt::data_array({2, 0, 0, 0, 3, 0, 0, 0, 5, 1,   2, 3, 0, 1, 4, 5, 6, 0,
+                                        1, 2, 3, 2, 4, 6, 0, 0, 1, nan, 0, 0, 0, 1, 0, 0, 0, 1},
+                                       9));
+    // The same diag(2, 3, 5) as a symmetric 6-component tensor.
+    m.AddPointData(
+        "s", mt::data_array(
+                 {2, 3, 5, 0, 0, 0, 1, 1, 1, 0, 0, 0, 4, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 0}, 6));
+    return m;
+}
+
+Mesh run_algebra(const std::string& rName, TensorInvariant flag) {
+    TensorInvariantsOptions o;
+    o.names = {rName};
+    o.outputs = flag;
+    return tensor_invariants(algebra_mesh(), o);
+}
+
+TEST(TensorInvariants, TraceAndDeterminantMatchClosedForms) {
+    Mesh t = run_algebra("a", TensorInvariant::Trace | TensorInvariant::Determinant);
+    const NDArray& tr = t.PointData("a_trace");
+    const NDArray& det = t.PointData("a_determinant");
+    EXPECT_NEAR(read_double(tr, 0), 10.0, 1e-12);
+    EXPECT_NEAR(read_double(det, 0), 30.0, 1e-12);
+    EXPECT_NEAR(read_double(tr, 1), 2.0, 1e-12);
+    EXPECT_NEAR(read_double(det, 1), 1.0, 1e-12);
+    EXPECT_NEAR(read_double(det, 2), 0.0, 1e-12);
+    EXPECT_TRUE(std::isnan(read_double(tr, 3)));
+    EXPECT_TRUE(std::isnan(read_double(det, 3)));
+}
+
+TEST(TensorInvariants, InvariantsAreTraceSecondAndDeterminant) {
+    Mesh t = run_algebra("a", TensorInvariant::Invariants);
+    const NDArray& inv = t.PointData("a_invariants");
+    EXPECT_EQ(data_num_components(inv), 3u);
+    EXPECT_NEAR(read_double(inv, 0 * 3 + 0), 10.0, 1e-12);
+    EXPECT_NEAR(read_double(inv, 0 * 3 + 1), 31.0, 1e-12);  // 6 + 15 + 10
+    EXPECT_NEAR(read_double(inv, 0 * 3 + 2), 30.0, 1e-12);
+    EXPECT_NEAR(read_double(inv, 1 * 3 + 0), 2.0, 1e-12);
+    EXPECT_NEAR(read_double(inv, 1 * 3 + 1), -38.0, 1e-12);
+    EXPECT_NEAR(read_double(inv, 1 * 3 + 2), 1.0, 1e-12);
+    EXPECT_TRUE(std::isnan(read_double(inv, 3 * 3 + 1)));
+}
+
+TEST(TensorInvariants, InverseOfAGeneralMatrixIsExact) {
+    Mesh t = run_algebra("a", TensorInvariant::Inverse);
+    const NDArray& inv = t.PointData("a_inverse");
+    ASSERT_EQ(data_num_components(inv), 9u);
+    const double diag[9] = {0.5, 0, 0, 0, 1.0 / 3.0, 0, 0, 0, 0.2};
+    const double gen[9] = {-24, 18, 5, 20, -15, -4, -5, 4, 1};
+    for (int k = 0; k < 9; ++k) {
+        EXPECT_NEAR(read_double(inv, k), diag[k], 1e-14) << k;
+        EXPECT_NEAR(read_double(inv, 9 + k), gen[k], 1e-12) << k;
+    }
+    // A singular row and a row with a NaN are NaN throughout.
+    for (int k = 0; k < 9; ++k) {
+        EXPECT_TRUE(std::isnan(read_double(inv, 2 * 9 + k))) << k;
+        EXPECT_TRUE(std::isnan(read_double(inv, 3 * 9 + k))) << k;
+    }
+}
+
+TEST(TensorInvariants, InverseOfASymmetricInputKeepsSixComponents) {
+    Mesh t = run_algebra("s", TensorInvariant::Inverse);
+    const NDArray& inv = t.PointData("s_inverse");
+    ASSERT_EQ(data_num_components(inv), 6u);
+    const double expect[6] = {0.5, 1.0 / 3.0, 0.2, 0, 0, 0};
+    for (int k = 0; k < 6; ++k)
+        EXPECT_NEAR(read_double(inv, k), expect[k], 1e-14) << k;
+}
+
+TEST(TensorInvariants, TheAlgebraicFlagsAreOptInAndReadTheTensorAsGiven) {
+    // The default is still the four original arrays.
+    TensorInvariantsOptions o;
+    o.names = {"a"};
+    Mesh out = tensor_invariants(algebra_mesh(), o);
+    EXPECT_TRUE(out.HasPointData("a_mises"));
+    EXPECT_FALSE(out.HasPointData("a_trace"));
+    EXPECT_FALSE(out.HasPointData("a_inverse"));
+    // A nonsymmetric 9-component input: the determinant is that of the matrix
+    // itself, not of its symmetric part (which would be 0.25 * ... != 1).
+    Mesh d = run_algebra("a", TensorInvariant::Determinant);
+    EXPECT_NEAR(read_double(d.PointData("a_determinant"), 1), 1.0, 1e-12);
+}
+
+TEST(TensorInvariants, InverseTimesTheMatrixIsTheIdentity) {
+    Mesh in;
+    in.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}}));
+    in.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    const double a[9] = {4, -2, 1, 3, 6, -5, 2, 7, 8};
+    in.AddPointData("t", mt::data_array({4,  -2, 1, 3, 6, -5, 2, 7, 8, 4,  -2, 1, 3, 6,
+                                         -5, 2,  7, 8, 4, -2, 1, 3, 6, -5, 2,  7, 8},
+                                        9));
+    TensorInvariantsOptions o;
+    o.names = {"t"};
+    o.outputs = TensorInvariant::Inverse;
+    const Mesh out = tensor_invariants(in, o);
+    const NDArray& inv = out.PointData("t_inverse");
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            double acc = 0.0;
+            for (int k = 0; k < 3; ++k)
+                acc += a[i * 3 + k] * read_double(inv, k * 3 + j);
+            EXPECT_NEAR(acc, i == j ? 1.0 : 0.0, 1e-12);
+        }
+    }
+}
+
+TEST(TensorInvariants, AlgebraicFlagsOnCellData) {
+    Mesh in;
+    in.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {2, 0, 0}}));
+    in.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    in.AddCellBlock("triangle", mt::conn_from({{0, 2, 3}}));
+    std::vector<NDArray> blocks;
+    blocks.push_back(mt::data_array({2, 0, 0, 0, 3, 0, 0, 0, 5}, 9));
+    blocks.push_back(mt::data_array({1, 2, 3, 0, 1, 4, 5, 6, 0}, 9));
+    in.AddCellData("g", std::move(blocks));
+    TensorInvariantsOptions o;
+    o.location = DataLocation::Cell;
+    o.names = {"g"};
+    o.outputs = TensorInvariant::Determinant | TensorInvariant::Inverse;
+    Mesh out = tensor_invariants(in, o);
+    ASSERT_EQ(out.CellDataNumBlocks("g_determinant"), 2u);
+    ASSERT_EQ(out.CellDataNumBlocks("g_inverse"), 2u);
+    EXPECT_NEAR(read_double(out.CellData("g_determinant", 0), 0), 30.0, 1e-12);
+    EXPECT_NEAR(read_double(out.CellData("g_determinant", 1), 0), 1.0, 1e-12);
+    EXPECT_NEAR(read_double(out.CellData("g_inverse", 1), 0), -24.0, 1e-12);
+    EXPECT_EQ(data_num_components(out.CellData("g_inverse", 1)), 9u);
+}
+
 TEST(TensorInvariantsParse, NameParsing) {
     EXPECT_EQ(static_cast<unsigned>(tensor_invariant_from_name("mises")),
              static_cast<unsigned>(TensorInvariant::Mises));
@@ -235,6 +373,11 @@ TEST(TensorInvariantsParse, NameParsing) {
              static_cast<unsigned>(TensorInvariant::Mises | TensorInvariant::Principal));
     EXPECT_EQ(static_cast<unsigned>(tensor_invariant_from_name("all")),
              static_cast<unsigned>(TensorInvariant::All));
+    EXPECT_EQ(static_cast<unsigned>(tensor_invariant_from_name("trace,determinant,invariants,inverse")),
+              static_cast<unsigned>(TensorInvariant::Trace | TensorInvariant::Determinant |
+                                    TensorInvariant::Invariants | TensorInvariant::Inverse));
+    // `all` is still the four original flags.
+    EXPECT_EQ(static_cast<unsigned>(TensorInvariant::All), 15u);
     EXPECT_THROW(tensor_invariant_from_name("bogus"), std::invalid_argument);
     EXPECT_THROW(tensor_invariant_from_name(""), std::invalid_argument);
 }

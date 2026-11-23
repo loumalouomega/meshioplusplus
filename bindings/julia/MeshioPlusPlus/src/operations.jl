@@ -3150,18 +3150,21 @@ von Mises, principal, hydrostatic and deviatoric fields of a symmetric
 tensor array. `mises`/`principal` use the symmetric part of a 9-component
 input. An empty `names` processes every 6- or 9-component array at `location`
 (`:field` is rejected). `outputs` is any of `:mises`, `:principal`,
-`:hydrostatic`, `:deviatoric`; an empty vector means all four. Results are
+`:hydrostatic`, `:deviatoric` (an empty vector means these four) and the
+opt-in `:trace`, `:determinant`, `:invariants` and `:inverse`. Results are
 stored as `prefix * name * "_" * output * suffix`. See
 `doc/tensor_invariants.md`.
 """
 function tensor_invariants(m::Mesh, location::Symbol, names=String[]; outputs=Symbol[],
                            prefix::AbstractString="", suffix::AbstractString="",
                            overwrite::Bool=true)
-    flags = Dict(:mises => 1, :principal => 2, :hydrostatic => 4, :deviatoric => 8)
+    flags = Dict(:mises => 1, :principal => 2, :hydrostatic => 4, :deviatoric => 8,
+                 :trace => 16, :determinant => 32, :invariants => 64, :inverse => 128)
     mask = isempty(outputs) ? 15 :
            reduce(|, (get(flags, o) do
                           throw(ArgumentError("outputs entries must be :mises, :principal, " *
-                                              ":hydrostatic or :deviatoric, got :$o"))
+                                              ":hydrostatic, :deviatoric, :trace, :determinant, " *
+                                              ":invariants or :inverse, got :$o"))
                       end for o in outputs))
     h = _handle(m); loc = _location(location)
     ptr = _with_names(names) do p, c

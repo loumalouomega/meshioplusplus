@@ -790,6 +790,10 @@ step('tensorInvariants: mises, principal, hydrostatic, deviatoric', () => {
     assert.ok(Math.abs(out.point_data.stress_hydrostatic[0] - 2) < 1e-12);
     assert.ok(!('stress_principal' in out.point_data));
 
+    const algebra = m.tensorInvariants(stressed, 'point', ['stress'], ['trace', 'determinant']);
+    assert.ok(Math.abs(algebra.point_data.stress_trace[0] - 6) < 1e-12);
+    assert.ok(Math.abs(algebra.point_data.stress_determinant[0] - 4.33) < 1e-12);
+
     assert.throws(
         () => m.tensorInvariants(stressed, 'field'),
         (err) => err instanceof Error && err.message.length > 0,

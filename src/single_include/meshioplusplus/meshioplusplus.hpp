@@ -41992,12 +41992,21 @@ MESHIOPLUSPLUS_API Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, b
 namespace meshioplusplus {
 
 /// Which invariants to compute; combine with `|`.
+///
+/// `All` is the four original flags and stays so: the algebraic flags below
+/// (`Trace` to `Inverse`) are opt-in, so a default call writes the same arrays
+/// it always did. They read the tensor as given (a 9-component input is not
+/// symmetrised, like `Hydrostatic` and `Deviatoric`).
 enum class TensorInvariant : unsigned {
     Mises = 1u << 0,
     Principal = 1u << 1,
     Hydrostatic = 1u << 2,
     Deviatoric = 1u << 3,
     All = Mises | Principal | Hydrostatic | Deviatoric,
+    Trace = 1u << 4,        ///< `xx + yy + zz`; one component.
+    Determinant = 1u << 5,  ///< `det A`; one component.
+    Invariants = 1u << 6,   ///< `I1 = trace`, `I2 = sum of the principal 2x2 minors`, `I3 = det`.
+    Inverse = 1u << 7,      ///< `adj(A) / det(A)`, in the input's shape; NaN where `det == 0`.
 };
 
 /// `a | b` for `TensorInvariant` flags.
@@ -42032,8 +42041,8 @@ struct TensorInvariantsOptions {
 };
 
 /**
- * @brief Computes von Mises, principal, hydrostatic and/or deviatoric fields
- * for the selected tensor arrays.
+ * @brief Computes von Mises, principal, hydrostatic, deviatoric, trace,
+ * determinant, invariant and/or inverse fields for the selected tensor arrays.
  * @param rMesh the source mesh (unmodified).
  * @param rOpts which arrays, which outputs, and how to name them.
  * @return a new mesh with the source data plus the requested invariant arrays;
@@ -311189,6 +311198,124 @@ NDArray tinv_deviatoric(const NDArray& rSrc, std::size_t Ncomp) {
     return dst;
 }
 
+/// Reads row @p r as the row-major 3x3 `pM[9]`, as given (a 6-component row is
+/// `xx yy zz xy yz zx`, symmetric; a 9-component row is not symmetrised).
+/// Returns false when any component is non-finite.
+bool tinv_read_matrix(const NDArray& rArray, std::size_t Ncomp, std::size_t r, double* pM) {
+    double t[9];
+    for (std::size_t k = 0; k < Ncomp; ++k) {
+        t[k] = detail::read_double(rArray, r * Ncomp + k);
+        if (!std::isfinite(t[k]))
+            return false;
+    }
+    if (Ncomp == 6) {
+        pM[0] = t[0];
+        pM[1] = t[3];
+        pM[2] = t[5];
+        pM[3] = t[3];
+        pM[4] = t[1];
+        pM[5] = t[4];
+        pM[6] = t[5];
+        pM[7] = t[4];
+        pM[8] = t[2];
+    } else {
+        for (int k = 0; k < 9; ++k)
+            pM[k] = t[k];
+    }
+    return true;
+}
+
+/// `det A` of the row-major 3x3 as the triple product of its rows.
+double tinv_det(const double* pM) {
+    return detail::det3({pM[0], pM[1], pM[2]}, {pM[3], pM[4], pM[5]}, {pM[6], pM[7], pM[8]});
+}
+
+NDArray tinv_trace(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double m[9];
+        out[r] = tinv_read_matrix(rSrc, Ncomp, r, m) ? m[0] + m[4] + m[8]
+                                                     : std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+NDArray tinv_determinant(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double m[9];
+        out[r] = tinv_read_matrix(rSrc, Ncomp, r, m) ? tinv_det(m)
+                                                     : std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+NDArray tinv_invariants(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows, std::size_t{3}});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double m[9];
+        if (tinv_read_matrix(rSrc, Ncomp, r, m)) {
+            out[r * 3 + 0] = m[0] + m[4] + m[8];
+            out[r * 3 + 1] = (m[0] * m[4] - m[1] * m[3]) + (m[4] * m[8] - m[5] * m[7]) +
+                             (m[0] * m[8] - m[2] * m[6]);
+            out[r * 3 + 2] = tinv_det(m);
+        } else {
+            for (int k = 0; k < 3; ++k)
+                out[r * 3 + k] = std::numeric_limits<double>::quiet_NaN();
+        }
+    });
+    return dst;
+}
+
+/// `adj(A) / det(A)` in the input's shape (a 6-component input gives the six
+/// components of the symmetric inverse). A row whose determinant is exactly
+/// zero, or that holds a non-finite component, is NaN: there is no warning
+/// channel, so the NaN is the whole report.
+NDArray tinv_inverse(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst = NDArray::Uninit(DType::Float64, rSrc.Shape());
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double m[9];
+        double inv[9];
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double det = tinv_read_matrix(rSrc, Ncomp, r, m) ? tinv_det(m) : nan;
+        if (!std::isfinite(det) || det == 0.0) {
+            for (std::size_t k = 0; k < Ncomp; ++k)
+                out[r * Ncomp + k] = nan;
+            return;
+        }
+        // The adjugate (the transposed cofactor matrix), row by row.
+        inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;
+        inv[1] = (m[2] * m[7] - m[1] * m[8]) / det;
+        inv[2] = (m[1] * m[5] - m[2] * m[4]) / det;
+        inv[3] = (m[5] * m[6] - m[3] * m[8]) / det;
+        inv[4] = (m[0] * m[8] - m[2] * m[6]) / det;
+        inv[5] = (m[2] * m[3] - m[0] * m[5]) / det;
+        inv[6] = (m[3] * m[7] - m[4] * m[6]) / det;
+        inv[7] = (m[1] * m[6] - m[0] * m[7]) / det;
+        inv[8] = (m[0] * m[4] - m[1] * m[3]) / det;
+        if (Ncomp == 6) {
+            out[r * 6 + 0] = inv[0];
+            out[r * 6 + 1] = inv[4];
+            out[r * 6 + 2] = inv[8];
+            out[r * 6 + 3] = inv[1];
+            out[r * 6 + 4] = inv[5];
+            out[r * 6 + 5] = inv[2];
+        } else {
+            for (int k = 0; k < 9; ++k)
+                out[r * 9 + k] = inv[k];
+        }
+    });
+    return dst;
+}
+
 /// Whether an array's trailing component count is one `tensor_invariants` can
 /// process.
 bool tinv_is_tensor_shaped(const NDArray& rArray) {
@@ -311204,8 +311331,8 @@ TensorInvariant tensor_invariant_from_name(const std::string& rName) {
     bool any = false;
     while (start <= rName.size()) {
         const std::size_t comma = rName.find(',', start);
-        const std::string tok = rName.substr(start, comma == std::string::npos ? std::string::npos
-                                                                                : comma - start);
+        const std::string tok =
+            rName.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
         if (tok == "mises")
             mask |= static_cast<unsigned>(TensorInvariant::Mises);
         else if (tok == "principal")
@@ -311214,12 +311341,21 @@ TensorInvariant tensor_invariant_from_name(const std::string& rName) {
             mask |= static_cast<unsigned>(TensorInvariant::Hydrostatic);
         else if (tok == "deviatoric")
             mask |= static_cast<unsigned>(TensorInvariant::Deviatoric);
+        else if (tok == "trace")
+            mask |= static_cast<unsigned>(TensorInvariant::Trace);
+        else if (tok == "determinant")
+            mask |= static_cast<unsigned>(TensorInvariant::Determinant);
+        else if (tok == "invariants")
+            mask |= static_cast<unsigned>(TensorInvariant::Invariants);
+        else if (tok == "inverse")
+            mask |= static_cast<unsigned>(TensorInvariant::Inverse);
         else if (tok == "all")
             mask |= static_cast<unsigned>(TensorInvariant::All);
         else
             throw std::invalid_argument(
                 "meshio++: unknown tensor invariant '" + tok +
-                "' (expected 'mises', 'principal', 'hydrostatic', 'deviatoric' or 'all')");
+                "' (expected 'mises', 'principal', 'hydrostatic', 'deviatoric', 'trace', "
+                "'determinant', 'invariants', 'inverse' or 'all')");
         any = true;
         if (comma == std::string::npos)
             break;
@@ -311238,8 +311374,8 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
     std::vector<std::string> names = rOpts.names;
     if (names.empty()) {
         for (const std::string& n : data_names(rMesh, rOpts.location)) {
-            const NDArray& src = rOpts.location == DataLocation::Point ? rMesh.PointData(n)
-                                                                        : rMesh.CellData(n, 0);
+            const NDArray& src =
+                rOpts.location == DataLocation::Point ? rMesh.PointData(n) : rMesh.CellData(n, 0);
             if (rOpts.location == DataLocation::Cell && rMesh.CellDataNumBlocks(n) == 0)
                 continue;
             if (tinv_is_tensor_shaped(src))
@@ -311249,8 +311385,8 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
         for (const std::string& n : names) {
             if (!data_has(rMesh, rOpts.location, n))
                 throw std::invalid_argument(data_unknown_key_message(rMesh, rOpts.location, n));
-            const NDArray& src = rOpts.location == DataLocation::Point ? rMesh.PointData(n)
-                                                                        : rMesh.CellData(n, 0);
+            const NDArray& src =
+                rOpts.location == DataLocation::Point ? rMesh.PointData(n) : rMesh.CellData(n, 0);
             if (!tinv_is_tensor_shaped(src))
                 throw std::invalid_argument(
                     "meshio++: tensor_invariants: '" + n + "' has " +
@@ -311304,6 +311440,14 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
                 add_cell("_hydrostatic", tinv_hydrostatic_array);
             if ((rOpts.outputs & TensorInvariant::Deviatoric) != 0)
                 add_cell("_deviatoric", tinv_deviatoric);
+            if ((rOpts.outputs & TensorInvariant::Trace) != 0)
+                add_cell("_trace", tinv_trace);
+            if ((rOpts.outputs & TensorInvariant::Determinant) != 0)
+                add_cell("_determinant", tinv_determinant);
+            if ((rOpts.outputs & TensorInvariant::Invariants) != 0)
+                add_cell("_invariants", tinv_invariants);
+            if ((rOpts.outputs & TensorInvariant::Inverse) != 0)
+                add_cell("_inverse", tinv_inverse);
             continue;
         }
 
@@ -311314,9 +311458,18 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
         if ((rOpts.outputs & TensorInvariant::Principal) != 0)
             add_point(out, base + "_principal" + rOpts.suffix, tinv_principal(src, ncomp));
         if ((rOpts.outputs & TensorInvariant::Hydrostatic) != 0)
-            add_point(out, base + "_hydrostatic" + rOpts.suffix, tinv_hydrostatic_array(src, ncomp));
+            add_point(out, base + "_hydrostatic" + rOpts.suffix,
+                      tinv_hydrostatic_array(src, ncomp));
         if ((rOpts.outputs & TensorInvariant::Deviatoric) != 0)
             add_point(out, base + "_deviatoric" + rOpts.suffix, tinv_deviatoric(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Trace) != 0)
+            add_point(out, base + "_trace" + rOpts.suffix, tinv_trace(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Determinant) != 0)
+            add_point(out, base + "_determinant" + rOpts.suffix, tinv_determinant(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Invariants) != 0)
+            add_point(out, base + "_invariants" + rOpts.suffix, tinv_invariants(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Inverse) != 0)
+            add_point(out, base + "_inverse" + rOpts.suffix, tinv_inverse(src, ncomp));
     }
     return out;
 }

@@ -1265,12 +1265,16 @@ The other flow quantities landed: `vorticity_magnitude`, `q_criterion`, `lambda2
 - **Tests.** a rigid rotation with an axial drift, `u = (−w y, w x, a)`, whose helicity density is the constant `2 w a`; a field with `u ⟂ curl u` giving zero; both methods; the twin against the core.
 - **Done when.** `meshioplusplus data gradient flow.vtu out.vtu --array U --op helicity` on every surface. **S**
 
-### 15.2 Per-tuple tensor math
+### 15.2 Eigenvectors and products of tensor arrays
 
-- **State today.** `tensor_invariants` (`operations/tensor_invariants.hpp` line 132) writes von Mises, principal values (ascending, of the symmetric part), hydrostatic and deviatoric parts of 6- or 9-component arrays. Nothing computes a determinant, an inverse, a trace, a transpose, eigenvectors, the invariants I1 to I3, or a product of two arrays; `data_condition` (`operations/data_condition.hpp` line 64) is clamp, normalize and standardize.
-- **Design.** Extend `TensorInvariant` (a flag set, line 80) with `Trace`, `Determinant`, `Invariants` (I1, I2, I3 as three components), `Eigenvectors` (nine components, columns in the order of the principal values, each sign fixed so that its largest-magnitude component is positive, for determinism) and `Inverse` (nine components; a singular tuple writes NaN and counts in a warning). Binary products go to a new small operation `tensor_math(mesh, TensorMathOptions {mOp: Dot|Cross|MatMul|Transpose|Outer, mA, mB, mOutput})` on point or cell arrays of matching location and compatible widths, the `vtkMatrixMathFilter` and `numpy_interface` `dot`/`cross`/`matmul` counterparts. Same arithmetic order in the numpy twin.
-- **Tests.** Identities per tuple: `A · inv(A) = I`, `det` against the product of the eigenvalues, `I1 = trace`, eigenvectors orthonormal and `A v = λ v`; the sign rule stable under a reversed input order.
-- **Done when.** `tensor_invariants(…, determinant | eigenvectors)` and `tensor_math(…, op="cross")` on every surface. **S**
+The unary algebra landed: `trace`, `determinant`, `invariants` and `inverse` are opt-in outputs of [`tensor_invariants`](./tensor_invariants.md) (cofactor formulas, tensor read as given, singular rows `NaN`). What remains is the part that needs new machinery.
+
+- **State today.** `detail::sym3_principal` (`src/cpp/src/detail/sym3_eigen.cpp`, cyclic Jacobi) returns the eigenvalues only: it does not accumulate the rotations. No operation multiplies, crosses or transposes two arrays; `data_condition` (`operations/data_condition.hpp`, options at line 76) is clamp, normalize and standardize. `tensor_invariants` has no warning channel (it returns a bare `Mesh`), so every refusal there is a `NaN`.
+- **Steps.**
+  - **15.2.1 Eigenvectors.** A `sym3_eigen(pT, pValues, pVectors)` beside `sym3_principal`, accumulating the Jacobi rotations and permuting the columns with the sort; an `Eigenvectors` flag (`1u << 8`, appended, opt-in) writing nine components, the vector of the k-th eigenvalue in components `k`, `k + 3` and `k + 6` (the k-th column of the row-major 3x3), of the symmetric part as `principal` does. The sign rule: the component of largest magnitude positive, ties broken by the lowest index; a repeated eigenvalue has no unique basis, which the page says, and the test of a stable sign under a reversed input order is run on distinct eigenvalues only. The flag lands in the places the unary flags did: the C header, the Fortran, Julia, R and Octave maps, `index.d.ts`, the twin. **S–M**
+  - **15.2.2 `tensor_math`.** The binary products `dot`, `cross`, `matmul`, `transpose` and `outer` of two arrays at one location, as a new operation (`tensor_math(mesh, TensorMathOptions {mOp, mA, mB, mOutput})`, the operator a **string** on every surface so no wrapper maps an integer); `cross` is 3-component only, `matmul` takes 9 by 9 or 9 by 3, widths listed on the page; the numpy twin repeats the arithmetic order. **M**
+- **Tests.** `A v = λ v` and orthonormal columns on random symmetric tensors; `A · inv(A)` against the identity; the cross product against `numpy.cross`.
+- **Done when.** `meshioplusplus data invariants r.vtu o.vtu --outputs eigenvectors` and `meshioplusplus data tensor-math a b --op cross` on every surface.
 
 ### 15.3 The `data_calc` grammar
 
