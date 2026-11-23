@@ -13,18 +13,22 @@ import type { Renderer } from './renderer';
 /** Capture the current view. Returns a `data:image/png;base64,...` URL. */
 export async function capturePng(renderer: Renderer): Promise<string> {
     const view = renderer.view;
+    // vtk.js types the capture as nullable: null when there is no render
+    // window to grab from, which falls through to the canvas below.
     const pending = view.captureNextImage('image/png');
     // The capture only resolves once another frame is drawn.
     renderer.render();
     try {
-        return await pending;
+        const url = pending ? await pending : null;
+        if (url) return url;
     } catch {
-        // Fall back to the raw canvas. Correct whenever the back buffer does
-        // happen to be preserved, and better than failing outright.
-        const canvas = view.getCanvas();
-        if (!canvas) throw new Error('the renderer has no canvas to capture');
-        return canvas.toDataURL('image/png');
+        // Fall through to the raw canvas below.
     }
+    // Fall back to the raw canvas. Correct whenever the back buffer does
+    // happen to be preserved, and better than failing outright.
+    const canvas = view.getCanvas();
+    if (!canvas) throw new Error('the renderer has no canvas to capture');
+    return canvas.toDataURL('image/png');
 }
 
 /** Capture and hand the browser a download. */

@@ -143,6 +143,9 @@ export function setupOrientationCube(
             const displayY = rect.height - (ev.clientY - rect.top);
 
             const vp = widget.computeViewport();
+            // vtk.js types the viewport as nullable: null until the widget has
+            // laid out, and then no click can be on it.
+            if (!vp) return;
             const xNorm = displayX / rect.width;
             const yNorm = displayY / rect.height;
             const inWidget =

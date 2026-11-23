@@ -16,14 +16,16 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@kitware/vtk.js": "32.9.0",
+    "@kitware/vtk.js": "38.1.0",
     "@meshioplusplus/wasm": "file:../wasm"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1",
-    "typescript": "^5.7.2",
-    "vite": "6.4.5",
-    "vite-plugin-singlefile": "2.3.3"
+    "@playwright/test": "1.65.1",
+    "esbuild": "0.28.2",
+    "events": "3.3.0",
+    "typescript": "^7.0.2",
+    "vite": "8.3.8",
+    "vite-plugin-singlefile": "2.3.4"
   },
   "overrides": {
     "js-yaml": "^4.3.1",
