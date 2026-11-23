@@ -78,6 +78,14 @@ def test_gate_counts_violations():
     )
 
 
+def test_gate_on_the_cell_measures():
+    # Longest edges: sqrt(2) in the first triangle, 2 in the second.
+    r = mio.check_quality(two_triangles(), "max_edge <= 1.5")
+    c = r["checks"][0]
+    assert c["metric"] == "quality:max_edge"
+    assert (c["evaluated"], c["violations"], c["worst_cell"]) == (2, 1, 1)
+
+
 @needs_core
 @pytest.mark.parametrize(
     "spec", ["min_angle >= 30", "aspect_ratio <= 3 @ 10%", "max_angle <= 170"]

@@ -40,6 +40,10 @@ METRICS = (
     "quality:max_dihedral",
     "quality:inverted",
     "quality:degenerate",
+    "quality:size",
+    "quality:diagonal",
+    "quality:min_edge",
+    "quality:max_edge",
 )
 
 

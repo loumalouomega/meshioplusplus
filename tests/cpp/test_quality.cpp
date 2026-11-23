@@ -107,6 +107,73 @@ TEST(Quality, ReferenceWedgeAndPyramidScaledJacobian) {
     EXPECT_NEAR(q_val(compute_quality(p), "quality:scaled_jacobian", 0, 0), 1.0, 1e-12);
 }
 
+TEST(Quality, CellMeasuresOfReferenceCells) {
+    Mesh hex = mt::make_mesh(
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}},
+        "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
+    QualityReport r = compute_quality(hex);
+    EXPECT_NEAR(q_val(r, "quality:size", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:diagonal", 0, 0), std::sqrt(3.0), 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:min_edge", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:max_edge", 0, 0), 1.0, 1e-12);
+
+    // A 1 x 2 rectangle in 2-D: size is the area, the diagonal is sqrt(5).
+    Mesh quad = mt::make_mesh({{0, 0}, {2, 0}, {2, 1}, {0, 1}}, "quad", {{0, 1, 2, 3}});
+    r = compute_quality(quad);
+    EXPECT_NEAR(q_val(r, "quality:size", 0, 0), 2.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:diagonal", 0, 0), std::sqrt(5.0), 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:min_edge", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:max_edge", 0, 0), 2.0, 1e-12);
+
+    // A right tetrahedron with legs 1: edges 1 and sqrt(2), volume 1/6.
+    Mesh tet = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}}, "tetra", {{0, 1, 2, 3}});
+    r = compute_quality(tet);
+    EXPECT_NEAR(q_val(r, "quality:size", 0, 0), 1.0 / 6.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:min_edge", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:max_edge", 0, 0), kSqrt2, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:diagonal", 0, 0), kSqrt2, 1e-12);
+
+    const double h = std::sqrt(3.0) / 2;
+    Mesh w = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0.5, h, 0}, {0, 0, 1}, {1, 0, 1}, {0.5, h, 1}},
+                           "wedge", {{0, 1, 2, 3, 4, 5}});
+    r = compute_quality(w);
+    EXPECT_NEAR(q_val(r, "quality:size", 0, 0), h / 2, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:min_edge", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:max_edge", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:diagonal", 0, 0), kSqrt2, 1e-12);
+
+    Mesh p = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0.5, 0.5, 1.0 / kSqrt2}},
+                           "pyramid", {{0, 1, 2, 3, 4}});
+    r = compute_quality(p);
+    EXPECT_NEAR(q_val(r, "quality:size", 0, 0), 1.0 / (3.0 * kSqrt2), 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:min_edge", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:max_edge", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:diagonal", 0, 0), kSqrt2, 1e-12);
+}
+
+TEST(Quality, CellMeasuresSurviveADegenerateCell) {
+    // Three collinear points: the family call returns early, the lengths remain.
+    Mesh m = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {3, 0, 0}}, "triangle", {{0, 1, 2}});
+    QualityReport r = compute_quality(m);
+    EXPECT_EQ(q_val(r, "quality:degenerate", 0, 0), 1.0);
+    EXPECT_NEAR(q_val(r, "quality:size", 0, 0), 0.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:min_edge", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:max_edge", 0, 0), 3.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:diagonal", 0, 0), 3.0, 1e-12);
+}
+
+TEST(Quality, SizeIsUnsignedForAnInvertedCell) {
+    const double s = kSqrt2;
+    Mesh m = mt::make_mesh({{0, 0, 0},
+                            {s, 0, 0},
+                            {s / 2, s * std::sqrt(3.0) / 2, 0},
+                            {s / 2, s * std::sqrt(3.0) / 6, s * std::sqrt(2.0 / 3.0)}},
+                           "tetra", {{0, 2, 1, 3}});
+    QualityReport r = compute_quality(m);
+    EXPECT_LT(q_val(r, "quality:volume", 0, 0), 0.0);
+    EXPECT_NEAR(q_val(r, "quality:size", 0, 0), -q_val(r, "quality:volume", 0, 0), 1e-12);
+}
+
 TEST(Quality, InvertedTetraIsFlagged) {
     // A regular tetra with two nodes swapped -> negative signed volume.
     const double s = kSqrt2;

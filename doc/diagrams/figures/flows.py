@@ -1172,7 +1172,7 @@ def roadmap_map():
             "§15 math on meshes",
             [
                 ("flow quantities · tensor math", "S"),
-                ("cell measures · statistics", "S"),
+                ("descriptive statistics", "S"),
                 ("calculator grammar", "M"),
                 ("Verdict metric parity", "M"),
                 ("integrals: quadrature · flux", "M"),

@@ -290775,7 +290775,7 @@ namespace {
 
 using detail::Vec3;
 
-constexpr int NUM_METRICS = 11;
+constexpr int NUM_METRICS = 15;
 // Fixed metric order (index === position in QualityReport::mMetrics).
 enum QualityMetric {
     QM_VOLUME = 0,
@@ -290789,13 +290789,19 @@ enum QualityMetric {
     QM_MAX_DIHEDRAL,
     QM_INVERTED,
     QM_DEGENERATE,
+    // Cell measures: size is the unsigned area/volume, the rest are lengths.
+    QM_SIZE,
+    QM_DIAGONAL,
+    QM_MIN_EDGE,
+    QM_MAX_EDGE,
 };
 
 const char* const QUALITY_METRIC_NAMES[NUM_METRICS] = {
     "quality:volume",   "quality:scaled_jacobian", "quality:aspect_ratio",
     "quality:skewness", "quality:min_angle",       "quality:max_angle",
     "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
-    "quality:inverted", "quality:degenerate",
+    "quality:inverted", "quality:degenerate",      "quality:size",
+    "quality:diagonal", "quality:min_edge",        "quality:max_edge",
 };
 
 constexpr double QUALITY_NAN = std::numeric_limits<double>::quiet_NaN();
@@ -291232,6 +291238,69 @@ void quality_pyramid(const std::vector<Vec3>& c, const std::vector<detail::CellF
     m[QM_SCALED_JACOBIAN] = std::sqrt(2.0) * sj;
 }
 
+// The edges of each family, as corner-index pairs in VTK order.
+constexpr int kQualityTriEdges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
+constexpr int kQualityQuadEdges[4][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+constexpr int kQualityTetraEdges[6][2] = {{0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3}};
+constexpr int kQualityHexEdges[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                                         {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+constexpr int kQualityWedgeEdges[9][2] = {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5},
+                                          {5, 3}, {0, 3}, {1, 4}, {2, 5}};
+constexpr int kQualityPyramidEdges[8][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0},
+                                            {0, 4}, {1, 4}, {2, 4}, {3, 4}};
+
+// Size, diagonal and the shortest and longest edge, written after the family's
+// own metrics so a cell that the family call left early (degenerate) still
+// reports its lengths. size is the unsigned area/volume the family computed.
+void quality_cell_measures(QualityFamily family, const std::vector<Vec3>& c, double* m) {
+    const int (*edges)[2] = nullptr;
+    int ne = 0;
+    switch (family) {
+        case QualityFamily::Tri:
+            edges = kQualityTriEdges;
+            ne = 3;
+            break;
+        case QualityFamily::Quad:
+            edges = kQualityQuadEdges;
+            ne = 4;
+            break;
+        case QualityFamily::Tetra:
+            edges = kQualityTetraEdges;
+            ne = 6;
+            break;
+        case QualityFamily::Hex:
+            edges = kQualityHexEdges;
+            ne = 12;
+            break;
+        case QualityFamily::Wedge:
+            edges = kQualityWedgeEdges;
+            ne = 9;
+            break;
+        case QualityFamily::Pyr:
+            edges = kQualityPyramidEdges;
+            ne = 8;
+            break;
+        default:
+            return;
+    }
+    if (std::isfinite(m[QM_VOLUME]))
+        m[QM_SIZE] = std::fabs(m[QM_VOLUME]);
+    double emin = std::numeric_limits<double>::infinity();
+    double emax = 0.0;
+    for (int k = 0; k < ne; ++k) {
+        const double l = quality_edge_len(c[edges[k][0]], c[edges[k][1]]);
+        emin = std::min(emin, l);
+        emax = std::max(emax, l);
+    }
+    m[QM_MIN_EDGE] = emin;
+    m[QM_MAX_EDGE] = emax;
+    double diag = 0.0;
+    for (std::size_t a = 0; a < c.size(); ++a)
+        for (std::size_t b = a + 1; b < c.size(); ++b)
+            diag = std::max(diag, quality_edge_len(c[a], c[b]));
+    m[QM_DIAGONAL] = diag;
+}
+
 // Evaluate one cell's metrics into m (assumed pre-filled with NaN).
 void quality_eval_cell(QualityFamily family, CellType ct, const std::vector<Vec3>& c, bool is2d,
                        double eps, double* m) {
@@ -291257,6 +291326,7 @@ void quality_eval_cell(QualityFamily family, CellType ct, const std::vector<Vec3
         default:
             break;
     }
+    quality_cell_measures(family, c, m);
 }
 
 using CellMetrics = std::array<double, NUM_METRICS>;
@@ -291310,6 +291380,7 @@ QualityReport compute_quality(const Mesh& rMesh) {
                 }
                 const detail::PolyMeasure pm = detail::poly_measure(rings, coords.data());
                 v[QM_VOLUME] = std::abs(pm.mVolume);
+                v[QM_SIZE] = v[QM_VOLUME];
                 // Relative to the cell's own size, never an absolute epsilon --
                 // the same rule grad_green_gauss_3d uses.
                 const double scale = pm.mSurfaceArea * std::sqrt(pm.mSurfaceArea);
@@ -291478,7 +291549,8 @@ const char* const kQgMetrics[] = {
     "quality:volume",   "quality:scaled_jacobian", "quality:aspect_ratio",
     "quality:skewness", "quality:min_angle",       "quality:max_angle",
     "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
-    "quality:inverted", "quality:degenerate",
+    "quality:inverted", "quality:degenerate",      "quality:size",
+    "quality:diagonal", "quality:min_edge",        "quality:max_edge",
 };
 
 std::string qg_full_name(const std::string& rMetric) {

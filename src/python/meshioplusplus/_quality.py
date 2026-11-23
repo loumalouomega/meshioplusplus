@@ -27,6 +27,10 @@ _METRIC_NAMES = [
     "quality:max_dihedral",
     "quality:inverted",
     "quality:degenerate",
+    "quality:size",
+    "quality:diagonal",
+    "quality:min_edge",
+    "quality:max_edge",
 ]
 _M = {name: i for i, name in enumerate(_METRIC_NAMES)}
 _NUM_METRICS = len(_METRIC_NAMES)
@@ -340,6 +344,33 @@ def _pyramid(c, faces, m):
     m[_M["quality:scaled_jacobian"]] = np.sqrt(2.0) * sj
 
 
+_EDGES = {
+    "tri": ((0, 1), (1, 2), (2, 0)),
+    "quad": ((0, 1), (1, 2), (2, 3), (3, 0)),
+    "tetra": ((0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)),
+    "hex": (
+        (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6),
+        (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7),
+    ),  # fmt: skip
+    "wedge": ((0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)),
+    "pyramid": ((0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)),
+}
+
+
+def _cell_measures(family, c, m):
+    """size, diagonal, shortest and longest edge (mirrors quality_cell_measures)."""
+    vol = m[_M["quality:volume"]]
+    if np.isfinite(vol):
+        m[_M["quality:size"]] = abs(vol)
+    lengths = [_norm(c[b] - c[a]) for a, b in _EDGES[family]]
+    m[_M["quality:min_edge"]] = min(lengths)
+    m[_M["quality:max_edge"]] = max(lengths)
+    n = len(c)
+    m[_M["quality:diagonal"]] = max(
+        _norm(c[b] - c[a]) for a in range(n) for b in range(a + 1, n)
+    )
+
+
 def _eval_cell(family, cell_type, c, is2d, m):
     if family == "tri":
         _tri(c, is2d, m)
@@ -353,6 +384,8 @@ def _eval_cell(family, cell_type, c, is2d, m):
         _wedge(c, _CELL_FACES[cell_type], m)
     elif family == "pyramid":
         _pyramid(c, _CELL_FACES[cell_type], m)
+    if family is not None:
+        _cell_measures(family, c, m)
 
 
 def _compute_quality_py(mesh) -> dict:

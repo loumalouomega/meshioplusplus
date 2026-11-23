@@ -28,8 +28,10 @@ meshioplusplus.write("part_quality.vtu", annotated)
 | `quality:warpage` | – | ✓ | – | – | – | – |
 | `quality:min_dihedral` / `quality:max_dihedral` | – | – | ✓ | – | – | – |
 | `quality:inverted` / `quality:degenerate` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `quality:size` (unsigned area or volume) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `quality:diagonal`, `quality:min_edge` / `quality:max_edge` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-A metric that does not apply to a cell type is `NaN` for that cell. Ideal (perfectly regular) elements give the ideal value: `scaled_jacobian = 1`, `aspect_ratio = 1`, `skewness = 0`, `warpage = 0`, triangle angles `= 60°`, tetra dihedral `≈ 70.53°`.
+A metric that does not apply to a cell type is `NaN` for that cell. The cell measures are lengths in the mesh's units (`size` is the area or volume): `size` is `abs(quality:volume)`, `quality:diagonal` the longest distance between two corner nodes (VTK's `diagonal`), and `quality:min_edge` and `quality:max_edge` the shortest and longest edge of the corner cell. They are set for every scored cell, including a degenerate one (whose `size` is then about zero); a polyhedron block gets `size` only, and 1-D cells are not scored. `attach_quality` always attaches all of them: there is no option to select metrics. Ideal (perfectly regular) elements give the ideal value: `scaled_jacobian = 1`, `aspect_ratio = 1`, `skewness = 0`, `warpage = 0`, triangle angles `= 60°`, tetra dihedral `≈ 70.53°`.
 
 - **`quality:scaled_jacobian`** of a quad (v17.23.0) is Verdict's: the least over its corners of `(e1 × e2) · n / (|e1| |e2|)`, `e1` and `e2` the corner's edges and `n` the quad's unit normal (`+z` in 2D, its vector area in 3D); 1 for a rectangle, below 0 at a reflex or inverted corner.
 - **`quality:inverted`** is `1.0` when the signed volume/area is negative (a 2D triangle/quad embedded in 3D is unsigned, so never flagged).

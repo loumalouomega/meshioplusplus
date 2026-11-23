@@ -125,6 +125,107 @@ def test_degenerate_triangle_flagged():
     assert np.isnan(_val(r, "quality:aspect_ratio"))
 
 
+def test_cell_measures_of_reference_cells():
+    s = SQRT2
+    hexa = meshioplusplus.Mesh(
+        np.array(
+            [
+                [0, 0, 0],
+                [1, 0, 0],
+                [1, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [1, 0, 1],
+                [1, 1, 1],
+                [0, 1, 1],
+            ],
+            dtype=float,
+        ),
+        [("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]]))],
+    )
+    r = meshioplusplus.compute_quality(hexa)
+    assert _val(r, "quality:size") == pytest.approx(1.0)
+    assert _val(r, "quality:diagonal") == pytest.approx(np.sqrt(3.0))
+    assert _val(r, "quality:min_edge") == pytest.approx(1.0)
+    assert _val(r, "quality:max_edge") == pytest.approx(1.0)
+
+    rect = meshioplusplus.Mesh(
+        np.array([[0, 0], [2, 0], [2, 1], [0, 1]], dtype=float),
+        [("quad", np.array([[0, 1, 2, 3]]))],
+    )
+    r = meshioplusplus.compute_quality(rect)
+    assert _val(r, "quality:size") == pytest.approx(2.0)
+    assert _val(r, "quality:diagonal") == pytest.approx(np.sqrt(5.0))
+    assert _val(r, "quality:min_edge") == pytest.approx(1.0)
+    assert _val(r, "quality:max_edge") == pytest.approx(2.0)
+
+    tet = meshioplusplus.Mesh(
+        np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=float),
+        [("tetra", np.array([[0, 1, 2, 3]]))],
+    )
+    r = meshioplusplus.compute_quality(tet)
+    assert _val(r, "quality:size") == pytest.approx(1.0 / 6.0)
+    assert _val(r, "quality:min_edge") == pytest.approx(1.0)
+    assert _val(r, "quality:max_edge") == pytest.approx(s)
+
+    h = np.sqrt(3.0) / 2
+    wedge = meshioplusplus.Mesh(
+        np.array(
+            [[0, 0, 0], [1, 0, 0], [0.5, h, 0], [0, 0, 1], [1, 0, 1], [0.5, h, 1]],
+            dtype=float,
+        ),
+        [("wedge", np.array([[0, 1, 2, 3, 4, 5]]))],
+    )
+    r = meshioplusplus.compute_quality(wedge)
+    assert _val(r, "quality:size") == pytest.approx(h / 2)
+    assert _val(r, "quality:max_edge") == pytest.approx(1.0)
+    assert _val(r, "quality:diagonal") == pytest.approx(s)
+
+    pyr = meshioplusplus.Mesh(
+        np.array(
+            [[0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0], [0.5, 0.5, 1 / s]], dtype=float
+        ),
+        [("pyramid", np.array([[0, 1, 2, 3, 4]]))],
+    )
+    r = meshioplusplus.compute_quality(pyr)
+    assert _val(r, "quality:size") == pytest.approx(1.0 / (3.0 * s))
+    assert _val(r, "quality:min_edge") == pytest.approx(1.0)
+    assert _val(r, "quality:max_edge") == pytest.approx(1.0)
+
+
+def test_cell_measures_survive_a_degenerate_cell():
+    pts = np.array([[0, 0, 0], [1, 0, 0], [3, 0, 0]], dtype=float)
+    mesh = meshioplusplus.Mesh(pts, [("triangle", np.array([[0, 1, 2]]))])
+    r = meshioplusplus.compute_quality(mesh)
+    assert _val(r, "quality:degenerate") == 1.0
+    assert _val(r, "quality:size") == pytest.approx(0.0, abs=1e-12)
+    assert _val(r, "quality:min_edge") == pytest.approx(1.0)
+    assert _val(r, "quality:max_edge") == pytest.approx(3.0)
+    assert _val(r, "quality:diagonal") == pytest.approx(3.0)
+
+
+def test_size_is_unsigned_and_sums_to_the_stats_totals():
+    s = SQRT2
+    pts = np.array(
+        [
+            [0, 0, 0],
+            [s, 0, 0],
+            [s / 2, s * np.sqrt(3) / 2, 0],
+            [s / 2, s * np.sqrt(3) / 6, s * np.sqrt(2 / 3)],
+        ],
+        dtype=float,
+    )
+    inv = meshioplusplus.Mesh(pts, [("tetra", np.array([[0, 2, 1, 3]]))])
+    r = meshioplusplus.compute_quality(inv)
+    assert _val(r, "quality:volume") < 0.0
+    assert _val(r, "quality:size") == pytest.approx(-_val(r, "quality:volume"))
+
+    mesh = meshioplusplus.Mesh(pts, [("tetra", np.array([[0, 1, 2, 3]]))])
+    r = meshioplusplus.compute_quality(mesh)
+    total = meshioplusplus.compute_stats(mesh)["unsigned_volume"]
+    assert r["cell_arrays"]["quality:size"][0].sum() == pytest.approx(total)
+
+
 def test_attach_quality_adds_cell_data():
     mesh = helpers.tet_mesh.copy()
     out = meshioplusplus.attach_quality(mesh)

@@ -47,7 +47,8 @@ const char* const kQgMetrics[] = {
     "quality:volume",   "quality:scaled_jacobian", "quality:aspect_ratio",
     "quality:skewness", "quality:min_angle",       "quality:max_angle",
     "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
-    "quality:inverted", "quality:degenerate",
+    "quality:inverted", "quality:degenerate",      "quality:size",
+    "quality:diagonal", "quality:min_edge",        "quality:max_edge",
 };
 
 std::string qg_full_name(const std::string& rMetric) {
