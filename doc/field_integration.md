@@ -59,7 +59,7 @@ An array name may carry a **mode prefix**, so no signature changes on any surfac
 | --- | --- | --- |
 | `point:<a>` | the `point_data` array `a` | each cell takes the mean of its own nodes' values (the cell-level mean `point_data_to_cell_data` gives), then the integral above: **exact for a field linear in `x` on a simplex**, first order otherwise (a Gauss rule on the shape functions waits on the shared reference elements) |
 | `flux:<a>` | `∫ u · n dA` of a 3-component `cell_data` or `point_data` array `a` | `u · n` per cell with the unit cell normals of [`compute_normals`](/normals), weighted by the cell's area; the mesh must be a surface (a volume mesh is refused, pointing at `boundary:`); the sign follows the cells' winding, outward for a closed, consistently wound surface |
-| `boundary:point:<a>`, `boundary:flux:<a>` | the same, over the boundary surface of a volume mesh | [`extract_surface`](/surface) first, so a volume's boundary integral needs no separate step; the boundary carries no `cell_data`, so `boundary:` alone is refused |
+| `boundary:point:<a>`, `boundary:flux:<a>` | the same, over the boundary surface of a volume mesh | [`extract_surface`](/extract_surface) first, so a volume's boundary integral needs no separate step; the boundary carries no `cell_data`, so `boundary:` alone is refused |
 
 ```python
 # the divergence theorem on a mesh: the flux of u through the boundary equals the integral of div u
