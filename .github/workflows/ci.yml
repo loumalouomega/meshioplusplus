@@ -1191,11 +1191,13 @@ jobs:
         run: |
           git clone https://github.com/loumalouomega/fTetWild.git /tmp/ftw-src
           git -C /tmp/ftw-src checkout "${{ steps.qfpin.outputs.ftetwild }}"
-          # fTetWild's libigl still calls FetchContent_Populate with details and
-          # an old minimum CMake version; the runner's CMake 4 refuses both.
-          cmake -S /tmp/ftw-src -B /tmp/ftw-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_POLICY_DEFAULT_CMP0169=OLD -DCMAKE_POLICY_VERSION_MINIMUM=3.5
-          cmake --build /tmp/ftw-build --target FloatTetwild_bin
+          # fTetWild's libigl calls FetchContent_Populate with details, which
+          # CMake 4.4 removed (no policy brings it back), so this one build
+          # uses a CMake 3.31 kept in its own venv.
+          python -m venv /tmp/cmake3
+          /tmp/cmake3/bin/pip install --quiet "cmake>=3.31,<3.32"
+          /tmp/cmake3/bin/cmake -S /tmp/ftw-src -B /tmp/ftw-build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          /tmp/cmake3/bin/cmake --build /tmp/ftw-build --target FloatTetwild_bin
           mkdir -p ~/ftetwild-bin
           cp /tmp/ftw-build/FloatTetwild_bin ~/ftetwild-bin/
       - name: Point meshio++ at fTetWild
