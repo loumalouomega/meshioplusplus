@@ -919,6 +919,7 @@ static mxArray *O_mio_tetrahedralize(const mxArray **a) {
     opts.optimize_steps = (int32_t)mio_o_int(a[5], "optimize_steps");
     opts.max_cells = (int64_t)mio_o_double(a[6], "max_cells");
     opts.face_array = mio_o_string(a[7], "face_array");
+    opts.post_optimize = mio_o_bool(a[8], "post_optimize") ? 1 : 0;
     mio_tetrahedralize_report report;
     mio_mesh *out = mio_tetrahedralize(mio_o_mesh(a[0]), &opts, &report);
     if (out == NULL) mio_o_fail("tetrahedralize");
@@ -1638,7 +1639,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_mesh_domain, 11),
     MIO_O_ENTRY(mio_move, 11),
     MIO_O_ENTRY(mio_metric_from_hessian, 6),
-    MIO_O_ENTRY(mio_tetrahedralize, 8),
+    MIO_O_ENTRY(mio_tetrahedralize, 9),
     MIO_O_ENTRY(mio_undo_green, 2),
     MIO_O_ENTRY(mio_meshes_equal, 5),
     MIO_O_ENTRY(mio_diff, 5),

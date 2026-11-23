@@ -35,6 +35,7 @@
 #include <vector>
 
 // Project includes
+#include "../detail/feature_snap.hpp"
 #include "../detail/linear_octree.hpp"
 #include "../detail/octree_size_field.hpp"
 #include "../detail/tri_bvh.hpp"
@@ -161,6 +162,16 @@ void octree_mesh_stuffed_lattice(OctreeMeshSetup& rSetup, const OctreeMeshOption
 void octree_mesh_snap_features(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
                                OctreeMeshResult& rResult, OctreeMeshTets& rTets);
 
+/// After the optimisation: the feature corners of every kept tetrahedron whose
+/// least dihedral angle is under the sliver bound (15 degrees) are released
+/// (they still slide on the skin) and the optimisation runs again, twice at
+/// most. On a scan the corners the boundary was snapped to are mostly noise
+/// and pin the flat cells beside them; chain nodes stay, since releasing one
+/// rounds a real edge. Returns the corners released.
+std::int64_t octree_mesh_release_features(OctreeMeshSetup& rSetup,
+                                          const OctreeMeshOptions& rOptions,
+                                          OctreeMeshResult& rResult, OctreeMeshTets& rTets);
+
 /// Fit the skin's nodes along it and optimise the tetrahedra (ODT relocation,
 /// flips) under the dihedral-floor guard.
 void octree_mesh_optimize(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOptions,
@@ -204,6 +215,19 @@ void octree_mesh_hexahedra(OctreeMeshSetup& rSetup, const OctreeMeshOptions& rOp
 
 /// The edge of the leaf holding @p rP (clamped into the forest).
 double octree_mesh_local_size(const OctreeMeshSetup& rSetup, const Vec3& rP);
+
+/// The point at arc length @p At along the polyline through the skin points @p rChain (clamped
+/// to its ends).
+Vec3 octree_mesh_along_chain(const std::vector<Vec3>& rSkin,
+                             const std::vector<std::int64_t>& rChain, double At);
+
+/// The feature graph without the chains shorter than a cell (both outputs): on a scanned skin
+/// a short crease is noise the boundary cannot follow, and pinning it leaves the cells around
+/// it flat. A corner is kept when a kept chain ends at it. @p Uniform is the grid's edge (0:
+/// the local leaf at the chain's midpoint). @p rDropped counts the chains dropped.
+FeatureGraph octree_mesh_drop_short_chains(const OctreeMeshSetup& rSetup,
+                                           const FeatureGraph& rGraph, double Uniform,
+                                           std::int64_t& rDropped);
 
 /// Write the tetrahedra (the inside materials, and the outside on request) to
 /// the result's mesh, with their regions and data.

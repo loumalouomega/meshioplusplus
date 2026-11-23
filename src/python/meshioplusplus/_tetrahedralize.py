@@ -17,7 +17,10 @@ surface within the reported ``hausdorff_to_surface``. ``backend="auto"`` takes
 Netgen when ``meshioplusplus._core.__has_netgen__`` and the octree backend
 otherwise, with a warning. The installed TetGen and Gmsh programs are named
 meshers too (``backend="tetgen"``, ``"gmsh"``; :func:`tetrahedralize_backends`),
-run as separate processes with the surface kept. See ``doc/tetrahedralize.md``.
+run as separate processes with the surface kept, and so is the installed
+fTetWild (``backend="ftetwild"``; Hu et al., *Fast Tetrahedral Meshing in the
+Wild*, 2020), whose boundary is fitted within its envelope instead, the
+distance reported. See ``doc/tetrahedralize.md``.
 
 The C++ core does the work; there is no numpy twin.
 """
@@ -39,9 +42,11 @@ _BACKENDS = ("auto", "netgen", "octree")
 def tetrahedralize_backends() -> list:
     """The ``backend`` names :func:`tetrahedralize` accepts besides ``"auto"``,
     sorted: ``"octree"``, then every registered tetrahedral mesher --
-    ``"netgen"`` when built in or added, and the installed ``"tetgen"`` and
-    ``"gmsh"`` programs, found on ``PATH`` (or through ``MESHIOPLUSPLUS_TETGEN``
-    and ``MESHIOPLUSPLUS_GMSH``) and run as separate processes."""
+    ``"netgen"`` when built in or added, and the installed ``"tetgen"``,
+    ``"gmsh"`` and ``"ftetwild"`` (fTetWild's ``FloatTetwild_bin``) programs,
+    found on ``PATH`` (or through ``MESHIOPLUSPLUS_TETGEN``,
+    ``MESHIOPLUSPLUS_GMSH`` and ``MESHIOPLUSPLUS_FTETWILD``) and run as
+    separate processes."""
     try:
         from . import _core
     except ImportError:
@@ -99,6 +104,7 @@ def tetrahedralize(
     optimize_steps: int = 3,
     max_cells: int = 50_000_000,
     face_array: str = "cad:face",
+    post_optimize: bool = False,
     return_report: bool = False,
 ):
     """Fill the closed triangle surface ``mesh`` with tetrahedra.
@@ -112,7 +118,9 @@ def tetrahedralize(
         native backend, the boundary fitted), or another name of
         :func:`tetrahedralize_backends`: ``"tetgen"`` and ``"gmsh"`` run the
         installed programs on the surface as separate processes, the surface
-        kept (checked); never in WebAssembly.
+        kept (checked); ``"ftetwild"`` runs fTetWild the same way, its
+        boundary fitted within its envelope (``boundary_preserved`` false,
+        ``hausdorff_to_surface`` measured); never in WebAssembly.
     :param max_size: the largest edge asked of the tetrahedra (0, the
         default, is none: the surface's triangles size the inside).
     :param max_volume: the largest volume asked of a tetrahedron (0 is none);
@@ -124,6 +132,11 @@ def tetrahedralize(
     :param max_cells: refuse a result of more tetrahedra.
     :param face_array: the cell data naming each triangle's CAD face, carried
         to the triangles and made ``face:<v>`` Side regions when present.
+    :param post_optimize: after the backend, run :func:`optimize_volume` (the
+        worst-element objective, the boundary pinned) on each region's
+        tetrahedra: the points and the boundary stay as the backend left them
+        (a mesher that keeps the skin still does, the regions still conform)
+        and the worst tetrahedra improve.
     :param return_report: also return the report.
     :returns: the mesh (a ``tetra`` block and a ``triangle`` block: with
         Netgen the input's points first and unchanged and the surface's
@@ -159,6 +172,8 @@ def tetrahedralize(
         raise ValueError(f"{_PREFIX}grading must lie in [0, 1]")
     optimize_steps = _int_option("optimize_steps", optimize_steps, 0, 100)
     max_cells = _int_option("max_cells", max_cells, 1, 2**63 - 1)
+    if not isinstance(post_optimize, bool):
+        raise ValueError(f"{_PREFIX}post_optimize must be True or False")
     _core = _core_or_raise("tetrahedralize")
     res = _core.tetrahedralize(
         mesh,
@@ -169,6 +184,7 @@ def tetrahedralize(
         optimize_steps=optimize_steps,
         max_cells=max_cells,
         face_array=str(face_array),
+        post_optimize=post_optimize,
     )
     out = res["mesh"]
     found = [str(w) for w in res["warnings"]]

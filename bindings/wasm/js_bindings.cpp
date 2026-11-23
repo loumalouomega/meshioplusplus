@@ -10261,7 +10261,7 @@ val thickness_js(const val& rMeshObj, const val& rOptions) {
 
 // tetrahedralize (roadmap 6.7): tetrahedra filling a closed triangle surface;
 // options {backend ("auto" | "netgen" | "octree"), maxSize, maxVolume,
-// grading, optimizeSteps, maxCells, faceArray}, all optional. The full
+// grading, optimizeSteps, maxCells, faceArray, postOptimize}, all optional. The full
 // artifact links Netgen (`hasNetgen()` is true), so "auto" keeps the
 // surface's triangles there; the lean one has none, so "auto" is the native
 // octree backend, its boundary fitted, and "netgen" throws pointing at the
@@ -10272,7 +10272,7 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
             check_settings_keys(rOptions, "the tetrahedralize options",
                                 {"backend", "maxSize", "maxVolume", "grading", "optimizeSteps",
-                                 "maxCells", "faceArray"});
+                                 "maxCells", "faceArray", "postOptimize"});
             if (rOptions.hasOwnProperty("backend")) {
                 const std::string b = rOptions["backend"].as<std::string>();
                 if (b == "auto")
@@ -10302,6 +10302,8 @@ val tetrahedralize_js(const val& rMeshObj, const val& rOptions) {
                 o.mMaxCells = static_cast<std::int64_t>(rOptions["maxCells"].as<double>());
             if (rOptions.hasOwnProperty("faceArray"))
                 o.mFaceArray = rOptions["faceArray"].as<std::string>();
+            if (rOptions.hasOwnProperty("postOptimize"))
+                o.mPostOptimize = rOptions["postOptimize"].as<bool>();
         }
         if (o.mBackend == meshioplusplus::TetrahedralizeBackend::Netgen &&
             !meshioplusplus::tetrahedralize_has_netgen())

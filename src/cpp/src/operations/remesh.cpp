@@ -1329,6 +1329,102 @@ std::vector<std::uint8_t> remesh_detect_nonmanifold_vertices(
     return bad;
 }
 
+// The automatic subdivision's second half: the triangles whose longest edge
+// exceeds half the cluster spacing (the edge of an equilateral mesh of
+// `Clusters` vertices on the surface's area) are refined, red-green so the
+// surface stays conforming, round by round until none is left. A uniform
+// input the count rule has already subdivided has none; a scan's hole caps
+// (fans of needles spanning several clusters, which no cluster can split)
+// are cut down to the clusters' scale. A round that would grow the triangle
+// count past `MaxTriangles` is not run. Returns the rounds applied.
+int remesh_split_long_triangles(Mesh& rWork, std::int64_t Clusters, std::int64_t MaxTriangles) {
+    constexpr int kMaxRounds = 8;
+    // Per triangle (block-major) its longest edge squared; with @p pArea, the
+    // surface's area too. Typed pointers over float64 points and int32 or
+    // int64 connectivity; false for any other type (nothing is split then).
+    const auto scan = [](const Mesh& rM, std::vector<double>& rLongest2, double* pArea) -> bool {
+        rLongest2.clear();
+        std::size_t total = 0;
+        for (std::size_t b = 0; b < rM.NumCellBlocks(); ++b)
+            total += rM.Cells(b).NumCells();
+        rLongest2.reserve(total);
+        const NDArray& pts = rM.Points();
+        if (pts.Dtype() != DType::Float64)
+            return false;
+        const double* x = pts.As<double>();
+        double area = 0.0;
+        for (std::size_t b = 0; b < rM.NumCellBlocks(); ++b) {
+            const auto cells = rM.Cells(b);
+            const NDArray& conn = cells.Conn();
+            // Only the 32- and 64-bit index types are scanned: another type
+            // would need detail::read_int, whose weak out-of-line copy then
+            // comes from this file and shifts every other row's instruction
+            // count (the linker keeps the first one it sees).
+            const std::int64_t* c64 =
+                conn.Dtype() == DType::Int64 ? conn.As<std::int64_t>() : nullptr;
+            const std::int32_t* c32 =
+                conn.Dtype() == DType::Int32 ? conn.As<std::int32_t>() : nullptr;
+            if (c64 == nullptr && c32 == nullptr)
+                return false;
+            for (std::size_t t = 0; t < cells.NumCells(); ++t) {
+                const double* q[3];
+                for (std::size_t k = 0; k < 3; ++k)
+                    q[k] = x + 3 * static_cast<std::size_t>(c64 ? c64[3 * t + k] : c32[3 * t + k]);
+                const double u[3] = {q[1][0] - q[0][0], q[1][1] - q[0][1], q[1][2] - q[0][2]};
+                const double v[3] = {q[2][0] - q[0][0], q[2][1] - q[0][1], q[2][2] - q[0][2]};
+                const double w[3] = {q[2][0] - q[1][0], q[2][1] - q[1][1], q[2][2] - q[1][2]};
+                rLongest2.push_back(std::max({u[0] * u[0] + u[1] * u[1] + u[2] * u[2],
+                                              v[0] * v[0] + v[1] * v[1] + v[2] * v[2],
+                                              w[0] * w[0] + w[1] * w[1] + w[2] * w[2]}));
+                if (pArea) {
+                    const double n[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                                         u[0] * v[1] - u[1] * v[0]};
+                    area += 0.5 * std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+                }
+            }
+        }
+        if (pArea)
+            *pArea = area;
+        return true;
+    };
+    std::vector<double> longest2;
+    double area = 0.0;
+    if (!scan(rWork, longest2, &area) || !(area > 0.0) || Clusters <= 0)
+        return 0;
+    const double limit =
+        0.5 * std::sqrt(2.0 * area / (std::sqrt(3.0) * static_cast<double>(Clusters)));
+    const double limit2 = limit * limit;
+    int rounds = 0;
+    for (; rounds < kMaxRounds; ++rounds) {
+        if (rounds > 0 && !scan(rWork, longest2, nullptr))
+            break;
+        RefineOptions ro;
+        ro.mLevels = 1;
+        ro.mClosure = RefineClosure::RedGreen;
+        for (std::size_t t = 0; t < longest2.size(); ++t)
+            if (longest2[t] > limit2)
+                ro.mCells.push_back(static_cast<std::int64_t>(t));
+        if (ro.mCells.empty())
+            break;
+        // Each selected triangle becomes four, and the green closure adds at most
+        // two to each neighbour.
+        if (static_cast<std::int64_t>(longest2.size() + 9 * ro.mCells.size()) > MaxTriangles) {
+            log::warn(
+                "meshio++: remesh: {} triangles are still longer than half the cluster "
+                "spacing; splitting them further would pass the max_subdivide bound",
+                ro.mCells.size());
+            break;
+        }
+        rWork = refine(rWork, ro).mMesh;
+    }
+    if (rounds > 0)
+        log::info(
+            "meshio++: remesh: {} rounds split the triangles longer than {} (half the "
+            "cluster spacing) into {} triangles",
+            rounds, limit, longest2.size());
+    return rounds;
+}
+
 }  // namespace
 
 RemeshMetric remesh_metric_from_name(const std::string& rName) {
@@ -1401,12 +1497,23 @@ RemeshResult remesh(const Mesh& rMesh, const RemeshOptions& rOptions) {
         subdivide = remesh_suggest_subdivide(static_cast<std::int64_t>(work.NumPoints()),
                                              rOptions.mNumClusters, rOptions.mSubsampleRatio,
                                              rOptions.mMaxSubdivide);
+    std::int64_t input_triangles = 0;
+    for (std::size_t b = 0; b < work.NumCellBlocks(); ++b)
+        input_triangles += static_cast<std::int64_t>(work.Cells(b).NumCells());
     if (subdivide > 0) {
         RefineOptions ropts;
         ropts.mLevels = subdivide;
         work = refine(work, ropts).mMesh;
     }
     result.mSubdivideApplied = subdivide;
+    // Automatic: a count of items per cluster is not enough on a mesh of mixed
+    // sizes, so the triangles still longer than the clusters are split too.
+    if (rOptions.mSubdivide < 0) {
+        std::int64_t bound = input_triangles;
+        for (int k = 0; k < std::max(rOptions.mMaxSubdivide, 1); ++k)
+            bound *= 4;
+        remesh_split_long_triangles(work, rOptions.mNumClusters, std::max<std::int64_t>(bound, 1));
+    }
 
     RemeshSurface surf = remesh_build_surface(work);
     if (surf.mNumFaces == 0)

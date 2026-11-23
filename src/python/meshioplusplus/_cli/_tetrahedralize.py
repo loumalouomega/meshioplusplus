@@ -46,13 +46,20 @@ def add_args(parser):
         help="the cell data naming each triangle's CAD face (default cad:face)",
     )
     parser.add_argument(
+        "--post-optimize",
+        action="store_true",
+        help="run optimize_volume on each region after the backend, the boundary "
+        "and the points kept",
+    )
+    parser.add_argument(
         "--backend",
         type=str,
         default="auto",
         metavar="NAME",
         help="the tetrahedra's backend: netgen keeps the surface's triangles, octree "
         "(native) fits them, tetgen and gmsh run those installed programs (the "
-        "triangles kept); auto is netgen when built in, else octree (default auto). "
+        "triangles kept), ftetwild runs fTetWild (the boundary fitted within its "
+        "envelope); auto is netgen when built in, else octree (default auto). "
         "tetrahedralize_backends() lists the names this install takes",
     )
     parser.add_argument("--json", action="store_true", help="print the report as JSON")
@@ -72,6 +79,7 @@ def tetrahedralize_cmd(args):
         optimize_steps=args.optimize_steps,
         max_cells=args.max_cells,
         face_array=args.face_array,
+        post_optimize=args.post_optimize,
         return_report=True,
     )
     if args.json:

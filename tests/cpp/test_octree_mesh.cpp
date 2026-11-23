@@ -43,6 +43,7 @@
 
 // Project includes
 #include "analytic_surfaces.hpp"
+#include "octree_mesh_fixtures.hpp"
 #include "mesh_fixtures.hpp"
 #include "../../src/cpp/benchmark/mesh_digest.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
@@ -64,54 +65,12 @@ namespace {
 
 namespace mio = meshioplusplus;
 using mio::detail::Vec3;
+using namespace omfix;
 
 constexpr double kPi = 3.14159265358979323846;
 // Hexahedron facets (detail/cell_faces), outward.
 constexpr int kFacet[6][4] = {{0, 4, 7, 3}, {1, 2, 6, 5}, {0, 1, 5, 4},
                               {3, 7, 6, 2}, {0, 3, 2, 1}, {4, 5, 6, 7}};
-
-struct OmBox {
-    Vec3 mLo, mHi;
-};
-
-std::vector<OmBox> om_boxes(const mio::Mesh& rM) {
-    const double* p = rM.Points().As<double>();
-    const auto block = rM.Cells(0);
-    const std::int64_t* c = block.Conn().As<std::int64_t>();
-    std::vector<OmBox> out(block.NumCells());
-    for (std::size_t n = 0; n < out.size(); ++n) {
-        out[n].mLo = {1e300, 1e300, 1e300};
-        out[n].mHi = {-1e300, -1e300, -1e300};
-        for (std::size_t v = 0; v < 8; ++v)
-            for (std::size_t k = 0; k < 3; ++k) {
-                const double x = p[static_cast<std::size_t>(c[n * 8 + v]) * 3 + k];
-                out[n].mLo[k] = std::min(out[n].mLo[k], x);
-                out[n].mHi[k] = std::max(out[n].mHi[k], x);
-            }
-    }
-    return out;
-}
-
-double om_volume(const OmBox& rB) {
-    return (rB.mHi[0] - rB.mLo[0]) * (rB.mHi[1] - rB.mLo[1]) * (rB.mHi[2] - rB.mLo[2]);
-}
-
-std::vector<std::int64_t> om_region(const mio::Mesh& rM, const char* pName, mio::RegionKind Kind) {
-    const std::size_t r = rM.FindRegion(pName, Kind);
-    EXPECT_NE(r, mio::Mesh::npos) << pName;
-    const auto& e = rM.Region(r).mEntries;
-    return std::vector<std::int64_t>(e.As<std::int64_t>(), e.As<std::int64_t>() + e.Size());
-}
-
-mio::OctreeMeshOptions om_castellated(double MaxSize, double MinSize) {
-    mio::OctreeMeshOptions o;
-    o.mOutput = mio::OctreeMeshOutput::Castellated;
-    o.mMaxSize = MaxSize;
-    o.mMinSize = MinSize;
-    o.mPaddingRelative = 0.05;
-    return o;
-}
-
 }  // namespace
 
 TEST(OctreeMesh, InsideConvergesToTheBallAndTheSurrogateBoundaryEnclosesIt) {
@@ -503,93 +462,6 @@ TEST(OctreeMesh, RefusesBadOptionsByName) {
     EXPECT_EQ(mio::octree_mesh_output_from_name("tet"), mio::OctreeMeshOutput::Tetra);
 }
 
-namespace {
-
-// The checks every tetrahedral output must pass: positive volumes, every
-// interior triangle shared by two tetrahedra with opposite orientations, and
-// a boundary that is a closed 2-manifold (every boundary edge on exactly two
-// boundary triangles).
-struct OmTetCheck {
-    double mVolume = 0.0;
-    double mMinDihedral = 180.0, mMaxDihedral = 0.0;
-    std::size_t mBoundaryFaces = 0;
-};
-
-OmTetCheck om_check_tets(const mio::Mesh& rM) {
-    OmTetCheck out;
-    const double* p = rM.Points().As<double>();
-    const auto block = rM.Cells(0);
-    EXPECT_EQ(block.Type(), "tetra");
-    const std::int64_t* c = block.Conn().As<std::int64_t>();
-    auto at = [&](std::int64_t v) { return Vec3{p[3 * v], p[3 * v + 1], p[3 * v + 2]}; };
-    std::map<std::array<std::int64_t, 3>, int> faces;
-    constexpr int kFace[4][3] = {{1, 2, 3}, {0, 3, 2}, {0, 1, 3}, {0, 2, 1}};
-    for (std::size_t t = 0; t < block.NumCells(); ++t) {
-        const std::int64_t* v = c + 4 * t;
-        const double vol = mio::detail::triple_product(mio::detail::vec3_sub(at(v[1]), at(v[0])),
-                                                       mio::detail::vec3_sub(at(v[2]), at(v[0])),
-                                                       mio::detail::vec3_sub(at(v[3]), at(v[0]))) /
-                           6.0;
-        EXPECT_GT(vol, 0.0) << "tet " << t;
-        out.mVolume += vol;
-        const auto a = mio::detail::tet_dihedral_angles(at(v[0]), at(v[1]), at(v[2]), at(v[3]));
-        out.mMinDihedral = std::min(out.mMinDihedral, a[0]);
-        out.mMaxDihedral = std::max(out.mMaxDihedral, a[5]);
-        for (const auto& f : kFace) {
-            std::array<std::int64_t, 3> k{v[f[0]], v[f[1]], v[f[2]]};
-            int parity = 0;
-            for (int x = 0; x < 3; ++x)
-                for (int y = x + 1; y < 3; ++y)
-                    parity ^= k[x] > k[y];
-            std::sort(k.begin(), k.end());
-            const int s = parity ? -1 : 1;
-            auto [it, fresh] = faces.emplace(k, s);
-            if (!fresh) {
-                EXPECT_EQ(it->second, -s) << "a triangle seen twice the same way";
-                it->second = 2;  // matched
-            }
-        }
-    }
-    std::map<std::array<std::int64_t, 2>, int> edges;
-    for (const auto& [k, s] : faces) {
-        if (s == 2)
-            continue;
-        ++out.mBoundaryFaces;
-        for (int e = 0; e < 3; ++e)
-            ++edges[{std::min(k[e], k[(e + 1) % 3]), std::max(k[e], k[(e + 1) % 3])}];
-    }
-    for (const auto& [e, n] : edges)
-        EXPECT_EQ(n, 2) << "boundary edge " << e[0] << "-" << e[1] << " on " << n << " triangles";
-    return out;
-}
-
-mio::OctreeMeshOptions om_tet(double MaxSize, double MinSize, bool Uniform) {
-    mio::OctreeMeshOptions o;
-    o.mOutput = mio::OctreeMeshOutput::Tetra;
-    o.mMaxSize = MaxSize;
-    o.mMinSize = MinSize;
-    o.mPaddingRelative = 0.05;
-    if (Uniform) {
-        o.mSkinGrading = mio::OctreeMeshSkinGrading::Uniform;
-        o.mSurfaceSize = 2.0 * MinSize;
-    }
-    return o;
-}
-
-// The volume a closed, outward surface encloses.
-double om_enclosed(const mio::Mesh& rSkin) {
-    const auto soup = mio::detail::build_triangle_soup(rSkin, "");
-    double v = 0.0;
-    for (std::size_t t = 0; t < soup.NumTriangles(); ++t)
-        v += mio::detail::vec3_dot(
-                 soup.mCorners[3 * t],
-                 mio::detail::vec3_cross(soup.mCorners[3 * t + 1], soup.mCorners[3 * t + 2])) /
-             6.0;
-    return v;
-}
-
-}  // namespace
-
 TEST(OctreeMeshTet, UniformSkinsKeepTheStuffingAngleBounds) {
     const mio::Mesh skins[] = {mio::icosa_sphere(1.0, 4), analytic::torus(1.0, 0.4, 64, 32)};
     for (const mio::Mesh& skin : skins) {
@@ -808,55 +680,6 @@ TEST(OctreeMeshTet, ReportsTheBoundarysDistanceAndManifoldness) {
     }
 }
 
-namespace {
-
-struct OmHexCheck {
-    double mVolume = 0.0;
-    double mMinScaledJacobian = 1.0;
-};
-
-// Every cell a positive hexahedron; the boundary closed and edge-manifold.
-OmHexCheck om_check_hexes(const mio::Mesh& rM) {
-    OmHexCheck out;
-    EXPECT_EQ(rM.NumCellBlocks(), 1u);
-    const auto block = rM.Cells(0);
-    EXPECT_EQ(block.Type(), "hexahedron");
-    mio::detail::HexMesh hm;
-    const double* p = rM.Points().As<double>();
-    for (std::size_t v = 0; v < rM.NumPoints(); ++v)
-        hm.mPoints.push_back({p[3 * v], p[3 * v + 1], p[3 * v + 2]});
-    const std::int64_t* c = block.Conn().As<std::int64_t>();
-    for (std::size_t h = 0; h < block.NumCells(); ++h) {
-        std::array<std::int64_t, 8> hex{};
-        for (std::size_t k = 0; k < 8; ++k)
-            hex[k] = c[8 * h + k];
-        hm.mHexes.push_back(hex);
-        out.mMinScaledJacobian =
-            std::min(out.mMinScaledJacobian, mio::detail::hex_min_scaled_jacobian(hm.mPoints, hex));
-    }
-    const mio::detail::HexBoundary b = mio::detail::hex_boundary(hm);
-    EXPECT_EQ(b.mNumOpenEdges, 0);
-    EXPECT_EQ(b.mNumNonManifoldEdges, 0);
-    for (const auto& q : b.mQuads) {
-        const Vec3& a = hm.mPoints[static_cast<std::size_t>(q[0])];
-        out.mVolume += (mio::detail::triple_product(a, hm.mPoints[static_cast<std::size_t>(q[1])],
-                                                    hm.mPoints[static_cast<std::size_t>(q[2])]) +
-                        mio::detail::triple_product(a, hm.mPoints[static_cast<std::size_t>(q[2])],
-                                                    hm.mPoints[static_cast<std::size_t>(q[3])])) /
-                       6.0;
-    }
-    return out;
-}
-
-mio::OctreeMeshOptions om_hex(double SurfaceSize) {
-    mio::OctreeMeshOptions o;
-    o.mOutput = mio::OctreeMeshOutput::Hexa;
-    o.mSurfaceSize = SurfaceSize;
-    return o;
-}
-
-}  // namespace
-
 TEST(OctreeMeshHex, SpheresAndToriAreAllHexahedraFittedToTheSkin) {
     const mio::Mesh skins[] = {mio::icosa_sphere(1.0, 4), analytic::torus(1.0, 0.4, 64, 32)};
     for (const mio::Mesh& skin : skins)
@@ -1037,32 +860,6 @@ struct OmHexFit {
     }
 };
 
-// The hexahedra's corners with a non-positive scaled Jacobian.
-std::int64_t om_flat_corners(const mio::Mesh& rM) {
-    std::vector<Vec3> pts;
-    const double* p = rM.Points().As<double>();
-    for (std::size_t v = 0; v < rM.NumPoints(); ++v)
-        pts.push_back({p[3 * v], p[3 * v + 1], p[3 * v + 2]});
-    const auto block = rM.Cells(0);
-    const std::int64_t* c = block.Conn().As<std::int64_t>();
-    std::int64_t flat = 0;
-    for (std::size_t h = 0; h < block.NumCells(); ++h) {
-        std::array<std::int64_t, 8> hex{};
-        for (std::size_t k = 0; k < 8; ++k)
-            hex[k] = c[8 * h + k];
-        for (double j : mio::detail::hex_corner_scaled_jacobians(pts, hex))
-            flat += j <= 0.0;
-    }
-    return flat;
-}
-
-// A unit box on the lattice's planes, its faces split into triangles.
-mio::Mesh om_unit_box() {
-    return mio::convert_cells(mio::extract_surface(mio::box({{4, 4, 4}}, {{1.0, 1.0, 1.0}})),
-                              {mio::ConvertCellsMode::Simplexify, false})
-        .mMesh;
-}
-
 }  // namespace
 
 // The capped cylinder of the hexahedral table (radius 0.5, height 2,
@@ -1151,48 +948,6 @@ TEST(OctreeMeshHex, TheBodyFittedHookIsTheFitOfVersion18) {
     EXPECT_GT(cylinder.mNumHexahedra, 0);
 #endif
 }
-
-namespace {
-
-// The volume of each material of a hexahedral output (each hexahedron as six
-// tetrahedra around its 0-6 diagonal), indexed by material.
-std::vector<double> om_material_volumes(const mio::Mesh& rM) {
-    const double* p = rM.Points().As<double>();
-    const std::int64_t* c = rM.Cells(0).Conn().As<std::int64_t>();
-    const std::int64_t* mat = rM.CellData(mio::kOctreeMeshMaterialName, 0).As<std::int64_t>();
-    std::vector<double> out;
-    static constexpr int kTets[6][4] = {{0, 1, 2, 6}, {0, 2, 3, 6}, {0, 3, 7, 6},
-                                        {0, 7, 4, 6}, {0, 4, 5, 6}, {0, 5, 1, 6}};
-    for (std::size_t h = 0; h < rM.Cells(0).NumCells(); ++h) {
-        const auto m = static_cast<std::size_t>(mat[h]);
-        if (out.size() <= m)
-            out.resize(m + 1, 0.0);
-        auto at = [&](int K) {
-            const std::int64_t v = c[8 * h + static_cast<std::size_t>(K)];
-            return Vec3{p[3 * v], p[3 * v + 1], p[3 * v + 2]};
-        };
-        for (const auto& t : kTets) {
-            const Vec3 o = at(t[0]);
-            out[m] += mio::detail::triple_product(mio::detail::vec3_sub(at(t[1]), o),
-                                                  mio::detail::vec3_sub(at(t[2]), o),
-                                                  mio::detail::vec3_sub(at(t[3]), o)) /
-                      6.0;
-        }
-    }
-    return out;
-}
-
-mio::Mesh om_nested_spheres(const std::vector<double>& rRadii) {
-    std::vector<mio::Mesh> parts;
-    for (double r : rRadii)
-        parts.push_back(mio::icosa_sphere(r, 4));
-    std::vector<const mio::Mesh*> ptrs;
-    for (const auto& m : parts)
-        ptrs.push_back(&m);
-    return mio::merge(ptrs, mio::MergeOptions{}).mMesh;
-}
-
-}  // namespace
 
 // Roadmap 7.9.3: `conformity = Cleaving` gives the hexahedral output one
 // material per winding level, each interface pillowed on both sides: the
@@ -1330,6 +1085,86 @@ TEST(OctreeMeshHex, CreasesShorterThanACellAreNotSnapped) {
     EXPECT_GT(r.mNumFeatureChainsMissed, 0);
 }
 
+// The tetrahedral output drops the creases shorter than a cell too: the same
+// box with a face centre pushed out keeps its eight corners and twelve edges,
+// leaves the bump's four short creases out, says so, and keeps its tetrahedra
+// above the stuffing's angle near the bump.
+TEST(OctreeMeshTet, CreasesShorterThanACellAreNotSnapped) {
+    mio::Mesh box =
+        mio::convert_cells(
+            mio::extract_surface(mio::box({{8, 8, 8}}, {{1.0, 1.0, 1.0}}, {{-0.51, -0.53, -0.55}})),
+            {mio::ConvertCellsMode::Simplexify, false})
+            .mMesh;
+    {
+        const std::size_t np = box.NumPoints();
+        mio::NDArray pts = mio::NDArray::Uninit(mio::DType::Float64, {np, std::size_t{3}});
+        const double* src = box.Points().As<double>();
+        double* p = pts.As<double>();
+        std::copy(src, src + 3 * np, p);
+        for (std::size_t v = 0; v < np; ++v)
+            if (std::abs(p[3 * v] - 0.49) < 1e-9 && std::abs(p[3 * v + 1] + 0.03) < 1e-9 &&
+                std::abs(p[3 * v + 2] + 0.05) < 1e-9)
+                p[3 * v] += 0.1;
+        box.AssignPoints(std::move(pts));
+    }
+    const auto r = mio::octree_mesh(box, om_tet(0.5, 0.15, true));
+    const OmTetCheck c = om_check_tets(r.mMesh);
+    EXPECT_EQ(r.mNumCornersSnapped, 8);
+    EXPECT_GT(r.mNumFeatureChainsMissed, 0);
+    bool said = false;
+    for (const std::string& w : r.mWarnings)
+        said = said || w.find("shorter than a cell") != std::string::npos;
+    EXPECT_TRUE(said);
+    EXPECT_GT(c.mMinDihedral, 10.0);
+    EXPECT_EQ(r.mNumInverted, 0);
+}
+
+// A box whose face carries a patch of scan-like noise: snapping its corners
+// leaves slivers beside them, so those corners are released and the
+// optimisation runs again. No tetrahedron stays under the sliver bound, the
+// box's own corners are still snapped, and a warning counts the corners.
+namespace {
+
+// Switch the feature release off (the internal test hook) for a scope.
+struct OmNoRelease {
+    OmNoRelease() { om_setenv("0"); }
+    ~OmNoRelease() { om_setenv(nullptr); }
+    static void om_setenv(const char* pValue) {
+#ifdef _WIN32
+        _putenv_s("MESHIOPLUSPLUS_OCTREE_MESH_RELEASE", pValue != nullptr ? pValue : "");
+#else
+        if (pValue != nullptr)
+            setenv("MESHIOPLUSPLUS_OCTREE_MESH_RELEASE", pValue, 1);
+        else
+            unsetenv("MESHIOPLUSPLUS_OCTREE_MESH_RELEASE");
+#endif
+    }
+};
+
+}  // namespace
+
+TEST(OctreeMeshTet, FeatureCornersBesideSliversAreReleased) {
+    const mio::Mesh box = om_jittered_bump_box(8, 0.1);
+    for (double size : {0.1, 0.15}) {
+        SCOPED_TRACE(size);
+        double without = 0.0;
+        {
+            const OmNoRelease off;
+            without =
+                om_check_tets(mio::octree_mesh(box, om_tet(0.5, size, true)).mMesh).mMinDihedral;
+        }
+        EXPECT_LT(without, 15.0) << "the fixture is supposed to leave slivers by its creases";
+        const auto r = mio::octree_mesh(box, om_tet(0.5, size, true));
+        const OmTetCheck c = om_check_tets(r.mMesh);
+        EXPECT_GE(c.mMinDihedral, 15.0);
+        EXPECT_GE(r.mNumCornersSnapped, 8);
+        bool said = false;
+        for (const std::string& w : r.mWarnings)
+            said = said || w.find("feature corners beside tetrahedra") != std::string::npos;
+        EXPECT_TRUE(said);
+    }
+}
+
 // ---- volume fixing and feature snapping on hand-made tetrahedra ----
 
 namespace {
@@ -1366,7 +1201,8 @@ OctreeMeshTets fix_test_tets(const std::vector<std::array<double, 3>>& rPoints,
 }  // namespace
 
 TEST(OctreeMeshFixVolumes, UntanglesAFreeNode) {
-    // Node 3 lies below the triangle 0-1-2 although its tetrahedron stands above it; the centroid of its neighbours (0, 1, 2 and 4) puts it back above
+    // Node 3 lies below the triangle 0-1-2 although its tetrahedron stands above it; the centroid
+    // of its neighbours (0, 1, 2 and 4) puts it back above
     OctreeMeshTets tets = fix_test_tets(
         {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.33, 0.33, -0.1}, {0.33, 0.33, 0.4}},
         {{0, 1, 2, 3}, {0, 1, 2, 4}, {1, 2, 3, 4}});
@@ -1382,10 +1218,15 @@ TEST(OctreeMeshFixVolumes, UntanglesAFreeNode) {
 }
 
 TEST(OctreeMeshFixVolumes, SplitsAFlatSliver) {
-    // A flat tetrahedron 0-1-2-3 whose opposite edges 0-1 and 2-3 cross at (0.5, 0, 0), with all its nodes on features so that no collapse can remove it
-    OctreeMeshTets tets = fix_test_tets(
-        {{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {0.5, -0.5, 0.0}, {0.5, 0.5, 0.0}, {0.5, 0.2, 1.0}, {0.8, -0.2, 2.0}},
-        {{0, 1, 2, 3}, {0, 1, 4, 5}, {2, 3, 4, 5}});
+    // A flat tetrahedron 0-1-2-3 whose opposite edges 0-1 and 2-3 cross at (0.5, 0, 0), with all
+    // its nodes on features so that no collapse can remove it
+    OctreeMeshTets tets = fix_test_tets({{0.0, 0.0, 0.0},
+                                         {1.0, 0.0, 0.0},
+                                         {0.5, -0.5, 0.0},
+                                         {0.5, 0.5, 0.0},
+                                         {0.5, 0.2, 1.0},
+                                         {0.8, -0.2, 2.0}},
+                                        {{0, 1, 2, 3}, {0, 1, 4, 5}, {2, 3, 4, 5}});
     // The neighbours around the two edges are positive
     for (std::size_t t = 1; t < 3; ++t)
         if (fix_test_volume(tets, tets.mTets[t]) < 0.0)
@@ -1405,7 +1246,8 @@ TEST(OctreeMeshFixVolumes, SplitsAFlatSliver) {
 }
 
 TEST(OctreeMeshFeatureSnap, KeepsGuardedTetrahedraPositive) {
-    // A cube of 6x6x6 cells, each split in six tetrahedra around its diagonal, and a ridge that runs along the edge x = y = 0 slightly inside it
+    // A cube of 6x6x6 cells, each split in six tetrahedra around its diagonal, and a ridge that
+    // runs along the edge x = y = 0 slightly inside it
     constexpr int n = 6;
     const double h = 1.0 / n;
     const auto id = [&](const int I, const int J, const int K) {
@@ -1445,9 +1287,11 @@ TEST(OctreeMeshFeatureSnap, KeepsGuardedTetrahedraPositive) {
     std::vector<std::uint8_t> feature(m.mPoints.size(), 0);
     const double min_volume = 1.0e-12 * h * h * h;
     meshioplusplus::detail::feature_snap(
-        m.mPoints, m.mTets, inside, inside, graph, ridge, [&](const std::array<double, 3>&) { return h; },
-        min_volume, pinned, feature);
-    EXPECT_GT(std::count(feature.begin(), feature.end(), 2) + std::count(feature.begin(), feature.end(), 1), 0);
+        m.mPoints, m.mTets, inside, inside, graph, ridge,
+        [&](const std::array<double, 3>&) { return h; }, min_volume, pinned, feature);
+    EXPECT_GT(std::count(feature.begin(), feature.end(), 2) +
+                  std::count(feature.begin(), feature.end(), 1),
+              0);
     // However the moves went, no tetrahedron the snap was told to guard may end up flat or inverted
     for (const auto& t : m.mTets)
         EXPECT_GT(fix_test_volume(m, t), min_volume);

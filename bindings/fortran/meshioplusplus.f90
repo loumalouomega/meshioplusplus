@@ -1134,7 +1134,10 @@ module meshioplusplus
         integer(c_int32_t) :: optimize_steps = 3
         !> backend 3 (a named mesher): its name (was reserved).
         type(c_ptr) :: provider = c_null_ptr
-        integer(c_int64_t) :: reserved(3) = 0
+        !> Non-zero: optimize_volume on each region afterwards (was reserved).
+        integer(c_int32_t) :: post_optimize = 0
+        integer(c_int32_t) :: reserved32 = 0
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> `mio_tetrahedralize_report` (128 bytes): what `mio_tetrahedralize` did.
@@ -18980,7 +18983,7 @@ contains
     !> 'netgen' without Netgen
     !> (`mio_has_netgen()` is false) fails naming MESHIOPLUSPLUS_WITH_NETGEN.
     function mio_tetrahedralize(mesh, max_size, max_volume, grading, optimize_steps, max_cells, &
-                                face_array, backend, report, stat, errmsg) result(out)
+                                face_array, backend, report, stat, errmsg, post_optimize) result(out)
         type(mio_mesh), intent(in) :: mesh
         real(real64), intent(in), optional :: max_size, max_volume, grading
         integer, intent(in), optional :: optimize_steps
@@ -18989,6 +18992,7 @@ contains
         type(mio_tetrahedralize_report), intent(out), optional :: report
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
+        logical, intent(in), optional :: post_optimize
         type(mio_mesh) :: out
         type(mio_tetrahedralize_opts_t) :: opts
         type(mio_tetrahedralize_report) :: rep
@@ -19003,6 +19007,9 @@ contains
         if (present(grading)) opts%grading = real(grading, c_double)
         if (present(optimize_steps)) opts%optimize_steps = int(optimize_steps, c_int32_t)
         if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(post_optimize)) then
+            if (post_optimize) opts%post_optimize = 1
+        end if
         if (present(face_array)) then
             fname = c_str(face_array)
             opts%face_array = c_loc(fname(1:1))

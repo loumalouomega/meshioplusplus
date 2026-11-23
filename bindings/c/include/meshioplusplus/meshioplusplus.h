@@ -8284,7 +8284,12 @@ typedef struct mio_tetrahedralize_opts {
     /** MIO_TETRAHEDRALIZE_BACKEND_NAMED: the mesher's name (borrowed; was
      *  reserved, unreleased after v18.0.0). */
     const char* provider;
-    int64_t reserved[3];
+    /** Non-zero: optimize_volume on each region after the backend, the
+     *  boundary and the points kept (init: 0; was reserved, unreleased after
+     *  v20.2.0). */
+    int32_t post_optimize;
+    int32_t reserved32;
+    int64_t reserved[2];
 } mio_tetrahedralize_opts;
 
 /** What mio_tetrahedralize did. 128 bytes, with a reserved tail. */

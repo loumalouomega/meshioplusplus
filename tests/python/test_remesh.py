@@ -305,3 +305,58 @@ def test_max_anisotropy_validation():
         remesh(ico, 60, metric="isotropic", max_anisotropy=5.0)
     # the default is always accepted, regardless of metric
     remesh(ico, 60, metric="isotropic", max_anisotropy=4.0)
+
+
+def _cube_with_capped_bottom(n=32):
+    """A closed cube of ``n`` squares a side whose bottom face is a fan of
+    needles from its centre, as ``repair`` caps a scan's hole."""
+    skin = meshioplusplus.extract_skin(
+        meshioplusplus.box((n, n, n), (1.0, 1.0, 1.0), cell_type="tetra")
+    )
+    p = np.asarray(skin.points, dtype=float)
+    t = np.concatenate([c.data for c in skin.cells if c.type == "triangle"])
+    keep = t[~np.all(np.isclose(p[t][:, :, 2], 0.0), axis=1)]
+
+    def vid(x, y):
+        hit = np.isclose(p[:, 0], x) & np.isclose(p[:, 1], y) & np.isclose(p[:, 2], 0.0)
+        return int(np.flatnonzero(hit)[0])
+
+    loop = (
+        [vid(i / n, 0.0) for i in range(n)]
+        + [vid(1.0, i / n) for i in range(n)]
+        + [vid(i / n, 1.0) for i in range(n, 0, -1)]
+        + [vid(0.0, i / n) for i in range(n, 0, -1)]
+    )
+    centre = len(p)
+    p = np.vstack([p, [0.5, 0.5, 0.0]])
+    fan = np.array(
+        [[centre, loop[i], loop[(i + 1) % len(loop)]] for i in range(len(loop))]
+    )
+    # Wind the fan like the face it replaces (outward, -z).
+    if np.cross(p[fan[0, 1]] - p[fan[0, 0]], p[fan[0, 2]] - p[fan[0, 0]])[2] > 0:
+        fan = fan[:, [0, 2, 1]]
+    return meshioplusplus.Mesh(p, [("triangle", np.vstack([keep, fan]))])
+
+
+def _max_aspect(mesh):
+    t = mesh.cells[0].data
+    p = np.asarray(mesh.points, dtype=float)[t]
+    longest = np.max(
+        [np.linalg.norm(p[:, (k + 1) % 3] - p[:, k], axis=1) for k in range(3)], axis=0
+    )
+    area2 = np.linalg.norm(np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), axis=1)
+    return float(np.max(longest**2 / area2))
+
+
+@needs_core
+def test_auto_subdivision_splits_needles():
+    """The automatic subdivision also splits the triangles longer than half the
+    cluster spacing, so a hole cap's needle fan does not survive; a fixed
+    subdivision count keeps the old behaviour."""
+    skin = _cube_with_capped_bottom()
+    assert _max_aspect(skin) > 20.0
+    out, report = remesh(skin, 3000, subsample_ratio=1.0, return_report=True)
+    assert report["subdivide_applied"] == 0
+    assert _max_aspect(out) < 10.0
+    fixed = remesh(skin, 3000, subsample_ratio=1.0, subdivide=0)
+    assert _max_aspect(fixed) > 10.0

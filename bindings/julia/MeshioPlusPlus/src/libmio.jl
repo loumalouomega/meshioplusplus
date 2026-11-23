@@ -1310,7 +1310,9 @@ struct _CTetrahedralizeOpts
     backend::Int32
     optimize_steps::Int32
     provider::Ptr{UInt8}  # backend 3 (a named mesher): its name (was reserved)
-    reserved::NTuple{3,Int64}
+    post_optimize::Int32  # non-zero: optimize_volume on each region afterwards (was reserved)
+    reserved32::Int32
+    reserved::NTuple{2,Int64}
 end
 
 """Mirror of C `mio_remesh_quads_opts` (80 bytes; roadmap 7.7.3)."""
@@ -2795,7 +2797,8 @@ function _check_abi_layout()
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CTetrahedralizeOpts) == 80 &&
                                  fieldoffset(_CTetrahedralizeOpts, 5) == 32 &&
                                  fieldoffset(_CTetrahedralizeOpts, 8) == 48 &&
-                                 fieldoffset(_CTetrahedralizeOpts, 9) == 56)) ||
+                                 fieldoffset(_CTetrahedralizeOpts, 9) == 56 &&
+                                 fieldoffset(_CTetrahedralizeOpts, 11) == 64)) ||
         error("meshio++: mio_tetrahedralize_opts layout mismatch " *
               "($(sizeof(_CTetrahedralizeOpts)) bytes)")
     (sizeof(Ptr{Cvoid}) != 8 || (sizeof(_CRemeshQuadsOpts) == 80 &&

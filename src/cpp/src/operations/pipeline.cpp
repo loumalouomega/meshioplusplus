@@ -1169,7 +1169,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         else if (backend == "octree")
             o.mBackend = TetrahedralizeBackend::Octree;
         else if (!backend.empty()) {
-            // A named mesher (roadmap 7.7.2): the installed tetgen or gmsh.
+            // A named mesher (roadmap 7.7.2): the installed tetgen, gmsh or ftetwild.
             o.mBackend = TetrahedralizeBackend::Named;
             o.mProvider = backend;
         } else
@@ -1183,6 +1183,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         o.mMaxCells = static_cast<std::int64_t>(
             pipe_number(rStep, "MaxCells", static_cast<double>(o.mMaxCells)));
         o.mFaceArray = pipe_text(rStep, "FaceArray", o.mFaceArray.c_str());
+        o.mPostOptimize = pipe_flag(rStep, "PostOptimize", false);
         TetrahedralizeResult r = tetrahedralize(mesh, o);
         for (const std::string& w : r.mWarnings)
             rReport.mWarnings.push_back("Tetrahedralize: " + w);

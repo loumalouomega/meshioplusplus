@@ -1062,6 +1062,9 @@ export interface TetrahedralizeOptions {
   maxCells?: number;
   /** The cell data naming each triangle's CAD face (default "cad:face"). */
   faceArray?: string;
+  /** Run optimize_volume on each region after the backend, the boundary and the
+   * points kept (default false). */
+  postOptimize?: boolean;
 }
 
 /** What `tetrahedralize` returns. */

@@ -319,3 +319,58 @@ def test_an_external_mesher_keeps_the_skin(name):
     assert report["num_regions"] == 2
     assert report["boundary_preserved"] is True
     assert report["volume"] == pytest.approx(27.0)
+
+
+@needs_core
+def test_ftetwild_fits_the_skin():
+    """The installed fTetWild program fills the sphere and a box in a box with
+    its boundary fitted within its envelope: every point its own, the
+    boundary's distance to the skin measured and small, the volume close."""
+    if "ftetwild" not in mio.tetrahedralize_backends():
+        pytest.skip("fTetWild (FloatTetwild_bin) is not installed")
+    skin = _sphere_skin(0.3)
+    out, report = mio.tetrahedralize(
+        skin, backend="ftetwild", max_size=0.3, return_report=True
+    )
+    assert report["backend"] == "ftetwild"
+    assert report["boundary_preserved"] is False
+    assert report["num_new_points"] == report["num_points"]
+    # fTetWild's default envelope is 1e-3 of the bounding box diagonal.
+    diag = float(np.linalg.norm(np.ptp(skin.points, axis=0)))
+    assert 0.0 <= report["hausdorff_to_surface"] < 0.01 * diag
+    assert report["volume"] == pytest.approx(_enclosed_volume(skin), rel=0.02)
+    assert report["min_dihedral_deg"] > 0.0
+    assert report["num_boundary_triangles"] > 0
+    assert any(c.type == "triangle" for c in out.cells)
+    two, report = mio.tetrahedralize(
+        _boxes((0.0, 3.0), (1.0, 2.0)), backend="ftetwild", return_report=True
+    )
+    assert report["num_regions"] == 2
+    assert report["boundary_preserved"] is False
+    assert report["volume"] == pytest.approx(27.0, rel=0.01)
+    assert any("do not share points" in w for w in report["warnings"])
+
+
+@needs_core
+def test_post_optimize_keeps_the_boundary_and_raises_the_worst():
+    """post_optimize runs optimize_volume on each region after the backend:
+    the worst dihedral angle is no lower, the volume and the boundary are the
+    same, and a non-boolean is refused by name."""
+    skin = _sphere_skin(0.3)
+    plain, a = mio.tetrahedralize(
+        skin, backend="octree", max_size=0.3, return_report=True
+    )
+    opt, b = mio.tetrahedralize(
+        skin, backend="octree", max_size=0.3, post_optimize=True, return_report=True
+    )
+    assert b["min_dihedral_deg"] >= a["min_dihedral_deg"] - 1e-9
+    assert b["volume"] == pytest.approx(a["volume"], rel=1e-12)
+    assert b["num_points"] == a["num_points"]
+    assert b["num_boundary_triangles"] == a["num_boundary_triangles"]
+    tri_a = _triangles(plain)
+    tri_b = _triangles(opt)
+    assert np.array_equal(np.sort(tri_a, axis=1), np.sort(tri_b, axis=1))
+    on_boundary = np.unique(tri_a)
+    assert np.array_equal(plain.points[on_boundary], opt.points[on_boundary])
+    with pytest.raises(ValueError, match="post_optimize"):
+        mio.tetrahedralize(skin, backend="octree", post_optimize=1)

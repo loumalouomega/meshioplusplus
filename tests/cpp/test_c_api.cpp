@@ -2359,6 +2359,7 @@ TEST(CApi, Tetrahedralize) {
     EXPECT_EQ(to.backend, MIO_TETRAHEDRALIZE_BACKEND_AUTO);
     EXPECT_DOUBLE_EQ(to.grading, 0.3);
     EXPECT_EQ(to.optimize_steps, 3);
+    EXPECT_EQ(to.post_optimize, 0);
     EXPECT_EQ(to.max_cells, 50000000);
     EXPECT_EQ(to.face_array, nullptr);
     EXPECT_EQ(to.max_size, 0.0);

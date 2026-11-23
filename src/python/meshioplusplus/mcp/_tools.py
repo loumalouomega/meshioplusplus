@@ -6130,6 +6130,7 @@ def tool_tetrahedralize(
     optimize_steps=3,
     max_cells=50_000_000,
     face_array="cad:face",
+    post_optimize=False,
 ):
     """Fill a closed triangle surface with tetrahedra: its triangles kept
     (Netgen) or its boundary fitted (the native octree backend; auto takes
@@ -6140,7 +6141,10 @@ def tool_tetrahedralize(
     (whether the Netgen backend is installed: the meshioplusplus-netgen
     package) and backends_available (every name backend takes besides auto:
     octree, netgen, and the installed tetgen and gmsh programs, run as
-    separate processes with the surface kept)."""
+    separate processes with the surface kept, and ftetwild, the installed
+    fTetWild program, which fits the boundary within its envelope).
+    post_optimize runs optimize_volume on each region afterwards, the boundary
+    and the points kept."""
     mesh = _load(input_path, input_format)
     out, report = tetrahedralize(
         mesh,
@@ -6151,6 +6155,7 @@ def tool_tetrahedralize(
         optimize_steps=optimize_steps,
         max_cells=max_cells,
         face_array=face_array,
+        post_optimize=post_optimize,
         return_report=True,
     )
     return _result(

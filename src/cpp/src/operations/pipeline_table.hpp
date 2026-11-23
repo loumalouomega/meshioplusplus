@@ -291,7 +291,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
          {"Point", "Normal", "Plane", "KeepOriginal", "Weld", "Tolerance", "ReflectData"}},
         // Tetrahedra filling the closed triangle surface (roadmap 6.7).
         {"Tetrahedralize",
-         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "MaxCells", "FaceArray"}},
+         {"Backend", "MaxSize", "MaxVolume", "Grading", "OptimizeSteps", "PostOptimize", "MaxCells",
+          "FaceArray"}},
         {"RemeshQuads",
          {"TargetFaces", "Backend", "Sharp", "Boundary", "Adaptive", "Dominant", "Seed",
           "MaxCells"}},

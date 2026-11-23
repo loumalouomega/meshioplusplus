@@ -70,22 +70,6 @@ struct OctmhFeatures {
     std::vector<std::int64_t> mNodeChain, mNodeCorner;
 };
 
-// The point at arc length @p At along the polyline through the skin points
-// @p rChain (clamped to its ends).
-Vec3 octmh_along_chain(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t>& rChain,
-                       double At) {
-    for (std::size_t s = 0; s + 1 < rChain.size(); ++s) {
-        const Vec3& a = rSkin[static_cast<std::size_t>(rChain[s])];
-        const Vec3& b = rSkin[static_cast<std::size_t>(rChain[s + 1])];
-        const double l = vec3_norm(vec3_sub(b, a));
-        if (At <= l || s + 2 == rChain.size())
-            return l > 0.0 ? vec3_add(a, vec3_scale(vec3_sub(b, a), std::clamp(At / l, 0.0, 1.0)))
-                           : a;
-        At -= l;
-    }
-    return rSkin[static_cast<std::size_t>(rChain.front())];
-}
-
 // Snap the boundary nodes @p rBoundaryNodes (with the boundary quads' edges as
 // their graph) onto the feature corners and chains of the skin: a corner
 // takes the nearest unclaimed node within 1.5 of its size @p rSize, a chain the
@@ -216,7 +200,7 @@ OctmhFeatures octmh_snap(std::vector<Vec3>& rPoints,
                                              rSkin[static_cast<std::size_t>(chain[i])]));
             for (std::size_t i = 1; i + 1 < path.size(); ++i) {
                 const auto v = static_cast<std::size_t>(path[i]);
-                rPoints[v] = octmh_along_chain(rSkin, chain, length * at[i] / at.back());
+                rPoints[v] = octree_mesh_along_chain(rSkin, chain, length * at[i] / at.back());
                 rFeature[v] = 2;
                 rep.mNodeChain[v] = static_cast<std::int64_t>(ci);
                 ++rep.mMoved;
@@ -719,41 +703,6 @@ Vec3 octmh_tether(const std::vector<Vec3>& rSkin, const std::vector<std::int64_t
 // untangled again for a fifth of the sweeps.
 constexpr double kOctmhRepairBelow = 0.05;
 
-// The feature graph without the chains shorter than a cell: on a scanned skin
-// a short crease is noise the boundary cannot follow, and pinning it holds
-// the hexahedra around it flat or inverted. A corner is kept when a kept chain
-// ends at it. @p Uniform is the uniform grid's edge (0: graded, where the
-// cell is the leaf's at the chain's midpoint). @p rDropped counts the chains
-// dropped.
-FeatureGraph octmh_drop_short(const OctreeMeshSetup& rS, const FeatureGraph& rGraph, double Uniform,
-                              std::int64_t& rDropped) {
-    const std::vector<Vec3>& skin = rS.mSkin.mPoints;
-    FeatureGraph out;
-    rDropped = 0;
-    std::vector<std::int64_t> ends;
-    for (const auto& chain : rGraph.mChains) {
-        double length = 0.0;
-        for (std::size_t i = 0; i + 1 < chain.size(); ++i)
-            length += vec3_norm(vec3_sub(skin[static_cast<std::size_t>(chain[i + 1])],
-                                         skin[static_cast<std::size_t>(chain[i])]));
-        const double cell = Uniform > 0.0 ? Uniform
-                                          : octree_mesh_local_size(
-                                                rS, octmh_along_chain(skin, chain, 0.5 * length));
-        if (length < cell) {
-            ++rDropped;
-            continue;
-        }
-        out.mChains.push_back(chain);
-        ends.push_back(chain.front());
-        ends.push_back(chain.back());
-    }
-    std::sort(ends.begin(), ends.end());
-    for (std::int64_t c : rGraph.mCorners)
-        if (std::binary_search(ends.begin(), ends.end(), c))
-            out.mCorners.push_back(c);
-    return out;
-}
-
 // Place the boundary on the skin, snap the features and untangle.
 OctmhFit octmh_fit(const OctmhFitInput& rIn, OctmhPlacement Placement) {
     const OctreeMeshSetup& rs = rIn.rS;
@@ -930,7 +879,7 @@ OctmhFit octmh_fit(const OctmhFitInput& rIn, OctmhPlacement Placement) {
         const FeatureGraph* p_graph = jobs[j].pGraph;
         std::int64_t short_chains = 0;
         if (robust) {
-            kept[j] = octmh_drop_short(
+            kept[j] = octree_mesh_drop_short_chains(
                 rs, *p_graph, ro.mHexGrading == OctreeMeshHexGrading::Graded ? 0.0 : size.front(),
                 short_chains);
             p_graph = &kept[j];
