@@ -4888,7 +4888,7 @@ int cmd_streamlines(const std::vector<std::string>& rArgs) {
             while (from <= triple.size()) {
                 const std::size_t comma = std::min(triple.find(',', from), triple.size());
                 try {
-                    v.push_back(std::stod(triple.substr(from, comma - from)));
+                    v.push_back(meshioplusplus::detail::stod_c(triple.substr(from, comma - from)));
                 } catch (const std::exception&) {
                     throw std::runtime_error("streamlines: --seed-points expects x,y,z;x,y,z");
                 }
