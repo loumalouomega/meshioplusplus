@@ -1191,13 +1191,13 @@ jobs:
         run: |
           git clone https://github.com/loumalouomega/fTetWild.git /tmp/ftw-src
           git -C /tmp/ftw-src checkout "${{ steps.qfpin.outputs.ftetwild }}"
-          # fTetWild's libigl calls FetchContent_Populate with details: CMake 3.30+
-          # rejects it unless CMP0169 is OLD, and CMake 4.4 dropped OLD, so this
-          # one build uses a CMake 3.31 kept in its own venv with the policy OLD.
+          # fTetWild's libigl calls FetchContent_Populate with details, which
+          # CMake 3.30+ rejects (CMP0169) and 4.4 no longer allows at all, so
+          # this one build uses a CMake 3.28 (what it is built with locally) in
+          # its own venv.
           python -m venv /tmp/cmake3
-          /tmp/cmake3/bin/pip install --quiet "cmake>=3.31,<3.32"
-          /tmp/cmake3/bin/cmake -S /tmp/ftw-src -B /tmp/ftw-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_POLICY_DEFAULT_CMP0169=OLD
+          /tmp/cmake3/bin/pip install --quiet "cmake>=3.28,<3.29"
+          /tmp/cmake3/bin/cmake -S /tmp/ftw-src -B /tmp/ftw-build -G Ninja -DCMAKE_BUILD_TYPE=Release
           /tmp/cmake3/bin/cmake --build /tmp/ftw-build --target FloatTetwild_bin
           mkdir -p ~/ftetwild-bin
           cp /tmp/ftw-build/FloatTetwild_bin ~/ftetwild-bin/
