@@ -108,5 +108,5 @@ TEST(QualityGate, TheMetricListMatchesComputeQuality) {
     const QualityReport rep = compute_quality(two_triangles());
     for (const auto& kv : rep.mMetrics)
         EXPECT_NO_THROW(parse_quality_thresholds(kv.first + " >= 0")) << kv.first;
-    EXPECT_EQ(rep.mMetrics.size(), 11u);
+    EXPECT_EQ(rep.mMetrics.size(), 15u);
 }

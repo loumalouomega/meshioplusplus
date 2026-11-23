@@ -683,7 +683,16 @@ def add_gradient_args(parser):
         "--op",
         type=str,
         default="gradient",
-        choices=("gradient", "divergence", "curl"),
+        choices=(
+            "gradient",
+            "divergence",
+            "curl",
+            "vorticity_magnitude",
+            "q_criterion",
+            "lambda2",
+            "strain_rate",
+            "green_lagrange",
+        ),
         help="which differential operator to apply (default: gradient)",
     )
     parser.add_argument(
@@ -1112,7 +1121,7 @@ _VERBS = (
     ("clamp", "Clamp values into [min, max]", add_clamp_args, clamp_cmd),
     (
         "gradient",
-        "Differentiate a point_data field (gradient / divergence / curl)",
+        "Differentiate a point_data field (gradient, divergence, curl, Q, lambda2, strain)",
         add_gradient_args,
         gradient_cmd,
     ),

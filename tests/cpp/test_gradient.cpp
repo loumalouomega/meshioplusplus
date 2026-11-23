@@ -319,6 +319,93 @@ TEST(Gradient, CurlHasThreeDistinctNonzeroComponents) {
     expect_grad(r.mMesh, "u:curl", 0, 0, 13.0, 7.0, 11.0);
 }
 
+// Reads the `Width` components of one cell of a produced cell array.
+std::vector<double> cell_values(const Mesh& rMesh, const std::string& rName, std::size_t Width) {
+    const NDArray& arr = rMesh.CellData(rName, 0);
+    std::vector<double> out(Width);
+    for (std::size_t k = 0; k < Width; ++k)
+        out[k] = meshioplusplus::detail::read_double(arr, k);
+    return out;
+}
+
+// One linear vector field on the tapered hex, one operator, the cell's values.
+std::vector<double> derived(const double C[9], GradientOperator op, const std::string& rSuffix,
+                            std::size_t Width) {
+    const auto pts = tapered_hex_points();
+    Mesh m = mt::make_mesh(pts, "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
+    m.AddPointData("u", linear_vector(pts, C));
+    const GradientResult r = gradient(m, opts("u", GradientMethod::GreenGauss, op));
+    return cell_values(r.mMesh, "u" + rSuffix, Width);
+}
+
+TEST(Gradient, DerivedQuantitiesOfARigidRotation) {
+    // u = w * (-y, x, 0): no strain, vorticity 2w, Q = w^2, lambda2 = -w^2.
+    const double w = 1.5;
+    const double C[9] = {0.0, -w, 0.0, w, 0.0, 0.0, 0.0, 0.0, 0.0};
+    EXPECT_NEAR(derived(C, GradientOperator::VorticityMagnitude, ":vorticity_magnitude", 1)[0],
+                2.0 * w, kTight);
+    EXPECT_NEAR(derived(C, GradientOperator::QCriterion, ":q_criterion", 1)[0], w * w, kTight);
+    EXPECT_NEAR(derived(C, GradientOperator::Lambda2, ":lambda2", 1)[0], -w * w, kTight);
+    for (double v : derived(C, GradientOperator::StrainRate, ":strain_rate", 6))
+        EXPECT_NEAR(v, 0.0, kTight);
+}
+
+TEST(Gradient, DerivedQuantitiesOfAPureShear) {
+    // u = (g y, 0, 0): Q = 0 and lambda2 = 0 (the strain and rotation balance),
+    // vorticity g, strain rate xy = g / 2; Green-Lagrange adds g^2 / 2 to yy.
+    const double g = 2.0;
+    const double C[9] = {0.0, g, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    EXPECT_NEAR(derived(C, GradientOperator::VorticityMagnitude, ":vorticity_magnitude", 1)[0], g,
+                kTight);
+    EXPECT_NEAR(derived(C, GradientOperator::QCriterion, ":q_criterion", 1)[0], 0.0, kTight);
+    EXPECT_NEAR(derived(C, GradientOperator::Lambda2, ":lambda2", 1)[0], 0.0, kTight);
+    const std::vector<double> s = derived(C, GradientOperator::StrainRate, ":strain_rate", 6);
+    const double expect_s[6] = {0.0, 0.0, 0.0, g / 2, 0.0, 0.0};
+    for (int k = 0; k < 6; ++k)
+        EXPECT_NEAR(s[k], expect_s[k], kTight) << k;
+    const std::vector<double> e =
+        derived(C, GradientOperator::GreenLagrangeStrain, ":green_lagrange", 6);
+    const double expect_e[6] = {0.0, g * g / 2, 0.0, g / 2, 0.0, 0.0};
+    for (int k = 0; k < 6; ++k)
+        EXPECT_NEAR(e[k], expect_e[k], kTight) << k;
+}
+
+TEST(Gradient, DerivedQuantitiesOfAnAnisotropicStretch) {
+    // u = (2x, 3y, 5z): irrotational, Q = -(4 + 9 + 25) / 2, lambda2 = 9 (the
+    // middle of 4, 9, 25), strain diag(2, 3, 5), Green-Lagrange diag(4, 7.5, 17.5).
+    const double C[9] = {2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 5.0};
+    EXPECT_NEAR(derived(C, GradientOperator::VorticityMagnitude, ":vorticity_magnitude", 1)[0], 0.0,
+                kTight);
+    EXPECT_NEAR(derived(C, GradientOperator::QCriterion, ":q_criterion", 1)[0], -19.0, kTight);
+    EXPECT_NEAR(derived(C, GradientOperator::Lambda2, ":lambda2", 1)[0], 9.0, 1e-10);
+    const std::vector<double> s = derived(C, GradientOperator::StrainRate, ":strain_rate", 6);
+    const double expect_s[6] = {2.0, 3.0, 5.0, 0.0, 0.0, 0.0};
+    for (int k = 0; k < 6; ++k)
+        EXPECT_NEAR(s[k], expect_s[k], kTight) << k;
+    const std::vector<double> e =
+        derived(C, GradientOperator::GreenLagrangeStrain, ":green_lagrange", 6);
+    const double expect_e[6] = {4.0, 7.5, 17.5, 0.0, 0.0, 0.0};
+    for (int k = 0; k < 6; ++k)
+        EXPECT_NEAR(e[k], expect_e[k], kTight) << k;
+}
+
+TEST(Gradient, DerivedQuantityNamesAndRefusals) {
+    EXPECT_EQ(gradient_operator_from_name("q-criterion"), GradientOperator::QCriterion);
+    EXPECT_EQ(gradient_operator_from_name("q_criterion"), GradientOperator::QCriterion);
+    EXPECT_EQ(gradient_operator_from_name("strain"), GradientOperator::StrainRate);
+    EXPECT_EQ(gradient_operator_from_name("green-lagrange"), GradientOperator::GreenLagrangeStrain);
+    EXPECT_EQ(gradient_operator_from_name("vorticity"), GradientOperator::VorticityMagnitude);
+    EXPECT_STREQ(meshioplusplus::gradient_suffix(GradientOperator::Lambda2), ":lambda2");
+    EXPECT_THROW(gradient_operator_from_name("helicity"), std::invalid_argument);
+
+    // A scalar field has no velocity gradient tensor.
+    const auto pts = tapered_hex_points();
+    Mesh m = mt::make_mesh(pts, "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
+    m.AddPointData("f", linear_scalar(pts, 1.0, 2.0, 3.0, 0.0));
+    EXPECT_THROW(gradient(m, opts("f", GradientMethod::GreenGauss, GradientOperator::QCriterion)),
+                 std::invalid_argument);
+}
+
 TEST(Gradient, TensorLayoutIsComponentMajorThenDerivative) {
     // All nine entries of C are distinct, so the i*3+j <-> j*3+i transpose fails.
     const auto pts = tapered_hex_points();

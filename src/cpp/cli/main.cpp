@@ -4891,8 +4891,8 @@ int cmd_bake_texture(const std::vector<std::string>& rArgs) {
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_opt(p, "image")) {
         const meshioplusplus::NDArray& png = r.mMesh.FieldData("texture:png");
-        auto os = meshioplusplus::detail::make_classic_ofstream(opt_value(p, "image"),
-                                                                std::ios::binary);
+        auto os =
+            meshioplusplus::detail::make_classic_ofstream(opt_value(p, "image"), std::ios::binary);
         if (!os)
             throw std::runtime_error("cannot write " + opt_value(p, "image"));
         os.write(reinterpret_cast<const char*>(png.Data()),
@@ -6926,8 +6926,8 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mAdapt.mMaxIterations =
         static_cast<int>(integer("adapt-max-iterations", o.mAdapt.mMaxIterations));
     o.mAdapt.mPreserveBoundary = has_flag(p, "adapt-preserve-boundary");
-    o.mAdapt.mBoundarySizing = mio::adapt_volume_boundary_sizing_from_name(
-        opt_value(p, "adapt-boundary-sizing", "input"));
+    o.mAdapt.mBoundarySizing =
+        mio::adapt_volume_boundary_sizing_from_name(opt_value(p, "adapt-boundary-sizing", "input"));
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     mio::OctreeMeshResult r = mio::octree_mesh(mesh, o);
@@ -9646,11 +9646,7 @@ int cmd_data_gradient(const std::vector<std::string>& rArgs) {
     if (!has_flag(p, "quiet")) {
         const std::string name =
             opts.mOutputName.empty()
-                ? opts.mArrayName + std::string(opt_value(p, "op", "gradient") == "divergence"
-                                                    ? meshioplusplus::kDivergenceSuffix
-                                                    : (opt_value(p, "op", "gradient") == "curl"
-                                                           ? meshioplusplus::kCurlSuffix
-                                                           : meshioplusplus::kGradientSuffix))
+                ? opts.mArrayName + meshioplusplus::gradient_suffix(opts.mOperator)
                 : opts.mOutputName;
         std::cout << "wrote " << meshioplusplus::data_location_name(opts.mLocation) << " '" << name
                   << "' (" << opt_value(p, "method", "green-gauss") << ")\n";
@@ -9997,7 +9993,8 @@ void print_data_usage(std::ostream& rOut) {
             "  clamp       Clamp values into [--min, --max]\n"
             "  normalize   Rescale to --to LO,HI (or --zero-mean)\n"
             "  gradient    Differentiate a point_data field (--array NAME --op "
-            "gradient|divergence|curl)\n"
+            "gradient|divergence|curl|vorticity_magnitude|q_criterion|lambda2|strain_rate|"
+            "green_lagrange)\n"
             "  hessian     Second derivative of a scalar point_data field "
             "(--array NAME), gradient's companion one order further\n"
             "  integrate   Cell-measure-weighted total/mean of a cell_data field, "

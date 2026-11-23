@@ -218,6 +218,75 @@ def test_curl_has_three_distinct_nonzero_components():
     )
 
 
+_ROTATION = [[0, -1.5, 0], [1.5, 0, 0], [0, 0, 0]]  # u = w * (-y, x, 0), w = 1.5
+_SHEAR = [[0, 2, 0], [0, 0, 0], [0, 0, 0]]  # u = (g y, 0, 0), g = 2
+_STRETCH = [[2, 0, 0], [0, 3, 0], [0, 0, 5]]  # u = (2x, 3y, 5z)
+
+# operator -> matrix -> the single cell's values, from closed forms.
+_DERIVED = {
+    "vorticity_magnitude": {"rot": [3.0], "shear": [2.0], "stretch": [0.0]},
+    "q_criterion": {"rot": [2.25], "shear": [0.0], "stretch": [-19.0]},
+    "lambda2": {"rot": [-2.25], "shear": [0.0], "stretch": [9.0]},
+    "strain_rate": {
+        "rot": [0, 0, 0, 0, 0, 0],
+        "shear": [0, 0, 0, 1.0, 0, 0],
+        "stretch": [2, 3, 5, 0, 0, 0],
+    },
+    "green_lagrange": {
+        "rot": [
+            1.125,
+            1.125,
+            0,
+            0,
+            0,
+            0,
+        ],  # (w^2 / 2) diag(1, 1, 0): linear u is not a rigid motion
+        "shear": [0, 2.0, 0, 1.0, 0, 0],
+        "stretch": [4, 7.5, 17.5, 0, 0, 0],
+    },
+}
+_FIELDS = {"rot": _ROTATION, "shear": _SHEAR, "stretch": _STRETCH}
+
+
+@pytest.mark.parametrize("operator", sorted(_DERIVED))
+@pytest.mark.parametrize("field", ["rot", "shear", "stretch"])
+def test_derived_quantities_match_the_closed_forms(operator, field):
+    mesh = _tapered_hex()
+    mesh.point_data["u"] = _linear_vector(mesh, _FIELDS[field])
+    out = mp.gradient(mesh, "u", operator=operator)
+    got = np.asarray(out.cell_data["u:" + operator][0]).ravel()
+    np.testing.assert_allclose(got, _DERIVED[operator][field], atol=1e-10)
+
+
+def test_derived_quantity_names_and_refusals():
+    mesh = _tapered_hex()
+    mesh.point_data["u"] = _linear_vector(mesh, _STRETCH)
+    out = mp.gradient(mesh, "u", operator="q-criterion")
+    assert "u:q_criterion" in out.cell_data
+    out = mp.gradient(mesh, "u", operator="strain", location="point")
+    assert out.point_data["u:strain_rate"].shape == (len(mesh.points), 6)
+    mesh.point_data["f"] = _linear(mesh, 1, 2, 3)
+    with pytest.raises(ValueError, match="2 or 3"):
+        mp.gradient(mesh, "f", operator="lambda2")
+    with pytest.raises(ValueError, match="unknown operator"):
+        mp.gradient(mesh, "u", operator="helicity")
+    with pytest.raises(ValueError, match="component selection"):
+        mp.gradient(mesh, "u", operator="q_criterion", component=0)
+
+
+@pytest.mark.parametrize("operator", sorted(_DERIVED))
+def test_the_numpy_twin_matches_the_core_on_derived_quantities(operator):
+    core = pytest.importorskip("meshioplusplus._core")  # noqa: F841
+    rng = np.random.default_rng(7)
+    mesh = _hex_grid(3)
+    mesh.point_data["u"] = _linear_vector(mesh, rng.normal(size=(3, 3)))
+    got = mp.gradient(mesh, "u", operator=operator)
+    ref, _, _ = _gradient_py(mesh, "u", operator=operator)
+    name = "u:" + operator
+    for a, b in zip(got.cell_data[name], ref.cell_data[name]):
+        np.testing.assert_allclose(np.asarray(a), np.asarray(b), rtol=1e-9, atol=1e-10)
+
+
 def test_tensor_layout_is_component_major_then_derivative():
     """All nine entries distinct, so the i*3+j <-> j*3+i transpose fails."""
     c = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=float)

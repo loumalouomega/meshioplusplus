@@ -77,12 +77,19 @@ An `nc`-component input yields **`3 · nc`** gradient components, flat and row-m
 | vector `(n, 3)` | `gradient` | `(n, 9)` | `∂u/∂x … ∂u/∂z, ∂v/∂x … , ∂w/∂x …` |
 | vector `(n, 3)` | `divergence` | `(n,)` | `∂u/∂x + ∂v/∂y + ∂w/∂z` |
 | vector `(n, 3)` | `curl` | `(n, 3)` | `∂w/∂y − ∂v/∂z, ∂u/∂z − ∂w/∂x, ∂v/∂x − ∂u/∂y` |
+| vector `(n, 3)` | `vorticity_magnitude` | `(n,)` | `‖curl u‖` |
+| vector `(n, 3)` | `q_criterion` | `(n,)` | `Q = ½(‖Ω‖² − ‖S‖²)` |
+| vector `(n, 3)` | `lambda2` | `(n,)` | the middle eigenvalue of `S² + Ω²` |
+| vector `(n, 3)` | `strain_rate` | `(n, 6)` | `S`, as `xx yy zz xy yz zx` |
+| displacement `(n, 3)` | `green_lagrange` | `(n, 6)` | `E = ½(FᵀF − I)`, `F = I + ∇u`, as `xx yy zz xy yz zx` |
 
-`component=i` selects one component of a multi-component input and yields 3 (gradient only — setting it with divergence or curl is an error, not a silently ignored argument).
+`component=i` selects one component of a multi-component input and yields 3 (gradient only — setting it with any other operator is an error, not a silently ignored argument).
 
-**Divergence and curl need 2 or 3 components.** A 2-component field reads as `(u, v, 0)`, the same padding convention 2-D point coordinates already use.
+The last five are derived from the per-cell gradient block `G` (`Gᵢⱼ = ∂uᵢ/∂xⱼ`) alone, with `S = (G + Gᵀ)/2` and `Ω = (G − Gᵀ)/2` its symmetric and skew parts, so each is exact wherever the chosen method's gradient is: for a field linear in `x`, which is all that a cell-wise gradient reproduces. They are the quantities VTK's `vtkGradientFilter` and `vtkCellDerivatives` compute (`ComputeQCriterion`, the strain tensor mode and the Green–Lagrange tensor mode); `lambda2` is the vortex-core criterion of Jeong and Hussain (1995), negative inside a vortex core. `green_lagrange` is for a *displacement* field: it evaluates `S + ½ GᵀG`, which is `½(FᵀF − I)` without the cancellation of forming `FᵀF`. Hyphens work for underscores (`--op q-criterion`), and `vorticity`, `q`, `strain` are accepted short names. Helicity (`u · curl u`) is not offered: it needs the field value at the cell, which the per-cell block does not carry.
 
-Output is always **`Float64`** — a derivative is not an integer — and named `<input>:gradient` / `:divergence` / `:curl` unless `output=` overrides it. That is `name:suffix`, deliberately *not* the repo's usual `prefix:name` (`iso:value`, `partition:part`), so that everything derived from one field sorts next to it.
+**Every operator but the gradient needs 2 or 3 components.** A 2-component field reads as `(u, v, 0)`, the same padding convention 2-D point coordinates already use.
+
+Output is always **`Float64`** — a derivative is not an integer — and named `<input>:gradient` / `:divergence` / `:curl` / `:vorticity_magnitude` / `:q_criterion` / `:lambda2` / `:strain_rate` / `:green_lagrange` unless `output=` overrides it. That is `name:suffix`, deliberately *not* the repo's usual `prefix:name` (`iso:value`, `partition:part`), so that everything derived from one field sorts next to it.
 
 ## Boundaries, skipped cells and NaN
 
@@ -166,7 +173,7 @@ Keep the gradient **cell**-located here: `refine --where` reads `cell_data`, so 
 
 ```sh
 meshioplusplus data gradient IN OUT --array NAME \
-    [--op gradient|divergence|curl] \
+    [--op gradient|divergence|curl|vorticity_magnitude|q_criterion|lambda2|strain_rate|green_lagrange] \
     [--method green-gauss|least-squares] \
     [--location cell|point] \
     [--output NAME] [--component I] [--overwrite] [--quiet]

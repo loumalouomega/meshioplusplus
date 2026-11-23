@@ -2011,7 +2011,15 @@ export interface SurfaceBuffers {
 }
 
 /** `gradient`'s differential operator. See doc/gradient.md. */
-export type GradientOperator = 'gradient' | 'divergence' | 'curl';
+export type GradientOperator =
+  | 'gradient'
+  | 'divergence'
+  | 'curl'
+  | 'vorticity_magnitude'
+  | 'q_criterion'
+  | 'lambda2'
+  | 'strain_rate'
+  | 'green_lagrange';
 
 /** Which cells `voxelize` keeps. See doc/voxelize.md. */
 export type VoxelFill = 'all' | 'surface' | 'inside';
@@ -3803,7 +3811,10 @@ export interface MeshioPlusPlusModule {
    * An `nc`-component input yields `3 * nc` gradient components, flat and
    * row-major as `[component][derivative]`, so a scalar gives `(n, 3)` and a
    * 3-vector `(n, 9)`; divergence gives 1 and curl always 3, both needing a 2-
-   * or 3-component field. The width travels with the array in the returned
+   * or 3-component field, as do the quantities built from the gradient:
+   * `vorticity_magnitude`, `q_criterion` and `lambda2` give 1 component, and
+   * `strain_rate` and `green_lagrange` the six of a symmetric tensor
+   * (`xx yy zz xy yz zx`). The width travels with the array in the returned
    * mesh's `point_data_components` / `cell_data_components` maps.
    *
    * `component` is negative for EVERY component — the opposite of
@@ -3812,7 +3823,7 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} when `array` names a `cell_data` array (piecewise constant,
    *   so it has no derivative — convert it with `dataCellToPoint` first), an
    *   unknown array, an unknown operator/method, an out-of-range component, or
-   *   a component count divergence/curl cannot use.
+   *   a component count the vector operators cannot use.
    */
   gradient(
     mesh: Mesh,

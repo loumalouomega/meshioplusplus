@@ -43,6 +43,7 @@
 #include "meshioplusplus/detail/cell_adjacency.hpp"
 #include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/polyhedron.hpp"
+#include "meshioplusplus/detail/sym3_eigen.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
@@ -410,11 +411,30 @@ bool grad_least_squares(const GradStencil& rStencil, std::size_t NumComp, int Di
 
 /// Number of output components for one operator.
 std::size_t grad_out_components(GradientOperator Op, std::size_t NumComp) {
-    if (Op == GradientOperator::Divergence)
-        return 1;
-    if (Op == GradientOperator::Curl)
-        return 3;
-    return NumComp * 3;
+    switch (Op) {
+        case GradientOperator::Divergence:
+        case GradientOperator::VorticityMagnitude:
+        case GradientOperator::QCriterion:
+        case GradientOperator::Lambda2:
+            return 1;
+        case GradientOperator::Curl:
+            return 3;
+        case GradientOperator::StrainRate:
+        case GradientOperator::GreenLagrangeStrain:
+            return 6;
+        default:
+            return NumComp * 3;
+    }
+}
+
+/// A symmetric 3x3 (row-major) as the six components `xx yy zz xy yz zx`.
+void grad_sym6(const double* pM, double* pOut) {
+    pOut[0] = pM[0];
+    pOut[1] = pM[4];
+    pOut[2] = pM[8];
+    pOut[3] = pM[1];
+    pOut[4] = pM[5];
+    pOut[5] = pM[2];
 }
 
 /// Reduces a full `[component][derivative]` block to the requested operator.
@@ -425,7 +445,7 @@ void grad_apply_operator(GradientOperator Op, const double* pGrad, std::size_t N
             pOut[i] = pGrad[i];
         return;
     }
-    // Divergence and curl read a 3x3 block; a 2-component field is (u, v, 0),
+    // The other operators read a 3x3 block; a 2-component field is (u, v, 0),
     // the same padding convention read_point applies to 2D points.
     double g[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     for (std::size_t k = 0; k < NumComp && k < 3; ++k)
@@ -435,18 +455,78 @@ void grad_apply_operator(GradientOperator Op, const double* pGrad, std::size_t N
         pOut[0] = g[0 * 3 + 0] + g[1 * 3 + 1] + g[2 * 3 + 2];
         return;
     }
-    pOut[0] = g[2 * 3 + 1] - g[1 * 3 + 2];
-    pOut[1] = g[0 * 3 + 2] - g[2 * 3 + 0];
-    pOut[2] = g[1 * 3 + 0] - g[0 * 3 + 1];
+    const double cx = g[2 * 3 + 1] - g[1 * 3 + 2];
+    const double cy = g[0 * 3 + 2] - g[2 * 3 + 0];
+    const double cz = g[1 * 3 + 0] - g[0 * 3 + 1];
+    if (Op == GradientOperator::Curl) {
+        pOut[0] = cx;
+        pOut[1] = cy;
+        pOut[2] = cz;
+        return;
+    }
+    if (Op == GradientOperator::VorticityMagnitude) {
+        pOut[0] = std::sqrt(cx * cx + cy * cy + cz * cz);
+        return;
+    }
+    // S = (G + G^T) / 2 and Omega = (G - G^T) / 2, each entry formed as
+    // (a + b) / 2 so a symmetric block is bit-exactly symmetric.
+    double s[9];
+    double w[9];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            s[i * 3 + j] = 0.5 * (g[i * 3 + j] + g[j * 3 + i]);
+            w[i * 3 + j] = 0.5 * (g[i * 3 + j] - g[j * 3 + i]);
+        }
+    }
+    if (Op == GradientOperator::StrainRate) {
+        grad_sym6(s, pOut);
+        return;
+    }
+    if (Op == GradientOperator::QCriterion) {
+        double s2 = 0.0;
+        double w2 = 0.0;
+        for (int i = 0; i < 9; ++i) {
+            s2 += s[i] * s[i];
+            w2 += w[i] * w[i];
+        }
+        pOut[0] = 0.5 * (w2 - s2);
+        return;
+    }
+    if (Op == GradientOperator::Lambda2) {
+        // S^2 + Omega^2 is symmetric; its middle eigenvalue is lambda2.
+        double m[9];
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                double acc = 0.0;
+                for (int k = 0; k < 3; ++k)
+                    acc += s[i * 3 + k] * s[k * 3 + j] + w[i * 3 + k] * w[k * 3 + j];
+                m[i * 3 + j] = acc;
+            }
+        }
+        double sym[6];
+        grad_sym6(m, sym);
+        double ev[3];
+        detail::sym3_principal(sym, ev);
+        pOut[0] = ev[1];
+        return;
+    }
+    // GreenLagrangeStrain: E = S + G^T G / 2, which is (F^T F - I) / 2 for
+    // F = I + G without the cancellation of forming F^T F.
+    double e[9];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            double acc = 0.0;
+            for (int k = 0; k < 3; ++k)
+                acc += g[k * 3 + i] * g[k * 3 + j];
+            e[i * 3 + j] = s[i * 3 + j] + 0.5 * acc;
+        }
+    }
+    grad_sym6(e, pOut);
 }
 
 /// The default output name for an operator.
 std::string grad_default_name(const std::string& rArray, GradientOperator Op) {
-    if (Op == GradientOperator::Divergence)
-        return rArray + kDivergenceSuffix;
-    if (Op == GradientOperator::Curl)
-        return rArray + kCurlSuffix;
-    return rArray + kGradientSuffix;
+    return rArray + gradient_suffix(Op);
 }
 
 /// `{rows}` for a scalar, `{rows, ncomp}` otherwise — data_average's rule, so a
@@ -479,14 +559,29 @@ int grad_mesh_dimension(const Mesh& rMesh) {
 }  // namespace
 
 GradientOperator gradient_operator_from_name(const std::string& rName) {
-    if (rName == "gradient" || rName == "grad" || rName.empty())
+    // Hyphens and underscores are interchangeable, as in the method names.
+    std::string n = rName;
+    std::replace(n.begin(), n.end(), '-', '_');
+    if (n == "gradient" || n == "grad" || n.empty())
         return GradientOperator::Gradient;
-    if (rName == "divergence" || rName == "div")
+    if (n == "divergence" || n == "div")
         return GradientOperator::Divergence;
-    if (rName == "curl" || rName == "rot")
+    if (n == "curl" || n == "rot")
         return GradientOperator::Curl;
+    if (n == "vorticity_magnitude" || n == "vorticity")
+        return GradientOperator::VorticityMagnitude;
+    if (n == "q_criterion" || n == "q")
+        return GradientOperator::QCriterion;
+    if (n == "lambda2")
+        return GradientOperator::Lambda2;
+    if (n == "strain_rate" || n == "strain")
+        return GradientOperator::StrainRate;
+    if (n == "green_lagrange" || n == "green_lagrange_strain")
+        return GradientOperator::GreenLagrangeStrain;
     throw std::invalid_argument(std::string(kGradPrefix) + "unknown operator '" + rName +
-                                "' (expected 'gradient', 'divergence', or 'curl')");
+                                "' (expected 'gradient', 'divergence', 'curl', "
+                                "'vorticity_magnitude', 'q_criterion', 'lambda2', "
+                                "'strain_rate' or 'green_lagrange')");
 }
 
 GradientMethod gradient_method_from_name(const std::string& rName) {
@@ -533,7 +628,7 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         if (rOptions.mOperator != GradientOperator::Gradient)
             throw std::invalid_argument(std::string(kGradPrefix) +
                                         "a component selection applies to the gradient only; "
-                                        "divergence and curl consume the whole vector");
+                                        "every other operator consumes the whole vector");
         const int c = *rOptions.mComponent;
         if (c < 0 || static_cast<std::size_t>(c) >= field_comp)
             throw std::invalid_argument(std::string(kGradPrefix) + "component " +
@@ -545,7 +640,7 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         throw std::invalid_argument(
             std::string(kGradPrefix) + "'" + rOptions.mArrayName + "' has " +
             std::to_string(field_comp) +
-            " components; divergence and curl need a vector field of 2 or 3");
+            " components; every operator but the gradient needs a vector field of 2 or 3");
 
     const std::string out_name = rOptions.mOutputName.empty()
                                      ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
