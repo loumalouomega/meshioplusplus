@@ -162,6 +162,7 @@ if TYPE_CHECKING:
     from ._fit_primitives import fit_primitives
     from ._flip_normals import flip_normals
     from ._geodesic import geodesic_distance
+    from ._streamlines import streamlines
     from ._gpu import (
         from_cupy,
         has_cuda_device,
@@ -394,6 +395,7 @@ _LAZY_ATTRS = {
     "to_blender": "_blender",
     "adjacency": "_adjacency",
     "geodesic_distance": "_geodesic",
+    "streamlines": "_streamlines",
     "parameterize": "_parameterize",
     "laplacian_eigenmodes": "_eigenmodes",
     "convex_hull": "_hull",
@@ -838,6 +840,7 @@ __all__ = [
     "adjacency",
     "write_graph",
     "geodesic_distance",
+    "streamlines",
     "parameterize",
     "laplacian_eigenmodes",
     "convex_hull",

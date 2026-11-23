@@ -10595,6 +10595,71 @@
   "stl": {
    "kind": "module"
   },
+  "streamlines": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "default": "40",
+      "kind": "KEYWORD_ONLY",
+      "name": "seeds"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "seed_points"
+     },
+     {
+      "default": "'both'",
+      "kind": "KEYWORD_ONLY",
+      "name": "direction"
+     },
+     {
+      "default": "'rk4'",
+      "kind": "KEYWORD_ONLY",
+      "name": "integrator"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "step"
+     },
+     {
+      "default": "0.5",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_length"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_steps"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "terminal_speed"
+     },
+     {
+      "default": "1e-06",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "su2": {
    "kind": "module"
   },

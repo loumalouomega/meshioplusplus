@@ -124,6 +124,7 @@ from .. import (
 from .. import fit_cad_iterate as _fit_cad_iterate_op
 from .. import fit_curves as _fit_curves_op
 from .. import fit_primitives
+from .. import streamlines
 from .. import flip_normals as _flip_normals_op
 from .. import (
     geo_sphere,
@@ -4971,6 +4972,48 @@ def tool_delaunay_2d(input_path, output_path, input_format=None, output_format=N
     )
 
 
+def tool_streamlines(
+    input_path,
+    output_path,
+    array,
+    seeds=40,
+    seed_points=None,
+    direction="both",
+    integrator="rk4",
+    step=0.0,
+    max_length=0.5,
+    max_steps=0,
+    terminal_speed=0.0,
+    tolerance=1e-6,
+    input_format=None,
+    output_format=None,
+):
+    """Streamlines of a point vector field, as a mesh of line segments; writes
+    point_data IntegrationTime, Speed, SeedId and the field."""
+    mesh = _load(input_path, input_format)
+    out, report = streamlines(
+        mesh,
+        array,
+        seeds=seeds,
+        seed_points=seed_points,
+        direction=direction,
+        integrator=integrator,
+        step=step,
+        max_length=max_length,
+        max_steps=max_steps,
+        terminal_speed=terminal_speed,
+        tolerance=tolerance,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_lines=int(report["num_lines"]),
+        num_seeds_outside=int(report["num_seeds_outside"]),
+        dim=int(report["dim"]),
+    )
+
+
 def tool_geodesic_distance(
     input_path,
     output_path,
@@ -8210,6 +8253,14 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_geodesic_distance,
                 "wraps": ("geodesic_distance",),
+                "gated": None,
+            },
+        ),
+        (
+            "streamlines",
+            {
+                "fn": tool_streamlines,
+                "wraps": ("streamlines",),
                 "gated": None,
             },
         ),

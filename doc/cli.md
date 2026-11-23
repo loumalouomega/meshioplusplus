@@ -146,6 +146,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
+| `streamlines` | `output`, `num_lines`, `num_points`, `num_seeds_outside`, `dim` |
 | `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
 | `parameterize` | `output`, `num_charts`, `num_flipped`, `stretch`, `packing_efficiency`, `num_seam_points` |
 | `eigenmodes` | `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
@@ -2277,6 +2278,31 @@ meshioplusplus eigenmodes skin.stl modes.vtu -k 32 --json
 ```
 
 ---
+
+## meshioplusplus streamlines
+
+Lines along a point vector field, as a mesh of line segments (see [streamlines](/streamlines)).
+
+```
+meshioplusplus streamlines [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The 2- or 3-component `point_data` array to follow (required) |
+| `--seeds N` | About `N` seeds, ranked at equal measure (default `40`) |
+| `--seed-points "X,Y,Z;X,Y,Z"` | Explicit seeds instead of `--seeds` |
+| `--direction both\|forward\|backward` | Which way from each seed (default `both`) |
+| `--integrator rk4\|rk45` | Fixed-step RK4, or adaptive Dormand–Prince 5(4) (default `rk4`) |
+| `--step L` | The step as a length at the fastest speed (default `0.005` of the diagonal) |
+| `--max-length F` | The longest path each way, a fraction of the diagonal (default `0.5`) |
+| `--max-steps N` | The step limit each way (default `0`: 20000) |
+| `--terminal-speed V` | A line stops where the speed falls to this (default `0`: `1e-9` of the fastest) |
+| `--tolerance T` | The adaptive integrator's tolerance, a fraction of the diagonal (default `1e-6`) |
+| `--json` | Emit the report: `output`, `num_lines`, `num_points`, `num_seeds_outside`, `dim` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output carries `IntegrationTime`, `Speed`, `SeedId` and the field as point data, and `SeedId` as cell data. Both CLIs print the same JSON.
 
 ## meshioplusplus geodesic
 

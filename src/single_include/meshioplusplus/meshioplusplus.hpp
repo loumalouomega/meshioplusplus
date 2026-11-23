@@ -41739,6 +41739,114 @@ MESHIOPLUSPLUS_API StatsReport compute_stats(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/stats.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/streamlines.hpp =====
+/**
+ * @file operations/streamlines.hpp
+ * @brief Streamlines of a point vector field, as a mesh of line segments.
+ *
+ * The field is the piecewise-linear interpolation of the 2- or 3-component
+ * point array `mArray` over the mesh's cells (each split into simplices: a
+ * volume mesh is traced in its volume, a surface mesh on its surface, the
+ * field projected onto the triangle it is on). Each line is traced from its
+ * seed by the **field's own velocity** (`dx/dt = v`), forward, backward or both,
+ * with fixed-step RK4 or adaptive Dormand-Prince 5(4), so `IntegrationTime` is
+ * the field's time. The result is a new mesh: the points of every line, one
+ * `line` segment between consecutive points, and the point data
+ * `IntegrationTime` (negative backward of the seed), `Speed`, `SeedId` and the
+ * field itself under its own name; the cell data `SeedId` per segment.
+ *
+ * Seeds are `mSeeds` simplex centroids ranked at equal measure along a
+ * golden-ratio sequence (the choice `render`'s streamlines make), or explicit
+ * points. A line stops in each direction because it left the mesh, the speed
+ * fell to `mTerminalSpeed`, the path reached `mMaxLength` or the step limit was
+ * used up; the reasons are in the result. Lines are traced in parallel into
+ * per-seed buffers joined in seed order, so the result does not depend on the
+ * backend or the thread count. `render`'s streamlines keep their own fixed
+ * arc-length tracer.
+ *
+ * C++ core only, with no numpy twin: the adaptive step control branches on
+ * rounded error estimates, which a second implementation could decide
+ * differently.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which way from each seed.
+enum class StreamlineDirection : std::int32_t { Both = 0, Forward = 1, Backward = 2 };
+
+/// The integrator.
+enum class StreamlineIntegrator : std::int32_t { RK4 = 0, RK45 = 1 };
+
+/// Why a line stopped growing in one direction (`StreamlinesResult::mEnd*`).
+enum class StreamlineStop : std::int32_t {
+    LeftDomain = 0,
+    Stagnation = 1,
+    MaxLength = 2,
+    MaxSteps = 3,
+};
+
+/// Point data written by `streamlines` (the field keeps its own name).
+inline constexpr const char* kStreamlineTimeName = "IntegrationTime";
+inline constexpr const char* kStreamlineSpeedName = "Speed";
+inline constexpr const char* kStreamlineSeedIdName = "SeedId";
+
+/// Options for `streamlines`.
+struct StreamlinesOptions {
+    /// The point array to follow: 2 or 3 components (a 2-component field is
+    /// `(u, v, 0)`). Required.
+    std::string mArray;
+    /// About this many seeds, used when `mSeedPoints` is empty.
+    std::int64_t mSeeds = 40;
+    /// Explicit seeds, 3 coordinates each.
+    std::vector<double> mSeedPoints;
+    StreamlineDirection mDirection = StreamlineDirection::Both;
+    StreamlineIntegrator mIntegrator = StreamlineIntegrator::RK4;
+    /// The step as a length at the fastest speed; 0 is `0.005` of the diagonal.
+    double mStep = 0.0;
+    /// The longest path in each direction, as a fraction of the diagonal.
+    double mMaxLength = 0.5;
+    /// The step limit in each direction; 0 is 20000.
+    std::int64_t mMaxSteps = 0;
+    /// The speed at or below which a line stops; 0 is `1e-9` of the fastest.
+    double mTerminalSpeed = 0.0;
+    /// The adaptive integrator's tolerance as a fraction of the diagonal.
+    double mTolerance = 1e-6;
+};
+
+/// The lines, and how each one ended.
+struct StreamlinesResult {
+    /// Points and `line` segments, with the data described above.
+    Mesh mMesh;
+    std::int64_t mNumLines = 0;
+    /// Explicit seeds that were not inside the mesh (no line is made for them).
+    std::int64_t mNumSeedsOutside = 0;
+    /// Per line: the seed (an index into the seeds as listed) and the
+    /// `StreamlineStop` of the backward and the forward end.
+    std::vector<std::int64_t> mSeedIds;
+    std::vector<std::int32_t> mEndBackward;
+    std::vector<std::int32_t> mEndForward;
+    /// 2 (traced on a surface) or 3 (in a volume).
+    std::int32_t mDim = 0;
+};
+
+/**
+ * @brief Traces streamlines of `mArray` over @p rMesh.
+ * @throws std::invalid_argument on an unknown array or one that is not 2- or
+ *         3-component, on a mesh with no triangle, quad, tetra, hexahedron,
+ *         wedge or pyramid cell, or on invalid options.
+ */
+MESHIOPLUSPLUS_API StreamlinesResult streamlines(const Mesh& rMesh,
+                                                 const StreamlinesOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/streamlines.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/subdivide.hpp =====
 /**
  * @file operations/subdivide.hpp
@@ -58529,6 +58637,7 @@ void step_write_wireframe(const std::string& rPath, const Mesh& rMesh);
 
 // System includes
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 // Project includes
@@ -58560,6 +58669,59 @@ struct Streamlines {
 /// mesh has no cell of a supported type.
 Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
                               const StreamlineOptions& rOptions);
+
+/// Why a streamline stopped growing in one direction.
+enum class StreamlineEnd : int {
+    LeftDomain = 0,  ///< the next point is outside the mesh
+    Stagnation = 1,  ///< the speed fell to the terminal speed or below
+    MaxLength = 2,   ///< the path reached the length limit
+    MaxSteps = 3,    ///< the step limit was used up
+};
+
+/// The options of the time-domain tracer behind the public `streamlines`.
+struct StreamlineTraceOptions {
+    /// About this many seeds when `mSeedPoints` is empty (at most the number of
+    /// simplices), chosen as `trace_streamlines` chooses them.
+    std::size_t mSeeds = 40;
+    /// Explicit seeds, 3 doubles each; used instead of the count when not empty.
+    std::vector<double> mSeedPoints;
+    bool mBackward = true;
+    bool mForward = true;
+    /// Dormand-Prince 5(4) with step control, instead of fixed-step RK4.
+    bool mAdaptive = false;
+    /// The step as a length, at the fastest speed; 0 is `0.005` of the diagonal.
+    double mStep = 0.0;
+    /// The longest path in each direction, as a fraction of the diagonal.
+    double mMaxLength = 0.5;
+    /// The step limit in each direction; 0 is 20000.
+    std::size_t mMaxSteps = 0;
+    /// The speed at or below which a line stops; 0 is `1e-9` of the fastest.
+    double mTerminalSpeed = 0.0;
+    /// The adaptive integrator's tolerance as a fraction of the diagonal.
+    double mTolerance = 1e-6;
+};
+
+/// One line: the points in order along the path (backward end first), the
+/// velocity of the field there, and the time since the seed (negative backward).
+struct StreamlineTrace {
+    std::vector<double> mXyz;       ///< 3 per point
+    std::vector<double> mVelocity;  ///< 3 per point
+    std::vector<double> mTime;      ///< 1 per point
+    std::int64_t mSeedId = 0;
+    StreamlineEnd mBackwardEnd = StreamlineEnd::LeftDomain;
+    StreamlineEnd mForwardEnd = StreamlineEnd::LeftDomain;
+};
+
+struct StreamlineTraces {
+    std::vector<StreamlineTrace> mLines;
+    std::int64_t mNumSeedsOutside = 0;  ///< explicit seeds that were not in the mesh
+    int mDim = 0;                       ///< 2 (on a surface) or 3 (in a volume)
+};
+
+/// Trace by true velocity (`dx/dt = v`), so the time is the field's own time.
+/// Throws std::invalid_argument, naming the cell types, as `trace_streamlines`.
+StreamlineTraces trace_streamlines_timed(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                                         const StreamlineTraceOptions& rOptions);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -121526,12 +121688,22 @@ void sl_trace(const SlField& rField, double Floor, const Vec3& rSeed, double Sig
     }
 }
 
-}  // namespace
+// What both tracers take from the mesh and the field before they seed: the
+// simplices, the diagonal of the box around them, the fastest speed and the
+// speed floor. `mOk` is false where there is nothing to trace (a zero-size mesh
+// or a zero field).
+struct SlSetup {
+    SlSoup mSoup;
+    double mDiag = 0.0;
+    double mFloor = 0.0;
+    double mMaxMag = 0.0;
+    bool mOk = false;
+};
 
-Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
-                              const StreamlineOptions& rOptions) {
-    const SlSoup soup = sl_collect(rMesh);
-    Streamlines out;
+SlSetup sl_setup(const Mesh& rMesh, const double* pXyz, const double* pVec) {
+    SlSetup out;
+    out.mSoup = sl_collect(rMesh);
+    const SlSoup& soup = out.mSoup;
     if (soup.mSimplices.empty()) {
         std::string seen;
         for (const std::string& type : soup.mSeen)
@@ -121541,9 +121713,6 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
             "mesh has: " +
             (seen.empty() ? std::string("no cells") : seen) + ")");
     }
-    out.mDim = soup.mDim;
-    out.mNumSimplices = soup.mSimplices.size();
-
     // The box around the traced cells, and the scales taken from its diagonal.
     double lo[3] = {std::numeric_limits<double>::infinity(), 0, 0};
     double hi[3] = {0, 0, 0};
@@ -121557,51 +121726,219 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
             }
             first = false;
         }
-    const double diag =
-        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
-    if (!(diag > 0.0) || !std::isfinite(diag))
+    out.mDiag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                          (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    if (!(out.mDiag > 0.0) || !std::isfinite(out.mDiag))
         return out;
-    const double step = 0.005 * diag;
-    const std::size_t max_steps = static_cast<std::size_t>(
-        std::clamp(std::ceil(rOptions.mLength * diag / step), 1.0, 2000.0));
-
     // The slowest speed that still counts as moving, from the fastest corner.
-    double max_mag = 0.0;
     for (const SlSimplex& s : soup.mSimplices)
         for (std::size_t k = 0; k < static_cast<std::size_t>(soup.mDim) + 1; ++k) {
             const double* v = pVec + 3 * static_cast<std::size_t>(s.mNode[k]);
             const double m = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
             if (std::isfinite(m))
-                max_mag = std::max(max_mag, m);
+                out.mMaxMag = std::max(out.mMaxMag, m);
         }
-    if (!(max_mag > 0.0))
+    if (!(out.mMaxMag > 0.0))
         return out;
-    const double floor = 1e-9 * max_mag;
+    out.mFloor = 1e-9 * out.mMaxMag;
+    out.mOk = true;
+    return out;
+}
 
-    const SlField field(soup, pXyz, pVec, diag, soup.mDim == 2 ? 0.5 * step : 1e-9 * diag);
-
-    // Seeds: simplices ranked at equal measure along a golden-ratio sequence
-    // (a plain stride would line up with the rows of a structured mesh), each
-    // started at its centroid.
-    const std::size_t count = soup.mSimplices.size();
-    std::vector<double> cumulative(count);
+// The seeds: simplices ranked at equal measure along a golden-ratio sequence (a
+// plain stride would line up with the rows of a structured mesh), each started
+// at its centroid.
+std::vector<Vec3> sl_seed_points(const SlField& rField, std::size_t Count, std::size_t Seeds) {
+    std::vector<double> cumulative(Count);
     double total = 0.0;
-    for (std::size_t s = 0; s < count; ++s) {
-        const double m = field.Measure(s);
+    for (std::size_t s = 0; s < Count; ++s) {
+        const double m = rField.Measure(s);
         total += std::isfinite(m) ? m : 0.0;
         cumulative[s] = total;
     }
-    const std::size_t seeds = std::min(rOptions.mSeeds, count);
+    const std::size_t seeds = std::min(Seeds, Count);
     std::vector<Vec3> seed_points;
     for (std::size_t k = 0; k < seeds && total > 0.0; ++k) {
         double t = 0.5 + static_cast<double>(k) * 0.6180339887498949;
         t -= std::floor(t);
         const auto it = std::lower_bound(cumulative.begin(), cumulative.end(), t * total);
         const std::size_t s =
-            std::min<std::size_t>(static_cast<std::size_t>(it - cumulative.begin()), count - 1);
-        seed_points.push_back(field.Centroid(s));
+            std::min<std::size_t>(static_cast<std::size_t>(it - cumulative.begin()), Count - 1);
+        seed_points.push_back(rField.Centroid(s));
     }
+    return seed_points;
+}
+
+// The field's locator tolerance: half a render step on a surface, a whisker in
+// a volume.
+double sl_tolerance(int Dim, double Diag) {
+    return Dim == 2 ? 0.5 * (0.005 * Diag) : 1e-9 * Diag;
+}
+
+struct SlTimePoint {
+    Vec3 mP;
+    Vec3 mV;  // the field's velocity at mP (not signed by the direction)
+    double mT;
+};
+
+// Trace one way from the seed by true velocity (`dx/dt = sign * v`), with fixed
+// RK4 or adaptive Dormand-Prince 5(4). The seed is not added. Returns why the
+// line stopped.
+StreamlineEnd sl_trace_timed(const SlField& rField, double Floor, const Vec3& rSeed, double Sign,
+                             const StreamlineTraceOptions& rOptions, double StepTime,
+                             double MaxLength, double ToleranceLength, std::size_t MaxSteps,
+                             std::vector<SlTimePoint>& rOut) {
+    // The velocity at x, signed by the direction; false outside the mesh.
+    auto velocity = [&](const Vec3& x, Vec3& v) {
+        double q[3] = {x[0], x[1], x[2]};
+        double vv[3];
+        if (!rField.Sample(q, vv))
+            return false;
+        v = {Sign * vv[0], Sign * vv[1], Sign * vv[2]};
+        return true;
+    };
+    auto add = [](const Vec3& a, const Vec3& b, double s) {
+        return Vec3{a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2]};
+    };
+    auto norm = [](const Vec3& a) { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); };
+
+    Vec3 p = rSeed;
+    Vec3 v;
+    if (!velocity(p, v))
+        return StreamlineEnd::LeftDomain;
+    double t = 0.0;
+    double length = 0.0;
+    double h = StepTime;
+    for (std::size_t it = 0; it < MaxSteps; ++it) {
+        if (!(norm(v) > Floor))
+            return StreamlineEnd::Stagnation;
+        Vec3 next;
+        Vec3 vnext;
+        double used = h;
+        if (!rOptions.mAdaptive) {
+            // Fixed RK4. A stage that leaves the mesh keeps the last slope.
+            Vec3 k1 = v;
+            Vec3 k2;
+            Vec3 k3;
+            Vec3 k4;
+            if (!velocity(add(p, k1, 0.5 * h), k2))
+                k2 = k1;
+            if (!velocity(add(p, k2, 0.5 * h), k3))
+                k3 = k2;
+            if (!velocity(add(p, k3, h), k4))
+                k4 = k3;
+            for (std::size_t c = 0; c < 3; ++c)
+                next[c] = p[c] + h / 6.0 * (k1[c] + 2.0 * k2[c] + 2.0 * k3[c] + k4[c]);
+            if (!velocity(next, vnext))
+                return StreamlineEnd::LeftDomain;
+        } else {
+            // Dormand-Prince 5(4): retry the step with a smaller h until its
+            // error estimate is within the tolerance; a stage outside the mesh
+            // counts as a failure.
+            bool accepted = false;
+            for (int attempt = 0; attempt < 16 && !accepted; ++attempt) {
+                Vec3 k[7];
+                k[0] = v;
+                bool ok = true;
+                auto stage = [&](int i, std::initializer_list<std::pair<int, double>> terms) {
+                    Vec3 x = p;
+                    for (const auto& term : terms)
+                        x = add(x, k[term.first], h * term.second);
+                    if (!velocity(x, k[i]))
+                        ok = false;
+                };
+                stage(1, {{0, 1.0 / 5.0}});
+                if (ok)
+                    stage(2, {{0, 3.0 / 40.0}, {1, 9.0 / 40.0}});
+                if (ok)
+                    stage(3, {{0, 44.0 / 45.0}, {1, -56.0 / 15.0}, {2, 32.0 / 9.0}});
+                if (ok)
+                    stage(4, {{0, 19372.0 / 6561.0},
+                              {1, -25360.0 / 2187.0},
+                              {2, 64448.0 / 6561.0},
+                              {3, -212.0 / 729.0}});
+                if (ok)
+                    stage(5, {{0, 9017.0 / 3168.0},
+                              {1, -355.0 / 33.0},
+                              {2, 46732.0 / 5247.0},
+                              {3, 49.0 / 176.0},
+                              {4, -5103.0 / 18656.0}});
+                if (ok) {
+                    // The fifth-order solution, which is also where k7 is taken (FSAL).
+                    Vec3 y = p;
+                    const double b[6] = {35.0 / 384.0,     0.0,
+                                         500.0 / 1113.0,   125.0 / 192.0,
+                                         -2187.0 / 6784.0, 11.0 / 84.0};
+                    for (int i = 0; i < 6; ++i)
+                        y = add(y, k[i], h * b[i]);
+                    if (!velocity(y, k[6])) {
+                        ok = false;
+                    } else {
+                        const double e[7] = {
+                            71.0 / 57600.0,      0.0,          -71.0 / 16695.0, 71.0 / 1920.0,
+                            -17253.0 / 339200.0, 22.0 / 525.0, -1.0 / 40.0};
+                        Vec3 err = {0, 0, 0};
+                        for (int i = 0; i < 7; ++i)
+                            err = add(err, k[i], h * e[i]);
+                        const double en = norm(err);
+                        if (en <= ToleranceLength) {
+                            accepted = true;
+                            next = y;
+                            vnext = k[6];
+                            used = h;
+                            // Grow for the next step, within bounds of the first.
+                            const double grow =
+                                en > 0.0 ? 0.9 * std::pow(ToleranceLength / en, 0.2) : 5.0;
+                            h = std::clamp(h * std::clamp(grow, 0.2, 5.0), StepTime * 1e-6,
+                                           StepTime * 50.0);
+                        } else {
+                            h = std::max(
+                                h * std::clamp(0.9 * std::pow(ToleranceLength / en, 0.2), 0.1, 0.9),
+                                StepTime * 1e-6);
+                        }
+                    }
+                }
+                if (!ok)
+                    h *= 0.5;
+            }
+            if (!accepted)
+                return StreamlineEnd::LeftDomain;
+        }
+        length += norm(Vec3{next[0] - p[0], next[1] - p[1], next[2] - p[2]});
+        t += used;
+        p = next;
+        v = vnext;
+        SlTimePoint pt;
+        pt.mP = p;
+        pt.mV = {Sign * vnext[0], Sign * vnext[1], Sign * vnext[2]};  // the field's own velocity
+        pt.mT = Sign * t;
+        rOut.push_back(pt);
+        if (length >= MaxLength)
+            return StreamlineEnd::MaxLength;
+    }
+    return StreamlineEnd::MaxSteps;
+}
+
+}  // namespace
+
+Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                              const StreamlineOptions& rOptions) {
+    const SlSetup setup = sl_setup(rMesh, pXyz, pVec);
+    const SlSoup& soup = setup.mSoup;
+    Streamlines out;
+    out.mDim = soup.mDim;
+    out.mNumSimplices = soup.mSimplices.size();
+    if (!setup.mOk)
+        return out;
+    const double diag = setup.mDiag;
+    const double floor = setup.mFloor;
+    const double step = 0.005 * diag;
+    const std::size_t max_steps = static_cast<std::size_t>(
+        std::clamp(std::ceil(rOptions.mLength * diag / step), 1.0, 2000.0));
+
+    const SlField field(soup, pXyz, pVec, diag, sl_tolerance(soup.mDim, diag));
+    const std::vector<Vec3> seed_points =
+        sl_seed_points(field, soup.mSimplices.size(), rOptions.mSeeds);
 
     std::vector<std::vector<Vec3>> lines(seed_points.size());
     parallel_for(seed_points.size(), [&](std::size_t i) {
@@ -121626,6 +121963,85 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
         for (const Vec3& p : line)
             out.mXyz.insert(out.mXyz.end(), p.begin(), p.end());
         out.mStart.push_back(out.mXyz.size() / 3);
+    }
+    return out;
+}
+
+StreamlineTraces trace_streamlines_timed(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                                         const StreamlineTraceOptions& rOptions) {
+    const SlSetup setup = sl_setup(rMesh, pXyz, pVec);
+    const SlSoup& soup = setup.mSoup;
+    StreamlineTraces out;
+    out.mDim = soup.mDim;
+    if (!setup.mOk)
+        return out;
+    const double diag = setup.mDiag;
+    const double floor = rOptions.mTerminalSpeed > 0.0 ? rOptions.mTerminalSpeed : setup.mFloor;
+    const double step_length = rOptions.mStep > 0.0 ? rOptions.mStep : 0.005 * diag;
+    const double step_time = step_length / setup.mMaxMag;
+    const double max_length = rOptions.mMaxLength * diag;
+    const std::size_t max_steps = rOptions.mMaxSteps > 0 ? rOptions.mMaxSteps : 20000;
+    const double tolerance = rOptions.mTolerance * diag;
+
+    const SlField field(soup, pXyz, pVec, diag, sl_tolerance(soup.mDim, diag));
+    std::vector<Vec3> seeds;
+    if (!rOptions.mSeedPoints.empty()) {
+        for (std::size_t i = 0; i + 2 < rOptions.mSeedPoints.size(); i += 3)
+            seeds.push_back({rOptions.mSeedPoints[i], rOptions.mSeedPoints[i + 1],
+                             rOptions.mSeedPoints[i + 2]});
+    } else {
+        seeds = sl_seed_points(field, soup.mSimplices.size(), rOptions.mSeeds);
+    }
+
+    struct SlOne {
+        bool mValid = false;
+        std::vector<SlTimePoint> mBack;
+        std::vector<SlTimePoint> mForward;
+        Vec3 mSeed = {0, 0, 0};
+        Vec3 mSeedVelocity = {0, 0, 0};
+        StreamlineEnd mBackEnd = StreamlineEnd::LeftDomain;
+        StreamlineEnd mForwardEnd = StreamlineEnd::LeftDomain;
+    };
+    std::vector<SlOne> traced(seeds.size());
+    parallel_for(seeds.size(), [&](std::size_t i) {
+        SlOne& one = traced[i];
+        Vec3 seed = seeds[i];
+        double v[3];
+        if (!field.Sample(seed.data(), v))
+            return;  // the seed (moved onto a surface) is outside the mesh
+        one.mValid = true;
+        one.mSeed = seed;
+        one.mSeedVelocity = {v[0], v[1], v[2]};
+        if (rOptions.mBackward)
+            one.mBackEnd = sl_trace_timed(field, floor, seed, -1.0, rOptions, step_time, max_length,
+                                          tolerance, max_steps, one.mBack);
+        if (rOptions.mForward)
+            one.mForwardEnd = sl_trace_timed(field, floor, seed, +1.0, rOptions, step_time,
+                                             max_length, tolerance, max_steps, one.mForward);
+    });
+    for (std::size_t i = 0; i < traced.size(); ++i) {
+        const SlOne& one = traced[i];
+        if (!one.mValid) {
+            ++out.mNumSeedsOutside;
+            continue;
+        }
+        if (one.mBack.size() + one.mForward.size() < 1)
+            continue;  // a point, not a line
+        StreamlineTrace line;
+        line.mSeedId = static_cast<std::int64_t>(i);
+        line.mBackwardEnd = one.mBackEnd;
+        line.mForwardEnd = one.mForwardEnd;
+        auto push = [&](const Vec3& p, const Vec3& v, double t) {
+            line.mXyz.insert(line.mXyz.end(), p.begin(), p.end());
+            line.mVelocity.insert(line.mVelocity.end(), v.begin(), v.end());
+            line.mTime.push_back(t);
+        };
+        for (auto it = one.mBack.rbegin(); it != one.mBack.rend(); ++it)
+            push(it->mP, it->mV, it->mT);
+        push(one.mSeed, one.mSeedVelocity, 0.0);
+        for (const SlTimePoint& pt : one.mForward)
+            push(pt.mP, pt.mV, pt.mT);
+        out.mLines.push_back(std::move(line));
     }
     return out;
 }
@@ -311249,6 +311665,144 @@ StatsReport compute_stats(const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/stats.cpp =====
+// ===== begin src/cpp/src/operations/streamlines.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+[[noreturn]] void sl_fail(const std::string& rMessage) {
+    throw std::invalid_argument("meshio++: streamlines: " + rMessage);
+}
+
+}  // namespace
+
+StreamlinesResult streamlines(const Mesh& rMesh, const StreamlinesOptions& rOptions) {
+    if (rOptions.mArray.empty())
+        sl_fail("an array name is required");
+    if (!rMesh.HasPointData(rOptions.mArray))
+        sl_fail(data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArray));
+    if (rOptions.mSeeds < 0 || rOptions.mMaxSteps < 0)
+        sl_fail("the seed and step counts must not be negative");
+    if (!(rOptions.mMaxLength > 0.0) || rOptions.mStep < 0.0 || rOptions.mTerminalSpeed < 0.0 ||
+        !(rOptions.mTolerance > 0.0))
+        sl_fail(
+            "the length and the tolerance must be positive, the step and the terminal speed "
+            "not negative");
+    if (rOptions.mSeedPoints.size() % 3 != 0)
+        sl_fail("the seed points are 3 coordinates each");
+
+    const NDArray& field = rMesh.PointData(rOptions.mArray);
+    const std::size_t comps = data_num_components(field);
+    if (comps != 2 && comps != 3)
+        sl_fail("'" + rOptions.mArray + "' has " + std::to_string(comps) +
+                " component(s); a vector field of 2 or 3 is needed");
+    const std::size_t npoints = rMesh.NumPoints();
+    if (detail::rows(field) != npoints)
+        sl_fail("'" + rOptions.mArray + "' has " + std::to_string(detail::rows(field)) +
+                " rows on a mesh of " + std::to_string(npoints) + " points");
+
+    // Points and the field as 3 doubles each (a 2D point or field gets z = 0).
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    std::vector<double> xyz(npoints * 3, 0.0);
+    std::vector<double> vec(npoints * 3, 0.0);
+    for (std::size_t i = 0; i < npoints; ++i) {
+        for (std::size_t c = 0; c < pdim && c < 3; ++c)
+            xyz[i * 3 + c] = detail::read_double(points, i * pdim + c);
+        for (std::size_t c = 0; c < comps; ++c)
+            vec[i * 3 + c] = detail::read_double(field, i * comps + c);
+    }
+
+    detail::StreamlineTraceOptions to;
+    to.mSeeds = static_cast<std::size_t>(rOptions.mSeeds);
+    to.mSeedPoints = rOptions.mSeedPoints;
+    to.mBackward = rOptions.mDirection != StreamlineDirection::Forward;
+    to.mForward = rOptions.mDirection != StreamlineDirection::Backward;
+    to.mAdaptive = rOptions.mIntegrator == StreamlineIntegrator::RK45;
+    to.mStep = rOptions.mStep;
+    to.mMaxLength = rOptions.mMaxLength;
+    to.mMaxSteps = static_cast<std::size_t>(rOptions.mMaxSteps);
+    to.mTerminalSpeed = rOptions.mTerminalSpeed;
+    to.mTolerance = rOptions.mTolerance;
+    const detail::StreamlineTraces traces =
+        detail::trace_streamlines_timed(rMesh, xyz.data(), vec.data(), to);
+
+    StreamlinesResult result;
+    result.mDim = traces.mDim;
+    result.mNumSeedsOutside = traces.mNumSeedsOutside;
+    result.mNumLines = static_cast<std::int64_t>(traces.mLines.size());
+
+    std::size_t total_points = 0;
+    std::size_t total_segments = 0;
+    for (const detail::StreamlineTrace& line : traces.mLines) {
+        total_points += line.mTime.size();
+        total_segments += line.mTime.size() - 1;
+    }
+    NDArray out_points = NDArray::Uninit(DType::Float64, {total_points, std::size_t{3}});
+    NDArray out_time = NDArray::Uninit(DType::Float64, {total_points});
+    NDArray out_speed = NDArray::Uninit(DType::Float64, {total_points});
+    NDArray out_seed = NDArray::Uninit(DType::Int64, {total_points});
+    NDArray out_field = NDArray::Uninit(DType::Float64, {total_points, comps});
+    NDArray conn = NDArray::Uninit(DType::Int64, {total_segments, std::size_t{2}});
+    NDArray seg_seed = NDArray::Uninit(DType::Int64, {total_segments});
+    double* pp = out_points.As<double>();
+    double* pt = out_time.As<double>();
+    double* ps = out_speed.As<double>();
+    std::int64_t* pi = out_seed.As<std::int64_t>();
+    double* pf = out_field.As<double>();
+    std::int64_t* pc = conn.As<std::int64_t>();
+    std::int64_t* pg = seg_seed.As<std::int64_t>();
+    std::size_t base = 0;
+    std::size_t seg = 0;
+    for (const detail::StreamlineTrace& line : traces.mLines) {
+        const std::size_t n = line.mTime.size();
+        for (std::size_t k = 0; k < n; ++k) {
+            for (std::size_t c = 0; c < 3; ++c)
+                pp[(base + k) * 3 + c] = line.mXyz[k * 3 + c];
+            pt[base + k] = line.mTime[k];
+            const double* v = line.mVelocity.data() + k * 3;
+            ps[base + k] = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            pi[base + k] = line.mSeedId;
+            for (std::size_t c = 0; c < comps; ++c)
+                pf[(base + k) * comps + c] = v[c];
+            if (k + 1 < n) {
+                pc[seg * 2] = static_cast<std::int64_t>(base + k);
+                pc[seg * 2 + 1] = static_cast<std::int64_t>(base + k + 1);
+                pg[seg] = line.mSeedId;
+                ++seg;
+            }
+        }
+        base += n;
+        result.mSeedIds.push_back(line.mSeedId);
+        result.mEndBackward.push_back(static_cast<std::int32_t>(line.mBackwardEnd));
+        result.mEndForward.push_back(static_cast<std::int32_t>(line.mForwardEnd));
+    }
+    Mesh& out = result.mMesh;
+    out.AssignPoints(std::move(out_points));
+    if (total_segments > 0) {
+        out.AddCellBlock("line", std::move(conn));
+        std::vector<NDArray> seg_blocks;
+        seg_blocks.push_back(std::move(seg_seed));
+        out.AddCellData(kStreamlineSeedIdName, std::move(seg_blocks));
+    }
+    out.AddPointData(kStreamlineTimeName, std::move(out_time));
+    out.AddPointData(kStreamlineSpeedName, std::move(out_speed));
+    out.AddPointData(kStreamlineSeedIdName, std::move(out_seed));
+    out.AddPointData(rOptions.mArray, std::move(out_field));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/streamlines.cpp =====
 // ===== begin src/cpp/src/operations/subdivide.cpp =====
 #include <cstddef>
 #include <cstdint>

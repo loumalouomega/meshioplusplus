@@ -151,6 +151,7 @@
 #include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/tensor_invariants.hpp"
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
@@ -2444,6 +2445,14 @@ int main(int argc, char** argv) {
             of(pD, r.mMesh);
             i64(pD, r.mHeatIterations);
             i64(pD, r.mPoissonIterations);
+        });
+        row("streamlines", [&](MeshDigest* pD) {
+            mio::StreamlinesOptions o;
+            o.mArray = "velocity";
+            o.mSeeds = 40;
+            auto r = mio::streamlines(with_tensors, o);
+            of(pD, r.mMesh);
+            i64(pD, r.mNumLines);
         });
         row("parameterize", [&](MeshDigest* pD) {
             auto r = mio::parameterize(surface, {});

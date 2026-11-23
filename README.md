@@ -682,6 +682,10 @@ out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
 d = out.point_data["geodesic:distance"]
 ```
 
+#### Streamlines
+
+**`meshioplusplus.streamlines(mesh, "U", seeds=200)`** follows a point vector field through the mesh and returns the paths as a mesh of line segments with `IntegrationTime` (the field's own time, negative behind the seed), `Speed`, `SeedId` and the field, by fixed-step RK4 or adaptive Dormand–Prince 5(4), in a volume or on a surface, from a count of seeds or explicit points; the reason each line stopped is in the report. C++ core only. See `doc/streamlines.md`.
+
 #### UV parameterization
 
 **`meshioplusplus.parameterize(mesh)`** gives a triangle surface a UV atlas: it cuts the surface into charts, flattens each without flipping a triangle (least-squares conformal maps, else mean-value coordinates, the kernels `fit_cad` uses), halves a chart that stretches too much, and shelf-packs the charts into the unit square. The result is split at its seams and carries `uv` point data, which the OBJ (`vt`), glTF (`TEXCOORD_0`) and USD (`primvars:st`) writers turn into texture coordinates, and their readers turn back. On every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs (`parameterize`), the pipeline (`Parameterize`) and MCP. See `doc/parameterize.md`.

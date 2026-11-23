@@ -175,6 +175,7 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
@@ -7494,6 +7495,60 @@ PYBIND11_MODULE(_core, m) {
         py::arg("mesh"), py::arg("sources") = std::vector<std::int64_t>{},
         py::arg("source_region") = "", py::arg("time_factor") = 1.0, py::arg("tolerance") = 1e-10,
         py::arg("max_iterations") = 0);
+
+    // Streamlines of a point vector field as a mesh of line segments.
+    // {mesh, counters, per-line seed ids and end reasons}. See
+    // operations/streamlines.hpp.
+    m.def(
+        "streamlines",
+        [](py::object pymesh, const std::string& array, std::int64_t seeds,
+           std::vector<double> seed_points, const std::string& direction,
+           const std::string& integrator, double step, double max_length, std::int64_t max_steps,
+           double terminal_speed, double tolerance) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::StreamlinesOptions options;
+            options.mArray = array;
+            options.mSeeds = seeds;
+            options.mSeedPoints = std::move(seed_points);
+            if (direction == "both")
+                options.mDirection = meshioplusplus::StreamlineDirection::Both;
+            else if (direction == "forward")
+                options.mDirection = meshioplusplus::StreamlineDirection::Forward;
+            else if (direction == "backward")
+                options.mDirection = meshioplusplus::StreamlineDirection::Backward;
+            else
+                throw std::invalid_argument(
+                    "meshio++: streamlines: direction must be 'both', 'forward' or 'backward'");
+            if (integrator == "rk4")
+                options.mIntegrator = meshioplusplus::StreamlineIntegrator::RK4;
+            else if (integrator == "rk45")
+                options.mIntegrator = meshioplusplus::StreamlineIntegrator::RK45;
+            else
+                throw std::invalid_argument(
+                    "meshio++: streamlines: integrator must be 'rk4' or 'rk45'");
+            options.mStep = step;
+            options.mMaxLength = max_length;
+            options.mMaxSteps = max_steps;
+            options.mTerminalSpeed = terminal_speed;
+            options.mTolerance = tolerance;
+            meshioplusplus::StreamlinesResult r =
+                core_nogil([&] { return meshioplusplus::streamlines(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_lines"] = r.mNumLines;
+            out["num_seeds_outside"] = r.mNumSeedsOutside;
+            out["seed_ids"] = r.mSeedIds;
+            out["end_backward"] = r.mEndBackward;
+            out["end_forward"] = r.mEndForward;
+            out["dim"] = r.mDim;
+            return out;
+        },
+        py::arg("mesh"), py::arg("array"), py::arg("seeds") = 40,
+        py::arg("seed_points") = std::vector<double>{}, py::arg("direction") = "both",
+        py::arg("integrator") = "rk4", py::arg("step") = 0.0, py::arg("max_length") = 0.5,
+        py::arg("max_steps") = 0, py::arg("terminal_speed") = 0.0, py::arg("tolerance") = 1e-6);
 
     // A UV atlas of a triangle surface. {mesh, counters}. See
     // operations/parameterize.hpp.

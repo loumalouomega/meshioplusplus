@@ -416,12 +416,22 @@ void sl_trace(const SlField& rField, double Floor, const Vec3& rSeed, double Sig
     }
 }
 
-}  // namespace
+// What both tracers take from the mesh and the field before they seed: the
+// simplices, the diagonal of the box around them, the fastest speed and the
+// speed floor. `mOk` is false where there is nothing to trace (a zero-size mesh
+// or a zero field).
+struct SlSetup {
+    SlSoup mSoup;
+    double mDiag = 0.0;
+    double mFloor = 0.0;
+    double mMaxMag = 0.0;
+    bool mOk = false;
+};
 
-Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
-                              const StreamlineOptions& rOptions) {
-    const SlSoup soup = sl_collect(rMesh);
-    Streamlines out;
+SlSetup sl_setup(const Mesh& rMesh, const double* pXyz, const double* pVec) {
+    SlSetup out;
+    out.mSoup = sl_collect(rMesh);
+    const SlSoup& soup = out.mSoup;
     if (soup.mSimplices.empty()) {
         std::string seen;
         for (const std::string& type : soup.mSeen)
@@ -431,9 +441,6 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
             "mesh has: " +
             (seen.empty() ? std::string("no cells") : seen) + ")");
     }
-    out.mDim = soup.mDim;
-    out.mNumSimplices = soup.mSimplices.size();
-
     // The box around the traced cells, and the scales taken from its diagonal.
     double lo[3] = {std::numeric_limits<double>::infinity(), 0, 0};
     double hi[3] = {0, 0, 0};
@@ -447,51 +454,219 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
             }
             first = false;
         }
-    const double diag =
-        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
-    if (!(diag > 0.0) || !std::isfinite(diag))
+    out.mDiag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                          (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    if (!(out.mDiag > 0.0) || !std::isfinite(out.mDiag))
         return out;
-    const double step = 0.005 * diag;
-    const std::size_t max_steps = static_cast<std::size_t>(
-        std::clamp(std::ceil(rOptions.mLength * diag / step), 1.0, 2000.0));
-
     // The slowest speed that still counts as moving, from the fastest corner.
-    double max_mag = 0.0;
     for (const SlSimplex& s : soup.mSimplices)
         for (std::size_t k = 0; k < static_cast<std::size_t>(soup.mDim) + 1; ++k) {
             const double* v = pVec + 3 * static_cast<std::size_t>(s.mNode[k]);
             const double m = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
             if (std::isfinite(m))
-                max_mag = std::max(max_mag, m);
+                out.mMaxMag = std::max(out.mMaxMag, m);
         }
-    if (!(max_mag > 0.0))
+    if (!(out.mMaxMag > 0.0))
         return out;
-    const double floor = 1e-9 * max_mag;
+    out.mFloor = 1e-9 * out.mMaxMag;
+    out.mOk = true;
+    return out;
+}
 
-    const SlField field(soup, pXyz, pVec, diag, soup.mDim == 2 ? 0.5 * step : 1e-9 * diag);
-
-    // Seeds: simplices ranked at equal measure along a golden-ratio sequence
-    // (a plain stride would line up with the rows of a structured mesh), each
-    // started at its centroid.
-    const std::size_t count = soup.mSimplices.size();
-    std::vector<double> cumulative(count);
+// The seeds: simplices ranked at equal measure along a golden-ratio sequence (a
+// plain stride would line up with the rows of a structured mesh), each started
+// at its centroid.
+std::vector<Vec3> sl_seed_points(const SlField& rField, std::size_t Count, std::size_t Seeds) {
+    std::vector<double> cumulative(Count);
     double total = 0.0;
-    for (std::size_t s = 0; s < count; ++s) {
-        const double m = field.Measure(s);
+    for (std::size_t s = 0; s < Count; ++s) {
+        const double m = rField.Measure(s);
         total += std::isfinite(m) ? m : 0.0;
         cumulative[s] = total;
     }
-    const std::size_t seeds = std::min(rOptions.mSeeds, count);
+    const std::size_t seeds = std::min(Seeds, Count);
     std::vector<Vec3> seed_points;
     for (std::size_t k = 0; k < seeds && total > 0.0; ++k) {
         double t = 0.5 + static_cast<double>(k) * 0.6180339887498949;
         t -= std::floor(t);
         const auto it = std::lower_bound(cumulative.begin(), cumulative.end(), t * total);
         const std::size_t s =
-            std::min<std::size_t>(static_cast<std::size_t>(it - cumulative.begin()), count - 1);
-        seed_points.push_back(field.Centroid(s));
+            std::min<std::size_t>(static_cast<std::size_t>(it - cumulative.begin()), Count - 1);
+        seed_points.push_back(rField.Centroid(s));
     }
+    return seed_points;
+}
+
+// The field's locator tolerance: half a render step on a surface, a whisker in
+// a volume.
+double sl_tolerance(int Dim, double Diag) {
+    return Dim == 2 ? 0.5 * (0.005 * Diag) : 1e-9 * Diag;
+}
+
+struct SlTimePoint {
+    Vec3 mP;
+    Vec3 mV;  // the field's velocity at mP (not signed by the direction)
+    double mT;
+};
+
+// Trace one way from the seed by true velocity (`dx/dt = sign * v`), with fixed
+// RK4 or adaptive Dormand-Prince 5(4). The seed is not added. Returns why the
+// line stopped.
+StreamlineEnd sl_trace_timed(const SlField& rField, double Floor, const Vec3& rSeed, double Sign,
+                             const StreamlineTraceOptions& rOptions, double StepTime,
+                             double MaxLength, double ToleranceLength, std::size_t MaxSteps,
+                             std::vector<SlTimePoint>& rOut) {
+    // The velocity at x, signed by the direction; false outside the mesh.
+    auto velocity = [&](const Vec3& x, Vec3& v) {
+        double q[3] = {x[0], x[1], x[2]};
+        double vv[3];
+        if (!rField.Sample(q, vv))
+            return false;
+        v = {Sign * vv[0], Sign * vv[1], Sign * vv[2]};
+        return true;
+    };
+    auto add = [](const Vec3& a, const Vec3& b, double s) {
+        return Vec3{a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2]};
+    };
+    auto norm = [](const Vec3& a) { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); };
+
+    Vec3 p = rSeed;
+    Vec3 v;
+    if (!velocity(p, v))
+        return StreamlineEnd::LeftDomain;
+    double t = 0.0;
+    double length = 0.0;
+    double h = StepTime;
+    for (std::size_t it = 0; it < MaxSteps; ++it) {
+        if (!(norm(v) > Floor))
+            return StreamlineEnd::Stagnation;
+        Vec3 next;
+        Vec3 vnext;
+        double used = h;
+        if (!rOptions.mAdaptive) {
+            // Fixed RK4. A stage that leaves the mesh keeps the last slope.
+            Vec3 k1 = v;
+            Vec3 k2;
+            Vec3 k3;
+            Vec3 k4;
+            if (!velocity(add(p, k1, 0.5 * h), k2))
+                k2 = k1;
+            if (!velocity(add(p, k2, 0.5 * h), k3))
+                k3 = k2;
+            if (!velocity(add(p, k3, h), k4))
+                k4 = k3;
+            for (std::size_t c = 0; c < 3; ++c)
+                next[c] = p[c] + h / 6.0 * (k1[c] + 2.0 * k2[c] + 2.0 * k3[c] + k4[c]);
+            if (!velocity(next, vnext))
+                return StreamlineEnd::LeftDomain;
+        } else {
+            // Dormand-Prince 5(4): retry the step with a smaller h until its
+            // error estimate is within the tolerance; a stage outside the mesh
+            // counts as a failure.
+            bool accepted = false;
+            for (int attempt = 0; attempt < 16 && !accepted; ++attempt) {
+                Vec3 k[7];
+                k[0] = v;
+                bool ok = true;
+                auto stage = [&](int i, std::initializer_list<std::pair<int, double>> terms) {
+                    Vec3 x = p;
+                    for (const auto& term : terms)
+                        x = add(x, k[term.first], h * term.second);
+                    if (!velocity(x, k[i]))
+                        ok = false;
+                };
+                stage(1, {{0, 1.0 / 5.0}});
+                if (ok)
+                    stage(2, {{0, 3.0 / 40.0}, {1, 9.0 / 40.0}});
+                if (ok)
+                    stage(3, {{0, 44.0 / 45.0}, {1, -56.0 / 15.0}, {2, 32.0 / 9.0}});
+                if (ok)
+                    stage(4, {{0, 19372.0 / 6561.0},
+                              {1, -25360.0 / 2187.0},
+                              {2, 64448.0 / 6561.0},
+                              {3, -212.0 / 729.0}});
+                if (ok)
+                    stage(5, {{0, 9017.0 / 3168.0},
+                              {1, -355.0 / 33.0},
+                              {2, 46732.0 / 5247.0},
+                              {3, 49.0 / 176.0},
+                              {4, -5103.0 / 18656.0}});
+                if (ok) {
+                    // The fifth-order solution, which is also where k7 is taken (FSAL).
+                    Vec3 y = p;
+                    const double b[6] = {35.0 / 384.0,     0.0,
+                                         500.0 / 1113.0,   125.0 / 192.0,
+                                         -2187.0 / 6784.0, 11.0 / 84.0};
+                    for (int i = 0; i < 6; ++i)
+                        y = add(y, k[i], h * b[i]);
+                    if (!velocity(y, k[6])) {
+                        ok = false;
+                    } else {
+                        const double e[7] = {
+                            71.0 / 57600.0,      0.0,          -71.0 / 16695.0, 71.0 / 1920.0,
+                            -17253.0 / 339200.0, 22.0 / 525.0, -1.0 / 40.0};
+                        Vec3 err = {0, 0, 0};
+                        for (int i = 0; i < 7; ++i)
+                            err = add(err, k[i], h * e[i]);
+                        const double en = norm(err);
+                        if (en <= ToleranceLength) {
+                            accepted = true;
+                            next = y;
+                            vnext = k[6];
+                            used = h;
+                            // Grow for the next step, within bounds of the first.
+                            const double grow =
+                                en > 0.0 ? 0.9 * std::pow(ToleranceLength / en, 0.2) : 5.0;
+                            h = std::clamp(h * std::clamp(grow, 0.2, 5.0), StepTime * 1e-6,
+                                           StepTime * 50.0);
+                        } else {
+                            h = std::max(
+                                h * std::clamp(0.9 * std::pow(ToleranceLength / en, 0.2), 0.1, 0.9),
+                                StepTime * 1e-6);
+                        }
+                    }
+                }
+                if (!ok)
+                    h *= 0.5;
+            }
+            if (!accepted)
+                return StreamlineEnd::LeftDomain;
+        }
+        length += norm(Vec3{next[0] - p[0], next[1] - p[1], next[2] - p[2]});
+        t += used;
+        p = next;
+        v = vnext;
+        SlTimePoint pt;
+        pt.mP = p;
+        pt.mV = {Sign * vnext[0], Sign * vnext[1], Sign * vnext[2]};  // the field's own velocity
+        pt.mT = Sign * t;
+        rOut.push_back(pt);
+        if (length >= MaxLength)
+            return StreamlineEnd::MaxLength;
+    }
+    return StreamlineEnd::MaxSteps;
+}
+
+}  // namespace
+
+Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                              const StreamlineOptions& rOptions) {
+    const SlSetup setup = sl_setup(rMesh, pXyz, pVec);
+    const SlSoup& soup = setup.mSoup;
+    Streamlines out;
+    out.mDim = soup.mDim;
+    out.mNumSimplices = soup.mSimplices.size();
+    if (!setup.mOk)
+        return out;
+    const double diag = setup.mDiag;
+    const double floor = setup.mFloor;
+    const double step = 0.005 * diag;
+    const std::size_t max_steps = static_cast<std::size_t>(
+        std::clamp(std::ceil(rOptions.mLength * diag / step), 1.0, 2000.0));
+
+    const SlField field(soup, pXyz, pVec, diag, sl_tolerance(soup.mDim, diag));
+    const std::vector<Vec3> seed_points =
+        sl_seed_points(field, soup.mSimplices.size(), rOptions.mSeeds);
 
     std::vector<std::vector<Vec3>> lines(seed_points.size());
     parallel_for(seed_points.size(), [&](std::size_t i) {
@@ -516,6 +691,85 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
         for (const Vec3& p : line)
             out.mXyz.insert(out.mXyz.end(), p.begin(), p.end());
         out.mStart.push_back(out.mXyz.size() / 3);
+    }
+    return out;
+}
+
+StreamlineTraces trace_streamlines_timed(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                                         const StreamlineTraceOptions& rOptions) {
+    const SlSetup setup = sl_setup(rMesh, pXyz, pVec);
+    const SlSoup& soup = setup.mSoup;
+    StreamlineTraces out;
+    out.mDim = soup.mDim;
+    if (!setup.mOk)
+        return out;
+    const double diag = setup.mDiag;
+    const double floor = rOptions.mTerminalSpeed > 0.0 ? rOptions.mTerminalSpeed : setup.mFloor;
+    const double step_length = rOptions.mStep > 0.0 ? rOptions.mStep : 0.005 * diag;
+    const double step_time = step_length / setup.mMaxMag;
+    const double max_length = rOptions.mMaxLength * diag;
+    const std::size_t max_steps = rOptions.mMaxSteps > 0 ? rOptions.mMaxSteps : 20000;
+    const double tolerance = rOptions.mTolerance * diag;
+
+    const SlField field(soup, pXyz, pVec, diag, sl_tolerance(soup.mDim, diag));
+    std::vector<Vec3> seeds;
+    if (!rOptions.mSeedPoints.empty()) {
+        for (std::size_t i = 0; i + 2 < rOptions.mSeedPoints.size(); i += 3)
+            seeds.push_back({rOptions.mSeedPoints[i], rOptions.mSeedPoints[i + 1],
+                             rOptions.mSeedPoints[i + 2]});
+    } else {
+        seeds = sl_seed_points(field, soup.mSimplices.size(), rOptions.mSeeds);
+    }
+
+    struct SlOne {
+        bool mValid = false;
+        std::vector<SlTimePoint> mBack;
+        std::vector<SlTimePoint> mForward;
+        Vec3 mSeed = {0, 0, 0};
+        Vec3 mSeedVelocity = {0, 0, 0};
+        StreamlineEnd mBackEnd = StreamlineEnd::LeftDomain;
+        StreamlineEnd mForwardEnd = StreamlineEnd::LeftDomain;
+    };
+    std::vector<SlOne> traced(seeds.size());
+    parallel_for(seeds.size(), [&](std::size_t i) {
+        SlOne& one = traced[i];
+        Vec3 seed = seeds[i];
+        double v[3];
+        if (!field.Sample(seed.data(), v))
+            return;  // the seed (moved onto a surface) is outside the mesh
+        one.mValid = true;
+        one.mSeed = seed;
+        one.mSeedVelocity = {v[0], v[1], v[2]};
+        if (rOptions.mBackward)
+            one.mBackEnd = sl_trace_timed(field, floor, seed, -1.0, rOptions, step_time, max_length,
+                                          tolerance, max_steps, one.mBack);
+        if (rOptions.mForward)
+            one.mForwardEnd = sl_trace_timed(field, floor, seed, +1.0, rOptions, step_time,
+                                             max_length, tolerance, max_steps, one.mForward);
+    });
+    for (std::size_t i = 0; i < traced.size(); ++i) {
+        const SlOne& one = traced[i];
+        if (!one.mValid) {
+            ++out.mNumSeedsOutside;
+            continue;
+        }
+        if (one.mBack.size() + one.mForward.size() < 1)
+            continue;  // a point, not a line
+        StreamlineTrace line;
+        line.mSeedId = static_cast<std::int64_t>(i);
+        line.mBackwardEnd = one.mBackEnd;
+        line.mForwardEnd = one.mForwardEnd;
+        auto push = [&](const Vec3& p, const Vec3& v, double t) {
+            line.mXyz.insert(line.mXyz.end(), p.begin(), p.end());
+            line.mVelocity.insert(line.mVelocity.end(), v.begin(), v.end());
+            line.mTime.push_back(t);
+        };
+        for (auto it = one.mBack.rbegin(); it != one.mBack.rend(); ++it)
+            push(it->mP, it->mV, it->mT);
+        push(one.mSeed, one.mSeedVelocity, 0.0);
+        for (const SlTimePoint& pt : one.mForward)
+            push(pt.mP, pt.mV, pt.mT);
+        out.mLines.push_back(std::move(line));
     }
     return out;
 }

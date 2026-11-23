@@ -289,6 +289,7 @@ export default defineConfig({
           { text: "Mesh morphing", link: "/morph" },
           { text: "Untangling", link: "/untangle" },
           { text: "Geodesic distance (heat method)", link: "/geodesic" },
+          { text: "Streamlines", link: "/streamlines" },
           { text: "UV parameterization", link: "/parameterize" },
           { text: "Baking a texture", link: "/bake_texture" },
           { text: "Laplacian eigenmodes", link: "/eigenmodes" },

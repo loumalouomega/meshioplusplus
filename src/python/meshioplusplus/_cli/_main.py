@@ -295,6 +295,12 @@ _VERBS = (
         "Surface distance from source points (heat method)",
     ),
     _Verb(
+        "streamlines",
+        "_streamlines",
+        "streamlines_cmd",
+        "Lines along a point vector field, as a mesh of segments",
+    ),
+    _Verb(
         "bake-texture",
         "_bake_texture",
         "bake_texture_cmd",

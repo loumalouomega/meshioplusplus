@@ -3409,6 +3409,37 @@ def _register_operations(server: FastMCP) -> None:
         heat_iterations, poisson_iterations and converged."""
 
     @server.tool()
+    @_forward(_tools.tool_streamlines)
+    def streamlines(
+        input_path: str,
+        output_path: str,
+        array: str,
+        seeds: int = 40,
+        seed_points: Optional[List[List[float]]] = None,
+        direction: str = "both",
+        integrator: str = "rk4",
+        step: float = 0.0,
+        max_length: float = 0.5,
+        max_steps: int = 0,
+        terminal_speed: float = 0.0,
+        tolerance: float = 1e-6,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Streamlines of a 2- or 3-component point_data vector field, as a new
+        mesh of line segments, traced by the field's own velocity (dx/dt = v)
+        over the mesh's cells (a volume in its volume, a surface on its
+        surface). Writes point_data IntegrationTime (negative backward), Speed,
+        SeedId and the field itself, and cell_data SeedId. Seeds: about `seeds`
+        simplex centroids, or explicit seed_points [[x, y, z], ...] (a seed
+        outside the mesh makes no line). direction: both|forward|backward.
+        integrator: rk4 (fixed step) or rk45 (adaptive Dormand-Prince).
+        max_length is a fraction of the mesh diagonal per direction; a line
+        stops where it leaves the mesh, the speed falls to terminal_speed, the
+        length or max_steps is reached. Reports num_lines, num_seeds_outside and
+        dim."""
+
+    @server.tool()
     @_forward(_tools.tool_bake_texture)
     def bake_texture(
         input_path: str,
