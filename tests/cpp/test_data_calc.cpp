@@ -29,6 +29,7 @@
 #include "mesh_fixtures.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/data_calc.hpp"
+#include "meshioplusplus/operations/gradient.hpp"
 
 namespace {
 
@@ -287,6 +288,66 @@ TEST(DataCalc, ADataArrayNamedLikeACoordinateShadowsIt) {
     EXPECT_NEAR(read_double(out.PointData("o"), 2), 301.0, 1e-12);  // 300 + y(1)
 }
 
+TEST(DataCalc, GradDivCurlMatchTheGradientOperation) {
+    Mesh in = mt::data_mesh();  // T = x + 10 y: grad T = (1, 10, 0) in every cell
+    DataCalcOptions cell;
+    cell.location = DataLocation::Cell;
+    cell.output = "o";
+    const Mesh g = data_calc(in, "grad(T)", cell);
+    ASSERT_EQ(g.CellDataNumBlocks("o"), 2u);
+    ASSERT_EQ(meshioplusplus::data_num_components(g.CellData("o", 0)), 3u);
+    for (std::size_t b = 0; b < 2; ++b) {
+        EXPECT_NEAR(read_double(g.CellData("o", b), 0), 1.0, 1e-10);
+        EXPECT_NEAR(read_double(g.CellData("o", b), 1), 10.0, 1e-10);
+        EXPECT_NEAR(read_double(g.CellData("o", b), 2), 0.0, 1e-10);
+    }
+    // div and curl of the vector field v, against the operation itself.
+    meshioplusplus::GradientOptions go;
+    go.mArrayName = "v";
+    go.mLocation = DataLocation::Cell;
+    go.mOperator = meshioplusplus::GradientOperator::Divergence;
+    const Mesh ref = meshioplusplus::gradient(in, go).mMesh;
+    const Mesh d = data_calc(in, "div(v)", cell);
+    for (std::size_t b = 0; b < 2; ++b)
+        for (std::size_t i = 0; i < meshioplusplus::detail::rows(ref.CellData("v:divergence", b));
+             ++i)
+            EXPECT_NEAR(read_double(d.CellData("o", b), i),
+                        read_double(ref.CellData("v:divergence", b), i), 1e-12);
+    go.mOperator = meshioplusplus::GradientOperator::Curl;
+    const Mesh cref = meshioplusplus::gradient(in, go).mMesh;
+    const Mesh c = data_calc(in, "curl(v)", cell);
+    ASSERT_EQ(meshioplusplus::data_num_components(c.CellData("o", 0)), 3u);
+    EXPECT_NEAR(read_double(c.CellData("o", 0), 2), read_double(cref.CellData("v:curl", 0), 2),
+                1e-12);
+    // At the point location the call is the gradient averaged to the points.
+    const Mesh p = data_calc(in, "dot(grad(T), grad(T))", point_opts("o"));
+    for (int i = 0; i < 6; ++i)
+        EXPECT_NEAR(read_double(p.PointData("o"), i), 101.0, 1e-9) << i;
+    // A call combines with an array of the expression's own location.
+    const Mesh m = data_calc(in, "mat * norm(grad(T))", cell);
+    EXPECT_NEAR(read_double(m.CellData("o", 0), 1), 2.0 * std::sqrt(101.0), 1e-9);
+    EXPECT_NEAR(read_double(m.CellData("o", 1), 0), 3.0 * std::sqrt(101.0), 1e-9);
+}
+
+TEST(DataCalc, AreaVolumeAndSizeOfTheCells) {
+    Mesh in = mt::data_mesh();  // two triangles of area 1/2 and a unit quad
+    DataCalcOptions cell;
+    cell.location = DataLocation::Cell;
+    cell.output = "o";
+    const Mesh a = data_calc(in, "area()", cell);
+    EXPECT_NEAR(read_double(a.CellData("o", 0), 1), 0.5, 1e-12);
+    EXPECT_NEAR(read_double(a.CellData("o", 1), 0), 1.0, 1e-12);
+    const Mesh s = data_calc(in, "size() * 2", cell);
+    EXPECT_NEAR(read_double(s.CellData("o", 1), 0), 2.0, 1e-12);
+    const Mesh v = data_calc(in, "volume()", cell);
+    EXPECT_TRUE(std::isnan(read_double(v.CellData("o", 0), 0)));  // no 3-D cell here
+    Mesh hex = mt::make_mesh(
+        {{0, 0, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}, {0, 0, 1}, {2, 0, 1}, {2, 1, 1}, {0, 1, 1}},
+        "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
+    EXPECT_NEAR(read_double(data_calc(hex, "volume()", cell).CellData("o", 0), 0), 2.0, 1e-12);
+    EXPECT_TRUE(std::isnan(read_double(data_calc(hex, "area()", cell).CellData("o", 0), 0)));
+}
+
 TEST(DataCalc, ScalarBroadcastAgainstAVector) {
     Mesh in = mt::data_mesh();
     Mesh out = data_calc(in, "v * 2", point_opts("v2"));
@@ -391,6 +452,15 @@ TEST(DataCalc, ArityErrors) {
     expect_message("matmul(v, v)", "'matmul' needs a 9-component");
     expect_message("outer(v, T)", "'outer' needs two 3-component operands");
     expect_message("inv(v)", "'inv' needs a 6-component");
+    expect_message("grad(T + 1)", "needs a point_data array name");
+    expect_message("grad(grad(T))", "needs a point_data array name");
+    expect_message("grad(mat)", "is not one");
+    expect_message("area()", "per-cell quantity");
+    expect_message("area(T)", "takes exactly 0 arguments");
+    DataCalcOptions mo;
+    mo.location = DataLocation::Field;
+    mo.output = "o";
+    EXPECT_THROW(data_calc(mt::data_mesh(), "grad(T)", mo), std::invalid_argument);
 }
 
 TEST(DataCalc, SyntaxErrors) {

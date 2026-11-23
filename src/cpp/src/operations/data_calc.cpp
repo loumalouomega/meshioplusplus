@@ -38,6 +38,7 @@
 // Geometry is never modified. See operations/data_calc.hpp for the contract.
 
 // System includes
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -51,6 +52,8 @@
 
 // Project includes
 #include "meshioplusplus/operations/data_calc.hpp"
+#include "meshioplusplus/cell_type.hpp"
+#include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "../detail/cell_centroids.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
@@ -242,6 +245,14 @@ enum class CalcNodeType {
     Matmul,
     Outer,
     Inv,
+    // Mesh-aware calls: evaluated once, before the element loop, into a
+    // precomputed operand (the node then reads it as an Array).
+    Grad,
+    Divergence,
+    Curl,
+    Area,
+    Volume,
+    Size,
 };
 
 struct CalcNode {
@@ -294,6 +305,12 @@ const CalcFuncDef CALC_FUNCS[] = {
     {"matmul", CalcNodeType::Matmul, 2},
     {"outer", CalcNodeType::Outer, 2},
     {"inv", CalcNodeType::Inv, 1},
+    {"grad", CalcNodeType::Grad, 1},
+    {"div", CalcNodeType::Divergence, 1},
+    {"curl", CalcNodeType::Curl, 1},
+    {"area", CalcNodeType::Area, 0},
+    {"volume", CalcNodeType::Volume, 0},
+    {"size", CalcNodeType::Size, 0},
 };
 
 std::string calc_known_funcs() {
@@ -448,10 +465,27 @@ private:
                              ident.mPos);
             CalcNode n;
             n.mType = def->mType;
-            n.mLhs = args[0];
+            if (!args.empty())
+                n.mLhs = args[0];
             if (args.size() > 1)
                 n.mRhs = args[1];
             n.mPos = ident.mPos;
+            if (def->mType == CalcNodeType::Grad || def->mType == CalcNodeType::Divergence ||
+                def->mType == CalcNodeType::Curl) {
+                // A mesh-aware derivative differentiates a point_data array by
+                // name: an expression (and so a nested call) has no such name.
+                CalcNode& arg = mrPool[args[0]];
+                if (arg.mType != CalcNodeType::Array)
+                    calc_fail_at("'" + ident.mText +
+                                     "' needs a point_data array name, not an expression (for a "
+                                     "second derivative use hessian)",
+                                 ident.mPos);
+                n.mName = arg.mName;
+                // The name is read by the call, not by the expression's own
+                // location, so the argument node is left as an inert constant.
+                arg.mType = CalcNodeType::Const;
+                arg.mConst = 0.0;
+            }
             return Emit(std::move(n));
         }
         calc_fail_at("unexpected token", tok.mPos);
@@ -476,6 +510,10 @@ struct CalcOperand {
     /// Values widened to double, laid out row-major as row * mWidth + k.
     /// Filled per cell block for the Cell location.
     std::vector<double> mValues;
+    /// A mesh-aware call's result, computed once in the inference pass: one
+    /// array at the point location, one per cell block at the cell location.
+    bool mPrecomputed = false;
+    std::vector<NDArray> mArrays;
 };
 
 /// The coordinate operand a name stands for when no data array has it: `x`, `y`,
@@ -535,6 +573,86 @@ std::size_t calc_combine_width(std::size_t a, std::size_t b, CalcNodeType t, std
     calc_fail_at("cannot combine a " + std::to_string(a) + "-component array with a " +
                      std::to_string(b) + "-component array in '" + calc_node_op_name(t) + "'",
                  pos);
+}
+
+/// The topological dimension of a block (a ragged polygon block is 2, a
+/// polyhedron block 3).
+int calc_block_dim(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    if (rBlock.IsRagged())
+        return 2;
+    return cell_type_dimension(cell_type_from_name(rBlock.Type()));
+}
+
+/// The result of one mesh-aware call as a precomputed operand: gradient,
+/// divergence or curl of a point_data array (at the expression's location), or
+/// the unsigned area, volume or size of every cell.
+CalcOperand calc_precompute_call(const CalcNode& rNode, const Mesh& rMesh, DataLocation location) {
+    const char* fname = rNode.mType == CalcNodeType::Grad         ? "grad"
+                        : rNode.mType == CalcNodeType::Divergence ? "div"
+                        : rNode.mType == CalcNodeType::Curl       ? "curl"
+                        : rNode.mType == CalcNodeType::Area       ? "area"
+                        : rNode.mType == CalcNodeType::Volume     ? "volume"
+                                                                  : "size";
+    if (location == DataLocation::Field)
+        calc_fail_at(std::string("'") + fname +
+                         "' needs the point or cell location: field_data has no mesh to read",
+                     rNode.mPos);
+    CalcOperand op;
+    op.mPrecomputed = true;
+    if (rNode.mType == CalcNodeType::Grad || rNode.mType == CalcNodeType::Divergence ||
+        rNode.mType == CalcNodeType::Curl) {
+        op.mName = std::string("\x01") + fname + "(" + rNode.mName + ")";
+        if (!rMesh.HasPointData(rNode.mName))
+            calc_fail_at(std::string("'") + fname + "' differentiates a point_data array and '" +
+                             rNode.mName + "' is not one",
+                         rNode.mPos);
+        GradientOptions go;
+        go.mArrayName = rNode.mName;
+        go.mOperator = rNode.mType == CalcNodeType::Grad         ? GradientOperator::Gradient
+                       : rNode.mType == CalcNodeType::Divergence ? GradientOperator::Divergence
+                                                                 : GradientOperator::Curl;
+        go.mLocation = location == DataLocation::Point ? DataLocation::Point : DataLocation::Cell;
+        go.mOutputName = "\x01calc";
+        go.mOverwrite = true;
+        Mesh res;
+        try {
+            res = gradient(rMesh, go).mMesh;
+        } catch (const std::invalid_argument& e) {
+            calc_fail_at(std::string("'") + fname + "': " + e.what(), rNode.mPos);
+        }
+        if (location == DataLocation::Point) {
+            op.mArrays.push_back(res.PointData(go.mOutputName));
+        } else {
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+                op.mArrays.push_back(res.CellData(go.mOutputName, b));
+        }
+        op.mWidth = op.mArrays.empty() ? 1 : data_num_components(op.mArrays.front());
+        return op;
+    }
+    // area(), volume(), size(): a per-cell quantity.
+    op.mName = std::string("\x01") + fname + "()";
+    if (location != DataLocation::Cell)
+        calc_fail_at(std::string("'") + fname + "' is a per-cell quantity: use the cell location",
+                     rNode.mPos);
+    const int want = rNode.mType == CalcNodeType::Area     ? 2
+                     : rNode.mType == CalcNodeType::Volume ? 3
+                                                           : 0;
+    const NDArray& pts = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t n = cb.NumCells();
+        NDArray arr = NDArray::Uninit(DType::Float64, {n});
+        double* d = arr.As<double>();
+        const bool defined = want == 0 || calc_block_dim(cb) == want;
+        for (std::size_t c = 0; c < n; ++c)
+            d[c] = defined ? detail::cell_measure(pts, pdim, cb, c) : std::nan("");
+        op.mArrays.push_back(std::move(arr));
+    }
+    op.mWidth = 1;
+    return op;
 }
 
 /// Walks the pool, resolving array names and filling in every node's width.
@@ -608,6 +726,31 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
                 n.mWidth = op.mWidth;
                 seen.emplace(n.mName, rOperands.size());
                 rOperands.push_back(std::move(op));
+                break;
+            }
+            case CalcNodeType::Grad:
+            case CalcNodeType::Divergence:
+            case CalcNodeType::Curl:
+            case CalcNodeType::Area:
+            case CalcNodeType::Volume:
+            case CalcNodeType::Size: {
+                CalcOperand op = calc_precompute_call(n, rMesh, location);
+                if (op.mWidth > DATA_CALC_MAX_COMPONENTS)
+                    calc_fail_at("the result of '" + op.mName.substr(1) + "' has " +
+                                     std::to_string(op.mWidth) +
+                                     " components, more than the supported maximum of " +
+                                     std::to_string(DATA_CALC_MAX_COMPONENTS),
+                                 n.mPos);
+                const auto it = seen.find(op.mName);
+                if (it != seen.end()) {
+                    n.mOperand = it->second;
+                } else {
+                    n.mOperand = rOperands.size();
+                    seen.emplace(op.mName, rOperands.size());
+                    rOperands.push_back(std::move(op));
+                }
+                n.mWidth = rOperands[n.mOperand].mWidth;
+                n.mType = CalcNodeType::Array;  // read like any operand from here on
                 break;
             }
             case CalcNodeType::Neg:
@@ -984,11 +1127,12 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
 /// @param rSource supplies the NDArray for an operand (differs per cell block).
 template <class TSource>
 void calc_load_operands(std::vector<CalcOperand>& rOperands, std::size_t rows, TSource&& rSource,
-                        const char* pWhat) {
+                        const char* pWhat, std::size_t Block = 0) {
     for (CalcOperand& op : rOperands) {
         if (op.mCoord >= 0)
             continue;  // filled from the geometry by calc_fill_coordinates
-        const NDArray& arr = rSource(op.mName);
+        const NDArray& arr = op.mPrecomputed ? op.mArrays[std::min(Block, op.mArrays.size() - 1)]
+                                             : rSource(op.mName);
         const std::size_t got = detail::rows(arr);
         if (got != rows)
             calc_fail("array '" + op.mName + "' has " + std::to_string(got) + " rows but " + pWhat +
@@ -1114,7 +1258,7 @@ Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalc
     // cell block as the uniform API requires.
     const std::size_t nblocks = rMesh.NumCellBlocks();
     for (const CalcOperand& op : operands)
-        if (op.mCoord < 0 && rMesh.CellDataNumBlocks(op.mName) != nblocks)
+        if (op.mCoord < 0 && !op.mPrecomputed && rMesh.CellDataNumBlocks(op.mName) != nblocks)
             calc_fail("cell_data '" + op.mName + "' has " +
                       std::to_string(rMesh.CellDataNumBlocks(op.mName)) +
                       " block(s) but the mesh has " + std::to_string(nblocks) + " cell block(s)");
@@ -1139,7 +1283,7 @@ Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalc
         calc_load_operands(
             operands, rows,
             [&](const std::string& n) -> const NDArray& { return rMesh.CellData(n, b); },
-            "cell_data");
+            "cell_data", b);
         blocks.push_back(calc_run(pool, root, operands, rows, width, rOpts.dtype));
     }
     out.AddCellData(rOpts.output, std::move(blocks));

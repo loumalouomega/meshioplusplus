@@ -5643,7 +5643,8 @@ export interface MeshioPlusPlusModule {
    * names, `abs`/`sqrt`/`min`/`max`/`norm` and the math functions `exp`, `log`,
    * `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`,
    * `tanh`, `floor`, `ceil`, `sign` and `pow`, and the tuple functions `dot`,
-   * `cross`, `det`, `trace`, `transpose`, `mag`, `matmul`, `outer` and `inv`) and store the result as a new
+   * `cross`, `det`, `trace`, `transpose`, `mag`, `matmul`, `outer` and `inv`, and the mesh-aware calls `grad`, `div`, `curl`,
+   * `area`, `volume` and `size`) and store the result as a new
    * array at `location`.
    * @throws {Error} on any lexical, syntactic, or name-resolution error.
    */

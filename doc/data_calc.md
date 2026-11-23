@@ -71,6 +71,21 @@ A name containing spaces or operator characters can be written between backticks
 mp.data_calc(mesh, "`my array` * 2", location="point", output="doubled")
 ```
 
+### Mesh-aware calls
+
+Six functions read the mesh rather than the arrays, each evaluated **once** before the element loop:
+
+| Call | Reads | Result |
+| --- | --- | --- |
+| `grad(a)` | a `point_data` array `a`, by name | its gradient, `3 · nc` components (`[component][derivative]`) |
+| `div(a)` | a 2- or 3-component `point_data` array | the divergence, a scalar |
+| `curl(a)` | a 2- or 3-component `point_data` array | the curl, 3 components |
+| `area()` | the cells (cell location only) | the unsigned area of a 2-D cell, `NaN` for any other |
+| `volume()` | the cells (cell location only) | the unsigned volume of a 3-D cell, `NaN` for any other |
+| `size()` | the cells (cell location only) | the unsigned length, area or volume, by the cell's dimension |
+
+`grad`, `div` and `curl` are [`gradient`](/gradient) with its defaults (Green–Gauss): at `location="cell"` they give the per-cell value, at `location="point"` that value averaged to the points, so `mat * norm(grad(T))` mixes a `cell_data` array with the gradient of a `point_data` one. The argument is an array **name**, and always a `point_data` one, whatever the expression's location; an expression (`grad(T + 1)`) or a nested call (`grad(grad(T))`) is refused, and a second derivative is [`hessian`](/hessian). The gradient method and the output component of `gradient` are not selectable here: for those, call the operation. `field_data` has no mesh to read, so these are refused there, and `area`, `volume` and `size` are refused at the point location.
+
 ### Coordinates
 
 `x`, `y` and `z` (one component each) and `coords` (all three) name the geometry when no data array of that name exists:
@@ -112,8 +127,10 @@ unexpected end of expression
 expected ')' at position 12
 trailing input after the expression at position 9
 unknown point_data array 'temp' at position 5 (available: T, p, u)
-unknown function 'foo' at position 0 (known: abs, sqrt, min, max, norm, exp, log, log10, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, floor, ceil, sign, pow, dot, cross, det, trace, transpose, mag, matmul, outer, inv)
+unknown function 'foo' at position 0 (known: abs, sqrt, min, max, norm, exp, log, log10, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, floor, ceil, sign, pow, dot, cross, det, trace, transpose, mag, matmul, outer, inv, grad, div, curl, area, volume, size)
 'norm' takes exactly 1 argument (got 2) at position 0
+'grad' needs a point_data array name, not an expression (for a second derivative use hessian) at position 0
+'area' is a per-cell quantity: use the cell location at position 0
 'dot' needs two operands of the same width (got 3 and 9) at position 0
 'det' needs a 6-component (symmetric) or 9-component (3x3) operand (got 3) at position 0
 'min' takes exactly 2 arguments (got 1) at position 3

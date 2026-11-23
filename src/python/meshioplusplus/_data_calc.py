@@ -19,7 +19,9 @@ Grammar::
 Functions: ``abs``, ``sqrt``, ``min``, ``max``, ``norm``, ``exp``, ``log``,
 ``log10``, ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``atan2``,
 ``sinh``, ``cosh``, ``tanh``, ``floor``, ``ceil``, ``sign``, ``pow`` and the
-tuple functions ``dot``, ``cross``, ``det``, ``trace``, ``transpose``, ``mag``, ``matmul``, ``outer``, ``inv``. Identifiers may
+tuple functions ``dot``, ``cross``, ``det``, ``trace``, ``transpose``, ``mag``, ``matmul``, ``outer``, ``inv`` and the mesh-aware calls ``grad``,
+``div``, ``curl`` (of a point_data array, by name) and ``area``, ``volume``,
+``size`` (per cell). Identifiers may
 contain ``:`` and ``.`` after the first character (so ``gmsh:physical`` works),
 and a name with spaces or operator characters can be backtick-quoted.
 
@@ -74,7 +76,18 @@ _FUNCS = {
     "matmul": 2,
     "outer": 2,
     "inv": 1,
+    "grad": 1,
+    "div": 1,
+    "curl": 1,
+    "area": 0,
+    "volume": 0,
+    "size": 0,
 }
+
+#: The mesh-aware calls: derivatives of a point_data array by name, and the
+#: per-cell measures. They are evaluated once, before the element loop.
+_DERIVATIVES = {"grad": "gradient", "div": "divergence", "curl": "curl"}
+_MEASURES = {"area": 2, "volume": 3, "size": 0}
 
 #: The unary math functions beyond ``abs``/``sqrt``/``norm``, width-preserving.
 _UNARY = {
@@ -262,6 +275,18 @@ class _Parser:
                     f"'{value}' takes exactly {arity} {word} (got {len(args)})",
                     pos,
                 )
+            if value in _DERIVATIVES:
+                # A derivative differentiates a point_data array by name: an
+                # expression (and so a nested call) has no such name.
+                if args[0][0] != "array":
+                    _fail(
+                        f"'{value}' needs a point_data array name, not an expression "
+                        "(for a second derivative use hessian)",
+                        pos,
+                    )
+                return (value, args[0][1], None, pos)
+            if value in _MEASURES:
+                return (value, None, None, pos)
             return (value, args[0], args[1] if len(args) > 1 else None, pos)
         _fail("unexpected token", pos)
 
@@ -298,6 +323,10 @@ def _eval(node, arrays, rows):
         return arrays[lhs]
     if kind == "neg":
         return -_eval(lhs, arrays, rows)
+    if kind in _DERIVATIVES:
+        return arrays[(kind, lhs)]
+    if kind in _MEASURES:
+        return arrays[(kind, None)]
     if kind == "abs":
         return np.abs(_eval(lhs, arrays, rows))
     if kind == "sqrt":
@@ -432,6 +461,74 @@ def _collect_names(node, out):
         _collect_names(rhs, out)
 
 
+def _collect_calls(node, out):
+    """Gather every ``(kind, array name or None, position)`` mesh-aware call."""
+    kind, lhs, rhs, pos = node
+    if kind in _DERIVATIVES or kind in _MEASURES:
+        out.add((kind, lhs, pos))
+        return
+    if isinstance(lhs, tuple):
+        _collect_calls(lhs, out)
+    if isinstance(rhs, tuple):
+        _collect_calls(rhs, out)
+
+
+def _precompute_calls(mesh, tree, loc):
+    """Evaluate the mesh-aware calls once: ``{(kind, name): [array per block]}``
+    (a single array at the point location)."""
+    from ._data_average import _DIM, _cell_measures
+    from ._gradient import _gradient_py, _validate
+
+    calls = set()
+    _collect_calls(tree, calls)
+    out = {}
+    for kind, name, pos in sorted(calls, key=lambda c: (c[0], str(c[1]), c[2])):
+        if loc == "field_data":
+            _fail(
+                f"'{kind}' needs the point or cell location: field_data has no mesh to read",
+                pos,
+            )
+        if kind in _DERIVATIVES:
+            if name not in mesh.point_data:
+                _fail(
+                    f"'{kind}' differentiates a point_data array and '{name}' is not one",
+                    pos,
+                )
+            where = "point" if loc == "point_data" else "cell"
+            op = _DERIVATIVES[kind]
+            try:
+                _validate(mesh, name, op, "green-gauss", where, "\x01calc", None, True)
+            except ValueError as exc:
+                _fail(f"'{kind}': {exc}", pos)
+            res, _skipped, _fallback = _gradient_py(
+                mesh, name, op, "green-gauss", where, "\x01calc", None, True
+            )
+            if loc == "point_data":
+                out[(kind, name)] = [np.asarray(res.point_data["\x01calc"])]
+            else:
+                out[(kind, name)] = [np.asarray(b) for b in res.cell_data["\x01calc"]]
+            continue
+        if loc != "cell_data":
+            _fail(f"'{kind}' is a per-cell quantity: use the cell location", pos)
+        want = _MEASURES[kind]
+        blocks = []
+        for block in mesh.cells:
+            n = len(block.data)
+            ctype = block.type.split("_")[0] if "_" in block.type else block.type
+            if block.type.startswith("polyhedron"):
+                dim = 3
+            elif block.type.startswith("polygon") or isinstance(block.data, list):
+                dim = 2
+            else:
+                dim = _DIM.get(ctype)
+            meas = _cell_measures(mesh, block)
+            if meas is None or (want != 0 and dim != want):
+                meas = np.full(n, np.nan)
+            blocks.append(np.asarray(meas, dtype=float))
+        out[(kind, None)] = blocks
+    return out
+
+
 def _calc_py(mesh, expression, location, output, overwrite):
     """Pure-Python reference for :func:`data_calc`."""
     loc = normalize_location(location)
@@ -467,9 +564,12 @@ def _calc_py(mesh, expression, location, output, overwrite):
             _fail(f"unknown {loc} array '{name}' ({detail})")
 
     out = copy.deepcopy(mesh)
+    call_values = _precompute_calls(mesh, tree, loc)
 
-    def run(rows, fetch):
+    def run(rows, fetch, block=0):
         arrays = {n: _as_2d(fetch(n), rows) for n in referenced - coord_names}
+        for key, values in call_values.items():
+            arrays[key] = _as_2d(values[min(block, len(values) - 1)], rows)
         for n in coord_names:
             xyz = fetch(n)
             arrays[n] = xyz[:, _COORDS[n]] if n != "coords" else xyz
@@ -528,7 +628,7 @@ def _calc_py(mesh, expression, location, output, overwrite):
         rows = len(block.data)
         cent = centroids[base : base + rows] if centroids is not None else None
         blocks.append(
-            run(rows, lambda n, b=b, c=cent: c if n in coord_names else source[n][b])
+            run(rows, lambda n, b=b, c=cent: c if n in coord_names else source[n][b], b)
         )
         base += rows
     out.cell_data[output] = blocks

@@ -4621,7 +4621,8 @@ def _register_data(server: FastMCP) -> None:
         """Evaluate an arithmetic expression over data arrays into a new array
         (operators + - * /, functions abs/sqrt/min/max/norm and exp/log/log10/
         sin/cos/tan/asin/acos/atan/atan2/sinh/cosh/tanh/floor/ceil/sign/pow and
-        dot/cross/det/trace/transpose/mag/matmul/outer/inv;
+        dot/cross/det/trace/transpose/mag/matmul/outer/inv and the mesh-aware
+        grad/div/curl (of a point_data array) and area()/volume()/size();
         back-tick-quote names with spaces, e.g. "speed = norm(velocity)")."""
 
     @server.tool()

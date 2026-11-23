@@ -471,6 +471,132 @@ def test_coordinates_match_between_the_core_and_the_twin():
                     np.testing.assert_allclose(a, b, rtol=1e-12, err_msg=expr)
 
 
+def test_grad_div_curl_of_a_point_array_match_the_gradient_operation():
+    m, _ = tensor_mesh()
+    m.point_data["u"] = np.column_stack(
+        [
+            m.points[:, 0] * 2 + m.points[:, 1],
+            m.points[:, 1] * 3,
+            m.points[:, 0] - m.points[:, 1],
+        ]
+    )
+    for call, op in (
+        ("div(u)", "divergence"),
+        ("curl(u)", "curl"),
+        ("grad(T)", "gradient"),
+    ):
+        name = "T" if call.startswith("grad") else "u"
+        for where, key in (("cell", "cell"), ("point", "point")):
+            out = mp.data_calc(m, call, location=where, output="o")
+            ref = mp.gradient(m, name, operator=op, location=where)
+            refname = f"{name}:{op}"
+            if where == "cell":
+                for a, b in zip(out.cell_data["o"], ref.cell_data[refname]):
+                    np.testing.assert_allclose(
+                        np.asarray(a).reshape(len(a), -1),
+                        np.asarray(b).reshape(len(b), -1),
+                        atol=1e-12,
+                    )
+            else:
+                np.testing.assert_allclose(
+                    np.asarray(out.point_data["o"]).reshape(6, -1),
+                    np.asarray(ref.point_data[refname]).reshape(6, -1),
+                    atol=1e-12,
+                )
+
+
+def test_a_gradient_call_combines_with_the_expression_location_arrays():
+    m, _ = tensor_mesh()
+    # T = x + 10 y: |grad T| = sqrt(101) in every cell; mat is a cell array.
+    out = mp.data_calc(m, "mat * norm(grad(T))", location="cell", output="o")
+    np.testing.assert_allclose(
+        out.cell_data["o"][0], np.array([1.0, 2.0]) * np.sqrt(101.0), rtol=1e-10
+    )
+    np.testing.assert_allclose(
+        out.cell_data["o"][1], [3.0 * np.sqrt(101.0)], rtol=1e-10
+    )
+    out = mp.data_calc(m, "dot(grad(T), grad(T))", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 101.0, rtol=1e-10)
+
+
+def test_area_volume_and_size_of_the_cells():
+    m, _ = tensor_mesh()  # two triangles of area 1/2 and a unit quad
+    out = mp.data_calc(m, "area()", location="cell", output="o")
+    np.testing.assert_allclose(out.cell_data["o"][0], [0.5, 0.5])
+    np.testing.assert_allclose(out.cell_data["o"][1], [1.0])
+    out = mp.data_calc(m, "size() * 2", location="cell", output="o")
+    np.testing.assert_allclose(out.cell_data["o"][1], [2.0])
+    out = mp.data_calc(m, "volume()", location="cell", output="o")
+    assert all(np.isnan(b).all() for b in out.cell_data["o"])  # no 3-D cell here
+    hexa = mp.Mesh(
+        np.array(
+            [
+                [0, 0, 0],
+                [2, 0, 0],
+                [2, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [2, 0, 1],
+                [2, 1, 1],
+                [0, 1, 1],
+            ],
+            float,
+        ),
+        [("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]]))],
+    )
+    out = mp.data_calc(hexa, "volume()", location="cell", output="o")
+    np.testing.assert_allclose(out.cell_data["o"][0], [2.0])
+    out = mp.data_calc(hexa, "area()", location="cell", output="o")
+    assert np.isnan(out.cell_data["o"][0]).all()
+
+
+def test_mesh_aware_call_errors():
+    m, _ = tensor_mesh()
+    for expr, loc, needle in [
+        ("grad(T + 1)", "point", "needs a point_data array name"),
+        ("grad(grad(T))", "point", "needs a point_data array name"),
+        ("grad(mat)", "point", "is not one"),
+        ("div(T)", "point", "gradient"),
+        ("area()", "point", "per-cell quantity"),
+        ("grad(T)", "field", "field_data has no mesh"),
+        ("area(T)", "cell", "takes exactly 0 arguments"),
+    ]:
+        with pytest.raises(ValueError, match=needle):
+            mp.data_calc(m, expr, location=loc, output="o")
+
+
+def test_mesh_aware_calls_match_between_the_core_and_the_twin():
+    pytest.importorskip("meshioplusplus._core")
+    m, _ = tensor_mesh()
+    m.point_data["u"] = np.column_stack(
+        [np.sin(m.points[:, 0]), m.points[:, 1] ** 2, m.points[:, 0] * m.points[:, 1]]
+    )
+    cases = [
+        ("point_data", "point", "grad(T)"),
+        ("point_data", "point", "div(u) * 2 + T"),
+        ("point_data", "point", "norm(curl(u))"),
+        ("cell_data", "cell", "grad(T)"),
+        ("cell_data", "cell", "mat * norm(curl(u))"),
+        ("cell_data", "cell", "area() + size()"),
+    ]
+    for key, loc, expr in cases:
+        cpp = mp.data_calc(m, expr, location=loc, output="o")
+        py = _calc_py(m, expr, key, "o", False)
+        if loc == "point":
+            np.testing.assert_allclose(
+                cpp.point_data["o"],
+                py.point_data["o"],
+                rtol=1e-10,
+                atol=1e-12,
+                err_msg=expr,
+            )
+        else:
+            for a, b in zip(cpp.cell_data["o"], py.cell_data["o"]):
+                np.testing.assert_allclose(
+                    a, b, rtol=1e-10, atol=1e-12, err_msg=expr, equal_nan=True
+                )
+
+
 def test_mag_is_norm():
     m, _ = tensor_mesh()
     a = mp.data_calc(m, "mag(v)", location="point", output="o")
