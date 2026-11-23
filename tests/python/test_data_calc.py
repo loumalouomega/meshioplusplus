@@ -328,6 +328,84 @@ def test_det_and_trace_of_a_symmetric_six_component_tensor():
     np.testing.assert_allclose(out.point_data["o"], np.trace(full, axis1=1, axis2=2))
 
 
+def test_matmul_outer_and_inv_match_numpy():
+    m, t9 = tensor_mesh()
+    a = t9.reshape(-1, 3, 3)
+    v = m.point_data["v"]
+    out = mp.data_calc(m, "matmul(t9, t9)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], (a @ a).reshape(-1, 9))
+    out = mp.data_calc(m, "matmul(t9, v)", location="point", output="o")
+    assert out.point_data["o"].shape == (6, 3)
+    np.testing.assert_allclose(out.point_data["o"], np.einsum("nij,nj->ni", a, v))
+    out = mp.data_calc(m, "outer(v, v + 1)", location="point", output="o")
+    np.testing.assert_allclose(
+        out.point_data["o"], np.einsum("ni,nj->nij", v, v + 1).reshape(-1, 9)
+    )
+    out = mp.data_calc(m, "inv(t9)", location="point", output="o")
+    got = out.point_data["o"].reshape(-1, 3, 3)
+    for r in range(5):  # row 5 is singular
+        np.testing.assert_allclose(got[r], np.linalg.inv(a[r]), atol=1e-10)
+    assert np.isnan(got[5]).all()
+    np.testing.assert_allclose(
+        got[0], [[-24, 18, 5], [20, -15, -4], [-5, 4, 1]], atol=1e-12
+    )
+
+
+def test_matmul_of_a_matrix_and_its_inverse_is_the_identity():
+    m, _ = tensor_mesh()
+    out = mp.data_calc(m, "matmul(t9, inv(t9))", location="point", output="o")
+    got = out.point_data["o"].reshape(-1, 3, 3)
+    for r in range(5):
+        np.testing.assert_allclose(got[r], np.eye(3), atol=1e-10)
+
+
+def test_inv_of_a_symmetric_six_component_tensor_keeps_six_components():
+    m, _ = tensor_mesh()
+    s = m.point_data["t6"]
+    out = mp.data_calc(m, "inv(t6)", location="point", output="o")
+    got = out.point_data["o"]
+    assert got.shape == (6, 6)
+    full = np.zeros((6, 3, 3))
+    full[:, 0, 0], full[:, 1, 1], full[:, 2, 2] = s[:, 0], s[:, 1], s[:, 2]
+    full[:, 0, 1] = full[:, 1, 0] = s[:, 3]
+    full[:, 1, 2] = full[:, 2, 1] = s[:, 4]
+    full[:, 0, 2] = full[:, 2, 0] = s[:, 5]
+    inv = np.linalg.inv(full)
+    expect = np.stack(
+        [
+            inv[:, 0, 0],
+            inv[:, 1, 1],
+            inv[:, 2, 2],
+            inv[:, 0, 1],
+            inv[:, 1, 2],
+            inv[:, 0, 2],
+        ],
+        axis=1,
+    )
+    np.testing.assert_allclose(got, expect, rtol=1e-9)
+
+
+def test_inv_equals_tensor_invariants_inverse():
+    m, _ = tensor_mesh()
+    a = mp.data_calc(m, "inv(t9)", location="point", output="o").point_data["o"]
+    b = mp.tensor_invariants(m, "point", ["t9"], outputs=["inverse"]).point_data[
+        "t9_inverse"
+    ]
+    np.testing.assert_allclose(a, b, atol=1e-12, equal_nan=True)
+
+
+def test_matmul_outer_inv_width_errors():
+    m, _ = tensor_mesh()
+    for expr, needle in [
+        ("matmul(v, v)", "matmul' needs a 9-component"),
+        ("matmul(t9, T)", r"3-component \(vector\)"),
+        ("outer(t9, v)", "outer' needs two 3-component"),
+        ("inv(v)", "inv' needs a 6-component"),
+    ]:
+        with pytest.raises(ValueError, match=needle):
+            mp.data_calc(m, expr, location="point", output="o")
+
+
 def test_mag_is_norm():
     m, _ = tensor_mesh()
     a = mp.data_calc(m, "mag(v)", location="point", output="o")
@@ -361,6 +439,12 @@ def test_tuple_functions_match_between_the_core_and_the_twin():
         "trace(t6)",
         "mag(cross(v, 2 + v))",
         "dot(transpose(t9), t9)",
+        "matmul(t9, t9)",
+        "matmul(t9, v)",
+        "outer(v, 1 + v)",
+        "inv(t9)",
+        "inv(t6)",
+        "matmul(t9, inv(t9))",
     ]:
         cpp = mp.data_calc(m, expr, location="point", output="o")
         py = _calc_py(m, expr, "point_data", "o", False)

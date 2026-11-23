@@ -210,6 +210,45 @@ TEST(DataCalc, DetTraceAndTranspose) {
     EXPECT_NEAR(read_double(mg.PointData("o"), 4), 2.0, 1e-12);
 }
 
+TEST(DataCalc, MatmulOuterAndInv) {
+    Mesh in = tuple_mesh();  // t9 row 0 = [[1,2,3],[0,1,4],[5,6,0]], det 1
+    const Mesh inv = data_calc(in, "inv(t9)", point_opts("o"));
+    ASSERT_EQ(meshioplusplus::data_num_components(inv.PointData("o")), 9u);
+    const double expect[9] = {-24, 18, 5, 20, -15, -4, -5, 4, 1};
+    for (int k = 0; k < 9; ++k)
+        EXPECT_NEAR(read_double(inv.PointData("o"), k), expect[k], 1e-12) << k;
+    // The singular row (all ones) is NaN throughout.
+    for (int k = 0; k < 9; ++k)
+        EXPECT_TRUE(std::isnan(read_double(inv.PointData("o"), 5 * 9 + k))) << k;
+
+    // matmul of a matrix and its inverse is the identity on a regular row.
+    const Mesh id = data_calc(in, "matmul(t9, inv(t9))", point_opts("o"));
+    const double eye[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    for (int k = 0; k < 9; ++k)
+        EXPECT_NEAR(read_double(id.PointData("o"), k), eye[k], 1e-12) << k;
+
+    // matmul by a vector: row 4 of v is (2,0,0), so t9 row 4 times it is its first column * 2.
+    const Mesh mv = data_calc(in, "matmul(t9, v)", point_opts("o"));
+    ASSERT_EQ(meshioplusplus::data_num_components(mv.PointData("o")), 3u);
+    EXPECT_NEAR(read_double(mv.PointData("o"), 4 * 3 + 0), 8.0, 1e-12);  // 4 * 2
+    EXPECT_NEAR(read_double(mv.PointData("o"), 4 * 3 + 1), 2.0, 1e-12);  // 1 * 2
+    EXPECT_NEAR(read_double(mv.PointData("o"), 4 * 3 + 2), 4.0, 1e-12);  // 2 * 2
+
+    // outer: v = (1,1,0) at row 3; outer(v, v) has ones in the top-left 2x2.
+    const Mesh ou = data_calc(in, "outer(v, v)", point_opts("o"));
+    ASSERT_EQ(meshioplusplus::data_num_components(ou.PointData("o")), 9u);
+    const double ones[9] = {1, 1, 0, 1, 1, 0, 0, 0, 0};
+    for (int k = 0; k < 9; ++k)
+        EXPECT_NEAR(read_double(ou.PointData("o"), 3 * 9 + k), ones[k], 1e-12) << k;
+
+    // A symmetric 6-component tensor keeps six components: diag(2,3,5).
+    const Mesh i6 = data_calc(in, "inv(t6)", point_opts("o"));
+    ASSERT_EQ(meshioplusplus::data_num_components(i6.PointData("o")), 6u);
+    EXPECT_NEAR(read_double(i6.PointData("o"), 1 * 6 + 0), 0.5, 1e-14);
+    EXPECT_NEAR(read_double(i6.PointData("o"), 1 * 6 + 1), 1.0 / 3.0, 1e-14);
+    EXPECT_NEAR(read_double(i6.PointData("o"), 1 * 6 + 2), 0.2, 1e-14);
+}
+
 TEST(DataCalc, ScalarBroadcastAgainstAVector) {
     Mesh in = mt::data_mesh();
     Mesh out = data_calc(in, "v * 2", point_opts("v2"));
@@ -306,6 +345,9 @@ TEST(DataCalc, ArityErrors) {
     expect_message("cross(v, T)", "'cross' needs two 3-component operands");
     expect_message("det(v)", "'det' needs a 6-component");
     expect_message("transpose(v)", "'transpose' needs a 9-component");
+    expect_message("matmul(v, v)", "'matmul' needs a 9-component");
+    expect_message("outer(v, T)", "'outer' needs two 3-component operands");
+    expect_message("inv(v)", "'inv' needs a 6-component");
 }
 
 TEST(DataCalc, SyntaxErrors) {

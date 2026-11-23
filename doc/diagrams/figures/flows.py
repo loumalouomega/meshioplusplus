@@ -1171,7 +1171,6 @@ def roadmap_map():
         (
             "§15 math on meshes",
             [
-                ("tensor products", "M"),
                 ("descriptive statistics", "S"),
                 ("calculator grammar", "M"),
                 ("Verdict metric parity", "M"),
@@ -1180,7 +1179,7 @@ def roadmap_map():
                 ("high-order fields (design first)", "L"),
                 ("streamlines · time statistics", "M"),
             ],
-            [(4, 5)],
+            [(3, 4)],
         ),
     ]
     per_row = 4

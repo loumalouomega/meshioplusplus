@@ -28811,7 +28811,9 @@ MESHIOPLUSPLUS_API CellPointWeight cell_point_weight_from_name(const std::string
  * a whole row: `dot(a,b)` (equal widths, a scalar), `cross(a,b)` (3-component
  * operands), `det(t)` and `trace(t)` (a 6-component symmetric `xx yy zz xy yz zx`
  * or 9-component row-major 3x3 tensor, a scalar), `transpose(t)` (9 components)
- * and `mag(v)` (an alias of `norm`). Exponentiation is a function,
+ * `mag(v)` (an alias of `norm`), `matmul(a,b)` (a 3x3 by a 3x3 or by a 3-vector),
+ * `outer(a,b)` (two 3-vectors to a 3x3) and `inv(t)` (the inverse of a 6- or
+ * 9-component tensor, in its own width; NaN where the determinant is zero). Exponentiation is a function,
  * `pow`, not an operator, so the grammar's precedence is unchanged; a domain
  * error (`log(-1)`, `asin(2)`) is a NaN, as division by zero is an infinity.
  *
@@ -249228,6 +249230,7 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -249415,6 +249418,9 @@ enum class CalcNodeType {
     Trace,
     Transpose,
     Mag,
+    Matmul,
+    Outer,
+    Inv,
 };
 
 struct CalcNode {
@@ -249464,6 +249470,9 @@ const CalcFuncDef CALC_FUNCS[] = {
     {"trace", CalcNodeType::Trace, 1},
     {"transpose", CalcNodeType::Transpose, 1},
     {"mag", CalcNodeType::Mag, 1},
+    {"matmul", CalcNodeType::Matmul, 2},
+    {"outer", CalcNodeType::Outer, 2},
+    {"inv", CalcNodeType::Inv, 1},
 };
 
 std::string calc_known_funcs() {
@@ -249667,6 +249676,10 @@ const char* calc_node_op_name(CalcNodeType t) {
             return "dot";
         case CalcNodeType::Cross:
             return "cross";
+        case CalcNodeType::Matmul:
+            return "matmul";
+        case CalcNodeType::Outer:
+            return "outer";
         default:
             return "?";
     }
@@ -249791,6 +249804,34 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
                                      std::to_string(rPool[n.mLhs].mWidth) + ")",
                                  n.mPos);
                 n.mWidth = 1;
+                break;
+            case CalcNodeType::Inv:
+                if (rPool[n.mLhs].mWidth != 6 && rPool[n.mLhs].mWidth != 9)
+                    calc_fail_at(
+                        "'inv' needs a 6-component (symmetric) or 9-component (3x3) "
+                        "operand (got " +
+                            std::to_string(rPool[n.mLhs].mWidth) + ")",
+                        n.mPos);
+                n.mWidth = rPool[n.mLhs].mWidth;
+                break;
+            case CalcNodeType::Matmul:
+                if (rPool[n.mLhs].mWidth != 9 ||
+                    (rPool[n.mRhs].mWidth != 9 && rPool[n.mRhs].mWidth != 3))
+                    calc_fail_at(
+                        "'matmul' needs a 9-component (3x3) operand and a 9-component "
+                        "(3x3) or 3-component (vector) operand (got " +
+                            std::to_string(rPool[n.mLhs].mWidth) + " and " +
+                            std::to_string(rPool[n.mRhs].mWidth) + ")",
+                        n.mPos);
+                n.mWidth = rPool[n.mRhs].mWidth;
+                break;
+            case CalcNodeType::Outer:
+                if (rPool[n.mLhs].mWidth != 3 || rPool[n.mRhs].mWidth != 3)
+                    calc_fail_at("'outer' needs two 3-component operands (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + " and " +
+                                     std::to_string(rPool[n.mRhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 9;
                 break;
             case CalcNodeType::Transpose:
                 if (rPool[n.mLhs].mWidth != 9)
@@ -249942,8 +249983,36 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
             pOut[2] = a[0] * b[1] - a[1] * b[0];
             return 3;
         }
+        case CalcNodeType::Matmul: {
+            double a[DATA_CALC_MAX_COMPONENTS];
+            double b[DATA_CALC_MAX_COMPONENTS];
+            calc_eval(rPool, n.mLhs, rOperands, row, a);
+            const std::size_t rw = calc_eval(rPool, n.mRhs, rOperands, row, b);
+            // C[i][j] = sum_k A[i][k] * B[k][j], k ascending; a vector is a column.
+            const std::size_t cols = rw == 9 ? 3 : 1;
+            for (std::size_t i = 0; i < 3; ++i) {
+                for (std::size_t j = 0; j < cols; ++j) {
+                    double acc = 0.0;
+                    for (std::size_t k = 0; k < 3; ++k)
+                        acc += a[i * 3 + k] * b[k * cols + j];
+                    pOut[i * cols + j] = acc;
+                }
+            }
+            return rw;
+        }
+        case CalcNodeType::Outer: {
+            double a[DATA_CALC_MAX_COMPONENTS];
+            double b[DATA_CALC_MAX_COMPONENTS];
+            calc_eval(rPool, n.mLhs, rOperands, row, a);
+            calc_eval(rPool, n.mRhs, rOperands, row, b);
+            for (std::size_t i = 0; i < 3; ++i)
+                for (std::size_t j = 0; j < 3; ++j)
+                    pOut[i * 3 + j] = a[i] * b[j];
+            return 9;
+        }
         case CalcNodeType::Det:
         case CalcNodeType::Trace:
+        case CalcNodeType::Inv:
         case CalcNodeType::Transpose: {
             double buf[DATA_CALC_MAX_COMPONENTS];
             const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, buf);
@@ -249971,6 +250040,39 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
             if (n.mType == CalcNodeType::Det) {
                 pOut[0] = detail::det3({m[0], m[1], m[2]}, {m[3], m[4], m[5]}, {m[6], m[7], m[8]});
                 return 1;
+            }
+            if (n.mType == CalcNodeType::Inv) {
+                // adj(A) / det(A), as tensor_invariants' inverse: a zero or
+                // non-finite determinant is NaN, there being no warning channel.
+                const double det =
+                    detail::det3({m[0], m[1], m[2]}, {m[3], m[4], m[5]}, {m[6], m[7], m[8]});
+                double inv[9];
+                if (!std::isfinite(det) || det == 0.0) {
+                    for (double& v : inv)
+                        v = std::numeric_limits<double>::quiet_NaN();
+                } else {
+                    inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;
+                    inv[1] = (m[2] * m[7] - m[1] * m[8]) / det;
+                    inv[2] = (m[1] * m[5] - m[2] * m[4]) / det;
+                    inv[3] = (m[5] * m[6] - m[3] * m[8]) / det;
+                    inv[4] = (m[0] * m[8] - m[2] * m[6]) / det;
+                    inv[5] = (m[2] * m[3] - m[0] * m[5]) / det;
+                    inv[6] = (m[3] * m[7] - m[4] * m[6]) / det;
+                    inv[7] = (m[1] * m[6] - m[0] * m[7]) / det;
+                    inv[8] = (m[0] * m[4] - m[1] * m[3]) / det;
+                }
+                if (w == 6) {
+                    pOut[0] = inv[0];
+                    pOut[1] = inv[4];
+                    pOut[2] = inv[8];
+                    pOut[3] = inv[1];
+                    pOut[4] = inv[5];
+                    pOut[5] = inv[2];
+                    return 6;
+                }
+                for (int k = 0; k < 9; ++k)
+                    pOut[k] = inv[k];
+                return 9;
             }
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j)

@@ -19,7 +19,7 @@ Grammar::
 Functions: ``abs``, ``sqrt``, ``min``, ``max``, ``norm``, ``exp``, ``log``,
 ``log10``, ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``atan2``,
 ``sinh``, ``cosh``, ``tanh``, ``floor``, ``ceil``, ``sign``, ``pow`` and the
-tuple functions ``dot``, ``cross``, ``det``, ``trace``, ``transpose``, ``mag``. Identifiers may
+tuple functions ``dot``, ``cross``, ``det``, ``trace``, ``transpose``, ``mag``, ``matmul``, ``outer``, ``inv``. Identifiers may
 contain ``:`` and ``.`` after the first character (so ``gmsh:physical`` works),
 and a name with spaces or operator characters can be backtick-quoted.
 
@@ -68,6 +68,9 @@ _FUNCS = {
     "trace": 1,
     "transpose": 1,
     "mag": 1,
+    "matmul": 2,
+    "outer": 2,
+    "inv": 1,
 }
 
 #: The unary math functions beyond ``abs``/``sqrt``/``norm``, width-preserving.
@@ -303,6 +306,17 @@ def _eval(node, arrays, rows):
     if kind in ("norm", "mag"):
         v = _eval(lhs, arrays, rows)
         return np.sqrt((v * v).sum(axis=1)).reshape(rows, 1)
+    if kind == "inv":
+        v = _eval(lhs, arrays, rows)
+        if v.shape[1] not in (6, 9):
+            _fail(
+                "'inv' needs a 6-component (symmetric) or 9-component (3x3) "
+                f"operand (got {v.shape[1]})",
+                pos,
+            )
+        from ._tensor_invariants import _inverse
+
+        return _inverse(v, v.shape[1])
     if kind in ("det", "trace", "transpose"):
         v = _eval(lhs, arrays, rows)
         if v.shape[1] not in (6, 9) or (kind == "transpose" and v.shape[1] != 9):
@@ -338,6 +352,27 @@ def _eval(node, arrays, rows):
         return np.stack([m[j * 3 + i] for i in range(3) for j in range(3)], axis=1)
     a = _eval(lhs, arrays, rows)
     b = _eval(rhs, arrays, rows)
+    if kind == "matmul":
+        if a.shape[1] != 9 or b.shape[1] not in (3, 9):
+            _fail(
+                "'matmul' needs a 9-component (3x3) operand and a 9-component "
+                f"(3x3) or 3-component (vector) operand (got {a.shape[1]} and {b.shape[1]})",
+                pos,
+            )
+        am = a.reshape(rows, 3, 3)
+        cols = 3 if b.shape[1] == 9 else 1
+        bm = b.reshape(rows, 3, cols)
+        out = np.zeros((rows, 3, cols))
+        for k in range(3):  # k ascending, as the core sums
+            out = out + am[:, :, k : k + 1] * bm[:, k : k + 1, :]
+        return out.reshape(rows, 3 * cols)
+    if kind == "outer":
+        if a.shape[1] != 3 or b.shape[1] != 3:
+            _fail(
+                f"'outer' needs two 3-component operands (got {a.shape[1]} and {b.shape[1]})",
+                pos,
+            )
+        return (a[:, :, None] * b[:, None, :]).reshape(rows, 9)
     if kind in ("dot", "cross"):
         if kind == "dot" and a.shape[1] != b.shape[1]:
             _fail(

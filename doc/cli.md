@@ -2550,7 +2550,7 @@ The output is always `float64` — the mean of an integer field is not an intege
 | `--point`, `--cell`, `--field` | `NAME = EXPRESSION` (repeatable) |
 | `--overwrite` | Allow replacing an array that already exists |
 
-The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric literals, array names, and `abs`/`sqrt`/`min`/`max`/`norm` plus the math functions `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `sign` and `pow`, and the tuple functions `dot`, `cross`, `det`, `trace`, `transpose` and `mag` — nothing else is evaluated.
+The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric literals, array names, and `abs`/`sqrt`/`min`/`max`/`norm` plus the math functions `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `sign` and `pow`, and the tuple functions `dot`, `cross`, `det`, `trace`, `transpose`, `mag`, `matmul`, `outer` and `inv` — nothing else is evaluated.
 
 ### data export
 

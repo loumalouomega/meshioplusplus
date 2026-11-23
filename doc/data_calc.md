@@ -47,8 +47,11 @@ The **tuple functions** read a whole row and check its width, naming the functio
 | `det(t)`, `trace(t)` | a 6-component symmetric `xx yy zz xy yz zx` or a 9-component row-major 3x3 | a scalar |
 | `transpose(t)` | a 9-component 3x3 | 9 components |
 | `mag(v)` | any | a scalar, the same as `norm(v)` |
+| `matmul(a, b)` | a 9-component 3x3 and a 9-component 3x3 or a 3-component vector | 9 components (the product) or 3 (the matrix-vector product); the sum over `k` runs in ascending order |
+| `outer(a, b)` | two 3-component | 9 components, `C[i][j] = a[i]·b[j]` |
+| `inv(t)` | a 6-component symmetric or a 9-component 3x3 | the same width: `adj(t) / det(t)`, `NaN` in a row whose determinant is zero or non-finite |
 
-Together with `pow` and `exp` they write most derived quantities in one call, for instance the helicity density `dot(U, curl)` from `gradient`'s `U:curl`, or `det(F)` of a deformation gradient. A 6-component tensor and a 9-component one are read as in [`tensor_invariants`](/tensor_invariants), and the determinant is the same triple product of rows.
+Together with `pow` and `exp` they write most derived quantities in one call, for instance the helicity density `dot(U, curl)` from `gradient`'s `U:curl`, or `det(F)` of a deformation gradient, and `matmul(F, inv(F))` is the identity. `inv` is the same cofactor formula as [`tensor_invariants`](/tensor_invariants)' `inverse` output; there is no warning channel, so a singular row is `NaN` and nothing more. A 6-component tensor and a 9-component one are read as in [`tensor_invariants`](/tensor_invariants), and the determinant is the same triple product of rows.
 
 Exponentiation is a **function**, `pow`, not an operator, so the grammar's precedence is unchanged. A domain error is a `NaN`, not an exception (`log(-1)`, `asin(2)`, `pow(-8, 0.5)`), and `log(0)` is `-inf`, the way division by zero is an infinity. There is no warning channel to count them in.
 
@@ -94,7 +97,7 @@ unexpected end of expression
 expected ')' at position 12
 trailing input after the expression at position 9
 unknown point_data array 'temp' at position 5 (available: T, p, u)
-unknown function 'foo' at position 0 (known: abs, sqrt, min, max, norm, exp, log, log10, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, floor, ceil, sign, pow, dot, cross, det, trace, transpose, mag)
+unknown function 'foo' at position 0 (known: abs, sqrt, min, max, norm, exp, log, log10, sin, cos, tan, asin, acos, atan, atan2, sinh, cosh, tanh, floor, ceil, sign, pow, dot, cross, det, trace, transpose, mag, matmul, outer, inv)
 'norm' takes exactly 1 argument (got 2) at position 0
 'dot' needs two operands of the same width (got 3 and 9) at position 0
 'det' needs a 6-component (symmetric) or 9-component (3x3) operand (got 3) at position 0
