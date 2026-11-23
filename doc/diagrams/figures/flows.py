@@ -1168,6 +1168,20 @@ def roadmap_map():
             ],
             [(0, 1), (3, 4)],
         ),
+        (
+            "§15 math on meshes",
+            [
+                ("flow quantities · tensor math", "S"),
+                ("cell measures · statistics", "S"),
+                ("calculator grammar", "M"),
+                ("Verdict metric parity", "M"),
+                ("integrals: quadrature · flux", "M"),
+                ("operator export · field smoothing", "M"),
+                ("high-order fields (design first)", "L"),
+                ("streamlines · time statistics", "M"),
+            ],
+            [(4, 5)],
+        ),
     ]
     per_row = 4
     col_w = 176
