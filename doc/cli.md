@@ -2490,7 +2490,7 @@ meshioplusplus data <subcommand> [options]
 | `hessian` | Second derivative of a scalar `point_data` field (see [second derivatives](/hessian)) |
 | `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
 | `error-size` | Per-point size field from a per-cell error indicator, for `mesh-cad-surface --background` (roadmap 6.10.2) |
-| `integrate` | Cell-measure-weighted total/mean over cells, per region (see [field integration](/field_integration)) |
+| `integrate` | Cell-measure-weighted total/mean over cells, per region; `--array` names may carry `point:`, `flux:` and `boundary:` prefixes (see [field integration](/field_integration)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
 | `export-cae` | Export a *set* of meshes as one `.npz` per case in the [CAE sample layout](/formats/cae) PhysicsNeMo's DoMINO/Transolver datapipes read |

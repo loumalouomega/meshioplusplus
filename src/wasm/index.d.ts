@@ -5696,8 +5696,12 @@ export interface MeshioPlusPlusModule {
   /**
    * Cell-measure-weighted total/mean of one or more cell_data arrays --
    * gradient's integration counterpart. `arrays` empty/undefined means
-   * every cell_data array. A point_data-only name throws naming
-   * dataPointToCell as the fix. See doc/field_integration.md.
+   * every cell_data array. A plain point_data-only name throws naming
+   * dataPointToCell as the fix; a name may instead carry a mode prefix:
+   * `point:<a>` (a point_data array through its cell means), `flux:<a>` (the
+   * flux of a 3-component array through a surface mesh) and
+   * `boundary:point:<a>` / `boundary:flux:<a>` (over a volume mesh's boundary).
+   * See doc/field_integration.md.
    */
   dataIntegrate(mesh: Mesh, arrays?: string[]): FieldIntegralArray[];
 

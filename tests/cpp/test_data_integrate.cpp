@@ -222,4 +222,77 @@ TEST(DataIntegrate, RepeatRunsByteIdentical) {
         EXPECT_EQ(data_integrate(m).mArrays[0].mDomain.mTotalPerComponent[0], first);
 }
 
+// --- mode prefixes: point:, flux:, boundary: --------------------------------
+
+Mesh flat_two_triangles() {
+    Mesh m = mt::make_mesh({{0, 0, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}}, "triangle",
+                           {{0, 1, 2}, {0, 2, 3}});
+    m.AddPointData("T", mt::data_array({0.0, 2.0, 12.0, 10.0}));  // x + 10 y
+    m.AddPointData("w", mt::data_array({0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1}, 3));
+    return m;
+}
+
+Mesh unit_cube() {
+    Mesh m = mt::make_mesh(
+        {{0, 0, 0}, {1, 0, 0}, {0, 1, 0}, {1, 1, 0}, {0, 0, 1}, {1, 0, 1}, {0, 1, 1}, {1, 1, 1}},
+        "hexahedron", {{0, 1, 3, 2, 4, 5, 7, 6}});
+    m.AddPointData(
+        "u", mt::data_array(
+                 {0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1}, 3));
+    m.AddPointData("T", mt::data_array({0, 1, 2, 3, 3, 4, 5, 6}));  // x + 2 y + 3 z
+    return m;
+}
+
+DataIntegrateReport run_integrate(const Mesh& rMesh, std::vector<std::string> names) {
+    DataIntegrateOptions o;
+    o.mArrayNames = std::move(names);
+    return data_integrate(rMesh, o);
+}
+
+TEST(DataIntegrate, PointDataThroughItsCellMeansIsExactForALinearField) {
+    const DataIntegrateReport r = run_integrate(flat_two_triangles(), {"point:T"});
+    ASSERT_EQ(r.mArrays.size(), 1u);
+    EXPECT_EQ(r.mArrays[0].mName, "point:T");
+    EXPECT_NEAR(r.mArrays[0].mDomain.mTotalPerComponent[0], 12.0, 1e-12);
+    EXPECT_NEAR(r.mArrays[0].mDomain.mDomainMeasurePerComponent[0], 2.0, 1e-12);
+}
+
+TEST(DataIntegrate, FluxAndTheDivergenceTheorem) {
+    const DataIntegrateReport flat = run_integrate(flat_two_triangles(), {"flux:w"});
+    EXPECT_NEAR(flat.mArrays[0].mDomain.mTotalPerComponent[0], 2.0, 1e-12);
+    // u = (x, y, z) through the boundary of the unit cube: div u = 3, volume 1.
+    const DataIntegrateReport cube = run_integrate(unit_cube(), {"boundary:flux:u"});
+    EXPECT_NEAR(cube.mArrays[0].mDomain.mTotalPerComponent[0], 3.0, 1e-12);
+    const DataIntegrateReport t = run_integrate(unit_cube(), {"boundary:point:T"});
+    EXPECT_NEAR(t.mArrays[0].mDomain.mTotalPerComponent[0], 18.0, 1e-12);
+}
+
+TEST(DataIntegrate, ModesKeepTheRequestedOrderAndMixWithPlainNames) {
+    Mesh m = flat_two_triangles();
+    std::vector<NDArray> c;
+    c.push_back(mt::data_array({1.0, 3.0}));
+    m.AddCellData("c", std::move(c));
+    const DataIntegrateReport r = run_integrate(m, {"point:T", "c", "flux:w"});
+    ASSERT_EQ(r.mArrays.size(), 3u);
+    EXPECT_EQ(r.mArrays[0].mName, "point:T");
+    EXPECT_EQ(r.mArrays[1].mName, "c");
+    EXPECT_EQ(r.mArrays[2].mName, "flux:w");
+    EXPECT_NEAR(r.mArrays[1].mDomain.mTotalPerComponent[0], 1.0 * 1 + 1.0 * 3, 1e-12);
+}
+
+TEST(DataIntegrate, ACellArrayWithThePrefixedNameWins) {
+    Mesh m = flat_two_triangles();
+    std::vector<NDArray> c;
+    c.push_back(mt::data_array({1.0, 1.0}));
+    m.AddCellData("point:T", std::move(c));
+    EXPECT_NEAR(run_integrate(m, {"point:T"}).mArrays[0].mDomain.mTotalPerComponent[0], 2.0, 1e-12);
+}
+
+TEST(DataIntegrate, ModeErrors) {
+    EXPECT_THROW(run_integrate(flat_two_triangles(), {"boundary:T"}), std::invalid_argument);
+    EXPECT_THROW(run_integrate(flat_two_triangles(), {"point:nothing"}), std::invalid_argument);
+    EXPECT_THROW(run_integrate(flat_two_triangles(), {"flux:T"}), std::invalid_argument);
+    EXPECT_THROW(run_integrate(unit_cube(), {"flux:u"}), std::invalid_argument);
+}
+
 }  // namespace

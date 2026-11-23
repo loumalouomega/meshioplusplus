@@ -181,7 +181,10 @@ def _register_inspection(server: FastMCP) -> None:
     ) -> dict:
         """Cell-measure-weighted total/mean of cell_data arrays (whole mesh,
         and independently for every named Cell region) -- gradient's
-        integration companion. arrays defaults to every cell_data array."""
+        integration companion. arrays defaults to every cell_data array; a name may
+        carry a prefix: point:<a> (a point_data array through its cell means),
+        flux:<a> (the flux of a 3-component array through a surface mesh) and
+        boundary:point:<a> / boundary:flux:<a> (over a volume mesh's boundary)."""
 
     @server.tool()
     @_forward(_tools.tool_regions)

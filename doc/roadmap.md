@@ -1256,15 +1256,15 @@ What is measured for the paper, fixed before it is run. **M–L**
 
 Two facts shape every item. VTK's cell derivatives are exact for linear fields and approximate otherwise (the curl of a gradient comes out small, not zero), and so are meshio++'s: each page states the order of exactness rather than implying more. And VTK computes on its cells' own shape functions, where `gradient` reconstructs per cell from faces or neighbours: where a result is compared, it is compared on a field both reproduce exactly.
 
-### 15.1 Integration beyond cell data
+### 15.1 Integration by quadrature
 
-- **State today.** `data_integrate` (`operations/data_integrate.hpp` line 155) integrates `cell_data` weighted by each cell's absolute measure, per component, in total and per region; point data and quadrature are deferred on its page. No flux (`∫ u · n dA`) and no integral over the boundary of a volume mesh. `vtkIntegrateAttributes` integrates point and cell data over lines, surfaces and volumes.
+Point data (through its cell means, exact for a linear field on a simplex), the flux `∫ u · n dA` and the boundary integrals of a volume mesh landed as **mode prefixes on the array names** of [`data_integrate`](./field_integration.md) (`point:`, `flux:`, `boundary:`), which changed no signature on any surface; the divergence-theorem test (the flux of `(x, y, z)` through a unit cube's boundary is 3) pins them. What remains is the quadrature.
+
+- **State today.** `point:<a>` takes the mean of a cell's corner values, which is first order for anything but a linear field. No Gauss rule on the cell's shape functions exists in the core (3.4.3 queues the shared reference elements).
 - **Steps.**
-  - **15.1.1 Point data by quadrature.** Integrate point data through the cell's shape functions with a Gauss rule of the field's order, from 3.4.3's reference elements; linear cells exact for linear data, quadratic cells for quadratic data. Before 3.4.3: point data averaged to the cell (`data_average`) and integrated as cell data, stated as first order. **S after 3.4.3**
-  - **15.1.2 Flux.** `mFlux = true` on a 3-component array over a surface (or a named boundary region of a volume mesh, after `extract_surface`): `∫ u · n dA`, the normal oriented as `compute_normals` orients it, outward for a closed surface; reported per region. **S**
-  - **15.1.3 Boundary integrals of a volume mesh.** `mOnBoundary = true` integrates over the extracted boundary surface, its regions named by the boundary sets, without a separate `extract_surface` call. **S**
-- **Tests.** A linear field integrated exactly by both point and cell paths; the divergence theorem: `∫ div u dV` (`gradient`'s divergence, integrated) equal to the flux of `u` through the boundary for a linear `u`; flux of a constant field through a closed surface zero.
-- **Done when.** `meshioplusplus integrate part.vtu --array U --flux --boundary` on every surface. **M**
+  - **15.1.1 Point data by Gauss quadrature.** Integrate point data through the cell's shape functions with a Gauss rule of the field's order, from 3.4.3's reference elements, as a further mode (`quad:<a>`, or the same `point:` once the rule exists, with its change of numbers stated); linear cells exact for linear data, quadratic cells for quadratic data. **S after 3.4.3**
+- **Tests.** A quadratic field on a `tetra10` and a `quad8` integrated exactly, where the first-order `point:` result is not.
+- **Done when.** `meshioplusplus data integrate part.vtu --array point:p --array flux:U` is exact for fields of the cells' order on every surface. **S after 3.4.3**
 
 ### 15.2 Discrete operators as data
 
