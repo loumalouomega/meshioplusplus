@@ -1173,13 +1173,12 @@ def roadmap_map():
             [
                 ("descriptive statistics", "S"),
                 ("calculator grammar", "M"),
-                ("Verdict metric parity", "M"),
                 ("integrals: quadrature · flux", "M"),
                 ("operator export · field smoothing", "M"),
                 ("high-order fields (design first)", "L"),
                 ("streamlines · time statistics", "M"),
             ],
-            [(3, 4)],
+            [(2, 3)],
         ),
     ]
     per_row = 4

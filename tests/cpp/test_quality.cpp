@@ -151,6 +151,66 @@ TEST(Quality, CellMeasuresOfReferenceCells) {
     EXPECT_NEAR(q_val(r, "quality:diagonal", 0, 0), kSqrt2, 1e-12);
 }
 
+TEST(Quality, VerdictMetricsOfTheIdealCells) {
+    const double s3 = std::sqrt(3.0);
+    const double s6 = std::sqrt(6.0);
+    Mesh tri = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0.5, s3 / 2, 0}}, "triangle", {{0, 1, 2}});
+    QualityReport r = compute_quality(tri);
+    EXPECT_NEAR(q_val(r, "quality:condition", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:shape", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:edge_ratio", 0, 0), 1.0, 1e-12);
+    EXPECT_TRUE(std::isnan(q_val(r, "quality:stretch", 0, 0)));
+
+    Mesh quad = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}, "quad", {{0, 1, 2, 3}});
+    r = compute_quality(quad);
+    EXPECT_NEAR(q_val(r, "quality:condition", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:stretch", 0, 0), 1.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:taper", 0, 0), 0.0, 1e-12);
+
+    Mesh tet = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {0.5, s3 / 2, 0}, {0.5, s3 / 6, s6 / 3}},
+                             "tetra", {{0, 1, 2, 3}});
+    r = compute_quality(tet);
+    for (const char* name :
+         {"quality:condition", "quality:shape", "quality:aspect_gamma", "quality:edge_ratio"})
+        EXPECT_NEAR(q_val(r, name, 0, 0), 1.0, 1e-12) << name;
+
+    Mesh hex = mt::make_mesh(
+        {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}},
+        "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
+    r = compute_quality(hex);
+    for (const char* name :
+         {"quality:condition", "quality:stretch", "quality:diagonal_ratio", "quality:edge_ratio"})
+        EXPECT_NEAR(q_val(r, name, 0, 0), 1.0, 1e-12) << name;
+}
+
+TEST(Quality, VerdictMetricsOfStretchedCells) {
+    // A 2 x 1 x 1 box: J = diag(2, 1, 1), |J| = sqrt 6, |J^-1| = 1.5.
+    Mesh box = mt::make_mesh(
+        {{0, 0, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}, {0, 0, 1}, {2, 0, 1}, {2, 1, 1}, {0, 1, 1}},
+        "hexahedron", {{0, 1, 2, 3, 4, 5, 6, 7}});
+    QualityReport r = compute_quality(box);
+    EXPECT_NEAR(q_val(r, "quality:edge_ratio", 0, 0), 2.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:condition", 0, 0), std::sqrt(6.0) * 1.5 / 3.0, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:stretch", 0, 0), std::sqrt(3.0) / std::sqrt(6.0), 1e-12);
+    // An isosceles trapezoid: X1 = (3,0), X2 = (0,2), X12 = (-1,0), taper 1/2.
+    Mesh trap =
+        mt::make_mesh({{0, 0, 0}, {2, 0, 0}, {1.5, 1, 0}, {0.5, 1, 0}}, "quad", {{0, 1, 2, 3}});
+    EXPECT_NEAR(q_val(compute_quality(trap), "quality:taper", 0, 0), 0.5, 1e-12);
+    // A 2 x 1 rectangle: every corner (4 + 1) / (2 * 2) = 5/4.
+    Mesh rect = mt::make_mesh({{0, 0, 0}, {2, 0, 0}, {2, 1, 0}, {0, 1, 0}}, "quad", {{0, 1, 2, 3}});
+    r = compute_quality(rect);
+    EXPECT_NEAR(q_val(r, "quality:condition", 0, 0), 1.25, 1e-12);
+    EXPECT_NEAR(q_val(r, "quality:stretch", 0, 0), std::sqrt(2.0) / std::sqrt(5.0), 1e-12);
+}
+
+TEST(Quality, VerdictMetricsAreNaNForADegenerateCellButTheLengthsSurvive) {
+    Mesh m = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {2, 0, 0}}, "triangle", {{0, 1, 2}});
+    const QualityReport r = compute_quality(m);
+    EXPECT_TRUE(std::isnan(q_val(r, "quality:condition", 0, 0)));
+    EXPECT_TRUE(std::isnan(q_val(r, "quality:shape", 0, 0)));
+    EXPECT_NEAR(q_val(r, "quality:edge_ratio", 0, 0), 2.0, 1e-12);
+}
+
 TEST(Quality, CellMeasuresSurviveADegenerateCell) {
     // Three collinear points: the family call returns early, the lengths remain.
     Mesh m = mt::make_mesh({{0, 0, 0}, {1, 0, 0}, {3, 0, 0}}, "triangle", {{0, 1, 2}});

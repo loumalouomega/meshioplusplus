@@ -291435,7 +291435,7 @@ namespace {
 
 using detail::Vec3;
 
-constexpr int NUM_METRICS = 15;
+constexpr int NUM_METRICS = 22;
 // Fixed metric order (index === position in QualityReport::mMetrics).
 enum QualityMetric {
     QM_VOLUME = 0,
@@ -291454,14 +291454,26 @@ enum QualityMetric {
     QM_DIAGONAL,
     QM_MIN_EDGE,
     QM_MAX_EDGE,
+    // The Verdict metrics beyond the ones above (SAND2007-1751): each is set
+    // only for the families it is defined for.
+    QM_EDGE_RATIO,
+    QM_CONDITION,
+    QM_SHAPE,
+    QM_ASPECT_GAMMA,
+    QM_STRETCH,
+    QM_TAPER,
+    QM_DIAGONAL_RATIO,
 };
 
 const char* const QUALITY_METRIC_NAMES[NUM_METRICS] = {
-    "quality:volume",   "quality:scaled_jacobian", "quality:aspect_ratio",
-    "quality:skewness", "quality:min_angle",       "quality:max_angle",
-    "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
-    "quality:inverted", "quality:degenerate",      "quality:size",
-    "quality:diagonal", "quality:min_edge",        "quality:max_edge",
+    "quality:volume",         "quality:scaled_jacobian", "quality:aspect_ratio",
+    "quality:skewness",       "quality:min_angle",       "quality:max_angle",
+    "quality:warpage",        "quality:min_dihedral",    "quality:max_dihedral",
+    "quality:inverted",       "quality:degenerate",      "quality:size",
+    "quality:diagonal",       "quality:min_edge",        "quality:max_edge",
+    "quality:edge_ratio",     "quality:condition",       "quality:shape",
+    "quality:aspect_gamma",   "quality:stretch",         "quality:taper",
+    "quality:diagonal_ratio",
 };
 
 constexpr double QUALITY_NAN = std::numeric_limits<double>::quiet_NaN();
@@ -291912,8 +291924,144 @@ constexpr int kQualityPyramidEdges[8][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0},
 // Size, diagonal and the shortest and longest edge, written after the family's
 // own metrics so a cell that the family call left early (degenerate) still
 // reports its lengths. size is the unsigned area/volume the family computed.
+/// The Frobenius condition number `|F| |F^-1| / 3` of the 3x3 matrix whose
+/// columns are @p f1, @p f2, @p f3 (the inverse's rows are the columns' cross
+/// products over the determinant). NaN when the determinant is zero.
+double quality_cond3(const Vec3& f1, const Vec3& f2, const Vec3& f3) {
+    const double det = detail::det3(f1, f2, f3);
+    if (det == 0.0 || !std::isfinite(det))
+        return QUALITY_NAN;
+    const double fn2 =
+        detail::vec3_norm_sq(f1) + detail::vec3_norm_sq(f2) + detail::vec3_norm_sq(f3);
+    const double in2 = detail::vec3_norm_sq(detail::vec3_cross(f2, f3)) +
+                       detail::vec3_norm_sq(detail::vec3_cross(f3, f1)) +
+                       detail::vec3_norm_sq(detail::vec3_cross(f1, f2));
+    return std::sqrt(fn2) * std::sqrt(in2) / (std::fabs(det) * 3.0);
+}
+
+// The Verdict metrics after the cell measures (m holds the edge lengths).
+void quality_verdict_metrics(QualityFamily family, const std::vector<Vec3>& c, double* m) {
+    const double emin = m[QM_MIN_EDGE];
+    const double emax = m[QM_MAX_EDGE];
+    if (emin > 0.0 && std::isfinite(emax))
+        m[QM_EDGE_RATIO] = emax / emin;
+    const double s3 = 1.0 / std::sqrt(3.0);
+    const double s6 = 1.0 / std::sqrt(6.0);
+    switch (family) {
+        case QualityFamily::Tri: {
+            // F = [e1 e2] W^-1 against the equilateral triangle; condition is
+            // tr(M) / (2 sqrt(det M)) for M = F^T F, and shape its reciprocal.
+            const Vec3 e1 = detail::vec3_sub(c[1], c[0]);
+            const Vec3 e2 = detail::vec3_sub(c[2], c[0]);
+            const Vec3 f2 =
+                detail::vec3_add(detail::vec3_scale(e1, -s3), detail::vec3_scale(e2, 2.0 * s3));
+            const double m11 = detail::vec3_norm_sq(e1);
+            const double m22 = detail::vec3_norm_sq(f2);
+            const double m12 = detail::vec3_dot(e1, f2);
+            const double det = m11 * m22 - m12 * m12;
+            if (det > 0.0 && std::isfinite(det)) {
+                m[QM_CONDITION] = (m11 + m22) / (2.0 * std::sqrt(det));
+                m[QM_SHAPE] = 2.0 * std::sqrt(det) / (m11 + m22);
+            }
+            break;
+        }
+        case QualityFamily::Quad: {
+            double cond = 0.0;
+            bool ok = true;
+            for (int k = 0; k < 4 && ok; ++k) {
+                const Vec3 a = detail::vec3_sub(c[(k + 1) % 4], c[k]);
+                const Vec3 b = detail::vec3_sub(c[(k + 3) % 4], c[k]);
+                const double area = detail::vec3_norm(detail::vec3_cross(a, b));
+                if (!(area > 0.0)) {
+                    ok = false;
+                    break;
+                }
+                cond = std::max(cond,
+                                (detail::vec3_norm_sq(a) + detail::vec3_norm_sq(b)) / (2.0 * area));
+            }
+            if (ok)
+                m[QM_CONDITION] = cond;
+            const double d = std::max(quality_edge_len(c[0], c[2]), quality_edge_len(c[1], c[3]));
+            if (d > 0.0)
+                m[QM_STRETCH] = std::sqrt(2.0) * emin / d;
+            const Vec3 x1 =
+                detail::vec3_add(detail::vec3_sub(c[1], c[0]), detail::vec3_sub(c[2], c[3]));
+            const Vec3 x2 =
+                detail::vec3_add(detail::vec3_sub(c[3], c[0]), detail::vec3_sub(c[2], c[1]));
+            const Vec3 x12 =
+                detail::vec3_add(detail::vec3_sub(c[0], c[1]), detail::vec3_sub(c[2], c[3]));
+            const double den = std::min(detail::vec3_norm(x1), detail::vec3_norm(x2));
+            if (den > 0.0)
+                m[QM_TAPER] = detail::vec3_norm(x12) / den;
+            break;
+        }
+        case QualityFamily::Tetra: {
+            // F = [e1 e2 e3] W^-1 against the regular tetrahedron.
+            const Vec3 e1 = detail::vec3_sub(c[1], c[0]);
+            const Vec3 e2 = detail::vec3_sub(c[2], c[0]);
+            const Vec3 e3 = detail::vec3_sub(c[3], c[0]);
+            const Vec3 f2 =
+                detail::vec3_add(detail::vec3_scale(e1, -s3), detail::vec3_scale(e2, 2.0 * s3));
+            const Vec3 f3 = detail::vec3_add(
+                detail::vec3_add(detail::vec3_scale(e1, -s6), detail::vec3_scale(e2, -s6)),
+                detail::vec3_scale(e3, 3.0 * s6));
+            m[QM_CONDITION] = quality_cond3(e1, f2, f3);
+            const double det = detail::det3(e1, f2, f3);
+            if (det == 0.0 || !std::isfinite(det)) {
+                // degenerate: shape stays NaN
+            } else if (det < 0.0) {
+                m[QM_SHAPE] = 0.0;
+            } else {
+                const double fn2 =
+                    detail::vec3_norm_sq(e1) + detail::vec3_norm_sq(f2) + detail::vec3_norm_sq(f3);
+                m[QM_SHAPE] = 3.0 * std::cbrt(det * det) / fn2;
+            }
+            // aspect gamma: (root mean square edge)^3 / (6 sqrt(2) V).
+            const double vol = std::fabs(detail::det3(e1, e2, e3)) / 6.0;
+            double sum2 = 0.0;
+            for (int a = 0; a < 4; ++a)
+                for (int b = a + 1; b < 4; ++b)
+                    sum2 += detail::vec3_norm_sq(detail::vec3_sub(c[b], c[a]));
+            const double srms = std::sqrt(sum2 / 6.0);
+            if (vol > 0.0)
+                m[QM_ASPECT_GAMMA] = srms * srms * srms / (6.0 * std::sqrt(2.0) * vol);
+            break;
+        }
+        case QualityFamily::Hex: {
+            static const int kCorner[8][4] = {{0, 1, 3, 4}, {1, 2, 0, 5}, {2, 3, 1, 6},
+                                              {3, 0, 2, 7}, {4, 7, 5, 0}, {5, 4, 6, 1},
+                                              {6, 5, 7, 2}, {7, 6, 4, 3}};
+            double cond = 0.0;
+            bool ok = true;
+            for (int k = 0; k < 8 && ok; ++k) {
+                const int* q = kCorner[k];
+                const double cc = quality_cond3(detail::vec3_sub(c[q[1]], c[q[0]]),
+                                                detail::vec3_sub(c[q[2]], c[q[0]]),
+                                                detail::vec3_sub(c[q[3]], c[q[0]]));
+                if (!std::isfinite(cc))
+                    ok = false;
+                else
+                    cond = std::max(cond, cc);
+            }
+            if (ok)
+                m[QM_CONDITION] = cond;
+            const double d[4] = {quality_edge_len(c[0], c[6]), quality_edge_len(c[1], c[7]),
+                                 quality_edge_len(c[2], c[4]), quality_edge_len(c[3], c[5])};
+            const double dmax = std::max(std::max(d[0], d[1]), std::max(d[2], d[3]));
+            const double dmin = std::min(std::min(d[0], d[1]), std::min(d[2], d[3]));
+            if (dmax > 0.0) {
+                m[QM_DIAGONAL_RATIO] = dmin / dmax;
+                m[QM_STRETCH] = std::sqrt(3.0) * emin / dmax;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
 void quality_cell_measures(QualityFamily family, const std::vector<Vec3>& c, double* m) {
-    const int (*edges)[2] = nullptr;
+    const int(*edges)[2] = nullptr;
     int ne = 0;
     switch (family) {
         case QualityFamily::Tri:
@@ -291959,6 +292107,7 @@ void quality_cell_measures(QualityFamily family, const std::vector<Vec3>& c, dou
         for (std::size_t b = a + 1; b < c.size(); ++b)
             diag = std::max(diag, quality_edge_len(c[a], c[b]));
     m[QM_DIAGONAL] = diag;
+    quality_verdict_metrics(family, c, m);
 }
 
 // Evaluate one cell's metrics into m (assumed pre-filled with NaN).
@@ -292211,6 +292360,9 @@ const char* const kQgMetrics[] = {
     "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
     "quality:inverted", "quality:degenerate",      "quality:size",
     "quality:diagonal", "quality:min_edge",        "quality:max_edge",
+    "quality:edge_ratio", "quality:condition",     "quality:shape",
+    "quality:aspect_gamma", "quality:stretch",     "quality:taper",
+    "quality:diagonal_ratio",
 };
 
 std::string qg_full_name(const std::string& rMetric) {

@@ -49,6 +49,9 @@ const char* const kQgMetrics[] = {
     "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
     "quality:inverted", "quality:degenerate",      "quality:size",
     "quality:diagonal", "quality:min_edge",        "quality:max_edge",
+    "quality:edge_ratio", "quality:condition",     "quality:shape",
+    "quality:aspect_gamma", "quality:stretch",     "quality:taper",
+    "quality:diagonal_ratio",
 };
 
 std::string qg_full_name(const std::string& rMetric) {
