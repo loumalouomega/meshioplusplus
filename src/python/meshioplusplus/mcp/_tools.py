@@ -44,14 +44,7 @@ from collections import OrderedDict
 
 import numpy as np
 
-from .. import (
-    GeometryGuard,
-    GridArray,
-    GridSpec,
-    adapt,
-    adapt_volume,
-    agglomerate,
-)
+from .. import GeometryGuard, GridArray, GridSpec, adapt, adapt_volume, agglomerate
 from .. import align_datums as _align_datums_op
 from .. import (
     annulus,
