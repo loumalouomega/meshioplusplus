@@ -181,7 +181,7 @@ MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint membe
 | `sets_data` | region-backed sets ↔ scalar integer data (`direction: sets_to_data \| data_to_sets`, `location: point \| cell`); `key` required for data→sets; sets→data accepts `data_name`, `join_char` and explicit `order` |
 | `data_calc` | expression evaluator; accepts the CLI's `"NAME = EXPR"` spelling |
 | `data_condition` | clamp / normalize / standardize |
-| `tensor_invariants` | von Mises / principal / hydrostatic / deviatoric of a symmetric (6-component) or general 3x3 (9-component) tensor array; `outputs` selects any of `mises`/`principal`/`hydrostatic`/`deviatoric` (default: these four) or the opt-in `trace`/`determinant`/`invariants`/`inverse` |
+| `tensor_invariants` | von Mises / principal / hydrostatic / deviatoric of a symmetric (6-component) or general 3x3 (9-component) tensor array; `outputs` selects any of `mises`/`principal`/`hydrostatic`/`deviatoric` (default: these four) or the opt-in `trace`/`determinant`/`invariants`/`inverse`/`eigenvectors` |
 
 ### Dataset manifests
 

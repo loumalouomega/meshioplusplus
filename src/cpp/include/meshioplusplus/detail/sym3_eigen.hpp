@@ -50,5 +50,18 @@ MESHIOPLUSPLUS_API double sym3_mises(const double* pT);
  */
 MESHIOPLUSPLUS_API void sym3_principal(const double* pT, double* pOut);
 
+/**
+ * @brief Eigenvalues and eigenvectors of a symmetric tensor, by the same cyclic
+ * Jacobi as `sym3_principal` (whose values this returns, bit for bit).
+ * @param pT six components, `xx yy zz xy yz zx`.
+ * @param pValues the three eigenvalues, ascending.
+ * @param pVectors the row-major 3x3 whose column `k` (entries `k`, `k + 3`,
+ *        `k + 6`) is the unit eigenvector of `pValues[k]`. Each vector's sign is
+ *        fixed: its first component of magnitude above `1e-8` is positive. A
+ *        repeated eigenvalue has no unique eigenvectors; the pair returned is
+ *        one orthonormal basis of its eigenspace.
+ */
+MESHIOPLUSPLUS_API void sym3_eigen(const double* pT, double* pValues, double* pVectors);
+
 }  // namespace detail
 }  // namespace meshioplusplus

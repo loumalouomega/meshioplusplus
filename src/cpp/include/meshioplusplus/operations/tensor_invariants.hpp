@@ -79,7 +79,7 @@ namespace meshioplusplus {
 /// Which invariants to compute; combine with `|`.
 ///
 /// `All` is the four original flags and stays so: the algebraic flags below
-/// (`Trace` to `Inverse`) are opt-in, so a default call writes the same arrays
+/// (`Trace` to `Eigenvectors`) are opt-in, so a default call writes the same arrays
 /// it always did. They read the tensor as given (a 9-component input is not
 /// symmetrised, like `Hydrostatic` and `Deviatoric`).
 enum class TensorInvariant : unsigned {
@@ -92,6 +92,9 @@ enum class TensorInvariant : unsigned {
     Determinant = 1u << 5,  ///< `det A`; one component.
     Invariants = 1u << 6,   ///< `I1 = trace`, `I2 = sum of the principal 2x2 minors`, `I3 = det`.
     Inverse = 1u << 7,      ///< `adj(A) / det(A)`, in the input's shape; NaN where `det == 0`.
+    /// The unit eigenvectors of the symmetric part, nine components: the row-major 3x3
+    /// whose column `k` belongs to the k-th (ascending) `principal` value.
+    Eigenvectors = 1u << 8,
 };
 
 /// `a | b` for `TensorInvariant` flags.

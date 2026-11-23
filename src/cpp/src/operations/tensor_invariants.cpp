@@ -214,6 +214,25 @@ NDArray tinv_invariants(const NDArray& rSrc, std::size_t Ncomp) {
     return dst;
 }
 
+/// The eigenvectors of the symmetric part: row r is the row-major 3x3 whose
+/// column k is the unit eigenvector of the k-th principal value (see
+/// `detail::sym3_eigen` for the sign rule).
+NDArray tinv_eigenvectors(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows, std::size_t{9}});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double sym[6];
+        double values[3];
+        if (tinv_read_symmetric(rSrc, Ncomp, r, sym))
+            detail::sym3_eigen(sym, values, out + r * 9);
+        else
+            for (int k = 0; k < 9; ++k)
+                out[r * 9 + k] = std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
 /// `adj(A) / det(A)` in the input's shape (a 6-component input gives the six
 /// components of the symmetric inverse). A row whose determinant is exactly
 /// zero, or that holds a non-finite component, is NaN: there is no warning
@@ -290,13 +309,15 @@ TensorInvariant tensor_invariant_from_name(const std::string& rName) {
             mask |= static_cast<unsigned>(TensorInvariant::Invariants);
         else if (tok == "inverse")
             mask |= static_cast<unsigned>(TensorInvariant::Inverse);
+        else if (tok == "eigenvectors")
+            mask |= static_cast<unsigned>(TensorInvariant::Eigenvectors);
         else if (tok == "all")
             mask |= static_cast<unsigned>(TensorInvariant::All);
         else
             throw std::invalid_argument(
                 "meshio++: unknown tensor invariant '" + tok +
                 "' (expected 'mises', 'principal', 'hydrostatic', 'deviatoric', 'trace', "
-                "'determinant', 'invariants', 'inverse' or 'all')");
+                "'determinant', 'invariants', 'inverse', 'eigenvectors' or 'all')");
         any = true;
         if (comma == std::string::npos)
             break;
@@ -389,6 +410,8 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
                 add_cell("_invariants", tinv_invariants);
             if ((rOpts.outputs & TensorInvariant::Inverse) != 0)
                 add_cell("_inverse", tinv_inverse);
+            if ((rOpts.outputs & TensorInvariant::Eigenvectors) != 0)
+                add_cell("_eigenvectors", tinv_eigenvectors);
             continue;
         }
 
@@ -411,6 +434,8 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
             add_point(out, base + "_invariants" + rOpts.suffix, tinv_invariants(src, ncomp));
         if ((rOpts.outputs & TensorInvariant::Inverse) != 0)
             add_point(out, base + "_inverse" + rOpts.suffix, tinv_inverse(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Eigenvectors) != 0)
+            add_point(out, base + "_eigenvectors" + rOpts.suffix, tinv_eigenvectors(src, ncomp));
     }
     return out;
 }

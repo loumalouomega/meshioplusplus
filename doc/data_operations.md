@@ -9,7 +9,7 @@ meshio++ carries three kinds of data alongside a mesh's geometry: `point_data` (
 | `data_calc` | Derive a new array from an elementwise expression | [Expressions](/data_calc) |
 | `data_condition` | Clamp, normalize or standardize values | [Value conditioning](/data_condition) |
 | `data_info` | Read-only per-array summary | [Data summary](/data_info) |
-| `tensor_invariants` | von Mises, principal, hydrostatic and deviatoric fields (and, opt-in, trace, determinant, invariants and inverse) of a symmetric or general 3x3 tensor array | [Tensor invariants](/tensor_invariants) |
+| `tensor_invariants` | von Mises, principal, hydrostatic and deviatoric fields (and, opt-in, trace, determinant, invariants, inverse and eigenvectors) of a symmetric or general 3x3 tensor array | [Tensor invariants](/tensor_invariants) |
 
 They are mesh **operations** (like [quality metrics](/mesh_quality) or [geometric statistics](/stats)), not file formats, and use only standard C++/numpy, so they run under every mesh backend and are reachable from every binding surface. All ten CLI verbs live under the `meshioplusplus data` group — see the [CLI reference](/cli#meshioplusplus-data).
 

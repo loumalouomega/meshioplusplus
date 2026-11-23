@@ -5455,7 +5455,8 @@ typedef enum mio_tensor_invariant {
     MIO_TINV_TRACE = 16,      /**< xx + yy + zz of the tensor as given (opt-in) */
     MIO_TINV_DETERMINANT = 32, /**< det of the 3x3 as given (opt-in) */
     MIO_TINV_INVARIANTS = 64, /**< I1, I2, I3, three components (opt-in) */
-    MIO_TINV_INVERSE = 128    /**< adj(A)/det(A) in the input's width; NaN if det == 0 (opt-in) */
+    MIO_TINV_INVERSE = 128,   /**< adj(A)/det(A) in the input's width; NaN if det == 0 (opt-in) */
+    MIO_TINV_EIGENVECTORS = 256 /**< unit eigenvectors of the symmetric part, 9 components (opt-in) */
 } mio_tensor_invariant;
 
 /**

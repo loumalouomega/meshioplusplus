@@ -1080,7 +1080,7 @@ A second bundle operates on the **data arrays** a mesh carries (`point_data` / `
 - **`meshioplusplus.point_data_to_cell_data` / `cell_data_to_point_data`** — move data between locations by averaging, optionally weighted by cell area/volume. See `doc/data_average.md`.
 - **`meshioplusplus.data_calc`** — derive a new array from an elementwise expression (`+ - * /`, parentheses, `abs`/`sqrt`/`min`/`max`/`norm`) evaluated by a hand-written parser — no external parser library, no arbitrary-code path. See `doc/data_calc.md`.
 - **`meshioplusplus.data_condition`** — clamp, normalize to a target range, or standardize to zero mean / unit standard deviation, per component or by row magnitude. See `doc/data_condition.md`.
-- **`meshioplusplus.tensor_invariants`** — von Mises, principal, hydrostatic and deviatoric fields (and, opt-in, trace, determinant, the invariants I1 to I3 and the inverse) of a symmetric or general 3x3 tensor array. See `doc/tensor_invariants.md`.
+- **`meshioplusplus.tensor_invariants`** — von Mises, principal, hydrostatic and deviatoric fields (and, opt-in, trace, determinant, the invariants I1 to I3, the inverse and the eigenvectors) of a symmetric or general 3x3 tensor array. See `doc/tensor_invariants.md`.
 - **`meshioplusplus.data_info`** — a read-only per-array summary (dtype, shape, components, min/max/mean, NaN/inf counts) — the data-side complement to `info` and `compute_stats`. See `doc/data_info.md`.
 
 <!--pytest-codeblocks:skip-->

@@ -28,6 +28,7 @@
 
 // Project includes
 #include "mesh_fixtures.hpp"
+#include "meshioplusplus/detail/sym3_eigen.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/operations/tensor_invariants.hpp"
 
@@ -366,6 +367,92 @@ TEST(TensorInvariants, AlgebraicFlagsOnCellData) {
     EXPECT_EQ(data_num_components(out.CellData("g_inverse", 1)), 9u);
 }
 
+// A symmetric tensor with three distinct eigenvalues and no zero component:
+// the eigenvector check holds for any basis of an eigenspace, so the rows use
+// distinct values (a repeated one has no unique eigenvectors).
+Mesh eigen_mesh() {
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    Mesh m;
+    m.AssignPoints(mt::points_from({{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}}));
+    m.AddCellBlock("triangle", mt::conn_from({{0, 1, 2}}));
+    m.AddPointData("s", mt::data_array({1.0, 2.0, 3.0, 0.5, 0.6, 0.7,
+                                        4.0, 1.0, 2.0, -0.3, 0.2, 0.1,
+                                        2.0, 3.0, 5.0, 0.0, 0.0, 0.0,
+                                        nan, 1.0, 1.0, 0.0, 0.0, 0.0},
+                                       6));
+    return m;
+}
+
+TEST(TensorInvariants, EigenvectorsSolveTheEigenproblemAndAreOrthonormal) {
+    Mesh in = eigen_mesh();
+    TensorInvariantsOptions o;
+    o.names = {"s"};
+    o.outputs = TensorInvariant::Principal | TensorInvariant::Eigenvectors;
+    const Mesh out = tensor_invariants(in, o);
+    const NDArray& vec = out.PointData("s_eigenvectors");
+    const NDArray& val = out.PointData("s_principal");
+    ASSERT_EQ(data_num_components(vec), 9u);
+    const NDArray& src = in.PointData("s");
+    for (int r = 0; r < 3; ++r) {
+        const double xx = read_double(src, r * 6 + 0), yy = read_double(src, r * 6 + 1),
+                     zz = read_double(src, r * 6 + 2), xy = read_double(src, r * 6 + 3),
+                     yz = read_double(src, r * 6 + 4), zx = read_double(src, r * 6 + 5);
+        const double A[3][3] = {{xx, xy, zx}, {xy, yy, yz}, {zx, yz, zz}};
+        for (int k = 0; k < 3; ++k) {
+            double v[3];
+            for (int i = 0; i < 3; ++i)
+                v[i] = read_double(vec, r * 9 + i * 3 + k);
+            const double lambda = read_double(val, r * 3 + k);
+            for (int i = 0; i < 3; ++i) {
+                double av = 0.0;
+                for (int j = 0; j < 3; ++j)
+                    av += A[i][j] * v[j];
+                EXPECT_NEAR(av, lambda * v[i], 1e-12) << r << " " << k << " " << i;
+            }
+            EXPECT_NEAR(v[0] * v[0] + v[1] * v[1] + v[2] * v[2], 1.0, 1e-12);
+            // The sign rule: the first component above 1e-8 is positive.
+            for (int i = 0; i < 3; ++i) {
+                if (std::fabs(v[i]) > 1e-8) {
+                    EXPECT_GT(v[i], 0.0);
+                    break;
+                }
+            }
+            for (int l = k + 1; l < 3; ++l) {
+                double dot = 0.0;
+                for (int i = 0; i < 3; ++i)
+                    dot += v[i] * read_double(vec, r * 9 + i * 3 + l);
+                EXPECT_NEAR(dot, 0.0, 1e-12);
+            }
+        }
+    }
+    for (int k = 0; k < 9; ++k)
+        EXPECT_TRUE(std::isnan(read_double(vec, 3 * 9 + k))) << k;
+}
+
+TEST(TensorInvariants, EigenvectorsOfADiagonalTensorAreTheAxes) {
+    // diag(2, 3, 5): the eigenvectors are the axes, in ascending value order.
+    Mesh t = eigen_mesh();
+    TensorInvariantsOptions o;
+    o.names = {"s"};
+    o.outputs = TensorInvariant::Eigenvectors;
+    const Mesh out = tensor_invariants(t, o);
+    const NDArray& vec = out.PointData("s_eigenvectors");
+    const double identity[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+    for (int k = 0; k < 9; ++k)
+        EXPECT_NEAR(read_double(vec, 2 * 9 + k), identity[k], 1e-14) << k;
+}
+
+TEST(TensorInvariants, EigenvaluesOfTheVectorSolverMatchPrincipalBitForBit) {
+    const double t[6] = {1.0, 2.0, 3.0, 0.5, 0.6, 0.7};
+    double a[3];
+    double b[3];
+    double v[9];
+    meshioplusplus::detail::sym3_principal(t, a);
+    meshioplusplus::detail::sym3_eigen(t, b, v);
+    for (int k = 0; k < 3; ++k)
+        EXPECT_EQ(a[k], b[k]) << k;
+}
+
 TEST(TensorInvariantsParse, NameParsing) {
     EXPECT_EQ(static_cast<unsigned>(tensor_invariant_from_name("mises")),
              static_cast<unsigned>(TensorInvariant::Mises));
@@ -376,6 +463,9 @@ TEST(TensorInvariantsParse, NameParsing) {
     EXPECT_EQ(static_cast<unsigned>(tensor_invariant_from_name("trace,determinant,invariants,inverse")),
               static_cast<unsigned>(TensorInvariant::Trace | TensorInvariant::Determinant |
                                     TensorInvariant::Invariants | TensorInvariant::Inverse));
+    EXPECT_EQ(static_cast<unsigned>(tensor_invariant_from_name("eigenvectors")),
+              static_cast<unsigned>(TensorInvariant::Eigenvectors));
+    EXPECT_EQ(static_cast<unsigned>(TensorInvariant::Eigenvectors), 256u);
     // `all` is still the four original flags.
     EXPECT_EQ(static_cast<unsigned>(TensorInvariant::All), 15u);
     EXPECT_THROW(tensor_invariant_from_name("bogus"), std::invalid_argument);

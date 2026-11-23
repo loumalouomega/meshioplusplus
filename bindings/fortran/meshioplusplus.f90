@@ -2409,6 +2409,7 @@ module meshioplusplus
     integer(c_int), parameter :: MIO_TINV_ALL = 15
     integer(c_int), parameter :: MIO_TINV_TRACE = 16, MIO_TINV_DETERMINANT = 32
     integer(c_int), parameter :: MIO_TINV_INVARIANTS = 64, MIO_TINV_INVERSE = 128
+    integer(c_int), parameter :: MIO_TINV_EIGENVECTORS = 256
 
     ! Region kinds (must match the C enum mio_region_kind).
     integer(c_int), parameter :: MIO_REGION_POINT = 0, MIO_REGION_CELL = 1

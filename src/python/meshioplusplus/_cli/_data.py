@@ -1056,10 +1056,10 @@ def add_invariants_args(parser):
         "--outputs",
         type=str,
         default=None,
-        metavar="mises,principal,hydrostatic,deviatoric,trace,determinant,invariants,inverse",
+        metavar="mises,principal,hydrostatic,deviatoric,trace,determinant,invariants,inverse,eigenvectors",
         help="comma-separated invariants to compute (default: mises, principal, "
-        "hydrostatic, deviatoric; trace, determinant, invariants and inverse are "
-        "opt-in and read the tensor as given)",
+        "hydrostatic, deviatoric; trace, determinant, invariants, inverse and "
+        "eigenvectors are opt-in)",
     )
     parser.add_argument(
         "--prefix", type=str, default="", help="prepended to every output array's name"

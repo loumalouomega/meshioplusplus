@@ -1171,7 +1171,7 @@ def roadmap_map():
         (
             "§15 math on meshes",
             [
-                ("eigenvectors · tensor products", "S"),
+                ("tensor products", "M"),
                 ("descriptive statistics", "S"),
                 ("calculator grammar", "M"),
                 ("Verdict metric parity", "M"),

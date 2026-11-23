@@ -2576,7 +2576,7 @@ The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric lite
 | Option | Description |
 |--------|-------------|
 | `--point`, `--cell` | Comma-separated names (default: every 6- or 9-component array at that location); exactly one of the two is required |
-| `--outputs` | Comma-separated `mises`/`principal`/`hydrostatic`/`deviatoric` (default: these four) or the opt-in `trace`/`determinant`/`invariants`/`inverse` |
+| `--outputs` | Comma-separated `mises`/`principal`/`hydrostatic`/`deviatoric` (default: these four) or the opt-in `trace`/`determinant`/`invariants`/`inverse`/`eigenvectors` |
 | `--prefix` | Prepended to every output array's name |
 | `--suffix` | Appended after the invariant's own name segment |
 | `--no-overwrite` | Fail instead of silently overwriting an existing array of the target name |

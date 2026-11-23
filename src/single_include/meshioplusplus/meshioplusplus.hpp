@@ -14524,6 +14524,19 @@ MESHIOPLUSPLUS_API double sym3_mises(const double* pT);
  */
 MESHIOPLUSPLUS_API void sym3_principal(const double* pT, double* pOut);
 
+/**
+ * @brief Eigenvalues and eigenvectors of a symmetric tensor, by the same cyclic
+ * Jacobi as `sym3_principal` (whose values this returns, bit for bit).
+ * @param pT six components, `xx yy zz xy yz zx`.
+ * @param pValues the three eigenvalues, ascending.
+ * @param pVectors the row-major 3x3 whose column `k` (entries `k`, `k + 3`,
+ *        `k + 6`) is the unit eigenvector of `pValues[k]`. Each vector's sign is
+ *        fixed: its first component of magnitude above `1e-8` is positive. A
+ *        repeated eigenvalue has no unique eigenvectors; the pair returned is
+ *        one orthonormal basis of its eigenspace.
+ */
+MESHIOPLUSPLUS_API void sym3_eigen(const double* pT, double* pValues, double* pVectors);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/sym3_eigen.hpp =====
@@ -41998,7 +42011,7 @@ namespace meshioplusplus {
 /// Which invariants to compute; combine with `|`.
 ///
 /// `All` is the four original flags and stays so: the algebraic flags below
-/// (`Trace` to `Inverse`) are opt-in, so a default call writes the same arrays
+/// (`Trace` to `Eigenvectors`) are opt-in, so a default call writes the same arrays
 /// it always did. They read the tensor as given (a 9-component input is not
 /// symmetrised, like `Hydrostatic` and `Deviatoric`).
 enum class TensorInvariant : unsigned {
@@ -42011,6 +42024,9 @@ enum class TensorInvariant : unsigned {
     Determinant = 1u << 5,  ///< `det A`; one component.
     Invariants = 1u << 6,   ///< `I1 = trace`, `I2 = sum of the principal 2x2 minors`, `I3 = det`.
     Inverse = 1u << 7,      ///< `adj(A) / det(A)`, in the input's shape; NaN where `det == 0`.
+    /// The unit eigenvectors of the symmetric part, nine components: the row-major 3x3
+    /// whose column `k` belongs to the k-th (ascending) `principal` value.
+    Eigenvectors = 1u << 8,
 };
 
 /// `a | b` for `TensorInvariant` flags.
@@ -123706,8 +123722,24 @@ double sym3_mises(const double* pT) {
                             6.0 * (xy * xy + yz * yz + xz * xz)));
 }
 
-void sym3_principal(const double* pT, double* pOut) {
-    double a[3][3] = {{pT[0], pT[3], pT[5]}, {pT[3], pT[1], pT[4]}, {pT[5], pT[4], pT[2]}};
+namespace {
+
+/// Cyclic Jacobi on the symmetric matrix of @p pT: leaves the (diagonalised)
+/// matrix in @p a and, when @p pV is non-null, accumulates the rotations into
+/// it (the columns of @p pV are the eigenvectors, unsorted). The matrix update
+/// does not depend on @p pV, so `sym3_principal`'s values are the same with or
+/// without it.
+void sym3_jacobi(const double* pT, double a[3][3], double (*pV)[3]) {
+    a[0][0] = pT[0];
+    a[0][1] = a[1][0] = pT[3];
+    a[0][2] = a[2][0] = pT[5];
+    a[1][1] = pT[1];
+    a[1][2] = a[2][1] = pT[4];
+    a[2][2] = pT[2];
+    if (pV != nullptr)
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                pV[i][j] = i == j ? 1.0 : 0.0;
     for (int sweep = 0; sweep < 60; ++sweep) {
         const double off = std::fabs(a[0][1]) + std::fabs(a[0][2]) + std::fabs(a[1][2]);
         const double diag = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]);
@@ -123734,13 +123766,56 @@ void sym3_principal(const double* pT, double* pOut) {
                     a[p][k] = c * apk - s * aqk;
                     a[q][k] = s * apk + c * aqk;
                 }
+                if (pV != nullptr) {
+                    for (int k = 0; k < 3; ++k) {
+                        const double vkp = pV[k][p];
+                        const double vkq = pV[k][q];
+                        pV[k][p] = c * vkp - s * vkq;
+                        pV[k][q] = s * vkp + c * vkq;
+                    }
+                }
             }
         }
     }
+}
+
+}  // namespace
+
+void sym3_principal(const double* pT, double* pOut) {
+    double a[3][3];
+    sym3_jacobi(pT, a, nullptr);
     pOut[0] = a[0][0];
     pOut[1] = a[1][1];
     pOut[2] = a[2][2];
     std::sort(pOut, pOut + 3);
+}
+
+void sym3_eigen(const double* pT, double* pValues, double* pVectors) {
+    double a[3][3];
+    double v[3][3];
+    sym3_jacobi(pT, a, v);
+    int order[3] = {0, 1, 2};
+    // Ascending by value; the index breaks a tie, so equal eigenvalues keep a
+    // fixed order.
+    std::sort(order, order + 3,
+              [&](int x, int y) { return a[x][x] < a[y][y] || (a[x][x] == a[y][y] && x < y); });
+    for (int k = 0; k < 3; ++k) {
+        pValues[k] = a[order[k]][order[k]];
+        double col[3] = {v[0][order[k]], v[1][order[k]], v[2][order[k]]};
+        // The sign of an eigenvector is arbitrary: make its first component of
+        // magnitude above 1e-8 positive, so the result does not depend on how
+        // the rotations happened to land.
+        for (int i = 0; i < 3; ++i) {
+            if (std::fabs(col[i]) > 1e-8) {
+                if (col[i] < 0.0)
+                    for (int j = 0; j < 3; ++j)
+                        col[j] = -col[j];
+                break;
+            }
+        }
+        for (int i = 0; i < 3; ++i)
+            pVectors[i * 3 + k] = col[i];
+    }
 }
 
 }  // namespace detail
@@ -311290,6 +311365,25 @@ NDArray tinv_invariants(const NDArray& rSrc, std::size_t Ncomp) {
     return dst;
 }
 
+/// The eigenvectors of the symmetric part: row r is the row-major 3x3 whose
+/// column k is the unit eigenvector of the k-th principal value (see
+/// `detail::sym3_eigen` for the sign rule).
+NDArray tinv_eigenvectors(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows, std::size_t{9}});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double sym[6];
+        double values[3];
+        if (tinv_read_symmetric(rSrc, Ncomp, r, sym))
+            detail::sym3_eigen(sym, values, out + r * 9);
+        else
+            for (int k = 0; k < 9; ++k)
+                out[r * 9 + k] = std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
 /// `adj(A) / det(A)` in the input's shape (a 6-component input gives the six
 /// components of the symmetric inverse). A row whose determinant is exactly
 /// zero, or that holds a non-finite component, is NaN: there is no warning
@@ -311366,13 +311460,15 @@ TensorInvariant tensor_invariant_from_name(const std::string& rName) {
             mask |= static_cast<unsigned>(TensorInvariant::Invariants);
         else if (tok == "inverse")
             mask |= static_cast<unsigned>(TensorInvariant::Inverse);
+        else if (tok == "eigenvectors")
+            mask |= static_cast<unsigned>(TensorInvariant::Eigenvectors);
         else if (tok == "all")
             mask |= static_cast<unsigned>(TensorInvariant::All);
         else
             throw std::invalid_argument(
                 "meshio++: unknown tensor invariant '" + tok +
                 "' (expected 'mises', 'principal', 'hydrostatic', 'deviatoric', 'trace', "
-                "'determinant', 'invariants', 'inverse' or 'all')");
+                "'determinant', 'invariants', 'inverse', 'eigenvectors' or 'all')");
         any = true;
         if (comma == std::string::npos)
             break;
@@ -311465,6 +311561,8 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
                 add_cell("_invariants", tinv_invariants);
             if ((rOpts.outputs & TensorInvariant::Inverse) != 0)
                 add_cell("_inverse", tinv_inverse);
+            if ((rOpts.outputs & TensorInvariant::Eigenvectors) != 0)
+                add_cell("_eigenvectors", tinv_eigenvectors);
             continue;
         }
 
@@ -311487,6 +311585,8 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
             add_point(out, base + "_invariants" + rOpts.suffix, tinv_invariants(src, ncomp));
         if ((rOpts.outputs & TensorInvariant::Inverse) != 0)
             add_point(out, base + "_inverse" + rOpts.suffix, tinv_inverse(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Eigenvectors) != 0)
+            add_point(out, base + "_eigenvectors" + rOpts.suffix, tinv_eigenvectors(src, ncomp));
     }
     return out;
 }

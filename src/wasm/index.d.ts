@@ -2095,7 +2095,8 @@ export type TensorInvariantOutput =
   | 'trace'
   | 'determinant'
   | 'invariants'
-  | 'inverse';
+  | 'inverse'
+  | 'eigenvectors';
 
 /** Cell-keeping rule for the crop operations: every node inside, or any. */
 export type CropMode = 'all' | 'any';
@@ -5670,7 +5671,9 @@ export interface MeshioPlusPlusModule {
    * (6-component, `xx yy zz xy yz zx`) or general 3x3 (9-component,
    * row-major) tensor array. `mises`/`principal` use the symmetric part of a
    * 9-component input; the opt-in `trace`, `determinant`, `invariants` (I1, I2,
-   * I3) and `inverse` read the tensor as given. `names` empty processes every 6- or 9-component array
+   * I3) and `inverse` read the tensor as given, and `eigenvectors` (nine
+   * components, column `k` the unit vector of the k-th ascending principal
+   * value) uses the symmetric part. `names` empty processes every 6- or 9-component array
    * at `location` (`'field'` throws). `outputs` empty means all four.
    */
   tensorInvariants(
