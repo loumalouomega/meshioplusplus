@@ -54,6 +54,16 @@ test_that("An MFEM NURBS mesh keeps its patches in the format side channel", {
   expect_null(a$inside)
   expect_length(a$fields, 0)
   expect_error(mio_iga_evaluate(r$info, 1, matrix(c(2, 0.5), nrow = 2)), "knot range")
+  # knot removal undoes the refinement's insertions: two knots per direction
+  red <- mio_iga_remove_knots(fine$info, direction = 1)
+  expect_equal(red$report$num_removed, 2)
+  expect_equal(red$report$removed, c(1L, 1L))
+  expect_equal(red$report$knots, c(1 / 3, 2 / 3))
+  expect_equal(mio_nurbs_info(red$info)$patches[[1]]$degrees, c(3, 2))
+  mio_release(red$mesh)
+  mio_format_info_release(red$info)
+  expect_error(mio_iga_remove_knots(fine$info, knots = 0.5), "knot")
+  expect_error(mio_iga_remove_knots(fine$info, direction = 4), "direction")
   # Bezier extraction: the annulus has unequal degrees; a bi-quadratic square is
   # one Bezier cell of nine points
   expect_error(mio_iga_bezier_extract(r$info, 1), "unequal degrees")

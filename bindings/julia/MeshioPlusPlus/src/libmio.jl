@@ -891,6 +891,18 @@ struct _CIgaOpts
     reserved::NTuple{6,Int64}
 end
 
+"""Mirror of C `mio_iga_remove_opts`. ABI; build through
+[`iga_remove_knots`](@ref)."""
+struct _CIgaRemoveOpts
+    patch::Int64
+    direction::Int32
+    sample_subdivisions::Int32
+    tolerance::Cdouble
+    knots::Ptr{Cdouble}
+    num_knots::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_mesh_cad_surface_opts`. ABI; build through
 [`mesh_cad_surface`](@ref)."""
 struct _CMeshCadSurfaceOpts
@@ -2742,6 +2754,8 @@ function _check_abi_layout()
               "($(sizeof(_CFitPrimitivesReport)) bytes)")
     sizeof(_CIgaOpts) == 96 ||
         error("meshio++: mio_iga_opts layout mismatch ($(sizeof(_CIgaOpts)) bytes)")
+    sizeof(_CIgaRemoveOpts) == 72 ||
+        error("meshio++: mio_iga_remove_opts layout mismatch ($(sizeof(_CIgaRemoveOpts)) bytes)")
     sizeof(_CMeshCadSurfaceOpts) == 104 ||
         error("meshio++: mio_mesh_cad_surface_opts layout mismatch " *
               "($(sizeof(_CMeshCadSurfaceOpts)) bytes)")

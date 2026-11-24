@@ -852,3 +852,140 @@ def test_bezier_extraction_refuses_bad_input():
         mp.iga_bezier_extract(_arc_model(), patch=1)
     with pytest.raises(ValueError, match="'nurbs' model"):
         mp.iga_bezier_extract({"faces": [], "patches": []})
+
+
+# --- knot removal (roadmap 9.8.3) ------------------------------------------------
+
+
+def _curve_model():
+    return {
+        "patches": [
+            {
+                "degrees": [3],
+                "knots": [[0, 0, 0, 0, 0.5, 1, 1, 1, 1]],
+                "control_points": np.array(
+                    [[0, 0], [1, 2], [2, 3.5], [3.5, 3], [4, 0.5]]
+                ),
+                "weights": np.ones(5),
+            }
+        ]
+    }
+
+
+def test_knot_removal_undoes_an_insertion_exactly():
+    fine = mp.iga_refine(_arc_model(), subdivisions=3)
+    out, rep = mp.iga_remove_knots(fine, return_report=True)
+    assert rep["num_removed"] == 2 and rep["removed"] == [1, 1]
+    back = out.info["nurbs"]["patches"][0]
+    ref = _arc_model()["patches"][0]
+    np.testing.assert_array_equal(back["knots"][0], ref["knots"][0])
+    np.testing.assert_allclose(
+        back["control_points"], ref["control_points"], atol=1e-13
+    )
+    np.testing.assert_allclose(back["weights"], ref["weights"], atol=1e-13)
+    one = mp.iga_remove_knots(fine, knots=[1 / 3])
+    assert len(one.info["nurbs"]["patches"][0]["control_points"]) == 4
+
+
+def test_knot_removal_respects_the_tolerance():
+    model = _curve_model()
+    _, rep = mp.iga_remove_knots(model, return_report=True)
+    assert rep["num_removed"] == 0  # the knot is needed
+    u = np.linspace(0.0, 1.0, 41)[:, None]
+    ref = mp.iga_evaluate(model, u)["points"]
+    for tol in (0.01, 0.1, 0.5, 2.0):
+        out, rep = mp.iga_remove_knots(model, tolerance=tol, return_report=True)
+        got = mp.iga_evaluate(out, u)["points"] if rep["num_removed"] else ref
+        assert np.abs(got - ref).max() <= tol * 1.000001
+    _, rep = mp.iga_remove_knots(model, tolerance=100.0, return_report=True)
+    assert rep["num_removed"] == 1
+
+
+def test_knot_removal_refuses_bad_input():
+    fine = mp.iga_refine(_arc_model(), subdivisions=2)
+    with pytest.raises(ValueError, match="not an interior knot"):
+        mp.iga_remove_knots(fine, knots=[0.0])
+    with pytest.raises(ValueError, match="not in the knot vector"):
+        mp.iga_remove_knots(fine, knots=[0.3])
+    with pytest.raises(ValueError, match="direction 1"):
+        mp.iga_remove_knots(fine, direction=1)
+    with pytest.raises(ValueError, match="tolerance"):
+        mp.iga_remove_knots(fine, tolerance=-1.0)
+    with pytest.raises(ValueError, match="'nurbs' model"):
+        mp.iga_remove_knots({"faces": [], "patches": []})
+
+
+SQUARE_MESH = """MFEM NURBS mesh v1.0
+dimension
+2
+elements
+1
+5 3 0 1 2 3
+boundary
+0
+edges
+4
+0 0 1
+0 3 2
+1 0 3
+1 1 2
+vertices
+4
+knotvectors
+2
+2 3 0 0 0 1 1 1
+2 3 0 0 0 1 1 1
+weights
+1
+1
+1
+1
+1
+1
+1
+1
+1
+FiniteElementSpace
+FiniteElementCollection: NURBS2
+VDim: 2
+Ordering: 1
+0 0
+1 0
+1 1
+0 1
+0.5 0
+0.5 1
+0 0.5
+1 0.5
+0.5 0.5
+"""
+
+
+def test_knot_removal_through_the_cli_and_the_mcp_tool(tmp_path, capsys):
+    import json
+
+    from meshioplusplus._cli._main import main
+    from meshioplusplus.mcp import _tools
+
+    square = tmp_path / "square.mesh"
+    square.write_text(SQUARE_MESH)
+    fine = tmp_path / "fine.mesh"
+    assert (
+        main(["iga-refine", str(square), str(fine), "-o", "mfem", "-s", "3", "-q"]) == 0
+    )
+    capsys.readouterr()
+    out = tmp_path / "reduced.mesh"
+    code = main(
+        ["iga-remove-knots", str(fine), str(out), "-o", "mfem", "--direction", "0",
+         "--json"]
+    )  # fmt: skip
+    got = json.loads(capsys.readouterr().out)
+    assert code == 0 and got["operation"] == "iga_remove_knots"
+    assert got["knots"] == pytest.approx([1 / 3, 2 / 3]) and got["removed"] == [1, 1]
+    assert out.read_text().startswith("MFEM NURBS mesh v1.0")
+    res = _tools.tool_iga_remove_knots(
+        str(fine), str(tmp_path / "t.mesh"), output_format="mfem", direction=1,
+        knots=[1 / 3],
+    )  # fmt: skip
+    res = json.loads(res) if isinstance(res, str) else res
+    assert res["num_removed"] == 1

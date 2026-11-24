@@ -559,6 +559,54 @@ static mxArray *ofi_iga_array(const mio_iga_evaluation *ev, int32_t which, int64
 
 /* iga_evaluate(info, patch, params, derivatives, trim_samples) -- params is
  * (N x d), one row per point: exactly the row-major (N, d) the C API takes. */
+/* iga_remove_knots(info, patch, direction, knots, tolerance, sample_subdivisions) */
+static mxArray *O_mio_iga_remove_knots(const mxArray **a) {
+    const mio_format_info *info = ofi_info_of(a[0], 0);
+    mio_iga_remove_opts opts;
+    mio_iga_remove_opts_init(&opts);
+    opts.patch = (int64_t)mio_o_int(a[1], "patch") - 1;
+    opts.direction = (int32_t)mio_o_int(a[2], "direction") - 1;
+    opts.knots = mxGetNumberOfElements(a[3]) > 0 ? mxGetPr(a[3]) : NULL;
+    opts.num_knots = (int64_t)mxGetNumberOfElements(a[3]);
+    opts.tolerance = mio_o_double(a[4], "tolerance");
+    opts.sample_subdivisions = (int32_t)mio_o_int(a[5], "sample_subdivisions");
+    int64_t n = 0;
+    mio_format_info *reduced = NULL;
+    /* the first call sizes the report, the second fills it */
+    mio_mesh *mesh = mio_iga_remove_knots(info, &opts, &reduced, 0, NULL, NULL, NULL, &n);
+    if (mesh == NULL) mio_o_fail("iga_remove_knots");
+    mio_mesh_free(mesh);
+    mio_format_info_free(reduced);
+    mxArray *rk = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
+    mxArray *rq = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
+    mxArray *rr = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
+    int32_t *requested = (int32_t *)mxCalloc((size_t)n + 1, sizeof(int32_t));
+    int32_t *removed = (int32_t *)mxCalloc((size_t)n + 1, sizeof(int32_t));
+    reduced = NULL;
+    mesh = mio_iga_remove_knots(info, &opts, &reduced, n, mxGetPr(rk), requested, removed, &n);
+    if (mesh == NULL) mio_o_fail("iga_remove_knots");
+    double total = 0.0;
+    for (int64_t i = 0; i < n; ++i) {
+        mxGetPr(rq)[i] = (double)requested[i];
+        mxGetPr(rr)[i] = (double)removed[i];
+        total += (double)removed[i];
+    }
+    mxFree(requested);
+    mxFree(removed);
+    mxArray *rep_values[4];
+    rep_values[0] = rk;
+    rep_values[1] = rq;
+    rep_values[2] = rr;
+    rep_values[3] = mxCreateDoubleScalar(total);
+    const char *rep_names[4] = {"knots", "requested", "removed", "num_removed"};
+    mxArray *values[3];
+    values[0] = mio_o_wrap_mesh(mesh);
+    values[1] = ofi_wrap_info(reduced);
+    values[2] = mio_o_struct(4, rep_names, rep_values);
+    const char *names[3] = {"mesh", "info", "report"};
+    return mio_o_struct(3, names, values);
+}
+
 static mxArray *O_mio_iga_bezier_extract(const mxArray **a) {
     const mio_format_info *info = ofi_info_of(a[0], 0);
     mio_mesh *mesh = mio_iga_bezier_extract(info, (int64_t)mio_o_int(a[1], "patch") - 1);
@@ -1232,6 +1280,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_iga_refine, 7),
     MIO_O_ENTRY(mio_iga_sample, 5),
     MIO_O_ENTRY(mio_iga_bezier_extract, 2),
+    MIO_O_ENTRY(mio_iga_remove_knots, 6),
     MIO_O_ENTRY(mio_project_to_cad, 6),
     MIO_O_ENTRY(mio_mesh_cad_surface, 36),
     MIO_O_ENTRY(mio_iga_evaluate, 5),

@@ -9251,6 +9251,32 @@ PYBIND11_MODULE(_core, m) {
             py::arg("brep"), py::arg("subdivisions") = 0, py::arg("trim_samples") = 16,
             py::arg("edges") = true, py::arg("trim") = true);
         m.def(
+            "iga_remove_knots_nurbs",
+            [=](py::object nurbs, std::size_t patch, std::int32_t direction,
+                std::vector<double> knots, double tolerance, int sample_subdivisions) {
+                const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);
+                meshioplusplus::IgaSampleOptions so;
+                so.mSubdivisions = sample_subdivisions;
+                meshioplusplus::NurbsInfo mapped;
+                meshioplusplus::IgaRemoveKnotsReport report;
+                meshioplusplus::Mesh mesh = core_nogil([&] {
+                    const meshioplusplus::NurbsInfo reduced = meshioplusplus::iga_remove_knots(
+                        in, patch, direction, knots, tolerance, &report);
+                    return meshioplusplus::iga_sample(reduced, so, &mapped);
+                });
+                py::object pymesh = meshioplusplus_py::mesh_to_py(std::move(mesh));
+                attach(pymesh, "nurbs", nurbs_info_to_py(std::move(mapped)));
+                py::dict rep;
+                rep["knots"] = report.mKnots;
+                rep["requested"] = report.mRequested;
+                rep["removed"] = report.mRemoved;
+                rep["num_removed"] = report.mNumRemoved;
+                return py::make_tuple(std::move(pymesh), std::move(rep));
+            },
+            py::arg("nurbs"), py::arg("patch") = 0, py::arg("direction") = 0,
+            py::arg("knots") = std::vector<double>{}, py::arg("tolerance") = 0.0,
+            py::arg("sample_subdivisions") = 0);
+        m.def(
             "iga_bezier_extract_nurbs",
             [=](py::object nurbs, std::size_t patch) {
                 const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);

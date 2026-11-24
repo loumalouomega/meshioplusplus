@@ -9783,6 +9783,68 @@ mio_mesh* mio_iga_sample(const mio_format_info* info, const mio_iga_opts* opts,
     });
 }
 
+static_assert(sizeof(mio_iga_remove_opts) == 72, "mio_iga_remove_opts layout changed");
+static_assert(offsetof(mio_iga_remove_opts, reserved) == 40,
+              "mio_iga_remove_opts: the reserved tail moved");
+
+void mio_iga_remove_opts_init(mio_iga_remove_opts* opts) {
+    if (opts)
+        *opts = mio_iga_remove_opts{};
+}
+
+mio_mesh* mio_iga_remove_knots(const mio_format_info* info, const mio_iga_remove_opts* opts,
+                               mio_format_info** reduced, int64_t capacity, double* report_knots,
+                               int32_t* report_requested, int32_t* report_removed,
+                               int64_t* num_report) {
+    if (reduced)
+        *reduced = nullptr;
+    if (num_report)
+        *num_report = 0;
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo);
+        if (!p_nurbs)
+            throw std::invalid_argument(kCapiIgaNotNurbs);
+        mio_iga_remove_opts o;
+        mio_iga_remove_opts_init(&o);
+        if (opts)
+            o = *opts;
+        if (o.patch < 0)
+            throw std::invalid_argument("meshio++: iga: the patch index is negative");
+        if (o.direction < 0)
+            throw std::invalid_argument("meshio++: iga: the direction is negative");
+        if (o.num_knots < 0 || (o.num_knots > 0 && !o.knots))
+            throw std::invalid_argument("meshio++: iga: the knot list is NULL or negative");
+        std::vector<double> knots;
+        if (o.num_knots > 0)
+            knots.assign(o.knots, o.knots + o.num_knots);
+        meshioplusplus::IgaSampleOptions so;
+        so.mSubdivisions = o.sample_subdivisions;
+        meshioplusplus::IgaRemoveKnotsReport report;
+        const meshioplusplus::NurbsInfo r = meshioplusplus::iga_remove_knots(
+            *p_nurbs, static_cast<std::size_t>(o.patch), o.direction, knots, o.tolerance, &report);
+        meshioplusplus::NurbsInfo mapped;
+        auto mesh =
+            std::make_unique<mio_mesh>(mio_mesh{meshioplusplus::iga_sample(r, so, &mapped)});
+        const auto n = static_cast<int64_t>(report.mKnots.size());
+        for (int64_t i = 0; i < std::min(n, capacity); ++i) {
+            const auto k = static_cast<std::size_t>(i);
+            if (report_knots)
+                report_knots[i] = report.mKnots[k];
+            if (report_requested)
+                report_requested[i] = report.mRequested[k];
+            if (report_removed)
+                report_removed[i] = report.mRemoved[k];
+        }
+        if (num_report)
+            *num_report = n;
+        if (reduced)
+            *reduced = capi_iga_handle(info->mFormat, std::move(mapped));
+        return mesh.release();
+    });
+}
+
 mio_mesh* mio_iga_bezier_extract(const mio_format_info* info, int64_t patch) {
     return capi_guarded_mesh([&]() -> mio_mesh* {
         if (!info)

@@ -150,6 +150,7 @@ from .. import (
     iga_bezier_extract,
     iga_evaluate,
     iga_refine,
+    iga_remove_knots,
     iga_sample,
     interpolate,
     isosurface,
@@ -4049,6 +4050,31 @@ def tool_iga_sample(
     Lagrange cells, subdivisions cells per knot span and direction (0 is
     automatic), the exact rational geometry at each cell's lattice."""
     return _run_op(iga_sample, locals(), report=False)
+
+
+def tool_iga_remove_knots(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    direction=0,
+    knots=None,
+    tolerance=0.0,
+    patch=0,
+    model="auto",
+    sample_subdivisions=0,
+):
+    """Remove knots from one patch of a NURBS model (The NURBS Book A5.8):
+    interior knots of direction go while the geometry moves by at most
+    tolerance (0 removes only what is exact up to rounding, undoing a knot
+    insertion); knots lists values to remove one copy of each (default every
+    copy of every interior knot). Reports, per distinct knot, the copies asked
+    for and removed; the reduced model is written."""
+    return _run_op(
+        iga_remove_knots,
+        locals(),
+        call={"knots": list(knots) if knots else ()},
+    )
 
 
 def tool_iga_bezier_extract(
@@ -8362,6 +8388,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "iga_sample",
             {"fn": tool_iga_sample, "wraps": ("iga_sample",), "gated": None},
+        ),
+        (
+            "iga_remove_knots",
+            {
+                "fn": tool_iga_remove_knots,
+                "wraps": ("iga_remove_knots",),
+                "gated": None,
+            },
         ),
         (
             "iga_bezier_extract",

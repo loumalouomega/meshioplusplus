@@ -3841,6 +3841,14 @@ mio_iga_sample <- function(info, sample_subdivisions = 0L, trim_samples = 16L, e
 
 #' @rdname mio_iga_refine
 #' @export
+mio_iga_remove_knots <- function(info, direction = 1L, knots = numeric(), tolerance = 0,
+                                 patch = 1L, sample_subdivisions = 0L) {
+  .Call(R_mio_iga_remove_knots, info, as.integer(patch), as.integer(direction),
+        as.numeric(knots), as.numeric(tolerance), as.integer(sample_subdivisions))
+}
+
+#' @rdname mio_iga_refine
+#' @export
 mio_iga_bezier_extract <- function(info, patch = 1L) {
   .Call(R_mio_iga_bezier_extract, info, as.integer(patch))
 }

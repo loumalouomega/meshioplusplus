@@ -160,6 +160,13 @@ _VERBS = (
         add_args="add_sample_args",
     ),
     _Verb(
+        "iga-remove-knots",
+        "_iga",
+        "remove_knots_cmd",
+        "Remove knots from a NURBS patch within a tolerance (The NURBS Book A5.8)",
+        add_args="add_remove_knots_args",
+    ),
+    _Verb(
         "iga-bezier",
         "_iga",
         "bezier_cmd",

@@ -349,6 +349,163 @@ inline void iga_net_insert(IgaNet& rNet, std::size_t Dir, const std::vector<doub
     rNet.mKnots[Dir] = ubar;
 }
 
+/**
+ * @brief The NURBS Book's A5.8: remove up to @p Num copies of the knot `U`
+ * (last at index @p R, multiplicity @p S) from one line of @p N rows of
+ * @p C homogeneous values, in place.
+ *
+ * A removal is accepted while the deviation of the line (the Euclidean
+ * distance over all @p C columns) stays within @p Tol. @p rKnots is not
+ * touched. On return the first `N - t` rows of @p pPw hold the new line.
+ * @return `t`, the copies removed (0 to @p Num).
+ */
+inline int iga_remove_knot_line(int P, const std::vector<double>& rKnots, double* pPw,
+                                std::size_t N, std::size_t C, double U, std::size_t R, int S,
+                                int Num, double Tol) {
+    using I = std::ptrdiff_t;
+    const I n = static_cast<I>(N) - 1;
+    const I p = P;
+    const I r = static_cast<I>(R);
+    const I s = S;
+    const I ord = p + 1;
+    const I fout = (2 * r - s - p) / 2;
+    I last = r - s;
+    I first = r - p;
+    std::vector<double> temp(static_cast<std::size_t>(2 * p + 3) * C);
+    const auto row = [C](double* pBase, I K) { return pBase + static_cast<std::size_t>(K) * C; };
+    const auto knot = [&rKnots](I K) { return rKnots[static_cast<std::size_t>(K)]; };
+    const auto dist = [C](const double* pA, const double* pB) {
+        double d = 0.0;
+        for (std::size_t c = 0; c < C; ++c)
+            d += (pA[c] - pB[c]) * (pA[c] - pB[c]);
+        return std::sqrt(d);
+    };
+    int t = 0;
+    for (; t < Num; ++t) {
+        const I off = first - 1;
+        for (std::size_t c = 0; c < C; ++c) {
+            row(temp.data(), 0)[c] = row(pPw, off)[c];
+            row(temp.data(), last + 1 - off)[c] = row(pPw, last + 1)[c];
+        }
+        I i = first, j = last, ii = 1, jj = last - off;
+        bool removable = false;
+        while (j - i > t) {
+            const double alfi = (U - knot(i)) / (knot(i + ord + t) - knot(i));
+            const double alfj = (U - knot(j - t)) / (knot(j + ord) - knot(j - t));
+            for (std::size_t c = 0; c < C; ++c) {
+                row(temp.data(), ii)[c] =
+                    (row(pPw, i)[c] - (1.0 - alfi) * row(temp.data(), ii - 1)[c]) / alfi;
+                row(temp.data(), jj)[c] =
+                    (row(pPw, j)[c] - alfj * row(temp.data(), jj + 1)[c]) / (1.0 - alfj);
+            }
+            ++i;
+            ++ii;
+            --j;
+            --jj;
+        }
+        if (j - i < t) {
+            removable = dist(row(temp.data(), ii - 1), row(temp.data(), jj + 1)) <= Tol;
+        } else {
+            const double alfi = (U - knot(i)) / (knot(i + ord + t) - knot(i));
+            std::vector<double> blend(C);
+            for (std::size_t c = 0; c < C; ++c)
+                blend[c] = alfi * row(temp.data(), ii + t + 1)[c] +
+                           (1.0 - alfi) * row(temp.data(), ii - 1)[c];
+            removable = dist(row(pPw, i), blend.data()) <= Tol;
+        }
+        if (!removable)
+            break;
+        i = first;
+        j = last;
+        while (j - i > t) {
+            for (std::size_t c = 0; c < C; ++c) {
+                row(pPw, i)[c] = row(temp.data(), i - off)[c];
+                row(pPw, j)[c] = row(temp.data(), j - off)[c];
+            }
+            ++i;
+            --j;
+        }
+        --first;
+        ++last;
+    }
+    if (t == 0)
+        return 0;
+    I j = fout, i = fout;
+    for (I k = 1; k < t; ++k) {
+        if (k % 2 == 1)
+            ++i;
+        else
+            --j;
+    }
+    for (I k = i + 1; k <= n; ++k, ++j)
+        for (std::size_t c = 0; c < C; ++c)
+            row(pPw, j)[c] = row(pPw, k)[c];
+    return t;
+}
+
+/**
+ * @brief Remove up to @p Num copies of the interior knot @p U from direction
+ * @p Dir of every line of the net, within @p Tol on each line.
+ *
+ * Two passes: the first finds how many copies *every* line can lose (a line
+ * that cannot lose one blocks the knot, the net must stay a tensor product),
+ * the second removes exactly that many, which the first pass proved
+ * possible. @return the copies removed.
+ */
+inline int iga_net_remove_knot(IgaNet& rNet, std::size_t Dir, double U, int Num, double Tol) {
+    const int p = rNet.mDegrees[Dir];
+    const std::size_t n = rNet.mCounts[Dir];
+    const std::vector<double>& k = rNet.mKnots[Dir];
+    std::size_t r = 0;
+    int s = 0;
+    for (std::size_t i = 0; i < k.size(); ++i)
+        if (k[i] == U) {
+            r = i;
+            ++s;
+        }
+    if (s == 0 || !(U > k[static_cast<std::size_t>(p)] && U < k[n]))
+        return 0;
+    const int num = std::min(Num, s);
+    const std::size_t C = rNet.mColumns;
+    std::size_t inner = 1, outer = 1;
+    for (std::size_t e = 0; e < Dir; ++e)
+        inner *= rNet.mCounts[e];
+    for (std::size_t e = Dir + 1; e < 3; ++e)
+        outer *= rNet.mCounts[e];
+    std::vector<double> line(n * C);
+    const auto load = [&](std::size_t O, std::size_t In) {
+        for (std::size_t q = 0; q < n; ++q)
+            for (std::size_t c = 0; c < C; ++c)
+                line[q * C + c] = rNet.mValues[(In + inner * (q + n * O)) * C + c];
+    };
+    int tmin = num;
+    for (std::size_t o = 0; o < outer && tmin > 0; ++o)
+        for (std::size_t in = 0; in < inner && tmin > 0; ++in) {
+            load(o, in);
+            tmin =
+                std::min(tmin, iga_remove_knot_line(p, k, line.data(), n, C, U, r, s, tmin, Tol));
+        }
+    if (tmin == 0)
+        return 0;
+    const std::size_t new_count = n - static_cast<std::size_t>(tmin);
+    std::vector<double> out(inner * new_count * outer * C);
+    for (std::size_t o = 0; o < outer; ++o)
+        for (std::size_t in = 0; in < inner; ++in) {
+            load(o, in);
+            iga_remove_knot_line(p, k, line.data(), n, C, U, r, s, tmin, Tol);
+            for (std::size_t q = 0; q < new_count; ++q)
+                for (std::size_t c = 0; c < C; ++c)
+                    out[(in + inner * (q + new_count * o)) * C + c] = line[q * C + c];
+        }
+    rNet.mValues = std::move(out);
+    rNet.mCounts[Dir] = new_count;
+    std::vector<double>& rk = rNet.mKnots[Dir];
+    for (std::size_t q = r + 1; q < rk.size(); ++q)
+        rk[q - static_cast<std::size_t>(tmin)] = rk[q];
+    rk.resize(rk.size() - static_cast<std::size_t>(tmin));
+    return tmin;
+}
+
 /// Raise direction `Dir`'s degree by `T`.
 inline void iga_net_elevate(IgaNet& rNet, std::size_t Dir, int T) {
     if (T <= 0)

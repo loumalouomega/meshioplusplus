@@ -33326,6 +33326,45 @@ MESHIOPLUSPLUS_API IgaEvaluation iga_evaluate(const BrepInfo& rInfo, std::size_t
 MESHIOPLUSPLUS_API Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions = {},
                                    NurbsInfo* pMapped = nullptr);
 
+/// What `iga_remove_knots` did, per distinct knot value, ascending.
+struct IgaRemoveKnotsReport {
+    /// The knot values tried.
+    std::vector<double> mKnots;
+    /// Copies of each that were asked for.
+    std::vector<std::int32_t> mRequested;
+    /// Copies of each that were removed.
+    std::vector<std::int32_t> mRemoved;
+    /// The sum of `mRemoved`.
+    std::int32_t mNumRemoved = 0;
+};
+
+/**
+ * @brief Knot removal (roadmap 9.8.3): the NURBS Book's A5.8 on one patch.
+ *
+ * Removes interior knots from direction @p Direction of patch @p Patch while
+ * the geometry (and the NURBS fields) deviates by at most @p Tolerance: the
+ * book's bound `TOL = d * wmin / (1 + Pmax)` on the homogeneous net, `wmin` the
+ * smallest weight and `Pmax` the largest control-point norm, so the curve or
+ * surface moves by at most `Tolerance`. A tolerance of 0 removes only what is
+ * exact up to rounding (`1e-12` relative to the net's size), which is what
+ * undoes a knot insertion. A knot of a surface or volume goes only when it
+ * goes from every line of the net.
+ *
+ * @param rKnots The knots to remove, each listing one copy (a value listed
+ *        twice asks for two); empty asks for every copy of every interior knot.
+ * @param pReport Receives, per distinct value, the copies asked for and removed.
+ * @return the model with that patch replaced; the cell maps cleared as
+ *         `iga_refine` does.
+ * @throws std::invalid_argument for a bad patch or direction, a negative or
+ *         non-finite tolerance, a knot that is not an interior knot of the
+ *         direction (or listed more often than its multiplicity), or a model
+ *         whose patch topology joins several patches (they share knot vectors).
+ */
+MESHIOPLUSPLUS_API NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch,
+                                              std::int32_t Direction,
+                                              const std::vector<double>& rKnots, double Tolerance,
+                                              IgaRemoveKnotsReport* pReport = nullptr);
+
 /**
  * @brief Bezier extraction of one patch (roadmap 9.8.2): the patch as VTK Bezier cells.
  *
@@ -50660,6 +50699,163 @@ inline void iga_net_insert(IgaNet& rNet, std::size_t Dir, const std::vector<doub
                             return res;
                         });
     rNet.mKnots[Dir] = ubar;
+}
+
+/**
+ * @brief The NURBS Book's A5.8: remove up to @p Num copies of the knot `U`
+ * (last at index @p R, multiplicity @p S) from one line of @p N rows of
+ * @p C homogeneous values, in place.
+ *
+ * A removal is accepted while the deviation of the line (the Euclidean
+ * distance over all @p C columns) stays within @p Tol. @p rKnots is not
+ * touched. On return the first `N - t` rows of @p pPw hold the new line.
+ * @return `t`, the copies removed (0 to @p Num).
+ */
+inline int iga_remove_knot_line(int P, const std::vector<double>& rKnots, double* pPw,
+                                std::size_t N, std::size_t C, double U, std::size_t R, int S,
+                                int Num, double Tol) {
+    using I = std::ptrdiff_t;
+    const I n = static_cast<I>(N) - 1;
+    const I p = P;
+    const I r = static_cast<I>(R);
+    const I s = S;
+    const I ord = p + 1;
+    const I fout = (2 * r - s - p) / 2;
+    I last = r - s;
+    I first = r - p;
+    std::vector<double> temp(static_cast<std::size_t>(2 * p + 3) * C);
+    const auto row = [C](double* pBase, I K) { return pBase + static_cast<std::size_t>(K) * C; };
+    const auto knot = [&rKnots](I K) { return rKnots[static_cast<std::size_t>(K)]; };
+    const auto dist = [C](const double* pA, const double* pB) {
+        double d = 0.0;
+        for (std::size_t c = 0; c < C; ++c)
+            d += (pA[c] - pB[c]) * (pA[c] - pB[c]);
+        return std::sqrt(d);
+    };
+    int t = 0;
+    for (; t < Num; ++t) {
+        const I off = first - 1;
+        for (std::size_t c = 0; c < C; ++c) {
+            row(temp.data(), 0)[c] = row(pPw, off)[c];
+            row(temp.data(), last + 1 - off)[c] = row(pPw, last + 1)[c];
+        }
+        I i = first, j = last, ii = 1, jj = last - off;
+        bool removable = false;
+        while (j - i > t) {
+            const double alfi = (U - knot(i)) / (knot(i + ord + t) - knot(i));
+            const double alfj = (U - knot(j - t)) / (knot(j + ord) - knot(j - t));
+            for (std::size_t c = 0; c < C; ++c) {
+                row(temp.data(), ii)[c] =
+                    (row(pPw, i)[c] - (1.0 - alfi) * row(temp.data(), ii - 1)[c]) / alfi;
+                row(temp.data(), jj)[c] =
+                    (row(pPw, j)[c] - alfj * row(temp.data(), jj + 1)[c]) / (1.0 - alfj);
+            }
+            ++i;
+            ++ii;
+            --j;
+            --jj;
+        }
+        if (j - i < t) {
+            removable = dist(row(temp.data(), ii - 1), row(temp.data(), jj + 1)) <= Tol;
+        } else {
+            const double alfi = (U - knot(i)) / (knot(i + ord + t) - knot(i));
+            std::vector<double> blend(C);
+            for (std::size_t c = 0; c < C; ++c)
+                blend[c] = alfi * row(temp.data(), ii + t + 1)[c] +
+                           (1.0 - alfi) * row(temp.data(), ii - 1)[c];
+            removable = dist(row(pPw, i), blend.data()) <= Tol;
+        }
+        if (!removable)
+            break;
+        i = first;
+        j = last;
+        while (j - i > t) {
+            for (std::size_t c = 0; c < C; ++c) {
+                row(pPw, i)[c] = row(temp.data(), i - off)[c];
+                row(pPw, j)[c] = row(temp.data(), j - off)[c];
+            }
+            ++i;
+            --j;
+        }
+        --first;
+        ++last;
+    }
+    if (t == 0)
+        return 0;
+    I j = fout, i = fout;
+    for (I k = 1; k < t; ++k) {
+        if (k % 2 == 1)
+            ++i;
+        else
+            --j;
+    }
+    for (I k = i + 1; k <= n; ++k, ++j)
+        for (std::size_t c = 0; c < C; ++c)
+            row(pPw, j)[c] = row(pPw, k)[c];
+    return t;
+}
+
+/**
+ * @brief Remove up to @p Num copies of the interior knot @p U from direction
+ * @p Dir of every line of the net, within @p Tol on each line.
+ *
+ * Two passes: the first finds how many copies *every* line can lose (a line
+ * that cannot lose one blocks the knot, the net must stay a tensor product),
+ * the second removes exactly that many, which the first pass proved
+ * possible. @return the copies removed.
+ */
+inline int iga_net_remove_knot(IgaNet& rNet, std::size_t Dir, double U, int Num, double Tol) {
+    const int p = rNet.mDegrees[Dir];
+    const std::size_t n = rNet.mCounts[Dir];
+    const std::vector<double>& k = rNet.mKnots[Dir];
+    std::size_t r = 0;
+    int s = 0;
+    for (std::size_t i = 0; i < k.size(); ++i)
+        if (k[i] == U) {
+            r = i;
+            ++s;
+        }
+    if (s == 0 || !(U > k[static_cast<std::size_t>(p)] && U < k[n]))
+        return 0;
+    const int num = std::min(Num, s);
+    const std::size_t C = rNet.mColumns;
+    std::size_t inner = 1, outer = 1;
+    for (std::size_t e = 0; e < Dir; ++e)
+        inner *= rNet.mCounts[e];
+    for (std::size_t e = Dir + 1; e < 3; ++e)
+        outer *= rNet.mCounts[e];
+    std::vector<double> line(n * C);
+    const auto load = [&](std::size_t O, std::size_t In) {
+        for (std::size_t q = 0; q < n; ++q)
+            for (std::size_t c = 0; c < C; ++c)
+                line[q * C + c] = rNet.mValues[(In + inner * (q + n * O)) * C + c];
+    };
+    int tmin = num;
+    for (std::size_t o = 0; o < outer && tmin > 0; ++o)
+        for (std::size_t in = 0; in < inner && tmin > 0; ++in) {
+            load(o, in);
+            tmin =
+                std::min(tmin, iga_remove_knot_line(p, k, line.data(), n, C, U, r, s, tmin, Tol));
+        }
+    if (tmin == 0)
+        return 0;
+    const std::size_t new_count = n - static_cast<std::size_t>(tmin);
+    std::vector<double> out(inner * new_count * outer * C);
+    for (std::size_t o = 0; o < outer; ++o)
+        for (std::size_t in = 0; in < inner; ++in) {
+            load(o, in);
+            iga_remove_knot_line(p, k, line.data(), n, C, U, r, s, tmin, Tol);
+            for (std::size_t q = 0; q < new_count; ++q)
+                for (std::size_t c = 0; c < C; ++c)
+                    out[(in + inner * (q + new_count * o)) * C + c] = line[q * C + c];
+        }
+    rNet.mValues = std::move(out);
+    rNet.mCounts[Dir] = new_count;
+    std::vector<double>& rk = rNet.mKnots[Dir];
+    for (std::size_t q = r + 1; q < rk.size(); ++q)
+        rk[q - static_cast<std::size_t>(tmin)] = rk[q];
+    rk.resize(rk.size() - static_cast<std::size_t>(tmin));
+    return tmin;
 }
 
 /// Raise direction `Dir`'s degree by `T`.
@@ -264773,6 +264969,111 @@ Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions, NurbsI
     for (std::size_t f = 0; f < fields.size(); ++f)
         mesh.AddPointData(rInfo.mFieldNames[f], std::move(fields[f]));
     return mesh;
+}
+
+NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch, std::int32_t Direction,
+                           const std::vector<double>& rKnots, double Tolerance,
+                           IgaRemoveKnotsReport* pReport) {
+    if (Patch >= rInfo.mPatches.size())
+        iga_fail("patch " + std::to_string(Patch) + " is out of range (the model has " +
+                 std::to_string(rInfo.mPatches.size()) + ")");
+    if (!std::isfinite(Tolerance) || Tolerance < 0.0)
+        iga_fail("the tolerance must be finite and not negative");
+    if (rInfo.mTopology.mDimension != 0 && rInfo.mPatches.size() > 1)
+        iga_fail("a model whose patch topology joins " + std::to_string(rInfo.mPatches.size()) +
+                 " patches shares knot vectors between them; remove knots from a model of one "
+                 "patch");
+    const NurbsPatch& patch = rInfo.mPatches[Patch];
+    const std::string what = "patch " + std::to_string(Patch);
+    const IgaShape sh = iga_check_patch(patch, what);
+    iga_check_direction(sh, Direction);
+    const bool rational = iga_is_rational(patch);
+    if (rational)
+        iga_check_weights(patch, what);
+    const auto dir = static_cast<std::size_t>(Direction);
+    detail::IgaNet net = iga_make_net(patch, sh, rational);
+
+    // The knots to remove: distinct values ascending, each with its count.
+    const std::vector<double>& k = net.mKnots[dir];
+    const int p = net.mDegrees[dir];
+    const double lo = k[static_cast<std::size_t>(p)], hi = k[sh.mCounts[dir]];
+    std::vector<double> values;
+    std::vector<std::int32_t> asked;
+    if (rKnots.empty()) {
+        for (std::size_t i = static_cast<std::size_t>(p) + 1; i < sh.mCounts[dir]; ++i) {
+            if (!(k[i] > lo && k[i] < hi))
+                continue;
+            if (!values.empty() && values.back() == k[i])
+                ++asked.back();
+            else {
+                values.push_back(k[i]);
+                asked.push_back(1);
+            }
+        }
+    } else {
+        std::vector<double> sorted = rKnots;
+        std::sort(sorted.begin(), sorted.end());
+        for (const double u : sorted) {
+            if (!std::isfinite(u))
+                iga_fail("a knot to remove is not finite");
+            if (!values.empty() && values.back() == u)
+                ++asked.back();
+            else {
+                values.push_back(u);
+                asked.push_back(1);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (!(values[i] > lo && values[i] < hi))
+            iga_fail("knot " + std::to_string(values[i]) +
+                     " is not an interior knot of direction " + std::to_string(Direction));
+        const auto mult = static_cast<std::int32_t>(std::count(k.begin(), k.end(), values[i]));
+        if (mult == 0)
+            iga_fail("knot " + std::to_string(values[i]) +
+                     " is not in the knot vector of direction " + std::to_string(Direction));
+        if (asked[i] > mult)
+            iga_fail("knot " + std::to_string(values[i]) + " occurs " + std::to_string(mult) +
+                     " time(s) in direction " + std::to_string(Direction) + ", not " +
+                     std::to_string(asked[i]));
+    }
+
+    // TOL = d * wmin / (1 + Pmax), with a floor at the net's rounding level.
+    double wmin = 1.0, pmax = 0.0, big = 0.0;
+    const double* w = patch.mWeights.As<double>();
+    const double* x = patch.mControlPoints.As<double>();
+    for (std::size_t i = 0; i < sh.mNumPoints; ++i) {
+        if (rational)
+            wmin = i == 0 ? w[0] : std::min(wmin, w[i]);
+        double norm = 0.0;
+        for (std::size_t d = 0; d < sh.mSdim; ++d)
+            norm += x[i * sh.mSdim + d] * x[i * sh.mSdim + d];
+        pmax = std::max(pmax, std::sqrt(norm));
+    }
+    for (const double v : net.mValues)
+        big = std::max(big, std::abs(v));
+    const double tol = std::max(Tolerance * wmin / (1.0 + pmax), 1e-12 * (1.0 + big));
+
+    IgaRemoveKnotsReport report;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const int done = detail::iga_net_remove_knot(net, dir, values[i], asked[i], tol);
+        report.mKnots.push_back(values[i]);
+        report.mRequested.push_back(asked[i]);
+        report.mRemoved.push_back(done);
+        report.mNumRemoved += done;
+    }
+
+    NurbsInfo out;
+    out.mFieldNames = rInfo.mFieldNames;
+    out.mTopology = rInfo.mTopology;
+    out.mPatches = rInfo.mPatches;
+    out.mPatches[Patch] = iga_patch_from_net(net, sh, rational);
+    out.mCellPatch = NDArray(DType::Int64, {0});
+    out.mCellSpan = NDArray(DType::Int64, {0, 3});
+    out.mBoundaryCellPatch = NDArray(DType::Int64, {0});
+    if (pReport)
+        *pReport = std::move(report);
+    return out;
 }
 
 Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch) {

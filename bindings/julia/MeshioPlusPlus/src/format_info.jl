@@ -465,6 +465,50 @@ function iga_sample(info::FormatInfo; kwargs...)
 end
 
 """
+    iga_remove_knots(info; direction=1, knots=Float64[], tolerance=0.0, patch=1,
+                     sample_subdivisions=0) -> (Mesh, FormatInfo, report)
+
+Remove knots from direction `direction` (1-based) of patch `patch` of a NURBS
+model while the geometry and the NURBS fields move by at most `tolerance` (The
+NURBS Book's A5.8; 0 removes only what is exact up to rounding, which undoes a
+knot insertion). `knots` lists the values to remove, one copy per entry (empty:
+every copy of every interior knot). The reduced model is sampled again; the
+`report` is a named tuple `(knots, requested, removed, num_removed)`, per
+distinct knot value, ascending. A B-rep, and a model whose patch topology joins
+several patches, are refused.
+"""
+function iga_remove_knots(info::FormatInfo; direction::Integer=1,
+                          knots::AbstractVector{<:Real}=Float64[], tolerance::Real=0.0,
+                          patch::Integer=1, sample_subdivisions::Integer=0)
+    kn = collect(Float64, knots)
+    GC.@preserve kn begin
+        opts = _CIgaRemoveOpts(Int64(patch - 1), Int32(direction - 1), Int32(sample_subdivisions),
+                               Float64(tolerance), isempty(kn) ? C_NULL : pointer(kn),
+                               Int64(length(kn)), (0, 0, 0, 0))
+        n = Ref{Int64}(0)
+        reduced = Ref{Ptr{Cvoid}}(C_NULL)
+        # the first call sizes the report, the second fills it
+        ptr = ccall(_sym(:mio_iga_remove_knots), Ptr{Cvoid},
+                    (Ptr{Cvoid}, Ref{_CIgaRemoveOpts}, Ptr{Ptr{Cvoid}}, Int64, Ptr{Cdouble},
+                     Ptr{Int32}, Ptr{Int32}, Ptr{Int64}),
+                    _handle(info), Ref(opts), reduced, 0, C_NULL, C_NULL, C_NULL, n)
+        close(Mesh(_check_ptr(ptr)))
+        close(FormatInfo(reduced[]))
+        rk = Vector{Float64}(undef, n[])
+        rq = Vector{Int32}(undef, n[])
+        rr = Vector{Int32}(undef, n[])
+        reduced = Ref{Ptr{Cvoid}}(C_NULL)
+        ptr = ccall(_sym(:mio_iga_remove_knots), Ptr{Cvoid},
+                    (Ptr{Cvoid}, Ref{_CIgaRemoveOpts}, Ptr{Ptr{Cvoid}}, Int64, Ptr{Cdouble},
+                     Ptr{Int32}, Ptr{Int32}, Ptr{Int64}),
+                    _handle(info), Ref(opts), reduced, n[], rk, rq, rr, n)
+        mesh = Mesh(_check_ptr(ptr))
+        report = (knots=rk, requested=Int.(rq), removed=Int.(rr), num_removed=Int(sum(rr)))
+        return mesh, FormatInfo(reduced[]), report
+    end
+end
+
+"""
     iga_bezier_extract(info, patch=1) -> Mesh
 
 Bezier extraction of patch `patch` (1-based) of a NURBS model: every interior

@@ -203,7 +203,7 @@ program test_fortran_api
             ! ---- the isogeometric layer: refine, write back, evaluate
             block
                 type(mio_mesh) :: fine
-                type(mio_format_info) :: refined
+                type(mio_format_info) :: refined, refined_again
                 type(mio_iga_evaluation) :: ev_a, ev_b
                 real(real64) :: uv(2, 2)
                 real(real64), allocatable :: pa(:, :), pb(:, :), da(:, :, :), nrm(:, :), d2(:, :, :, :)
@@ -245,12 +245,33 @@ program test_fortran_api
                 end if
                 call fine%free()
                 call refined%free()
+                fine = info%iga_refine(subdivisions=[3], elevate=[1], refined=refined_again, stat=ierr)
+                call fine%free()
                 fine = info%iga_sample(stat=ierr)
                 call check(ierr == 0, 'iga_sample succeeds')
                 call fine%free()
                 ev_a = info%iga_evaluate(1, reshape([2.0_real64, 0.5_real64], [2, 1]), stat=ierr)
                 call check(ierr /= 0, 'an out-of-range parameter fails')
                 call ev_a%free()
+                ! ---- knot removal undoes the refinement's insertions: two knots per direction
+                block
+                    type(mio_format_info) :: reduced
+                    real(real64), allocatable :: rk(:)
+                    integer, allocatable :: rq(:), rm(:)
+                    fine = refined_again%iga_remove_knots(direction=1, reduced=reduced, report_knots=rk, &
+                                                         requested=rq, removed=rm, stat=ierr)
+                    call check(ierr == 0, 'iga_remove_knots succeeds')
+                    call check(size(rk) == 2 .and. all(rm == 1) .and. all(rq == 1), 'two knots removed once')
+                    call check(abs(rk(1) - 1.0_real64/3.0_real64) < 1.0e-15_real64, 'the first knot is 1/3')
+                    call fine%free()
+                    call reduced%free()
+                    fine = refined_again%iga_remove_knots(direction=1, knots=[0.5_real64], stat=ierr)
+                    call check(ierr /= 0, 'an absent knot is refused')
+                    call fine%free()
+                    fine = refined_again%iga_remove_knots(direction=3, stat=ierr)
+                    call check(ierr /= 0, 'a bad direction is refused')
+                    call fine%free()
+                end block
                 ! ---- Bezier extraction: the annulus has unequal degrees; a bi-quadratic
                 ! square is one Bezier cell of nine points
                 fine = info%iga_bezier_extract(1, stat=ierr)
@@ -285,6 +306,7 @@ program test_fortran_api
                     open (newunit=unit, file=sq_path, status='old')
                     close (unit, status='delete')
                 end block
+                call refined_again%free()
             end block
             open (newunit=unit, file=output_path, status='old')
             close (unit, status='delete')

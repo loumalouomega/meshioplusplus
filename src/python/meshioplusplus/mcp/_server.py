@@ -2754,6 +2754,37 @@ def _register_operations(server: FastMCP) -> None:
         keep every cell)."""
 
     @server.tool()
+    @_forward(_tools.tool_iga_remove_knots)
+    def iga_remove_knots(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        direction: int = 0,
+        knots: Optional[List[float]] = None,
+        tolerance: float = 0.0,
+        patch: int = 0,
+        model: str = "auto",
+        sample_subdivisions: int = 0,
+    ) -> dict:
+        """Remove knots from one patch of a NURBS model (an MFEM NURBS mesh
+        of one patch), the inverse of refine's knot insertion (The NURBS
+        Book's A5.8, on the homogeneous net so rational patches are handled).
+
+        Knots of the parametric direction (0-based) are removed while the
+        geometry and the NURBS fields move by at most tolerance, in the
+        book's bound d * wmin / (1 + Pmax): tolerance 0 removes only what is
+        exact up to rounding (undoing an insertion), a larger one trades
+        accuracy for fewer control points. knots lists the values to remove,
+        each entry one copy (a value twice asks for two); omitted, every copy
+        of every interior knot is tried. A knot of a surface or volume goes
+        only if it goes from every line of the control net. Reports knots,
+        requested, removed (per distinct knot value) and num_removed; the
+        reduced model is written like iga_refine's. A B-rep is not a NURBS
+        model and a model whose patch topology joins several patches shares
+        knot vectors between them: both are refused by name."""
+
+    @server.tool()
     @_forward(_tools.tool_iga_bezier_extract)
     def iga_bezier_extract(
         input_path: str,

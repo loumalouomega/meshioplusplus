@@ -523,6 +523,94 @@ TEST(Iga, BezierExtractionRefusesUnequalDegreesAndBadPatches) {
     EXPECT_THROW(meshioplusplus::iga_bezier_extract(one_patch(arc()), 1), std::invalid_argument);
 }
 
+// --- Knot removal (roadmap 9.8.3) ---------------------------------------------
+
+namespace {
+
+NurbsPatch cubic_curve() {
+    return make_patch({3}, {{0, 0, 0, 0, 0.5, 1, 1, 1, 1}}, 2,
+                      {0, 0, 1, 2, 2, 3.5, 3.5, 3, 4, 0.5});
+}
+
+double max_eval_diff(const NurbsInfo& rA, const NurbsInfo& rB) {
+    const NDArray u = grid(rA.mPatches[0], 9);
+    const auto a = meshioplusplus::iga_evaluate(rA, 0, u);
+    const auto b = meshioplusplus::iga_evaluate(rB, 0, u);
+    return max_diff(a.mPoints, b.mPoints);
+}
+
+}  // namespace
+
+TEST(Iga, RemovingInsertedKnotsRestoresTheArc) {
+    const NurbsPatch original = arc();
+    const NurbsPatch refined = meshioplusplus::iga_insert_knots(original, 0, {0.3, 0.7}, true);
+    ASSERT_EQ(refined.mControlPoints.Shape()[0], 5u);
+    meshioplusplus::IgaRemoveKnotsReport rep;
+    const NurbsInfo out = meshioplusplus::iga_remove_knots(one_patch(refined), 0, 0, {}, 0.0, &rep);
+    const NurbsPatch& back = out.mPatches[0];
+    EXPECT_EQ(back.mKnots[0], original.mKnots[0]);
+    EXPECT_EQ(rep.mNumRemoved, 2);
+    ASSERT_EQ(rep.mKnots.size(), 2u);
+    EXPECT_EQ(rep.mRemoved[0], 1);
+    EXPECT_EQ(rep.mRemoved[1], 1);
+    EXPECT_LT(max_diff(back.mControlPoints, original.mControlPoints), 1e-13);
+    EXPECT_LT(max_diff(back.mWeights, original.mWeights), 1e-13);
+    // One listed knot removes one; an unknown or end knot is refused.
+    const NurbsInfo one =
+        meshioplusplus::iga_remove_knots(one_patch(refined), 0, 0, {0.7}, 0.0, &rep);
+    EXPECT_EQ(one.mPatches[0].mControlPoints.Shape()[0], 4u);
+    EXPECT_EQ(rep.mNumRemoved, 1);
+    EXPECT_LT(max_eval_diff(one_patch(refined), one), 1e-13);
+}
+
+TEST(Iga, AKnotTheCurveNeedsStaysUnlessTheToleranceAllowsIt) {
+    const NurbsInfo in = one_patch(cubic_curve());
+    meshioplusplus::IgaRemoveKnotsReport rep;
+    const NurbsInfo exact = meshioplusplus::iga_remove_knots(in, 0, 0, {}, 0.0, &rep);
+    EXPECT_EQ(rep.mNumRemoved, 0);
+    EXPECT_EQ(exact.mPatches[0].mControlPoints.Shape()[0], 5u);
+    const NurbsInfo loose = meshioplusplus::iga_remove_knots(in, 0, 0, {0.5}, 100.0, &rep);
+    EXPECT_EQ(rep.mNumRemoved, 1);
+    EXPECT_EQ(loose.mPatches[0].mControlPoints.Shape()[0], 4u);
+    // A tolerance is a bound on the deviation of the curve.
+    for (const double tol : {0.01, 0.1, 0.5, 2.0}) {
+        const NurbsInfo cut = meshioplusplus::iga_remove_knots(in, 0, 0, {}, tol, &rep);
+        EXPECT_LE(max_eval_diff(in, cut), tol * 1.0000001) << "tolerance " << tol;
+    }
+}
+
+TEST(Iga, KnotRemovalInASurfaceAndAVolumeNeedsEveryLine) {
+    NurbsPatch a = meshioplusplus::iga_insert_knots(annulus(), 1, {0.5}, true);
+    a = meshioplusplus::iga_insert_knots(a, 0, {0.25, 0.25}, true);
+    const NurbsInfo in = one_patch(a);
+    meshioplusplus::IgaRemoveKnotsReport rep;
+    const NurbsInfo back = meshioplusplus::iga_remove_knots(in, 0, 0, {}, 0.0, &rep);
+    EXPECT_EQ(rep.mNumRemoved, 2);  // the double knot 0.25, both copies
+    EXPECT_LT(max_eval_diff(in, back), 1e-13);
+    const NurbsInfo flat = meshioplusplus::iga_remove_knots(back, 0, 1, {}, 0.0, &rep);
+    EXPECT_EQ(rep.mNumRemoved, 1);
+    EXPECT_LT(max_eval_diff(in, flat), 1e-13);
+    EXPECT_LT(max_diff(flat.mPatches[0].mControlPoints, annulus().mControlPoints), 1e-13);
+
+    NurbsPatch h = meshioplusplus::iga_insert_knots(hexahedron(), 2, {0.5}, false);
+    const NurbsInfo hb = meshioplusplus::iga_remove_knots(one_patch(h), 0, 2, {}, 0.0, &rep);
+    EXPECT_EQ(rep.mNumRemoved, 1);
+    EXPECT_LT(max_diff(hb.mPatches[0].mControlPoints, hexahedron().mControlPoints), 1e-13);
+}
+
+TEST(Iga, KnotRemovalRefusesWhatItCannotDo) {
+    const NurbsInfo in = one_patch(meshioplusplus::iga_insert_knots(arc(), 0, {0.4, 0.4}, true));
+    EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 1, 0, {}, 0.0), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 1, {}, 0.0), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 0, {}, -1.0), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 0, {}, std::nan("")),
+                 std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 0, {0.6}, 0.0), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 0, {0.0}, 0.0), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 0, {0.4, 0.4, 0.4}, 0.0),
+                 std::invalid_argument);
+}
+
 TEST(Iga, ErrorsAreInvalidArguments) {
     const NurbsInfo in = one_patch(arc());
     IgaRefineOptions o;

@@ -284,6 +284,14 @@ end
         @test size(a.derivatives) == (2, 2, 2)
         @test a.normals === nothing && a.inside === nothing && isempty(a.fields)
         @test_throws MeshioError iga_evaluate(info, 1, reshape([2.0, 0.5], 2, 1))
+        # knot removal undoes the refinement's insertions: two knots per direction
+        red_mesh, red_info, rep = iga_remove_knots(refined; direction=1)
+        @test rep.num_removed == 2 && rep.removed == [1, 1] && rep.requested == [1, 1]
+        @test rep.knots ≈ [1 / 3, 2 / 3]
+        @test nurbs_info(red_info).patches[1].degrees == Int32[3, 2]
+        @test_throws MeshioError iga_remove_knots(refined; knots=[0.5])
+        @test_throws MeshioError iga_remove_knots(refined; direction=4)
+        close(red_mesh); close(red_info)
         # Bezier extraction: the annulus has unequal degrees; a bi-quadratic square
         # is one Bezier cell of nine points
         @test_throws MeshioError iga_bezier_extract(info, 1)

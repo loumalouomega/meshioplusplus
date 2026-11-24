@@ -187,6 +187,45 @@ MESHIOPLUSPLUS_API IgaEvaluation iga_evaluate(const BrepInfo& rInfo, std::size_t
 MESHIOPLUSPLUS_API Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions = {},
                                    NurbsInfo* pMapped = nullptr);
 
+/// What `iga_remove_knots` did, per distinct knot value, ascending.
+struct IgaRemoveKnotsReport {
+    /// The knot values tried.
+    std::vector<double> mKnots;
+    /// Copies of each that were asked for.
+    std::vector<std::int32_t> mRequested;
+    /// Copies of each that were removed.
+    std::vector<std::int32_t> mRemoved;
+    /// The sum of `mRemoved`.
+    std::int32_t mNumRemoved = 0;
+};
+
+/**
+ * @brief Knot removal (roadmap 9.8.3): the NURBS Book's A5.8 on one patch.
+ *
+ * Removes interior knots from direction @p Direction of patch @p Patch while
+ * the geometry (and the NURBS fields) deviates by at most @p Tolerance: the
+ * book's bound `TOL = d * wmin / (1 + Pmax)` on the homogeneous net, `wmin` the
+ * smallest weight and `Pmax` the largest control-point norm, so the curve or
+ * surface moves by at most `Tolerance`. A tolerance of 0 removes only what is
+ * exact up to rounding (`1e-12` relative to the net's size), which is what
+ * undoes a knot insertion. A knot of a surface or volume goes only when it
+ * goes from every line of the net.
+ *
+ * @param rKnots The knots to remove, each listing one copy (a value listed
+ *        twice asks for two); empty asks for every copy of every interior knot.
+ * @param pReport Receives, per distinct value, the copies asked for and removed.
+ * @return the model with that patch replaced; the cell maps cleared as
+ *         `iga_refine` does.
+ * @throws std::invalid_argument for a bad patch or direction, a negative or
+ *         non-finite tolerance, a knot that is not an interior knot of the
+ *         direction (or listed more often than its multiplicity), or a model
+ *         whose patch topology joins several patches (they share knot vectors).
+ */
+MESHIOPLUSPLUS_API NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch,
+                                              std::int32_t Direction,
+                                              const std::vector<double>& rKnots, double Tolerance,
+                                              IgaRemoveKnotsReport* pReport = nullptr);
+
 /**
  * @brief Bezier extraction of one patch (roadmap 9.8.2): the patch as VTK Bezier cells.
  *

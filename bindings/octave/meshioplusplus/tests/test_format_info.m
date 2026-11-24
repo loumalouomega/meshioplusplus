@@ -146,6 +146,17 @@ function t_mfem_nurbs()
     assert(isempty(b.derivatives));
     expect_error(@() mio.iga_evaluate(r.info, 1, [2, 0.5]), 'knot range');
     expect_error(@() mio.iga_evaluate(r.info, 1, [0.5, 0.5, 0.5]), 'params');
+    % knot removal undoes the refinement's insertions: two knots per direction
+    red = mio.iga_remove_knots(fine.info, 'direction', 1);
+    expect_equal(red.report.num_removed, 2);
+    expect_equal(red.report.removed, [1; 1]);
+    assert(max(abs(red.report.knots - [1/3; 2/3])) < 1e-15);
+    red_info = mio.nurbs_info(red.info);
+    expect_equal(red_info.patches(1).degrees(:)', [3 2]);
+    mio.release(red.mesh);
+    mio.format_info_release(red.info);
+    expect_error(@() mio.iga_remove_knots(fine.info, 'knots', 0.5), 'knot');
+    expect_error(@() mio.iga_remove_knots(fine.info, 'direction', 4), 'direction');
     % Bezier extraction: the annulus has unequal degrees; a bi-quadratic square is
     % one Bezier cell of nine points
     expect_error(@() mio.iga_bezier_extract(r.info, 1), 'unequal degrees');

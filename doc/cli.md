@@ -137,7 +137,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `refine-patches` | `num_patches`, `num_iterations`, `num_splits`, `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`, `num_facets`, `tolerance`, `explained_area_fraction`, `initial_explained_area_fraction`, `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop` (`unchanged`, `small_gain`, `iteration_cap` or `energy_rose`) |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`), `num_unfitted`, `num_feature_cells` and `warnings` |
-| `iga-refine`, `iga-sample`, `iga-bezier` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
+| `iga-refine`, `iga-sample`, `iga-bezier`, `iga-remove-knots` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
 | `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals` (`2` adds `second_derivatives`); for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
 | `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches`; `closed` (v17.11.0, always); with `--refine` (v17.11.0) also `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction`, `explained_area_fraction` and `refinement_kept`; with `--freeform-general` `num_freeform_general`, `num_freeform_refinements` and `avg_freeform_poles`; with `--extend-surfaces` `num_extended_edges`; with `--snap-junctions` `num_snapped_junctions`; with `--face-deviation` `hausdorff_max` and `hausdorff_rms`; with `--constrain-primitives` `num_constrained_primitives` and `num_constraint_groups`; with `--validation-report` (unreleased) `validation_reported`, `cad_to_mesh_max`, `cad_to_mesh_p95`, `cad_to_mesh_p99`, `mesh_to_cad_max`, `mesh_to_cad_p95`, `mesh_to_cad_p99`, `normal_deviation_max_deg`, `normal_deviation_p95_deg`, `step_round_trip_checked`, `step_round_trip_valid`, `step_round_trip_volume_ratio` and `total_freeform_control_points`; outside `--freeform-mode legacy` (v17.12.0) also `freeform_mode`, `brep_checked`, `num_freeform_adaptive`, `num_network_patches`, `num_network_edges`, `num_extraordinary_vertices`, `num_resegmented`, `num_escalations`, `facet_area_fraction`, `max_g1_angle_deg`, `max_freeform_distance`, `rms_freeform_distance` and `faces`, one record per patch tried as a surface (`patch`, `face`, `kind`, `param_method`, `num_ctrl`, `iterations`, `refinements`, `max_dist`, `rms_dist`, `reverse_max_dist`, `max_g1_angle_deg`, `escalation_steps`, `demotion_reason`) |
@@ -1667,6 +1667,24 @@ Sample a NURBS model into Lagrange cells (see [isogeometric layer](/iga#sampling
 
 ```sh
 meshioplusplus iga-sample plate.cad.json plate.vtu -s 8
+```
+
+---
+
+## meshioplusplus iga-remove-knots
+
+Remove knots from one patch of a NURBS model within a tolerance (see [isogeometric layer](/iga#knot-removal)). Takes `iga-refine`'s input, format and summary options; the JSON summary adds `knots`, `requested`, `removed` and `num_removed`.
+
+| Option | Meaning |
+|---|---|
+| `-d`, `--direction N` | The parametric direction, 0-based (default 0) |
+| `-k`, `--knot U` | A knot value to remove one copy of; repeat for more (default: every copy of every interior knot) |
+| `-t`, `--tolerance T` | The largest deviation of the geometry; 0 removes only what is exact up to rounding (default 0) |
+| `--patch N` | The patch, 0-based (default 0) |
+| `--sample-subdivisions N` | Cells per knot span of the written sampling (default 0, automatic) |
+
+```sh
+meshioplusplus iga-remove-knots fine.mesh coarse.mesh -o mfem --direction 0 --tolerance 1e-6
 ```
 
 ---

@@ -2824,6 +2824,20 @@ int main(int argc, char** argv) {
             info.mPatches.push_back(std::move(p));
             return info;
         };
+        row("iga_remove_knots", [&](MeshDigest* pD) {
+            mio::IgaRefineOptions o;
+            o.mSubdivisions = {static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), 2};
+            const mio::NurbsInfo refined = mio::iga_refine(nurbs_block(), o);
+            mio::IgaRemoveKnotsReport rep;
+            mio::NurbsInfo cut = mio::iga_remove_knots(refined, 0, 0, {}, 0.0, &rep);
+            std::int64_t removed = rep.mNumRemoved;
+            cut = mio::iga_remove_knots(cut, 0, 1, {}, 0.0, &rep);
+            removed += rep.mNumRemoved;
+            cut = mio::iga_remove_knots(cut, 0, 2, {}, 0.0, &rep);
+            removed += rep.mNumRemoved;
+            i64(pD, removed);
+            of(pD, mio::iga_sample(cut));
+        });
         row("iga_bezier_extract", [&](MeshDigest* pD) {
             mio::IgaRefineOptions o;
             o.mSubdivisions = {static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), 2};

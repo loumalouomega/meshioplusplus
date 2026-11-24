@@ -2637,7 +2637,8 @@ void cli_iga_write(const std::string& rPath, const std::string& rFormat, const M
 }
 
 void cli_iga_summary(const cli_parsed& rP, const char* pName, const char* pModel, const Mesh& rMesh,
-                     std::size_t Patches) {
+                     std::size_t Patches,
+                     const meshioplusplus::IgaRemoveKnotsReport* pRemoved = nullptr) {
     std::size_t ncells = 0;
     for (const auto cb : rMesh.CellRange())
         ncells += cb.NumCells();
@@ -2658,10 +2659,31 @@ void cli_iga_summary(const cli_parsed& rP, const char* pName, const char* pModel
             json.EndObject();
         }
         json.EndArray();
+        if (pRemoved) {
+            json.Key("knots");
+            json.BeginArray();
+            for (const double u : pRemoved->mKnots)
+                json.Number(u);
+            json.EndArray();
+            json.Key("requested");
+            json.BeginArray();
+            for (const auto n : pRemoved->mRequested)
+                json.Int(n);
+            json.EndArray();
+            json.Key("removed");
+            json.BeginArray();
+            for (const auto n : pRemoved->mRemoved)
+                json.Int(n);
+            json.EndArray();
+            json.Field("num_removed", pRemoved->mNumRemoved);
+        }
         json.EndObject();
     } else if (!has_flag(rP, "quiet")) {
         std::cout << pName << ": " << Patches << " patch(es), " << rMesh.NumPoints() << " points, "
-                  << ncells << " cells\n";
+                  << ncells << " cells";
+        if (pRemoved)
+            std::cout << ", " << pRemoved->mNumRemoved << " knot(s) removed";
+        std::cout << "\n";
     }
 }
 
@@ -2726,6 +2748,42 @@ int cmd_iga_sample(const std::vector<std::string>& rArgs) {
     }
     cli_iga_write(p.positionals[1], opt_value(p, "output-format"), mesh, mapped, model.mBrep);
     cli_iga_summary(p, "iga_sample", model.mNurbs ? "nurbs" : "brep", mesh, patches);
+    return 0;
+}
+
+int cmd_iga_remove_knots(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"direction", {"-d"}, true},
+                                          {"knot", {"-k"}, true},
+                                          {"tolerance", {"-t"}, true},
+                                          {"patch", {}, true},
+                                          {"sample-subdivisions", {}, true}},
+                                         report_flag_specs()}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("iga-remove-knots requires exactly INFILE and OUTFILE");
+    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    if (!model.mNurbs)
+        throw std::runtime_error(
+            "iga-remove-knots takes a NURBS model (an MFEM NURBS mesh), not a B-rep");
+    const auto patch =
+        static_cast<std::size_t>(has_opt(p, "patch") ? std::stoll(opt_value(p, "patch")) : 0);
+    const auto direction = static_cast<std::int32_t>(
+        has_opt(p, "direction") ? std::stol(opt_value(p, "direction")) : 0);
+    double tolerance = 0.0;
+    if (has_opt(p, "tolerance"))
+        tolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    std::vector<double> knots;
+    for (const std::string& text : opt_values(p, "knot"))
+        knots.push_back(meshioplusplus::detail::stod_c(text));
+    const meshioplusplus::IgaSampleOptions so = cli_iga_sample_options(p, "sample-subdivisions");
+    meshioplusplus::IgaRemoveKnotsReport report;
+    const meshioplusplus::NurbsInfo reduced = meshioplusplus::iga_remove_knots(
+        *model.mNurbs, patch, direction, knots, tolerance, &report);
+    std::optional<meshioplusplus::NurbsInfo> mapped;
+    mapped.emplace();
+    const Mesh mesh = meshioplusplus::iga_sample(reduced, so, &*mapped);
+    cli_iga_write(p.positionals[1], opt_value(p, "output-format"), mesh, mapped, std::nullopt);
+    cli_iga_summary(p, "iga_remove_knots", "nurbs", mesh, reduced.mPatches.size(), &report);
     return 0;
 }
 
@@ -10859,6 +10917,9 @@ const CliVerb kCliVerbs[] = {
      &cmd_iga_refine},
     {"iga-sample", nullptr, "  iga-sample              Sample a NURBS model into Lagrange cells\n",
      &cmd_iga_sample},
+    {"iga-remove-knots", nullptr,
+     "  iga-remove-knots        Remove knots from a NURBS patch within a tolerance\n",
+     &cmd_iga_remove_knots},
     {"iga-bezier", nullptr,
      "  iga-bezier              Bezier extraction of a NURBS patch into VTK Bezier cells\n",
      &cmd_iga_bezier},

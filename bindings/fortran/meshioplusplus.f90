@@ -727,6 +727,17 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(6) = 0
     end type
 
+    !> Interop mirror of C `mio_iga_remove_opts` (72 bytes).
+    type, bind(c) :: mio_iga_remove_opts_t
+        integer(c_int64_t) :: patch = 0
+        integer(c_int32_t) :: direction = 0
+        integer(c_int32_t) :: sample_subdivisions = 0
+        real(c_double) :: tolerance = 0.0_c_double
+        type(c_ptr) :: knots = c_null_ptr
+        integer(c_int64_t) :: num_knots = 0
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Why `info%mesh_cad_surface` left a face out (C `mio_mesh_cad_face_status`).
     integer, parameter :: MIO_MESH_CAD_OK = 0, MIO_MESH_CAD_EMPTY = 1, &
                           MIO_MESH_CAD_OPEN_LOOP = 2, MIO_MESH_CAD_SELF_INTERSECTING = 3, &
@@ -3348,6 +3359,7 @@ module meshioplusplus
         procedure :: iga_refine => format_info_iga_refine
         procedure :: iga_sample => format_info_iga_sample
         procedure :: iga_bezier_extract => format_info_iga_bezier_extract
+        procedure :: iga_remove_knots => format_info_iga_remove_knots
         procedure :: iga_evaluate => format_info_iga_evaluate
         procedure :: mesh_cad_surface => format_info_mesh_cad_surface
     end type mio_format_info
@@ -7258,6 +7270,20 @@ module meshioplusplus
             type(c_ptr), value :: info
             type(mio_iga_opts_t), intent(in) :: opts
             type(c_ptr), intent(out) :: mapped
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_iga_remove_knots(info, opts, reduced, capacity, report_knots, &
+                                        report_requested, report_removed, num_report) &
+                bind(c, name="mio_iga_remove_knots") result(h)
+            import :: c_ptr, c_double, c_int32_t, c_int64_t, mio_iga_remove_opts_t
+            type(c_ptr), value :: info
+            type(mio_iga_remove_opts_t), intent(in) :: opts
+            type(c_ptr), intent(out) :: reduced
+            integer(c_int64_t), value :: capacity
+            real(c_double), intent(out) :: report_knots(*)
+            integer(c_int32_t), intent(out) :: report_requested(*), report_removed(*)
+            integer(c_int64_t), intent(out) :: num_report
             type(c_ptr) :: h
         end function
 
@@ -18473,6 +18499,76 @@ contains
         else
             call c_mio_format_info_free(ih)
         end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remove knots from direction `direction` (1-based) of patch `patch` (1-based,
+    !> default 1) of this NURBS model while the geometry moves by at most
+    !> `tolerance` (default 0: only what is exact up to rounding). `knots` lists
+    !> the values to remove, one copy per entry (default: every copy of every
+    !> interior knot). The reduced model is sampled again; `reduced` receives it
+    !> and `report_knots`, `requested` and `removed` the knot values tried, the
+    !> copies asked for and the copies removed.
+    function format_info_iga_remove_knots(self, direction, knots, tolerance, patch, &
+                                          sample_subdivisions, reduced, report_knots, &
+                                          requested, removed, stat, errmsg) result(out)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in), optional :: direction, patch, sample_subdivisions
+        real(real64), intent(in), optional :: knots(:)
+        real(real64), intent(in), optional :: tolerance
+        class(mio_format_info), intent(inout), optional :: reduced
+        real(real64), allocatable, intent(out), optional :: report_knots(:)
+        integer, allocatable, intent(out), optional :: requested(:), removed(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_iga_remove_opts_t) :: opts
+        type(c_ptr) :: res, ih
+        real(c_double), allocatable :: rk(:)
+        integer(c_int32_t), allocatable :: rq(:), rr(:)
+        integer(c_int64_t) :: n, cap
+        real(c_double), allocatable, target :: kc(:)
+        if (c_sizeof(opts) /= 72_c_size_t) then
+            write (error_unit, '(a,i0,a)') 'meshio++: iga_remove_knots layout mismatch (', &
+                c_sizeof(opts), ' bytes)'
+            error stop 1
+        end if
+        if (present(direction)) opts%direction = int(direction - 1, c_int32_t)
+        if (present(patch)) opts%patch = int(patch - 1, c_int64_t)
+        if (present(sample_subdivisions)) opts%sample_subdivisions = int(sample_subdivisions, c_int32_t)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(knots)) then
+            if (size(knots) > 0) then
+                kc = real(knots, c_double)
+                opts%knots = c_loc(kc)
+                opts%num_knots = int(size(knots), c_int64_t)
+            end if
+        end if
+        cap = max(16_c_int64_t, opts%num_knots)
+        allocate (rk(cap), rq(cap), rr(cap))
+        res = c_mio_iga_remove_knots(self%handle, opts, ih, cap, rk, rq, rr, n)
+        if (c_associated(res) .and. n > cap) then
+            call c_mio_mesh_free(res)
+            call c_mio_format_info_free(ih)
+            deallocate (rk, rq, rr)
+            cap = n
+            allocate (rk(cap), rq(cap), rr(cap))
+            res = c_mio_iga_remove_knots(self%handle, opts, ih, cap, rk, rq, rr, n)
+        end if
+        if (.not. c_associated(res)) then
+            call handle_failure('iga_remove_knots', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(reduced)) then
+            call format_info_free(reduced)
+            reduced%handle = ih
+        else
+            call c_mio_format_info_free(ih)
+        end if
+        if (present(report_knots)) report_knots = real(rk(1:n), real64)
+        if (present(requested)) requested = int(rq(1:n))
+        if (present(removed)) removed = int(rr(1:n))
         call clear_status(stat, errmsg)
     end function
 

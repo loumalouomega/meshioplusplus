@@ -6692,6 +6692,52 @@
     ]
    }
   },
+  "iga_remove_knots": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "direction"
+     },
+     {
+      "default": "()",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "knots"
+     },
+     {
+      "default": "0.0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "tolerance"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "patch"
+     },
+     {
+      "default": "'auto'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "model"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "sample_subdivisions"
+     },
+     {
+      "default": "False",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "iga_sample": {
    "kind": "function",
    "signature": {

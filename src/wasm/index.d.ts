@@ -4378,6 +4378,36 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; info: MfemInfo | CadJsonInfo };
 
   /**
+   * Remove knots from one patch of an MFEM NURBS model (The NURBS Book's
+   * A5.8): interior knots of `direction` (0-based) go while the geometry and
+   * the NURBS fields move by at most `tolerance` (0 removes only what is
+   * exact up to rounding, which undoes a knot insertion). `knots` lists the
+   * values to remove, one copy per entry (default: every copy of every
+   * interior knot). The reduced model is sampled again; `report` lists, per
+   * distinct knot value, the copies asked for and removed. A B-rep and a
+   * model whose patch topology joins several patches are refused.
+   */
+  igaRemoveKnots(
+    info: MfemInfo,
+    options?: {
+      direction?: number;
+      knots?: ArrayLike<number>;
+      tolerance?: number;
+      patch?: number;
+      sampleSubdivisions?: number;
+    },
+  ): {
+    mesh: Mesh;
+    info: MfemInfo;
+    report: {
+      knots: number[];
+      requested: number[];
+      removed: number[];
+      numRemoved: number;
+    };
+  };
+
+  /**
    * Bezier extraction of patch `patch` (0-based) of an MFEM NURBS model: every
    * interior knot raised to multiplicity p and the net cut at its knot spans
    * into one `VTK_BEZIER_CURVE`, `VTK_BEZIER_QUADRILATERAL` or

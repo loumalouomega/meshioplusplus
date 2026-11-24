@@ -451,7 +451,7 @@ marked, support = meshioplusplus.face_support(solid, scan, return_report=True)
 
 #### Isogeometric layer: evaluate, refine, sample NURBS models
 
-The NURBS model a reader keeps beside its mesh (`mesh.info["nurbs"]` for MFEM NURBS meshes, `mesh.info["brep"]` for Kratos CAD JSON, STEP and IGES) can be acted on directly, on every surface (Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP): **`iga_refine`** inserts knots and elevates degrees exactly, with the geometry, the NURBS fields and a trimmed face's trimming loops unchanged; **`iga_evaluate`** returns points, first derivatives, normals and the trimming test at parametric coordinates; **`iga_sample`** samples a model into Lagrange cells again; **`iga_bezier_extract`** cuts one patch into VTK Bezier cells. A refined MFEM model writes back as an `MFEM NURBS mesh`. See [isogeometric layer](doc/iga.md).
+The NURBS model a reader keeps beside its mesh (`mesh.info["nurbs"]` for MFEM NURBS meshes, `mesh.info["brep"]` for Kratos CAD JSON, STEP and IGES) can be acted on directly, on every surface (Python, C++, C, Fortran, Julia, R, WASM, both CLIs, MCP): **`iga_refine`** inserts knots and elevates degrees exactly, with the geometry, the NURBS fields and a trimmed face's trimming loops unchanged; **`iga_evaluate`** returns points, first derivatives, normals and the trimming test at parametric coordinates; **`iga_sample`** samples a model into Lagrange cells again; **`iga_bezier_extract`** cuts one patch into VTK Bezier cells; **`iga_remove_knots`** removes knots within a tolerance. A refined MFEM model writes back as an `MFEM NURBS mesh`. See [isogeometric layer](doc/iga.md).
 
 <!--pytest-codeblocks:skip-->
 

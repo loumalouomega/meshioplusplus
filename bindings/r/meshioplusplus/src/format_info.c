@@ -512,6 +512,62 @@ SEXP R_mio_iga_sample(SEXP x, SEXP sample_subdivisions, SEXP trim_samples, SEXP 
     return iga_mesh_and_info(mesh, mapped, "iga_sample");
 }
 
+SEXP R_mio_iga_remove_knots(SEXP x, SEXP patch, SEXP direction, SEXP knots, SEXP tolerance,
+                            SEXP sample_subdivisions) {
+    const mio_format_info *info = info_of(x, 0);
+    SEXP kn = PROTECT(Rf_coerceVector(knots, REALSXP));
+    mio_iga_remove_opts opts;
+    mio_iga_remove_opts_init(&opts);
+    opts.patch = (int64_t)mio_r_int(patch, "patch") - 1;
+    opts.direction = (int32_t)mio_r_int(direction, "direction") - 1;
+    opts.sample_subdivisions = (int32_t)mio_r_int(sample_subdivisions, "sample_subdivisions");
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+    opts.knots = Rf_length(kn) > 0 ? REAL(kn) : NULL;
+    opts.num_knots = (int64_t)Rf_length(kn);
+    int64_t n = 0;
+    mio_format_info *reduced = NULL;
+    /* the first call sizes the report, the second fills it */
+    mio_mesh *mesh = mio_iga_remove_knots(info, &opts, &reduced, 0, NULL, NULL, NULL, &n);
+    if (mesh == NULL) {
+        UNPROTECT(1);
+        mio_r_fail("iga_remove_knots");
+    }
+    mio_mesh_free(mesh);
+    mio_format_info_free(reduced);
+    SEXP rk = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+    SEXP rq = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+    SEXP rr = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
+    int32_t *requested = (int32_t *)R_alloc((size_t)n + 1, sizeof(int32_t));
+    int32_t *removed = (int32_t *)R_alloc((size_t)n + 1, sizeof(int32_t));
+    reduced = NULL;
+    mesh = mio_iga_remove_knots(info, &opts, &reduced, n, REAL(rk), requested, removed, &n);
+    if (mesh == NULL) {
+        UNPROTECT(4);
+        mio_r_fail("iga_remove_knots");
+    }
+    int total = 0;
+    for (int64_t i = 0; i < n; ++i) {
+        INTEGER(rq)[i] = requested[i];
+        INTEGER(rr)[i] = removed[i];
+        total += removed[i];
+    }
+    SEXP rep_values[4];
+    rep_values[0] = rk;
+    rep_values[1] = rq;
+    rep_values[2] = rr;
+    rep_values[3] = PROTECT(Rf_ScalarInteger(total));
+    const char *rep_names[4] = {"knots", "requested", "removed", "num_removed"};
+    SEXP report = PROTECT(mio_r_named_list(4, rep_names, rep_values));
+    SEXP values[3];
+    values[0] = PROTECT(mio_r_wrap_mesh(mesh));
+    values[1] = PROTECT(reduced != NULL ? wrap_info(reduced) : R_NilValue);
+    values[2] = report;
+    const char *names[3] = {"mesh", "info", "report"};
+    SEXP out = mio_r_named_list(3, names, values);
+    UNPROTECT(8);
+    return out;
+}
+
 SEXP R_mio_iga_bezier_extract(SEXP x, SEXP patch) {
     const mio_format_info *info = info_of(x, 0);
     mio_mesh *mesh = mio_iga_bezier_extract(info, (int64_t)mio_r_int(patch, "patch") - 1);

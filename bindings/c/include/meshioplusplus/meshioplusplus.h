@@ -7488,6 +7488,53 @@ MIO_API mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation
 MIO_API void mio_iga_evaluation_free(mio_iga_evaluation* evaluation);
 
 /**
+ * Options for mio_iga_remove_knots (72 bytes). Initialize through
+ * mio_iga_remove_opts_init().
+ */
+typedef struct mio_iga_remove_opts {
+    /** The patch, 0-based. */
+    int64_t patch;
+    /** The parametric direction to remove knots from, 0-based. */
+    int32_t direction;
+    /** The sampling of the returned cells: cells per knot span, 0 automatic (0 to 64). */
+    int32_t sample_subdivisions;
+    /** The largest deviation of the geometry; 0 removes only what is exact up to rounding. */
+    double tolerance;
+    /** The knot values to remove, each entry one copy; NULL or num_knots == 0 asks for every
+     *  copy of every interior knot. */
+    const double* knots;
+    int64_t num_knots;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_iga_remove_opts;
+
+/** Initialize knot-removal options: patch 0, direction 0, tolerance 0, every knot, automatic sampling. */
+MIO_API void mio_iga_remove_opts_init(mio_iga_remove_opts* opts);
+
+/**
+ * Knot removal on one patch of a NURBS model (The NURBS Book's A5.8; see
+ * doc/iga.md): interior knots of `opts->direction` go while the geometry and
+ * the NURBS fields move by at most `opts->tolerance`. The reduced model is
+ * sampled again, like mio_iga_refine.
+ *
+ * @param reduced optional out: a new handle holding the reduced model (free
+ *                with mio_format_info_free).
+ * @param capacity entries the three report arrays can hold.
+ * @param report_knots optional out: each distinct knot value tried, ascending.
+ * @param report_requested optional out: the copies asked for of each.
+ * @param report_removed optional out: the copies removed of each.
+ * @param num_report optional out: the number of distinct knot values (may exceed
+ *                   capacity, which only limits what is written).
+ * @return the sampled cells (free with mio_mesh_free), or NULL on failure (a bad patch,
+ *         direction or tolerance, a knot that is not an interior knot, a B-rep, a model
+ *         whose topology joins several patches): see mio_last_error().
+ */
+MIO_API mio_mesh* mio_iga_remove_knots(const mio_format_info* info,
+                                       const mio_iga_remove_opts* opts, mio_format_info** reduced,
+                                       int64_t capacity, double* report_knots,
+                                       int32_t* report_requested, int32_t* report_removed,
+                                       int64_t* num_report);
+
+/**
  * Bezier extraction of one patch of a NURBS model: every interior knot raised
  * to multiplicity p, the net cut into one VTK_BEZIER_CURVE, _QUADRILATERAL or
  * _HEXAHEDRON cell per knot-span product ((p+1)^d unshared points each, in

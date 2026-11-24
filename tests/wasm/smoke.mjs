@@ -3737,6 +3737,14 @@ step('igaRefine, igaSample, igaEvaluate: a NURBS model refined exactly and writt
     const s = m.igaSample(mesh.info);
     assert.equal(s.info.format, 'mfem');
     assert.equal(s.mesh.cells[0].type, 'quad9');
+    // Knot removal undoes the refinement's insertions: two knots per direction.
+    const red = m.igaRemoveKnots(fine.info, { direction: 0 });
+    assert.equal(red.report.numRemoved, 2);
+    assert.deepEqual(Array.from(red.report.removed), [1, 1]);
+    assert.ok(Math.abs(red.report.knots[0] - 1 / 3) < 1e-15);
+    assert.equal(red.info.format, 'mfem');
+    assert.throws(() => m.igaRemoveKnots(fine.info, { knots: [0.5] }), /knot/);
+    assert.throws(() => m.igaRemoveKnots(fine.info, { direction: 4 }), /direction/);
     // Bezier extraction: the annulus has unequal degrees (refused); a
     // bi-quadratic square is one Bezier cell of nine points.
     assert.throws(() => m.igaBezierExtract(mesh.info, 0), /unequal degrees/);

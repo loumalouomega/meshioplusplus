@@ -6782,6 +6782,53 @@ val iga_sample_js(const val& rInfo, const val& rOptions) {
     });
 }
 
+// `igaRemoveKnots(info, options)`: knot removal on one patch (0-based) of an
+// MFEM NURBS model; `options` is `{direction, knots, tolerance, patch,
+// sampleSubdivisions}`. Returns `{mesh, info, report}`.
+val iga_remove_knots_js(const val& rInfo, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        if (iga_js_format(rInfo) != "mfem")
+            throw std::invalid_argument(
+                "meshio++: iga: knot removal takes a NURBS model, not a B-rep");
+        const std::int32_t direction = iga_js_int(rOptions, "direction", 0);
+        const std::int32_t patch = iga_js_int(rOptions, "patch", 0);
+        if (patch < 0)
+            throw std::invalid_argument("meshio++: iga: the patch index is negative");
+        double tolerance = 0.0;
+        if (!rOptions.isUndefined() && !rOptions.isNull() && rOptions.hasOwnProperty("tolerance"))
+            tolerance = rOptions["tolerance"].as<double>();
+        std::vector<double> knots;
+        if (!rOptions.isUndefined() && !rOptions.isNull() && rOptions.hasOwnProperty("knots")) {
+            const val k = rOptions["knots"];
+            const auto n = k["length"].as<std::size_t>();
+            for (std::size_t i = 0; i < n; ++i)
+                knots.push_back(k[static_cast<unsigned>(i)].as<double>());
+        }
+        const meshioplusplus::IgaSampleOptions so = iga_js_sample_options(rOptions);
+        meshioplusplus::IgaRemoveKnotsReport report;
+        const meshioplusplus::NurbsInfo reduced = meshioplusplus::iga_remove_knots(
+            val_to_nurbs_info(rInfo), static_cast<std::size_t>(patch), direction, knots, tolerance,
+            &report);
+        meshioplusplus::NurbsInfo mapped;
+        val out = val::object();
+        out.set("mesh", mesh_to_val(meshioplusplus::iga_sample(reduced, so, &mapped)));
+        out.set("info", nurbs_info_to_val(mapped));
+        val rep = val::object();
+        val rk = val::array(), rq = val::array(), rr = val::array();
+        for (std::size_t i = 0; i < report.mKnots.size(); ++i) {
+            rk.call<void>("push", report.mKnots[i]);
+            rq.call<void>("push", static_cast<int>(report.mRequested[i]));
+            rr.call<void>("push", static_cast<int>(report.mRemoved[i]));
+        }
+        rep.set("knots", rk);
+        rep.set("requested", rq);
+        rep.set("removed", rr);
+        rep.set("numRemoved", static_cast<int>(report.mNumRemoved));
+        out.set("report", rep);
+        return out;
+    });
+}
+
 // `igaBezierExtract(info, patch)`: one patch (0-based) of an MFEM NURBS model as
 // VTK Bezier cells (operations/iga.hpp `iga_bezier_extract`).
 val iga_bezier_extract_js(const val& rInfo, int Patch) {
@@ -11410,6 +11457,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("metricFromHessian", &metric_from_hessian_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("igaBezierExtract", &iga_bezier_extract_js);
+    emscripten::function("igaRemoveKnots", &iga_remove_knots_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);
     emscripten::function("renderPng", &render_png_js);

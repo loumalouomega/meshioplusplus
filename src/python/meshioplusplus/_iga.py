@@ -1225,4 +1225,61 @@ def iga_bezier_extract(mesh, patch=0, model="auto"):
     return _core_op("iga_bezier_extract_nurbs")(data, int(patch))
 
 
-__all__ = ["iga_bezier_extract", "iga_evaluate", "iga_refine", "iga_sample"]
+def iga_remove_knots(
+    mesh,
+    direction=0,
+    knots=(),
+    tolerance=0.0,
+    patch=0,
+    model="auto",
+    sample_subdivisions=0,
+    return_report=False,
+):
+    """Remove knots from one patch of a NURBS model (The NURBS Book's A5.8).
+
+    Interior knots are removed from ``direction`` of ``patch`` while the
+    geometry (and the NURBS fields) stays within ``tolerance``, in the book's
+    bound ``d * wmin / (1 + Pmax)`` on the homogeneous net: the curve or
+    surface moves by at most ``tolerance``. ``tolerance=0`` removes only what
+    is exact up to rounding (``1e-12`` of the net's size), which undoes a
+    knot insertion. A knot of a surface or volume goes only if it goes from
+    every line of the net.
+
+    :param direction: the parametric direction (0-based).
+    :param knots: knot values to remove, each listing one copy (a value listed
+        twice asks for two); empty asks for every copy of every interior knot.
+    :param sample_subdivisions: cells per knot span of the returned sampling
+        (0: automatic, as :func:`iga_sample`).
+    :param return_report: also return ``{"knots", "requested", "removed",
+        "num_removed"}`` (per distinct knot value, ascending).
+    :returns: the model with that patch replaced, sampled again, with the new
+        model in ``mesh.info["nurbs"]``; or ``(mesh, report)``.
+    :raises ValueError: on a bad patch or direction, a negative tolerance, a
+        knot that is not an interior knot (or is listed more often than its
+        multiplicity), a ``brep`` model, or a model whose patch topology joins
+        several patches.
+    :raises NotImplementedError: when the compiled C++ core is unavailable.
+    """
+    from ._hull import _core_op
+
+    kind, data = _model(mesh, model)
+    if kind != "nurbs":
+        _fail("knot removal takes a 'nurbs' model, not a 'brep'")
+    out, report = _core_op("iga_remove_knots_nurbs")(
+        data,
+        int(patch),
+        int(direction),
+        [float(k) for k in np.atleast_1d(np.asarray(knots, dtype=np.float64))],
+        float(tolerance),
+        int(sample_subdivisions),
+    )
+    return (out, report) if return_report else out
+
+
+__all__ = [
+    "iga_bezier_extract",
+    "iga_evaluate",
+    "iga_refine",
+    "iga_remove_knots",
+    "iga_sample",
+]

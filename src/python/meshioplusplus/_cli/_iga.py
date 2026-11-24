@@ -161,27 +161,91 @@ def bezier_cmd(args):
     return 0
 
 
-def _summary(mesh, args, name):
+def add_remove_knots_args(parser):
+    _add_io(parser, "reduced model, sampled, to be written to")
+    parser.add_argument(
+        "--direction",
+        "-d",
+        type=int,
+        default=0,
+        help="parametric direction to remove knots from, 0-based (default: 0)",
+    )
+    parser.add_argument(
+        "--knot",
+        "-k",
+        type=float,
+        action="append",
+        default=None,
+        help="a knot value to remove one copy of; repeat for more "
+        "(default: every copy of every interior knot)",
+    )
+    parser.add_argument(
+        "--tolerance",
+        "-t",
+        type=float,
+        default=0.0,
+        help="largest deviation of the geometry; 0 removes only what is exact "
+        "up to rounding (default: 0)",
+    )
+    parser.add_argument(
+        "--patch", type=int, default=0, help="the patch to reduce (default: 0)"
+    )
+    parser.add_argument(
+        "--sample-subdivisions",
+        type=int,
+        default=0,
+        help="cells per knot span of the written sampling (default: 0, automatic)",
+    )
+    parser.add_argument("--json", action="store_true", help="emit a summary as JSON")
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="suppress the summary"
+    )
+
+
+def remove_knots_cmd(args):
+    from .._iga import iga_remove_knots
+
+    mesh = read(args.infile, file_format=args.input_format)
+    out, report = iga_remove_knots(
+        mesh,
+        direction=args.direction,
+        knots=args.knot or (),
+        tolerance=args.tolerance,
+        patch=args.patch,
+        model=args.model,
+        sample_subdivisions=args.sample_subdivisions,
+        return_report=True,
+    )
+    write(args.outfile, out, file_format=args.output_format)
+    _summary(out, args, "iga_remove_knots", report)
+    return 0
+
+
+def _summary(mesh, args, name, report=None):
     cells = sum(len(c.data) for c in mesh.cells)
     info = mesh.info or {}
     kind = "brep" if "brep" in info and "nurbs" not in info else "nurbs"
     # An extraction carries no model: it is one patch's cells
     patches = len(info[kind]["patches"]) if kind in info else 1
     if args.json:
-        emit_json(
-            {
-                "operation": name,
-                "model": kind,
-                "num_patches": patches,
-                "num_points": len(mesh.points),
-                "num_cells": cells,
-                "cell_blocks": [
-                    {"type": c.type, "num_cells": len(c.data)} for c in mesh.cells
-                ],
-            }
-        )
+        payload = {
+            "operation": name,
+            "model": kind,
+            "num_patches": patches,
+            "num_points": len(mesh.points),
+            "num_cells": cells,
+            "cell_blocks": [
+                {"type": c.type, "num_cells": len(c.data)} for c in mesh.cells
+            ],
+        }
+        payload.update(report or {})
+        emit_json(payload)
     elif not args.quiet:
-        print(f"{name}: {patches} patch(es), {len(mesh.points)} points, {cells} cells")
+        extra = f", {report['num_removed']} knot(s) removed" if report else ""
+        print(
+            f"{name}: {patches} patch(es), {len(mesh.points)} points, "
+            f"{cells} cells{extra}"
+        )
 
 
 def add_evaluate_args(parser):

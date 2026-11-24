@@ -1903,6 +1903,58 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     mio_mesh_free(cells);
     mio_format_info_free(mapped);
 
+    // Knot removal undoes the insertion of the refinement: two knots per direction.
+    {
+        mio_iga_remove_opts ro;
+        mio_iga_remove_opts_init(&ro);
+        EXPECT_EQ(ro.num_knots, 0);
+        EXPECT_EQ(ro.reserved[0], 0);
+        ro.direction = 0;
+        double rk[4] = {0, 0, 0, 0};
+        int32_t rq[4] = {0, 0, 0, 0}, rr[4] = {0, 0, 0, 0};
+        int64_t nrep = 0;
+        mio_format_info* reduced = nullptr;
+        mio_mesh* cells_r = mio_iga_remove_knots(refined, &ro, &reduced, 4, rk, rq, rr, &nrep);
+        ASSERT_NE(cells_r, nullptr) << mio_last_error();
+        ASSERT_NE(reduced, nullptr);
+        EXPECT_EQ(nrep, 2);
+        EXPECT_NEAR(rk[0], 1.0 / 3.0, 1e-15);
+        EXPECT_NEAR(rk[1], 2.0 / 3.0, 1e-15);
+        EXPECT_EQ(rq[0], 1);
+        EXPECT_EQ(rr[0], 1);
+        EXPECT_EQ(rr[1], 1);
+        mio_mesh_free(cells_r);
+        mio_format_info_free(reduced);
+        // The capacity only limits what is written; the count is the full one.
+        nrep = 0;
+        cells_r = mio_iga_remove_knots(refined, &ro, nullptr, 1, rk, rq, rr, &nrep);
+        ASSERT_NE(cells_r, nullptr) << mio_last_error();
+        EXPECT_EQ(nrep, 2);
+        mio_mesh_free(cells_r);
+        // Listed knots: one value, one copy; errors are NULL with a message.
+        const double one = 1.0 / 3.0;
+        ro.knots = &one;
+        ro.num_knots = 1;
+        cells_r = mio_iga_remove_knots(refined, &ro, nullptr, 0, nullptr, nullptr, nullptr, &nrep);
+        ASSERT_NE(cells_r, nullptr) << mio_last_error();
+        EXPECT_EQ(nrep, 1);
+        mio_mesh_free(cells_r);
+        const double absent = 0.5;
+        ro.knots = &absent;
+        EXPECT_EQ(mio_iga_remove_knots(refined, &ro, nullptr, 0, nullptr, nullptr, nullptr, nullptr),
+                  nullptr);
+        ro.num_knots = 0;
+        ro.direction = 5;
+        EXPECT_EQ(mio_iga_remove_knots(refined, &ro, nullptr, 0, nullptr, nullptr, nullptr, nullptr),
+                  nullptr);
+        ro.direction = 0;
+        ro.tolerance = -1.0;
+        EXPECT_EQ(mio_iga_remove_knots(refined, &ro, nullptr, 0, nullptr, nullptr, nullptr, nullptr),
+                  nullptr);
+        EXPECT_EQ(mio_iga_remove_knots(nullptr, nullptr, nullptr, 0, nullptr, nullptr, nullptr,
+                                       nullptr),
+                  nullptr);
+    }
     // Bezier extraction: the annulus has unequal degrees (refused by name); a
     // bi-quadratic square gives one Bezier cell of nine points.
     EXPECT_EQ(mio_iga_bezier_extract(info, 0), nullptr);
