@@ -770,17 +770,19 @@ const MIO_IGA_DERIVATIVES = Int32(1)
 const MIO_IGA_NORMALS = Int32(2)
 const MIO_IGA_INSIDE = Int32(3)
 const MIO_IGA_FIELD = Int32(4)
+const MIO_IGA_SECOND_DERIVATIVES = Int32(5)
 
 """
     iga_evaluate(info, patch, params; derivatives=0, trim_samples=16)
-        -> (; points, fields, derivatives, normals, inside)
+        -> (; points, fields, derivatives, normals, inside, second_derivatives)
 
 Evaluate patch `patch` (1-based; the face of a B-rep) of a NURBS model at the
 parametric coordinates in `params`, a `(d, N)` matrix with one column per point
 (`d` the parametric dimension), each inside the patch's knot range. `points` is
 `(space dimension, N)`, `fields` one `(components, N)` matrix per NURBS field.
 With `derivatives=1`, `derivatives` is `(space dimension, d, N)` and `normals`
-`(3, N)` (surfaces in 3-D); for a B-rep face `inside` is a `Vector{Bool}` of the
+`(3, N)` (surfaces in 3-D); with `derivatives=2`, `second_derivatives` is
+`(space dimension, d, d, N)`, the symmetric `d2 x / d u_k d u_l`; for a B-rep face `inside` is a `Vector{Bool}` of the
 trimming test. Absent parts are `nothing`.
 """
 function iga_evaluate(info::FormatInfo, patch::Integer, params::AbstractMatrix{<:Real};
@@ -805,7 +807,8 @@ function iga_evaluate(info::FormatInfo, patch::Integer, params::AbstractMatrix{<
         inside = opt(MIO_IGA_INSIDE)
         (points=arr(MIO_IGA_POINTS), fields=[arr(MIO_IGA_FIELD, k) for k in 0:nf-1],
          derivatives=opt(MIO_IGA_DERIVATIVES), normals=opt(MIO_IGA_NORMALS),
-         inside=inside === nothing ? nothing : Vector{Bool}(inside .!= 0))
+         inside=inside === nothing ? nothing : Vector{Bool}(inside .!= 0),
+         second_derivatives=opt(MIO_IGA_SECOND_DERIVATIVES))
     finally
         ccall(_sym(:mio_iga_evaluation_free), Cvoid, (Ptr{Cvoid},), ev)
     end

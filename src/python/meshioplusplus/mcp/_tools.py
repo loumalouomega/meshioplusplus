@@ -4064,7 +4064,8 @@ def tool_iga_evaluate(
 ):
     """Evaluate a patch of a NURBS model (a face of a B-rep) at parametric
     coordinates params (a list of [u], [u, v] or [u, v, w]): points, with
-    derivatives=1 the first derivatives and surface normals, the NURBS fields,
+    derivatives=1 the first derivatives and surface normals, derivatives=2 also
+    the second derivatives, the NURBS fields,
     and for a B-rep face whether each point lies inside its trimming loops."""
     points = np.asarray(params, dtype=np.float64)
     if points.ndim == 1:

@@ -274,6 +274,10 @@ end
         write_with_info(fine, refined, joinpath(dir, "refined.mesh"); format="mfem")
         uv = [0.3 0.9; 0.7 0.2]
         a = iga_evaluate(info, 1, uv; derivatives=1)
+        c2 = iga_evaluate(info, 1, uv; derivatives=2)
+        @test size(c2.second_derivatives) == (2, 2, 2, 2)
+        @test c2.second_derivatives[:, 1, 2, :] == c2.second_derivatives[:, 2, 1, :]
+        @test a.second_derivatives === nothing
         b = iga_evaluate(refined, 1, uv)
         @test size(a.points) == (2, 2)
         @test maximum(abs.(a.points .- b.points)) < 1e-13

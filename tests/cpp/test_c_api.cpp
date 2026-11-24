@@ -1859,6 +1859,26 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
               MIO_ERR_INVALID_ARG);
     EXPECT_EQ(mio_iga_evaluation_array(a, MIO_IGA_FIELD, 0, &pa, nullptr, nullptr, nullptr),
               MIO_ERR_INVALID_ARG);
+    // derivatives = 2 adds the symmetric second-derivative block (N, 2, 2, 2).
+    EXPECT_EQ(mio_iga_evaluation_array(a, MIO_IGA_SECOND_DERIVATIVES, 0, &pa, nullptr, nullptr,
+                                       nullptr),
+              MIO_ERR_INVALID_ARG);  // not requested at derivatives = 1
+    mio_iga_evaluation* c = mio_iga_evaluate(info, 0, uv, 2, 2, 16);
+    ASSERT_NE(c, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_iga_evaluation_array(c, MIO_IGA_SECOND_DERIVATIVES, 0, &pa, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_FLOAT64);
+    EXPECT_EQ(ndim, 4);
+    EXPECT_EQ(shape[0], 2);
+    EXPECT_EQ(shape[1], 2);
+    EXPECT_EQ(shape[2], 2);
+    EXPECT_EQ(shape[3], 2);
+    const double* h2 = static_cast<const double*>(pa);
+    for (int i = 0; i < 2; ++i)  // symmetric d2 x / du dv = d2 x / dv du
+        for (int comp = 0; comp < 2; ++comp)
+            EXPECT_EQ(h2[((i * 2 + 0) * 2 + 1) * 2 + comp], h2[((i * 2 + 1) * 2 + 0) * 2 + comp]);
+    EXPECT_EQ(mio_iga_evaluate(info, 0, uv, 2, 3, 16), nullptr);
+    mio_iga_evaluation_free(c);
     mio_iga_evaluation_free(a);
     mio_iga_evaluation_free(b);
 

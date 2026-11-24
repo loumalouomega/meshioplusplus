@@ -4508,14 +4508,16 @@ export interface MeshioPlusPlusModule {
    * Evaluate patch `patch` (0-based; the face of a B-rep) at `params`, a flat
    * array with the parametric dimension's worth of numbers per point.
    * `derivatives: 1` adds the first derivatives (`(N, d, spaceDim)`) and the
-   * unit normals of a surface in 3-D; a B-rep face also reports `inside`
+   * unit normals of a surface in 3-D; `derivatives: 2` also the symmetric
+   * second derivatives `secondDerivatives` (`(N, d, d, spaceDim)`); a B-rep
+   * face also reports `inside`
    * (1 where its trimming loops contain the point).
    */
   igaEvaluate(
     info: MfemInfo | CadJsonInfo,
     patch: number,
     params: ArrayLike<number>,
-    options?: { derivatives?: 0 | 1; trimSamples?: number },
+    options?: { derivatives?: 0 | 1 | 2; trimSamples?: number },
   ): {
     spaceDim: number;
     points: Float64Array;
@@ -4523,6 +4525,7 @@ export interface MeshioPlusPlusModule {
     fieldComponents: number[];
     derivatives?: Float64Array;
     normals?: Float64Array;
+    secondDerivatives?: Float64Array;
     inside?: Uint8Array;
   };
 

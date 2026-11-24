@@ -33236,6 +33236,10 @@ struct MESHIOPLUSPLUS_API IgaEvaluation {
     /// Float64 `(N, 3)`: the unit normal `d1 x d2 / |d1 x d2|` of a surface in
     /// 3-D (zeros where the tangents are parallel).
     NDArray mNormals{DType::Float64, {0}};
+    /// Float64 `(N, parametric dimension, parametric dimension, space
+    /// dimension)`: the full symmetric second derivatives `d2 x / d u_k d u_l`,
+    /// filled only by `Derivatives == 2` (roadmap 9.8.1).
+    NDArray mSecondDerivatives{DType::Float64, {0}};
     /// One Float64 `(N, components)` per `NurbsInfo::mFieldNames` entry.
     std::vector<NDArray> mFields;
     /// UInt8 `(N)`: 1 where a face's trimming loops contain the point (a face
@@ -33285,8 +33289,11 @@ MESHIOPLUSPLUS_API BrepInfo iga_refine(const BrepInfo& rInfo, const IgaRefineOpt
 /**
  * @brief Evaluate patch @p Patch of @p rInfo, and its fields, at the parameters
  * @p rParams (Float64 `(N, parametric dimension)`).
- * @param Derivatives 0 or 1: with 1, also the first derivatives and, for a
- * surface in 3-D, the unit normals.
+ * @param Derivatives 0, 1 or 2: with 1, also the first derivatives and, for a
+ * surface in 3-D, the unit normals; with 2, also the second derivatives
+ * (`mSecondDerivatives`). The first derivatives of order 2 come from the
+ * second-order basis recurrence and may differ in the last bits from those of
+ * order 1.
  * @throws std::invalid_argument for a bad patch, parameters or a parameter
  * outside the patch's knot range (by more than rounding).
  */
@@ -50910,6 +50917,98 @@ inline void iga_eval_surface_d2(const IgaEvalNet& rNet, const std::size_t* pSpan
         pD2[c] = (acc[3 * NV + c] - 2.0 * wsum[1] * xu - wsum[3] * x) / w0;
         pD2[NV + c] = (acc[4 * NV + c] - wsum[1] * xv - wsum[2] * xu - wsum[4] * x) / w0;
         pD2[2 * NV + c] = (acc[5 * NV + c] - 2.0 * wsum[2] * xv - wsum[5] * x) / w0;
+    }
+}
+
+/// A net of dimension 1 to 3 at the parameters `pU` in spans `pSpan`, to the
+/// second derivatives (roadmap 9.8.1): the `NV` values `pOut`, their first
+/// derivatives `pD1` (row-major `(dim, NV)`) and their full symmetric second
+/// derivatives `pD2` (row-major `(dim, dim, NV)`, `pD2[(k * dim + l) * NV]`
+/// the derivative along `k` then `l`). The homogeneous sums run over the
+/// tensor nodes in the order `iga_eval_point` uses; a rational net takes the
+/// quotient rule `R_kl = (((A_kl - W_kl R) - W_k R_l) - W_l R_k) / W`
+/// (Piegl and Tiller 1997, A4.4 generalised to any dimension), a polynomial net
+/// its sums as they are. The Python twin repeats this arithmetic order.
+inline void iga_eval_point_d2(const IgaEvalNet& rNet, const std::size_t* pSpan, const double* pU,
+                              double* pOut, double* pD1, double* pD2) {
+    const std::size_t dim = rNet.mDim, NV = rNet.mColumns;
+    std::array<IgaScratch<48>, 3> ders;
+    std::array<std::size_t, 3> np1{1, 1, 1}, base{0, 0, 0};
+    for (std::size_t d = 0; d < dim; ++d) {
+        np1[d] = static_cast<std::size_t>(rNet.mDegrees[d]) + 1;
+        base[d] = pSpan[d] - static_cast<std::size_t>(rNet.mDegrees[d]);
+        ders[d].Assign(3 * np1[d], 0.0);
+        iga_basis_ders2(pSpan[d], pU[d], rNet.mDegrees[d], *rNet.mKnots[d], ders[d].data());
+    }
+    // The homogeneous sums: 0 the value, 1 + k the first derivative along k,
+    // then the second derivatives (k, l), k <= l, in row order.
+    std::array<std::array<int, 3>, 10> order{};
+    std::size_t nq = 0;
+    order[nq++] = {0, 0, 0};
+    for (std::size_t k = 0; k < dim; ++k) {
+        order[nq] = {0, 0, 0};
+        order[nq++][k] = 1;
+    }
+    std::array<std::array<std::size_t, 3>, 6> pair{};
+    std::size_t npair = 0;
+    for (std::size_t k = 0; k < dim; ++k)
+        for (std::size_t l = k; l < dim; ++l) {
+            order[nq] = {0, 0, 0};
+            order[nq][k] += 1;
+            order[nq][l] += 1;
+            pair[npair++] = {k, l, nq};
+            ++nq;
+        }
+    IgaScratch<120> acc(nq * NV);
+    std::array<double, 10> wsum{};
+    for (std::size_t j2 = 0; j2 < np1[2]; ++j2)
+        for (std::size_t j1 = 0; j1 < np1[1]; ++j1)
+            for (std::size_t j0 = 0; j0 < np1[0]; ++j0) {
+                const std::array<std::size_t, 3> j{j0, j1, j2};
+                const std::size_t idx =
+                    (base[0] + j0) +
+                    rNet.mCounts[0] * ((base[1] + j1) + rNet.mCounts[1] * (base[2] + j2));
+                const double w = rNet.mWeights ? rNet.mWeights[idx] : 1.0;
+                const double* v = rNet.mValues + idx * NV;
+                for (std::size_t q = 0; q < nq; ++q) {
+                    double b = 1.0;
+                    for (std::size_t d = 0; d < dim; ++d)
+                        b *= ders[d][static_cast<std::size_t>(order[q][d]) * np1[d] + j[d]];
+                    const double cc = w * b;
+                    for (std::size_t c = 0; c < NV; ++c)
+                        acc[q * NV + c] += cc * v[c];
+                    wsum[q] += cc;
+                }
+            }
+    if (!rNet.mWeights) {
+        for (std::size_t c = 0; c < NV; ++c)
+            pOut[c] = acc[c];
+        for (std::size_t k = 0; k < dim; ++k)
+            for (std::size_t c = 0; c < NV; ++c)
+                pD1[k * NV + c] = acc[(1 + k) * NV + c];
+        for (std::size_t m = 0; m < npair; ++m)
+            for (std::size_t c = 0; c < NV; ++c) {
+                const double v = acc[pair[m][2] * NV + c];
+                pD2[(pair[m][0] * dim + pair[m][1]) * NV + c] = v;
+                pD2[(pair[m][1] * dim + pair[m][0]) * NV + c] = v;
+            }
+        return;
+    }
+    const double w0 = wsum[0];
+    for (std::size_t c = 0; c < NV; ++c)
+        pOut[c] = acc[c] / w0;
+    for (std::size_t k = 0; k < dim; ++k)
+        for (std::size_t c = 0; c < NV; ++c)
+            pD1[k * NV + c] = (acc[(1 + k) * NV + c] - wsum[1 + k] * pOut[c]) / w0;
+    for (std::size_t m = 0; m < npair; ++m) {
+        const std::size_t k = pair[m][0], l = pair[m][1], q = pair[m][2];
+        for (std::size_t c = 0; c < NV; ++c) {
+            const double v = (((acc[q * NV + c] - wsum[q] * pOut[c]) - wsum[1 + k] * pD1[l * NV + c]) -
+                              wsum[1 + l] * pD1[k * NV + c]) /
+                             w0;
+            pD2[(k * dim + l) * NV + c] = v;
+            pD2[(l * dim + k) * NV + c] = v;
+        }
     }
 }
 
@@ -264235,8 +264334,8 @@ IgaTable iga_make_table(const NurbsPatch& rP, const std::string& rWhat, bool Rat
 
 IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDArray& rParams,
                                  std::int32_t Derivatives, const std::string& rWhat) {
-    if (Derivatives < 0 || Derivatives > 1)
-        iga_fail("derivatives must be 0 or 1");
+    if (Derivatives < 0 || Derivatives > 2)
+        iga_fail("derivatives must be 0, 1 or 2");
     const IgaTable t = iga_make_table(rP, rWhat, Rational);
     const IgaShape& sh = t.mShape;
     if (rParams.Dtype() != DType::Float64 ||
@@ -264262,7 +264361,8 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
         }
     IgaEvaluation out;
     out.mPoints = NDArray(DType::Float64, {n, sdim});
-    std::vector<double> values(n * nv), ders(Derivatives ? n * dim * nv : 0);
+    std::vector<double> values(n * nv), ders(Derivatives ? n * dim * nv : 0),
+        ders2(Derivatives == 2 ? n * dim * dim * nv : 0);
     parallel_for(n, [&](std::size_t i) {
         std::array<std::size_t, 3> span{0, 0, 0};
         std::array<double, 3> u{0, 0, 0};
@@ -264270,8 +264370,14 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
             u[d] = std::min(std::max(params[i * dim + d], lo[d]), hi[d]);
             span[d] = detail::nurbs_find_span(rP.mDegrees[d], rP.mKnots[d], sh.mCounts[d], u[d]);
         }
-        detail::iga_eval_point(t.mNet, span.data(), u.data(), Derivatives, values.data() + i * nv,
-                               Derivatives ? ders.data() + i * dim * nv : nullptr);
+        if (Derivatives == 2)
+            detail::iga_eval_point_d2(t.mNet, span.data(), u.data(), values.data() + i * nv,
+                                      ders.data() + i * dim * nv,
+                                      ders2.data() + i * dim * dim * nv);
+        else
+            detail::iga_eval_point(t.mNet, span.data(), u.data(), Derivatives,
+                                   values.data() + i * nv,
+                                   Derivatives ? ders.data() + i * dim * nv : nullptr);
     });
     double* px = out.mPoints.As<double>();
     for (std::size_t i = 0; i < n; ++i)
@@ -264294,6 +264400,16 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
             for (std::size_t k = 0; k < dim; ++k)
                 for (std::size_t d = 0; d < sdim; ++d)
                     pd[(i * dim + k) * sdim + d] = ders[(i * dim + k) * nv + d];
+        if (Derivatives == 2) {
+            out.mSecondDerivatives = NDArray(DType::Float64, {n, dim, dim, sdim});
+            double* ps = out.mSecondDerivatives.As<double>();
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t k = 0; k < dim; ++k)
+                    for (std::size_t l = 0; l < dim; ++l)
+                        for (std::size_t d = 0; d < sdim; ++d)
+                            ps[((i * dim + k) * dim + l) * sdim + d] =
+                                ders2[((i * dim + k) * dim + l) * nv + d];
+        }
         if (dim == 2 && sdim == 3) {
             out.mNormals = NDArray(DType::Float64, {n, std::size_t{3}});
             double* pn = out.mNormals.As<double>();

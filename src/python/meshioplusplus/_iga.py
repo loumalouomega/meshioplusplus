@@ -431,9 +431,8 @@ def _refine_patch(patch, rational, subdivisions, elevate, what):
 # ---------------------------------------------------------------------------
 
 
-def _basis_ders(span, u, p, nder, knots):
-    """``(nder + 1, N, p + 1)``: the basis functions and, for ``nder == 1``,
-    their derivatives, at ``u`` in knot spans ``span`` (arrays of length N)."""
+def _ndu(span, u, p, knots):
+    """The triangular table of A2.2/A2.3 ``(p + 1, p + 1, N)``."""
     n = len(u)
     ndu = np.zeros((p + 1, p + 1, n))
     left = np.zeros((p + 1, n))
@@ -449,6 +448,14 @@ def _basis_ders(span, u, p, nder, knots):
             ndu[r, j] = saved + right[r + 1] * temp
             saved = left[j - r] * temp
         ndu[j, j] = saved
+    return ndu
+
+
+def _basis_ders(span, u, p, nder, knots):
+    """``(nder + 1, N, p + 1)``: the basis functions and, for ``nder == 1``,
+    their derivatives, at ``u`` in knot spans ``span`` (arrays of length N)."""
+    n = len(u)
+    ndu = _ndu(span, u, p, knots)
     out = np.zeros((nder + 1, n, p + 1))
     for j in range(p + 1):
         out[0, :, j] = ndu[j, p]
@@ -518,6 +525,117 @@ def _eval_batch(net, spans, u, nder):
     return acc, (dacc if nder >= 1 else None)
 
 
+def _basis_ders2(span, u, p, knots):
+    """``(3, N, p + 1)``: the basis functions and their first and second
+    derivatives, A2.3 in the order of the core's ``iga_basis_ders2``."""
+    n = len(u)
+    w = p + 1
+    ndu = _ndu(span, u, p, knots)
+    out = np.zeros((3, n, w))
+    for j in range(w):
+        out[0, :, j] = ndu[j, p]
+    nk = min(2, p)
+    a = np.zeros((2, w, n))
+    for r in range(w):
+        s1, s2 = 0, 1
+        a[0, 0] = 1.0
+        for k in range(1, nk + 1):
+            d = np.zeros(n)
+            rk = r - k
+            pk = p - k
+            if r >= k:
+                a[s2, 0] = a[s1, 0] / ndu[pk + 1, rk]
+                d = a[s2, 0] * ndu[rk, pk]
+            j1 = 1 if rk >= -1 else -rk
+            j2 = k - 1 if r - 1 <= pk else p - r
+            for j in range(j1, j2 + 1):
+                a[s2, j] = (a[s1, j] - a[s1, j - 1]) / ndu[pk + 1, rk + j]
+                d = d + a[s2, j] * ndu[rk + j, pk]
+            if r <= pk:
+                a[s2, k] = -a[s1, k - 1] / ndu[pk + 1, r]
+                d = d + a[s2, k] * ndu[r, pk]
+            out[k, :, r] = d
+            s1, s2 = s2, s1
+    factor = float(p)
+    for k in range(1, nk + 1):
+        for j in range(w):
+            out[k, :, j] = out[k, :, j] * factor
+        factor = factor * float(p - k)
+    return out
+
+
+def _eval_batch2(net, spans, u):
+    """Values ``(N, NV)``, first derivatives ``(dim, N, NV)`` and the full
+    symmetric second derivatives ``(dim, dim, N, NV)``, in the arithmetic order
+    of the core's ``iga_eval_point_d2``."""
+    dim = net["dim"]
+    values, weights = net["values"], net["weights"]
+    nv = values.shape[1]
+    n = u.shape[0]
+    ders = [
+        _basis_ders2(spans[:, d], u[:, d], net["degrees"][d], net["knots"][d])
+        for d in range(dim)
+    ]
+    np1 = [net["degrees"][d] + 1 if d < dim else 1 for d in range(3)]
+    base = [spans[:, d] - net["degrees"][d] if d < dim else 0 for d in range(3)]
+    counts = net["counts"]
+    # The homogeneous sums: the value, the first derivatives, then (k, l), k <= l.
+    order = [(0, 0, 0)]
+    for k in range(dim):
+        o = [0, 0, 0]
+        o[k] = 1
+        order.append(tuple(o))
+    pairs = []
+    for k in range(dim):
+        for m in range(k, dim):
+            o = [0, 0, 0]
+            o[k] += 1
+            o[m] += 1
+            pairs.append((k, m, len(order)))
+            order.append(tuple(o))
+    nq = len(order)
+    acc = np.zeros((nq, n, nv))
+    wsum = np.zeros((nq, n))
+    for j2 in range(np1[2]):
+        for j1 in range(np1[1]):
+            for j0 in range(np1[0]):
+                j = (j0, j1, j2)
+                idx = (base[0] + j0) + counts[0] * (
+                    (base[1] + j1) + counts[1] * (base[2] + j2)
+                )
+                w = weights[idx] if weights is not None else 1.0
+                v = values[idx]
+                for q in range(nq):
+                    b = np.ones(n)
+                    for d in range(dim):
+                        b = b * ders[d][order[q][d]][:, j[d]]
+                    cc = w * b
+                    acc[q] = acc[q] + cc[:, None] * v
+                    wsum[q] = wsum[q] + cc
+    d1 = np.zeros((dim, n, nv))
+    d2 = np.zeros((dim, dim, n, nv))
+    if weights is None:
+        out = acc[0]
+        for k in range(dim):
+            d1[k] = acc[1 + k]
+        for k, m, q in pairs:
+            d2[k, m] = acc[q]
+            d2[m, k] = acc[q]
+        return out, d1, d2
+    w0 = wsum[0][:, None]
+    out = acc[0] / w0
+    for k in range(dim):
+        d1[k] = (acc[1 + k] - wsum[1 + k][:, None] * out) / w0
+    for k, m, q in pairs:
+        v = (
+            ((acc[q] - wsum[q][:, None] * out) - wsum[1 + k][:, None] * d1[m])
+            - wsum[1 + m][:, None] * d1[k]
+        ) / w0
+        d2[k, m] = v
+        d2[m, k] = v
+    return out, d1, d2
+
+
 def _eval_table(patch, sh, rational):
     cols = [np.asarray(patch["control_points"], dtype=np.float64)]
     cols += [np.asarray(f, dtype=np.float64) for f in patch.get("fields", [])]
@@ -532,8 +650,8 @@ def _eval_table(patch, sh, rational):
 
 
 def _evaluate_patch(patch, rational, params, derivatives, what):
-    if derivatives not in (0, 1):
-        _fail("derivatives must be 0 or 1")
+    if derivatives not in (0, 1, 2):
+        _fail("derivatives must be 0, 1 or 2")
     sh = _check_patch(patch, what)
     if rational:
         _check_weights(patch, what)
@@ -565,7 +683,11 @@ def _evaluate_patch(patch, rational, params, derivatives, what):
             for x in uc
         ]
     table = _eval_table(patch, sh, rational)
-    values, ders = _eval_batch(table, spans, u, derivatives)
+    ders2 = None
+    if derivatives == 2:
+        values, ders, ders2 = _eval_batch2(table, spans, u)
+    else:
+        values, ders = _eval_batch(table, spans, u, derivatives)
     out = {"points": np.ascontiguousarray(values[:, :sdim])}
     fields = []
     c = sdim
@@ -576,6 +698,10 @@ def _evaluate_patch(patch, rational, params, derivatives, what):
     if derivatives:
         d_arr = np.ascontiguousarray(np.moveaxis(ders[:, :, :sdim], 0, 1))
         out["derivatives"] = d_arr
+        if ders2 is not None:
+            out["second_derivatives"] = np.ascontiguousarray(
+                np.transpose(ders2[:, :, :, :sdim], (2, 0, 1, 3))
+            )
         if dim == 2 and sdim == 3:
             a, b = d_arr[:, 0], d_arr[:, 1]
             cx = a[:, 1] * b[:, 2] - a[:, 2] * b[:, 1]
@@ -999,14 +1125,18 @@ def iga_evaluate(
         parametric dimension); every one must lie in the patch's knot range.
     :param patch: the patch of a ``nurbs`` model, or the face of a ``brep``
         model, to evaluate.
-    :param derivatives: 0, or 1 for the first derivatives (and the unit
-        normals of a surface in 3-D).
+    :param derivatives: 0; 1 for the first derivatives (and the unit normals
+        of a surface in 3-D); 2 also for the second derivatives (the first
+        derivatives of order 2 come from the second-order recurrence and may
+        differ from those of order 1 in the last bits).
     :param trim_samples: ``brep``: points per knot span a trimming curve is
         sampled at for the inside test.
     :returns: a dict with ``points`` ``(N, space dim)``, ``fields`` (one
         ``(N, components)`` array per NURBS field), with ``derivatives`` also
         ``derivatives`` ``(N, d, space dim)`` and, for a surface in 3-D,
-        ``normals`` ``(N, 3)``, and for a ``brep`` face ``inside`` (a bool
+        ``normals`` ``(N, 3)``, with ``derivatives=2`` also
+        ``second_derivatives`` ``(N, d, d, space dim)`` (the full symmetric
+        ``d2 x / d u_k d u_l``), and for a ``brep`` face ``inside`` (a bool
         array: the point lies inside the face's trimming loops).
     """
     kind, data = _model(mesh, model)

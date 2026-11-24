@@ -206,7 +206,7 @@ program test_fortran_api
                 type(mio_format_info) :: refined
                 type(mio_iga_evaluation) :: ev_a, ev_b
                 real(real64) :: uv(2, 2)
-                real(real64), allocatable :: pa(:, :), pb(:, :), da(:, :, :), nrm(:, :)
+                real(real64), allocatable :: pa(:, :), pb(:, :), da(:, :, :), nrm(:, :), d2(:, :, :, :)
                 fine = info%iga_refine(subdivisions=[3], elevate=[1], refined=refined, &
                                        stat=ierr, errmsg=msg)
                 call check(ierr == 0, 'iga_refine succeeds')
@@ -227,6 +227,18 @@ program test_fortran_api
                     call check(all(shape(da) == [2, 2, 2]), 'iga derivatives shape')
                     nrm = ev_a%normals(stat=ierr)
                     call check(ierr /= 0, 'a planar patch has no 3-D normals')
+                    d2 = ev_a%second_derivatives(stat=ierr)
+                    call check(ierr /= 0, 'derivatives = 1 carries no second derivatives')
+                    call ev_a%free()
+                    ev_a = info%iga_evaluate(1, uv, derivatives=2, stat=ierr)
+                    call check(ierr == 0, 'iga_evaluate with derivatives = 2 succeeds')
+                    d2 = ev_a%second_derivatives(stat=ierr)
+                    call check(ierr == 0 .and. all(shape(d2) == [2, 2, 2, 2]), &
+                               'iga second derivatives shape')
+                    call check(maxval(abs(d2(:, 1, 2, :) - d2(:, 2, 1, :))) == 0.0_real64, &
+                               'the second derivatives are symmetric')
+                    call ev_a%free()
+                    ev_a = info%iga_evaluate(1, uv, derivatives=1, stat=ierr)
                     call check(ev_a%num_fields() == 0, 'iga carries no fields here')
                     call ev_a%free()
                     call ev_b%free()

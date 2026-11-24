@@ -7447,7 +7447,10 @@ typedef enum mio_iga_array {
     /** UInt8 (N): 1 where a B-rep face's trimming loops contain the point. */
     MIO_IGA_INSIDE = 3,
     /** Float64 (N, components): NURBS field `index` of a patch. */
-    MIO_IGA_FIELD = 4
+    MIO_IGA_FIELD = 4,
+    /** Float64 (N, parametric dimension, parametric dimension, space dimension):
+     *  the symmetric second derivatives d2 x / d u_k d u_l; with derivatives = 2. */
+    MIO_IGA_SECOND_DERIVATIVES = 5
 } mio_iga_array;
 
 /** Opaque result of mio_iga_evaluate. Destroy with mio_iga_evaluation_free(). */
@@ -7459,7 +7462,8 @@ typedef struct mio_iga_evaluation mio_iga_evaluation;
  * (d the parametric dimension: mio_nurbs_info_int(MIO_NURBS_PATCHES, patch,
  * field 0), 2 for a face), point after point, each inside the knot range.
  *
- * @param derivatives 0, or 1 for the first derivatives and the surface normals.
+ * @param derivatives 0; 1 for the first derivatives and the surface normals; 2
+ *        also for the second derivatives (MIO_IGA_SECOND_DERIVATIVES).
  * @param trim_samples B-rep: points per knot span a trimming curve is sampled at.
  * @return the result (free with mio_iga_evaluation_free), or NULL on failure.
  */

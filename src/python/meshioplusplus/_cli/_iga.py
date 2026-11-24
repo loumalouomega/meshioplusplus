@@ -179,9 +179,10 @@ def add_evaluate_args(parser):
     parser.add_argument(
         "--derivatives",
         type=int,
-        choices=[0, 1],
+        choices=[0, 1, 2],
         default=0,
-        help="1: also the first derivatives and unit normals (default: 0)",
+        help="1: also the first derivatives and unit normals; 2: also the "
+        "second derivatives (default: 0)",
     )
     parser.add_argument(
         "--trim-samples",
@@ -221,7 +222,7 @@ def evaluate_cmd(args):
             {"components": f.shape[1], "values": f.ravel()} for f in res["fields"]
         ],
     }
-    for key in ("derivatives", "normals", "inside"):
+    for key in ("derivatives", "normals", "second_derivatives", "inside"):
         if key in res:
             out[key] = res[key].ravel()
     emit_json(out)

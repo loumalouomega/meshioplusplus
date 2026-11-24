@@ -3722,6 +3722,9 @@ step('igaRefine, igaSample, igaEvaluate: a NURBS model refined exactly and writt
     assert.ok(new TextDecoder().decode(m.FS.readFile('/annulus_fine.mesh')).startsWith('MFEM NURBS mesh v1.0'));
     const uv = [0.3, 0.7, 0.9, 0.2];
     const a = m.igaEvaluate(mesh.info, 0, uv, { derivatives: 1 });
+    const c2 = m.igaEvaluate(mesh.info, 0, uv, { derivatives: 2 });
+    assert.equal(c2.secondDerivatives.length, (uv.length / 2) * 2 * 2 * c2.spaceDim);
+    assert.equal(a.secondDerivatives, undefined);
     const b = m.igaEvaluate(fine.info, 0, uv);
     assert.equal(a.spaceDim, 2);
     for (let i = 0; i < 4; i++) assert.ok(Math.abs(a.points[i] - b.points[i]) < 1e-13);

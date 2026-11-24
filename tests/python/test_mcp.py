@@ -1567,6 +1567,8 @@ def test_iga_tools_refine_sample_and_evaluate(tmp_path):
     ev = _dump(_tools.tool_iga_evaluate(plate, [[0.5, 0.5], [2.0, 2.0]], derivatives=1))
     assert ev["inside"] == [True, False]
     assert ev["num_points"] == 2 and len(ev["normals"]) == 2
+    ev2 = _dump(_tools.tool_iga_evaluate(plate, [[0.5, 0.5]], derivatives=2))
+    assert len(ev2["second_derivatives"][0]) == 2  # d x d blocks per point
     ev = _dump(_tools.tool_iga_evaluate(nurbs, [[0.3, 0.7, 0.4]], patch=1))
     assert len(ev["points"][0]) == 3
     with pytest.raises(ValueError, match="knot range"):

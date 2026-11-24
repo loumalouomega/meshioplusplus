@@ -254,6 +254,75 @@ def test_brep_engines_are_bit_identical(name, variant):
             np.testing.assert_array_equal(a[k], b[k], err_msg=k)
 
 
+@needs_core
+@pytest.mark.parametrize("name", NURBS)
+def test_second_derivatives_are_bit_identical_between_engines(name):
+    info = _nurbs(name).info["nurbs"]
+    for pi, p in enumerate(info["patches"][:3]):
+        u = _params(p, 25, seed=pi)
+        a = _core.iga_evaluate_nurbs(info, pi, u, 2)
+        b = _iga._evaluate_patch(p, _iga._is_rational(p), u, 2, "p")
+        dim, sdim = len(p["degrees"]), np.asarray(p["control_points"]).shape[1]
+        assert a["second_derivatives"].shape == (25, dim, dim, sdim)
+        for k in ("points", "derivatives", "second_derivatives", "normals"):
+            if k in a or k in b:
+                np.testing.assert_array_equal(a[k], b[k], err_msg=k)
+
+
+@needs_core
+@pytest.mark.parametrize("name", CAD)
+def test_brep_second_derivatives_are_bit_identical_between_engines(name):
+    brep = _cad(name).info["brep"]
+    for fi, face in enumerate(brep["faces"][:3]):
+        u = _params(brep["patches"][face["patch"]], 20, seed=fi)
+        a = _core.iga_evaluate_brep(brep, fi, u, 2, 16)
+        b = _iga._evaluate_brep_py(brep, fi, u, 2, 16)
+        for k in ("points", "derivatives", "second_derivatives", "normals", "inside"):
+            np.testing.assert_array_equal(a[k], b[k], err_msg=k)
+
+
+@pytest.mark.parametrize("name", NURBS)
+def test_second_derivatives_match_central_differences(name):
+    info = _nurbs(name).info["nurbs"]
+    for pi, p in enumerate(info["patches"][:2]):
+        dim = len(p["degrees"])
+        lo = np.array([_range(p, d)[0] for d in range(dim)])
+        hi = np.array([_range(p, d)[1] for d in range(dim)])
+        u = lo + (hi - lo) * np.random.default_rng(pi).uniform(0.2, 0.8, size=(10, dim))
+        got = _iga.iga_evaluate(info, u, patch=pi, derivatives=2)["second_derivatives"]
+        h = 1e-5
+        for l in range(dim):
+            e = np.zeros(dim)
+            e[l] = h * (hi[l] - lo[l])
+            fwd = _iga.iga_evaluate(info, u + e, patch=pi, derivatives=1)["derivatives"]
+            bwd = _iga.iga_evaluate(info, u - e, patch=pi, derivatives=1)["derivatives"]
+            np.testing.assert_allclose(
+                got[:, :, l], (fwd - bwd) / (2 * e[l]), rtol=1e-4, atol=1e-4
+            )
+        np.testing.assert_array_equal(got, np.swapaxes(got, 1, 2))  # symmetric
+
+
+def test_python_twin_second_derivatives_without_the_core(monkeypatch):
+    # The numpy twin alone, on a rational quarter circle: x . x'' + x' . x' = 0.
+    patch = {
+        "degrees": [2],
+        "knots": [np.array([0, 0, 0, 1, 1, 1], dtype=float)],
+        "control_points": np.array([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+        "weights": np.array([1.0, np.sqrt(0.5), 1.0]),
+        "fields": [],
+    }
+    u = np.linspace(0.05, 0.95, 9)[:, None]
+    res = _iga._evaluate_patch(patch, True, u, 2, "arc")
+    x, d1, d2 = (
+        res["points"],
+        res["derivatives"][:, 0],
+        res["second_derivatives"][:, 0, 0],
+    )
+    np.testing.assert_allclose(
+        np.sum(x * d2, axis=1) + np.sum(d1 * d1, axis=1), 0.0, atol=1e-10
+    )
+
+
 def test_knot_multiplicities_follow_the_elevation():
     # one quadratic span pair with a C1 interior knot: elevated by 2 it is a
     # cubic-plus-one with the knot's multiplicity raised by 2 (C1 kept: degree
@@ -576,7 +645,7 @@ def test_public_names_are_exported():
         (lambda m: _iga.iga_evaluate(m, [[5.0, 5.0]]), "outside the knot range"),
         (lambda m: _iga.iga_evaluate(m, [[0.5]]), "parameters"),
         (lambda m: _iga.iga_evaluate(m, [[0.5, 0.5]], patch=9), "outside"),
-        (lambda m: _iga.iga_evaluate(m, [[0.5, 0.5]], derivatives=2), "derivatives"),
+        (lambda m: _iga.iga_evaluate(m, [[0.5, 0.5]], derivatives=3), "derivatives"),
         (lambda m: _iga.iga_refine(m, model="brep"), "no 'brep'"),
         (lambda m: _iga.iga_refine(m, model="stl"), "model must be"),
     ],

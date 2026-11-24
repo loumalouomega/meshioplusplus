@@ -586,7 +586,7 @@ static mxArray *O_mio_iga_evaluate(const mxArray **a) {
                                               (int32_t)mio_o_int(a[4], "trim_samples"));
     if (ev == NULL) mio_o_fail("iga_evaluate");
     const int64_t nf = mio_iga_evaluation_num_fields(ev);
-    mxArray *v[5];
+    mxArray *v[6];
     v[0] = ofi_iga_array(ev, MIO_IGA_POINTS, 0, 0);
     v[1] = mio_o_cell(nf > 0 ? nf : 0);
     for (int64_t k = 0; k < nf; ++k) {
@@ -595,9 +595,11 @@ static mxArray *O_mio_iga_evaluate(const mxArray **a) {
     v[2] = ofi_iga_array(ev, MIO_IGA_DERIVATIVES, 0, 0);
     v[3] = ofi_iga_array(ev, MIO_IGA_NORMALS, 0, 0);
     v[4] = ofi_iga_array(ev, MIO_IGA_INSIDE, 0, 1);
+    v[5] = ofi_iga_array(ev, MIO_IGA_SECOND_DERIVATIVES, 0, 0);
     mio_iga_evaluation_free(ev);
-    const char *names[5] = {"points", "fields", "derivatives", "normals", "inside"};
-    return mio_o_struct(5, names, v);
+    const char *names[6] = {"points", "fields", "derivatives", "normals", "inside",
+                            "second_derivatives"};
+    return mio_o_struct(6, names, v);
 }
 
 /* --- mesh generation from CAD (v17.13.0; doc/mesh_cad.md) ----------------- */

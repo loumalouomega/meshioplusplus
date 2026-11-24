@@ -2484,7 +2484,7 @@ module meshioplusplus
     !> What `mio_iga_evaluation` holds (the C enum mio_iga_array).
     integer(c_int32_t), parameter, public :: MIO_IGA_POINTS = 0, MIO_IGA_DERIVATIVES = 1, &
                                              MIO_IGA_NORMALS = 2, MIO_IGA_INSIDE = 3, &
-                                             MIO_IGA_FIELD = 4
+                                             MIO_IGA_FIELD = 4, MIO_IGA_SECOND_DERIVATIVES = 5
     integer(c_int), parameter :: MIO_MDPA_PROPERTIES = 0, MIO_MDPA_ENTITY_NAMES = 1
     integer(c_int), parameter :: MIO_MDPA_SKIPPED = 2, MIO_MDPA_MODEL_PART_DATA = 3
     integer(c_int), parameter :: MIO_MDPA_TABLES = 4, MIO_MDPA_GEOMETRIES = 5
@@ -3367,6 +3367,7 @@ module meshioplusplus
         procedure :: points => iga_evaluation_points
         procedure :: derivatives => iga_evaluation_derivatives
         procedure :: normals => iga_evaluation_normals
+        procedure :: second_derivatives => iga_evaluation_second_derivatives
         procedure :: inside => iga_evaluation_inside
         procedure :: field => iga_evaluation_field
     end type mio_iga_evaluation
@@ -19632,7 +19633,7 @@ contains
 
     !> Evaluate patch `patch` (1-based; the face of a B-rep) at the parametric
     !> coordinates `params(d, N)` (one column per point, `d` the parametric
-    !> dimension), each inside the patch's knot range. `derivatives` 0 or 1.
+    !> dimension), each inside the patch's knot range. `derivatives` 0, 1 or 2.
     function format_info_iga_evaluate(self, patch, params, derivatives, trim_samples, stat, &
                                       errmsg) result(ev)
         class(mio_format_info), intent(in) :: self
@@ -19725,6 +19726,25 @@ contains
         call iga_array(self, MIO_IGA_DERIVATIVES, 0, 'iga_derivatives', p, shp, ok, stat, errmsg)
         if (.not. ok .or. shp(1) == 0) return
         call c_f_pointer(p, vals, [shp(3), shp(2), shp(1)])
+        d = real(vals, real64)
+    end function
+
+    !> The second derivatives, `(space dimension, parametric dimension,
+    !> parametric dimension, N)` (`derivatives = 2` only): `d2 x / d u_k d u_l`.
+    function iga_evaluation_second_derivatives(self, stat, errmsg) result(d)
+        class(mio_iga_evaluation), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: d(:, :, :, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :, :, :)
+        allocate (d(0, 0, 0, 0))
+        call iga_array(self, MIO_IGA_SECOND_DERIVATIVES, 0, 'iga_second_derivatives', p, shp, ok, &
+                       stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(4), shp(3), shp(2), shp(1)])
         d = real(vals, real64)
     end function
 

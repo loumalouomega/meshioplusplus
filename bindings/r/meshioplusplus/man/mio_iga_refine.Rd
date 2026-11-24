@@ -21,7 +21,8 @@ mio_iga_evaluate(info, patch, params, derivatives = 0L, trim_samples = 16L)
 the trimming loops.}
 \item{patch}{Patch (B-rep: face) to evaluate, 1-based.}
 \item{params}{A \code{(d, N)} matrix of parametric coordinates, one column per point.}
-\item{derivatives}{0, or 1 for the first derivatives and the surface normals.}
+\item{derivatives}{0; 1 for the first derivatives and the surface normals; 2 also
+for the second derivatives.}
 }
 \description{The isogeometric layer (v16.43.0): act on the NURBS model a reader
 kept in a format-info handle (an MFEM NURBS mesh, Kratos CAD JSON, STEP or IGES,
@@ -39,5 +40,6 @@ sampled mesh and the model (refined, or with the sampling's cell maps), for
 \code{mio_write_with_info()}. \code{mio_iga_evaluate()}: a list with \code{points}
 (\code{(space_dimension, N)}), \code{fields} (one \code{(components, N)} matrix per
 NURBS field), \code{derivatives} (\code{(space_dimension, d, N)}) and \code{normals}
-(\code{(3, N)}), both \code{NULL} unless \code{derivatives = 1}, and \code{inside}
+(\code{(3, N)}), both \code{NULL} unless \code{derivatives = 1}, \code{second_derivatives}
+(\code{(space_dimension, d, d, N)}, \code{NULL} unless \code{derivatives = 2}), and \code{inside}
 (a logical vector for a B-rep face, else \code{NULL}).}

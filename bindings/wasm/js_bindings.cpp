@@ -7166,6 +7166,8 @@ val iga_evaluate_js(const val& rInfo, double patch, const val& rParams, const va
             out.set("derivatives", ndarray_to_typed_array(e.mDerivatives));
         if (e.mNormals.Size())
             out.set("normals", ndarray_to_typed_array(e.mNormals));
+        if (e.mSecondDerivatives.Size())
+            out.set("secondDerivatives", ndarray_to_typed_array(e.mSecondDerivatives));
         if (fmt == "cad_json")
             out.set("inside", ndarray_to_typed_array(e.mInside));
         return out;

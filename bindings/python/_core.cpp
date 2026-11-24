@@ -9166,6 +9166,8 @@ PYBIND11_MODULE(_core, m) {
                 out["derivatives"] = numpy_from_ndarray(std::move(rE.mDerivatives));
             if (rE.mNormals.Size())
                 out["normals"] = numpy_from_ndarray(std::move(rE.mNormals));
+            if (rE.mSecondDerivatives.Size())
+                out["second_derivatives"] = numpy_from_ndarray(std::move(rE.mSecondDerivatives));
             py::list fields;
             for (auto& f : rE.mFields)
                 fields.append(numpy_from_ndarray(std::move(f)));

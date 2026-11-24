@@ -977,17 +977,19 @@ SEXP R_mio_iga_evaluate(SEXP x, SEXP patch, SEXP params, SEXP derivatives, SEXP 
     UNPROTECT(1);
     if (ev == NULL) mio_r_fail("iga_evaluate");
     const int64_t nf = mio_iga_evaluation_num_fields(ev);
-    SEXP v[5];
+    SEXP v[6];
     v[0] = PROTECT(iga_array(ev, MIO_IGA_POINTS, 0, 0));
     v[1] = PROTECT(Rf_allocVector(VECSXP, (R_xlen_t)nf));
     for (int64_t k = 0; k < nf; ++k) SET_VECTOR_ELT(v[1], k, iga_array(ev, MIO_IGA_FIELD, k, 0));
     v[2] = PROTECT(iga_array(ev, MIO_IGA_DERIVATIVES, 0, 0));
     v[3] = PROTECT(iga_array(ev, MIO_IGA_NORMALS, 0, 0));
     v[4] = PROTECT(iga_array(ev, MIO_IGA_INSIDE, 0, 1));
+    v[5] = PROTECT(iga_array(ev, MIO_IGA_SECOND_DERIVATIVES, 0, 0));
     mio_iga_evaluation_free(ev);
-    const char *names[5] = {"points", "fields", "derivatives", "normals", "inside"};
-    SEXP out = mio_r_named_list(5, names, v);
-    UNPROTECT(5);
+    const char *names[6] = {"points", "fields", "derivatives", "normals", "inside",
+                            "second_derivatives"};
+    SEXP out = mio_r_named_list(6, names, v);
+    UNPROTECT(6);
     return out;
 }
 

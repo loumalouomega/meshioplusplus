@@ -3185,6 +3185,8 @@ int cmd_iga_evaluate(const std::vector<std::string>& rArgs) {
         array("derivatives", e.mDerivatives);
     if (e.mNormals.Size())
         array("normals", e.mNormals);
+    if (e.mSecondDerivatives.Size())
+        array("second_derivatives", e.mSecondDerivatives);
     if (model.mBrep)
         array("inside", e.mInside);
     json.EndObject();

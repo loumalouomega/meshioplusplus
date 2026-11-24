@@ -2771,7 +2771,8 @@ def _register_operations(server: FastMCP) -> None:
         patch's knot range (at most 10000 per call). The answer carries the
         points (N x space dimension) and the NURBS fields; derivatives=1 adds
         the first derivatives (N x d x space dimension) and, for a surface in
-        3-D, the unit normals; a B-rep face also reports inside: whether each
+        3-D, the unit normals; derivatives=2 also second_derivatives
+        (N x d x d x space dimension); a B-rep face also reports inside: whether each
         point lies within its trimming loops (trim_samples per knot span)."""
 
     @server.tool()

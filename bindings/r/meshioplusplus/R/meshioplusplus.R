@@ -3815,12 +3815,14 @@ mio_nurbs_info <- function(info) .Call(R_mio_nurbs_info, info)
 #'   the trimming loops.
 #' @param patch Patch (B-rep: face) to evaluate, 1-based.
 #' @param params A `(d, N)` matrix of parametric coordinates, one column per point.
-#' @param derivatives 0, or 1 for the first derivatives and the surface normals.
+#' @param derivatives 0; 1 for the first derivatives and the surface normals; 2 also
+#'   for the second derivatives.
 #' @return `mio_iga_refine()` and `mio_iga_sample()`: `list(mesh = , info = )`.
 #'   `mio_iga_evaluate()`: a list with `points` (`(space_dimension, N)`),
 #'   `fields` (one `(components, N)` matrix per NURBS field), `derivatives`
 #'   (`(space_dimension, d, N)`) and `normals` (`(3, N)`), both `NULL` unless
-#'   `derivatives = 1` (and a surface in 3-D for the normals), and `inside`
+#'   `derivatives = 1` (and a surface in 3-D for the normals), `second_derivatives`
+#'   (`(space_dimension, d, d, N)`, `NULL` unless `derivatives = 2`), and `inside`
 #'   (a logical vector for a B-rep face, else `NULL`).
 #' @export
 mio_iga_refine <- function(info, subdivisions = 1L, elevate = 0L, sample_subdivisions = 0L,

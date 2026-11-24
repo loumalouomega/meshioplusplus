@@ -43,6 +43,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
+#include "../../src/cpp/src/detail/edge_sampler.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 
 namespace {
@@ -235,6 +236,119 @@ TEST(Iga, DerivativesMatchCentralDifferencesInAVolume) {
     }
 }
 
+// The second derivatives against central differences of the first, in every
+// parametric direction, on a rational curve, a rational surface and a volume.
+namespace {
+
+void expect_second_derivatives_match_differences(const NurbsInfo& rInfo, std::size_t PerDirection,
+                                                 double Tolerance) {
+    const NurbsPatch& patch = rInfo.mPatches[0];
+    const std::size_t dim = patch.mDegrees.size();
+    const std::size_t sdim = patch.mControlPoints.Shape()[1];
+    NDArray u = grid(patch, PerDirection);
+    const std::size_t n = u.Shape()[0];
+    // Keep every point two steps inside the domain, so the differences below
+    // are central (the ends would make them one-sided).
+    const double h = 1e-5;
+    for (std::size_t d = 0; d < dim; ++d) {
+        const double lo = patch.mKnots[d][static_cast<std::size_t>(patch.mDegrees[d])];
+        const double hi =
+            patch.mKnots[d][patch.mKnots[d].size() - static_cast<std::size_t>(patch.mDegrees[d]) - 1];
+        for (std::size_t i = 0; i < n; ++i) {
+            double& v = u.As<double>()[i * dim + d];
+            v = std::min(std::max(v, lo + 2 * h), hi - 2 * h);
+        }
+    }
+    const auto ev = meshioplusplus::iga_evaluate(rInfo, 0, u, 2);
+    ASSERT_EQ(ev.mSecondDerivatives.Shape(), (std::vector<std::size_t>{n, dim, dim, sdim}));
+    // Order 2 carries the points and first derivatives too.
+    const auto ev1 = meshioplusplus::iga_evaluate(rInfo, 0, u, 1);
+    EXPECT_LT(max_diff(ev.mPoints, ev1.mPoints), 1e-13);
+    EXPECT_LT(max_diff(ev.mDerivatives, ev1.mDerivatives), 1e-12);
+    for (std::size_t l = 0; l < dim; ++l) {
+        const double lo = patch.mKnots[l][static_cast<std::size_t>(patch.mDegrees[l])];
+        const double hi =
+            patch.mKnots[l][patch.mKnots[l].size() - static_cast<std::size_t>(patch.mDegrees[l]) - 1];
+        NDArray fwd = u, bwd = u;
+        for (std::size_t i = 0; i < n; ++i) {
+            double* f = fwd.As<double>() + i * dim + l;
+            double* r = bwd.As<double>() + i * dim + l;
+            const double base = *f;
+            *f = std::min(base + h, hi);
+            *r = std::max(base - h, lo);
+        }
+        const auto pf = meshioplusplus::iga_evaluate(rInfo, 0, fwd, 1);
+        const auto pb = meshioplusplus::iga_evaluate(rInfo, 0, bwd, 1);
+        for (std::size_t i = 0; i < n; ++i) {
+            const double span = fwd.As<double>()[i * dim + l] - bwd.As<double>()[i * dim + l];
+            for (std::size_t k = 0; k < dim; ++k)
+                for (std::size_t c = 0; c < sdim; ++c) {
+                    const double fd = (pf.mDerivatives.As<double>()[(i * dim + k) * sdim + c] -
+                                       pb.mDerivatives.As<double>()[(i * dim + k) * sdim + c]) /
+                                      span;
+                    EXPECT_NEAR(ev.mSecondDerivatives.As<double>()[((i * dim + k) * dim + l) * sdim + c],
+                                fd, Tolerance)
+                        << "point " << i << " d" << k << " d" << l << " component " << c;
+                }
+        }
+    }
+    // The Hessian is symmetric.
+    const double* h2 = ev.mSecondDerivatives.As<double>();
+    for (std::size_t i = 0; i < n; ++i)
+        for (std::size_t k = 0; k < dim; ++k)
+            for (std::size_t l = 0; l < dim; ++l)
+                for (std::size_t c = 0; c < sdim; ++c)
+                    EXPECT_EQ(h2[((i * dim + k) * dim + l) * sdim + c],
+                              h2[((i * dim + l) * dim + k) * sdim + c]);
+}
+
+}  // namespace
+
+TEST(Iga, SecondDerivativesMatchDifferencesOfTheFirst) {
+    expect_second_derivatives_match_differences(one_patch(arc()), 7, 1e-6);
+    expect_second_derivatives_match_differences(one_patch(annulus()), 5, 1e-5);
+    expect_second_derivatives_match_differences(one_patch(hexahedron()), 4, 1e-5);
+}
+
+TEST(Iga, SecondDerivativesAgreeWithTheSurfaceKernel) {
+    // The general kernel against the surface-only one `BrepSurfaceEval::Eval2` runs.
+    const NurbsInfo in = one_patch(annulus());
+    const NurbsPatch& patch = in.mPatches[0];
+    const meshioplusplus::detail::BrepSurfaceEval surface(patch, true);
+    const NDArray u = grid(patch, 6);
+    const auto ev = meshioplusplus::iga_evaluate(in, 0, u, 2);
+    const std::size_t n = u.Shape()[0];
+    for (std::size_t i = 0; i < n; ++i) {
+        double x[3], su[3], sv[3], suu[3], suv[3], svv[3];
+        surface.Eval2(u.As<double>()[i * 2], u.As<double>()[i * 2 + 1], x, su, sv, suu, suv, svv);
+        const double* h = ev.mSecondDerivatives.As<double>() + i * 4 * 3;
+        for (std::size_t c = 0; c < 3; ++c) {
+            EXPECT_NEAR(h[(0 * 2 + 0) * 3 + c], suu[c], 1e-10);
+            EXPECT_NEAR(h[(0 * 2 + 1) * 3 + c], suv[c], 1e-10);
+            EXPECT_NEAR(h[(1 * 2 + 1) * 3 + c], svv[c], 1e-10);
+        }
+    }
+}
+
+TEST(Iga, SecondDerivativesOfAQuarterCircleAreCentripetal) {
+    // arc() is a rational quarter circle of radius 1 whose speed is not
+    // constant, so only the closed identity x . x' = 0 differentiated twice is
+    // checked: x . x'' + x' . x' = 0.
+    const NurbsInfo in = one_patch(arc());
+    const NDArray u = grid(in.mPatches[0], 9);
+    const auto ev = meshioplusplus::iga_evaluate(in, 0, u, 2);
+    const std::size_t n = u.Shape()[0];
+    const std::size_t sdim = ev.mPoints.Shape()[1];
+    for (std::size_t i = 0; i < n; ++i) {
+        double xx2 = 0.0, d1d1 = 0.0;
+        for (std::size_t c = 0; c < sdim; ++c) {
+            xx2 += ev.mPoints.As<double>()[i * sdim + c] * ev.mSecondDerivatives.As<double>()[i * sdim + c];
+            d1d1 += ev.mDerivatives.As<double>()[i * sdim + c] * ev.mDerivatives.As<double>()[i * sdim + c];
+        }
+        EXPECT_NEAR(xx2 + d1d1, 0.0, 1e-10) << i;
+    }
+}
+
 TEST(Iga, FieldsRefineWithTheGeometry) {
     NurbsInfo in = one_patch(arc());
     in.mFieldNames = {"u"};
@@ -306,7 +420,8 @@ TEST(Iga, ErrorsAreInvalidArguments) {
     EXPECT_THROW(meshioplusplus::iga_insert_knots(arc(), 0, {0.6, 0.4}), std::invalid_argument);
     EXPECT_THROW(meshioplusplus::iga_elevate_degree(arc(), 0, -1), std::invalid_argument);
     EXPECT_THROW(meshioplusplus::iga_evaluate(in, 1, grid(arc(), 3)), std::invalid_argument);
-    EXPECT_THROW(meshioplusplus::iga_evaluate(in, 0, grid(arc(), 3), 2), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_evaluate(in, 0, grid(arc(), 3), 3), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_evaluate(in, 0, grid(arc(), 3), -1), std::invalid_argument);
     NDArray out_of_range = doubles({1, 1}, {1.5});
     EXPECT_THROW(meshioplusplus::iga_evaluate(in, 0, out_of_range), std::invalid_argument);
     NDArray wrong_width = doubles({1, 2}, {0.5, 0.5});

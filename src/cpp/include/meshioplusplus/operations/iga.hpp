@@ -97,6 +97,10 @@ struct MESHIOPLUSPLUS_API IgaEvaluation {
     /// Float64 `(N, 3)`: the unit normal `d1 x d2 / |d1 x d2|` of a surface in
     /// 3-D (zeros where the tangents are parallel).
     NDArray mNormals{DType::Float64, {0}};
+    /// Float64 `(N, parametric dimension, parametric dimension, space
+    /// dimension)`: the full symmetric second derivatives `d2 x / d u_k d u_l`,
+    /// filled only by `Derivatives == 2` (roadmap 9.8.1).
+    NDArray mSecondDerivatives{DType::Float64, {0}};
     /// One Float64 `(N, components)` per `NurbsInfo::mFieldNames` entry.
     std::vector<NDArray> mFields;
     /// UInt8 `(N)`: 1 where a face's trimming loops contain the point (a face
@@ -146,8 +150,11 @@ MESHIOPLUSPLUS_API BrepInfo iga_refine(const BrepInfo& rInfo, const IgaRefineOpt
 /**
  * @brief Evaluate patch @p Patch of @p rInfo, and its fields, at the parameters
  * @p rParams (Float64 `(N, parametric dimension)`).
- * @param Derivatives 0 or 1: with 1, also the first derivatives and, for a
- * surface in 3-D, the unit normals.
+ * @param Derivatives 0, 1 or 2: with 1, also the first derivatives and, for a
+ * surface in 3-D, the unit normals; with 2, also the second derivatives
+ * (`mSecondDerivatives`). The first derivatives of order 2 come from the
+ * second-order basis recurrence and may differ in the last bits from those of
+ * order 1.
  * @throws std::invalid_argument for a bad patch, parameters or a parameter
  * outside the patch's knot range (by more than rounding).
  */

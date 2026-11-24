@@ -255,8 +255,8 @@ IgaTable iga_make_table(const NurbsPatch& rP, const std::string& rWhat, bool Rat
 
 IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDArray& rParams,
                                  std::int32_t Derivatives, const std::string& rWhat) {
-    if (Derivatives < 0 || Derivatives > 1)
-        iga_fail("derivatives must be 0 or 1");
+    if (Derivatives < 0 || Derivatives > 2)
+        iga_fail("derivatives must be 0, 1 or 2");
     const IgaTable t = iga_make_table(rP, rWhat, Rational);
     const IgaShape& sh = t.mShape;
     if (rParams.Dtype() != DType::Float64 ||
@@ -282,7 +282,8 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
         }
     IgaEvaluation out;
     out.mPoints = NDArray(DType::Float64, {n, sdim});
-    std::vector<double> values(n * nv), ders(Derivatives ? n * dim * nv : 0);
+    std::vector<double> values(n * nv), ders(Derivatives ? n * dim * nv : 0),
+        ders2(Derivatives == 2 ? n * dim * dim * nv : 0);
     parallel_for(n, [&](std::size_t i) {
         std::array<std::size_t, 3> span{0, 0, 0};
         std::array<double, 3> u{0, 0, 0};
@@ -290,8 +291,14 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
             u[d] = std::min(std::max(params[i * dim + d], lo[d]), hi[d]);
             span[d] = detail::nurbs_find_span(rP.mDegrees[d], rP.mKnots[d], sh.mCounts[d], u[d]);
         }
-        detail::iga_eval_point(t.mNet, span.data(), u.data(), Derivatives, values.data() + i * nv,
-                               Derivatives ? ders.data() + i * dim * nv : nullptr);
+        if (Derivatives == 2)
+            detail::iga_eval_point_d2(t.mNet, span.data(), u.data(), values.data() + i * nv,
+                                      ders.data() + i * dim * nv,
+                                      ders2.data() + i * dim * dim * nv);
+        else
+            detail::iga_eval_point(t.mNet, span.data(), u.data(), Derivatives,
+                                   values.data() + i * nv,
+                                   Derivatives ? ders.data() + i * dim * nv : nullptr);
     });
     double* px = out.mPoints.As<double>();
     for (std::size_t i = 0; i < n; ++i)
@@ -314,6 +321,16 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
             for (std::size_t k = 0; k < dim; ++k)
                 for (std::size_t d = 0; d < sdim; ++d)
                     pd[(i * dim + k) * sdim + d] = ders[(i * dim + k) * nv + d];
+        if (Derivatives == 2) {
+            out.mSecondDerivatives = NDArray(DType::Float64, {n, dim, dim, sdim});
+            double* ps = out.mSecondDerivatives.As<double>();
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t k = 0; k < dim; ++k)
+                    for (std::size_t l = 0; l < dim; ++l)
+                        for (std::size_t d = 0; d < sdim; ++d)
+                            ps[((i * dim + k) * dim + l) * sdim + d] =
+                                ders2[((i * dim + k) * dim + l) * nv + d];
+        }
         if (dim == 2 && sdim == 3) {
             out.mNormals = NDArray(DType::Float64, {n, std::size_t{3}});
             double* pn = out.mNormals.As<double>();

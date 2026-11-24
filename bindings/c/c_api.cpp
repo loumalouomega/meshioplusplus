@@ -9844,6 +9844,9 @@ mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation, int32_
             case MIO_IGA_NORMALS:
                 a = e.mNormals.Size() ? &e.mNormals : nullptr;
                 break;
+            case MIO_IGA_SECOND_DERIVATIVES:
+                a = e.mSecondDerivatives.Size() ? &e.mSecondDerivatives : nullptr;
+                break;
             case MIO_IGA_INSIDE:
                 a = evaluation->mFace ? &e.mInside : nullptr;
                 break;

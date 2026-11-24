@@ -136,6 +136,10 @@ function t_mfem_nurbs()
     expect_equal(size(a.points), [2, 2]);
     assert(max(abs(a.points(:) - b.points(:))) < 1e-13);
     expect_equal(size(a.derivatives), [2, 2, 2]);
+    assert(isempty(a.second_derivatives));
+    c2 = mio.iga_evaluate(r.info, 1, uv, 'derivatives', 2);
+    expect_equal(size(c2.second_derivatives), [2, 2, 2, 2]);
+    assert(isequal(c2.second_derivatives(:, 1, 2, :), c2.second_derivatives(:, 2, 1, :)));
     assert(isempty(a.normals));
     assert(isempty(a.inside));
     expect_equal(numel(a.fields), 0);

@@ -24,7 +24,7 @@ mp.iga_sample(face, subdivisions=8)                         # the face as Lagran
 
 | Operation | What it does |
 |---|---|
-| `iga_evaluate(mesh, params, patch=0, derivatives=0)` | Points, NURBS fields and, with `derivatives=1`, first derivatives `(N, d, space dim)` and unit normals of a surface in 3-D, at the parametric coordinates `params` `(N, d)`. For a B-rep face, `inside`: whether each point lies in the face's trimming loops (even-odd over all of them). Rational, in 1, 2 or 3 parametric dimensions. |
+| `iga_evaluate(mesh, params, patch=0, derivatives=0)` | Points, NURBS fields and, with `derivatives=1`, first derivatives `(N, d, space dim)` and unit normals of a surface in 3-D, and with `derivatives=2` also the symmetric second derivatives `(N, d, d, space dim)`, at the parametric coordinates `params` `(N, d)`. For a B-rep face, `inside`: whether each point lies in the face's trimming loops (even-odd over all of them). Rational, in 1, 2 or 3 parametric dimensions. |
 | `iga_refine(mesh, subdivisions=1, elevate=0, sample_subdivisions=0)` | Degree elevation by `elevate`, then knot insertion splitting every nonzero knot span in `subdivisions` parts: the refined model, sampled again, with the refined model in `info`. |
 | `iga_sample(mesh, subdivisions=0)` | The model as Lagrange cells. |
 
@@ -70,8 +70,12 @@ The [pipeline](/pipeline#the-rules) carries the model a CAD JSON, STEP, IGES or 
 
 - **Not a second entity kind in `Mesh`.** Operations on a mesh (`refine`, `smooth`, `partition`, …) still see only the sampling; the model changes only through these three operations. Putting patches and trims inside `Mesh` itself (every backend, binding and the ABI) is a recorded [non-goal](/roadmap#non-goals-and-decisions-taken) that a consumer needing it can reopen.
 - **Not a mesher.** `iga_sample` keeps the cells of a trimmed face whose centre its loops contain, so its trimmed edges are staircases; the loops themselves stay exact. A conforming triangulation that follows the trims is [`mesh_cad_surface`](/mesh_cad), on the same side channel.
-- **Not yet:** Bézier extraction, knot removal as an operation, second derivatives through the public `iga_evaluate` (the core evaluates them since v17.18.0 for `mesh_cad_surface`'s curvature sizing, not yet exposed), closest-point projection as a public query on a patch (a mesh's points are projected onto a B-rep's faces and edges by [`project_to_cad`](./project_to_cad.md), v17.23.0), and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
+- **Not yet:** Bézier extraction, knot removal as an operation, closest-point projection as a public query on a patch (a mesh's points are projected onto a B-rep's faces and edges by [`project_to_cad`](./project_to_cad.md), v17.23.0), and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
 
 ## Verification
+
+### Second derivatives
+
+`derivatives=2` adds `second_derivatives`, the full symmetric `d2 x / d u_k d u_l` of shape `(N, d, d, space dim)`, for curves, surfaces and volumes, rational or not (rational ones by the quotient rule `R_kl = (((A_kl - W_kl R) - W_k R_l) - W_l R_k) / W`). The first derivatives of order 2 come from the second-order basis recurrence and may differ from those of `derivatives=1` in the last bits. C: `MIO_IGA_SECOND_DERIVATIVES` of `mio_iga_array` (`derivatives` 0 to 2). The Python twin repeats the arithmetic order of the core, so both engines are bit-identical.
 
 The tests refine all six NURBS fixtures of the [MFEM](/formats/mfem) reader and every [CAD JSON](/formats/cad_json) fixture by h, p and both, on dense parameter grids: points, first derivatives, NURBS fields and the trimming test agree with the unrefined model to 1e-11, rational circles and spheres stay on their analytic surface to 1e-14, derivatives match central differences, a refined MFEM model writes and reads back, and the C++ core and the numpy twin return the same bits (`tests/python/test_iga.py`, `tests/cpp/test_iga.cpp`).
