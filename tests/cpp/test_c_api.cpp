@@ -1386,7 +1386,7 @@ TEST(CApi, DataCalc) {
 
 TEST(CApi, DataCalcRejectsBadExpressions) {
     mio_mesh* m = build_data_mesh();
-    EXPECT_EQ(mio_data_calc(m, "log(T)", MIO_DATA_POINT, "o", 0), nullptr);
+    EXPECT_EQ(mio_data_calc(m, "foo(T)", MIO_DATA_POINT, "o", 0), nullptr);
     EXPECT_STRNE(mio_last_error(), "");
     EXPECT_EQ(mio_data_calc(m, "nope + 1", MIO_DATA_POINT, "o", 0), nullptr);
     EXPECT_STRNE(mio_last_error(), "");
@@ -1441,6 +1441,45 @@ TEST(CApi, TensorInvariants) {
     EXPECT_NEAR(static_cast<const double*>(data)[0], 2.0, 1e-12);
     // Only the two requested outputs were computed.
     EXPECT_NE(mio_mesh_get_point_data(out, "s_principal", &data, &dt, &ndim, out_shape), MIO_OK);
+    mio_mesh_free(out);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, TensorInvariantsAlgebraicFlags) {
+    mio_mesh* m = build_data_mesh();
+    // diag(2, 3, 5) as a symmetric 6-component tensor, once per point (5 points).
+    std::array<double, 30> s{};
+    for (int p = 0; p < 5; ++p) {
+        s[p * 6 + 0] = 2;
+        s[p * 6 + 1] = 3;
+        s[p * 6 + 2] = 5;
+    }
+    std::int64_t shape[2] = {5, 6};
+    ASSERT_EQ(mio_mesh_add_point_data(m, "s", MIO_FLOAT64, 2, shape, s.data()), MIO_OK);
+    const char* names[] = {"s"};
+    mio_mesh* out = mio_tensor_invariants(
+        m, MIO_DATA_POINT, names, 1,
+        MIO_TINV_TRACE | MIO_TINV_DETERMINANT | MIO_TINV_INVARIANTS | MIO_TINV_INVERSE, nullptr,
+        nullptr, 1);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    const void* data = nullptr;
+    mio_dtype dt;
+    std::int32_t ndim = 0;
+    std::int64_t out_shape[MIO_MAX_NDIM] = {};
+    ASSERT_EQ(mio_mesh_get_point_data(out, "s_trace", &data, &dt, &ndim, out_shape), MIO_OK);
+    EXPECT_NEAR(static_cast<const double*>(data)[0], 10.0, 1e-12);
+    ASSERT_EQ(mio_mesh_get_point_data(out, "s_determinant", &data, &dt, &ndim, out_shape), MIO_OK);
+    EXPECT_NEAR(static_cast<const double*>(data)[0], 30.0, 1e-12);
+    ASSERT_EQ(mio_mesh_get_point_data(out, "s_invariants", &data, &dt, &ndim, out_shape), MIO_OK);
+    EXPECT_NEAR(static_cast<const double*>(data)[1], 31.0, 1e-12);
+    ASSERT_EQ(mio_mesh_get_point_data(out, "s_inverse", &data, &dt, &ndim, out_shape), MIO_OK);
+    EXPECT_EQ(out_shape[1], 6);
+    EXPECT_NEAR(static_cast<const double*>(data)[2], 0.2, 1e-14);
+    // The default (0) is still only the four original outputs.
+    mio_mesh* dflt = mio_tensor_invariants(m, MIO_DATA_POINT, names, 1, 0, nullptr, nullptr, 1);
+    ASSERT_NE(dflt, nullptr) << mio_last_error();
+    EXPECT_NE(mio_mesh_get_point_data(dflt, "s_trace", &data, &dt, &ndim, out_shape), MIO_OK);
+    mio_mesh_free(dflt);
     mio_mesh_free(out);
     mio_mesh_free(m);
 }

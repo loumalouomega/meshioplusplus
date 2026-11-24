@@ -146,6 +146,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `contact-pairs` | `num_pairs`, the pair table and unmatched slave-point ids |
 | `split-interface` | duplicated-point and cohesive-cell counts |
 | `graph` | `output`, `kind`, `format`, `num_vertices`, `num_edges`, `max_degree` |
+| `streamlines` | `output`, `num_lines`, `num_points`, `num_seeds_outside`, `dim` |
 | `geodesic` | `output`, `num_sources`, `num_unreached`, `num_degenerate`, `max_distance`, `time_step`, `heat_iterations`, `poisson_iterations`, `converged` |
 | `parameterize` | `output`, `num_charts`, `num_flipped`, `stretch`, `packing_efficiency`, `num_seam_points` |
 | `eigenmodes` | `output`, `eigenvalues`, `iterations`, `max_residual`, `converged`, `num_degenerate` |
@@ -1007,6 +1008,53 @@ meshioplusplus poly-to-tet domain_poly.vtu domain_tets.vtu --json
 ```
 
 ---
+
+## meshioplusplus data stats
+
+Variance, quantiles and histograms of data arrays, whole mesh and per region ([statistics per region](/data_statistics)). Python CLI only.
+
+```
+meshioplusplus data stats [options] INFILE
+```
+
+`--arrays`, `--location point|cell`, `--quantiles 0.05,0.5,0.95` (empty for none), `--bins N`, `--ddof`, `--weighted` (cell location), `--no-regions` and `--json`.
+
+## meshioplusplus sequence-stats
+
+Per-point (or per-cell) statistics of data arrays over the steps of a sequence, one step in memory at a time (see [statistics over time](/sequence_stats)).
+
+```
+meshioplusplus sequence-stats [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--arrays NAME[,NAME...]` | The arrays to reduce (default: every numeric array of the first step) |
+| `--stats mean,std,min,max,sum` | The statistics (default `mean,std`) |
+| `--ddof N` | Delta degrees of freedom of `std`: `0` population, `1` sample (default `0`) |
+| `--location point\|cell` | `point_data` or `cell_data` (default `point`) |
+| `--time-from auto\|file\|filename\|index` | Where the step times come from |
+| `--json` | Emit the report: `output`, `num_steps`, `first_time`, `last_time`, `arrays` |
+
+A Python CLI verb only. The output carries `<array>:<statistic>` and the first step's geometry.
+
+## meshioplusplus sequence-derivative
+
+The time derivative of an array over a sequence, written as a sequence (see [statistics over time](/sequence_stats)).
+
+```
+meshioplusplus sequence-derivative [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The array to differentiate (required) |
+| `--scheme central\|forward` | Second-order central (one-sided at the ends) or forward (default `central`) |
+| `--output-name NAME` | The derivative's name (default `<array>:dt`) |
+| `--location`, `--time-from` | As for `sequence-stats` |
+| `--json` | Emit `output`, `num_steps` and `files` |
+
+`OUTFILE` is a `{step}`/`{index}` pattern or a series file. A Python CLI verb only.
 
 ## meshioplusplus resample
 
@@ -2278,6 +2326,31 @@ meshioplusplus eigenmodes skin.stl modes.vtu -k 32 --json
 
 ---
 
+## meshioplusplus streamlines
+
+Lines along a point vector field, as a mesh of line segments (see [streamlines](/streamlines)).
+
+```
+meshioplusplus streamlines [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--array NAME` | The 2- or 3-component `point_data` array to follow (required) |
+| `--seeds N` | About `N` seeds, ranked at equal measure (default `40`) |
+| `--seed-points "X,Y,Z;X,Y,Z"` | Explicit seeds instead of `--seeds` |
+| `--direction both\|forward\|backward` | Which way from each seed (default `both`) |
+| `--integrator rk4\|rk45` | Fixed-step RK4, or adaptive Dormand–Prince 5(4) (default `rk4`) |
+| `--step L` | The step as a length at the fastest speed (default `0.005` of the diagonal) |
+| `--max-length F` | The longest path each way, a fraction of the diagonal (default `0.5`) |
+| `--max-steps N` | The step limit each way (default `0`: 20000) |
+| `--terminal-speed V` | A line stops where the speed falls to this (default `0`: `1e-9` of the fastest) |
+| `--tolerance T` | The adaptive integrator's tolerance, a fraction of the diagonal (default `1e-6`) |
+| `--json` | Emit the report: `output`, `num_lines`, `num_points`, `num_seeds_outside`, `dim` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+The output carries `IntegrationTime`, `Speed`, `SeedId` and the field as point data, and `SeedId` as cell data. Both CLIs print the same JSON.
+
 ## meshioplusplus geodesic
 
 The distance along a triangle surface from source points to every point, by the heat method (see [geodesic distance](/geodesic)).
@@ -2490,7 +2563,7 @@ meshioplusplus data <subcommand> [options]
 | `hessian` | Second derivative of a scalar `point_data` field (see [second derivatives](/hessian)) |
 | `estimate-error` | ZZ recovery-based error indicator, plus marking (see [error estimation](/error)) |
 | `error-size` | Per-point size field from a per-cell error indicator, for `mesh-cad-surface --background` (roadmap 6.10.2) |
-| `integrate` | Cell-measure-weighted total/mean over cells, per region (see [field integration](/field_integration)) |
+| `integrate` | Cell-measure-weighted total/mean over cells, per region; `--array` names may carry `point:`, `flux:` and `boundary:` prefixes (see [field integration](/field_integration)) |
 | `export` | Export the arrays to Parquet (see [interoperability](/interop)) |
 | `export-dataset` | Export a *set* of meshes as one `mesh_id`-keyed dataset (see [ML data handling](/ml)) |
 | `export-cae` | Export a *set* of meshes as one `.npz` per case in the [CAE sample layout](/formats/cae) PhysicsNeMo's DoMINO/Transolver datapipes read |
@@ -2550,7 +2623,7 @@ The output is always `float64` — the mean of an integer field is not an intege
 | `--point`, `--cell`, `--field` | `NAME = EXPRESSION` (repeatable) |
 | `--overwrite` | Allow replacing an array that already exists |
 
-The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric literals, array names, and `abs`/`sqrt`/`min`/`max`/`norm` — nothing else is evaluated.
+The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric literals, array names, and `abs`/`sqrt`/`min`/`max`/`norm` plus the math functions `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`, `tanh`, `floor`, `ceil`, `sign` and `pow`, and the tuple functions `dot`, `cross`, `det`, `trace`, `transpose`, `mag`, `matmul`, `outer` and `inv`, and the mesh-aware calls `grad`, `div`, `curl`, `area`, `volume` and `size` — nothing else is evaluated.
 
 ### data export
 
@@ -2576,7 +2649,7 @@ The expression grammar accepts `+ - * /`, unary minus, parentheses, numeric lite
 | Option | Description |
 |--------|-------------|
 | `--point`, `--cell` | Comma-separated names (default: every 6- or 9-component array at that location); exactly one of the two is required |
-| `--outputs` | Comma-separated `mises`/`principal`/`hydrostatic`/`deviatoric` (default: all four) |
+| `--outputs` | Comma-separated `mises`/`principal`/`hydrostatic`/`deviatoric` (default: these four) or the opt-in `trace`/`determinant`/`invariants`/`inverse`/`eigenvectors` |
 | `--prefix` | Prepended to every output array's name |
 | `--suffix` | Appended after the invariant's own name segment |
 | `--no-overwrite` | Fail instead of silently overwriting an existing array of the target name |

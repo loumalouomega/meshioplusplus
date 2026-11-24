@@ -16,7 +16,12 @@ Grammar::
     unary   := ('-'|'+') unary | primary
     primary := number | ident | ident '(' expr (',' expr)* ')' | '(' expr ')'
 
-Functions: ``abs``, ``sqrt``, ``min``, ``max``, ``norm``. Identifiers may
+Functions: ``abs``, ``sqrt``, ``min``, ``max``, ``norm``, ``exp``, ``log``,
+``log10``, ``sin``, ``cos``, ``tan``, ``asin``, ``acos``, ``atan``, ``atan2``,
+``sinh``, ``cosh``, ``tanh``, ``floor``, ``ceil``, ``sign``, ``pow`` and the
+tuple functions ``dot``, ``cross``, ``det``, ``trace``, ``transpose``, ``mag``, ``matmul``, ``outer``, ``inv`` and the mesh-aware calls ``grad``,
+``div``, ``curl`` (of a point_data array, by name) and ``area``, ``volume``,
+``size`` (per cell). Identifiers may
 contain ``:`` and ``.`` after the first character (so ``gmsh:physical`` works),
 and a name with spaces or operator characters can be backtick-quoted.
 
@@ -36,7 +41,72 @@ from ._fallback import core_op_declined
 MAX_COMPONENTS = 16
 MAX_DEPTH = 64
 
-_FUNCS = {"abs": 1, "sqrt": 1, "min": 2, "max": 2, "norm": 1}
+#: The coordinate names, and the column of ``(x, y, z)`` each one is.
+_COORDS = {"x": 0, "y": 1, "z": 2, "coords": slice(0, 3)}
+
+_FUNCS = {
+    "abs": 1,
+    "sqrt": 1,
+    "min": 2,
+    "max": 2,
+    "norm": 1,
+    "exp": 1,
+    "log": 1,
+    "log10": 1,
+    "sin": 1,
+    "cos": 1,
+    "tan": 1,
+    "asin": 1,
+    "acos": 1,
+    "atan": 1,
+    "atan2": 2,
+    "sinh": 1,
+    "cosh": 1,
+    "tanh": 1,
+    "floor": 1,
+    "ceil": 1,
+    "sign": 1,
+    "pow": 2,
+    "dot": 2,
+    "cross": 2,
+    "det": 1,
+    "trace": 1,
+    "transpose": 1,
+    "mag": 1,
+    "matmul": 2,
+    "outer": 2,
+    "inv": 1,
+    "grad": 1,
+    "div": 1,
+    "curl": 1,
+    "area": 0,
+    "volume": 0,
+    "size": 0,
+}
+
+#: The mesh-aware calls: derivatives of a point_data array by name, and the
+#: per-cell measures. They are evaluated once, before the element loop.
+_DERIVATIVES = {"grad": "gradient", "div": "divergence", "curl": "curl"}
+_MEASURES = {"area": 2, "volume": 3, "size": 0}
+
+#: The unary math functions beyond ``abs``/``sqrt``/``norm``, width-preserving.
+_UNARY = {
+    "exp": np.exp,
+    "log": np.log,
+    "log10": np.log10,
+    "sin": np.sin,
+    "cos": np.cos,
+    "tan": np.tan,
+    "asin": np.arcsin,
+    "acos": np.arccos,
+    "atan": np.arctan,
+    "sinh": np.sinh,
+    "cosh": np.cosh,
+    "tanh": np.tanh,
+    "floor": np.floor,
+    "ceil": np.ceil,
+    "sign": np.sign,
+}
 
 
 def _fail(message: str, pos: int | None = None):
@@ -205,6 +275,18 @@ class _Parser:
                     f"'{value}' takes exactly {arity} {word} (got {len(args)})",
                     pos,
                 )
+            if value in _DERIVATIVES:
+                # A derivative differentiates a point_data array by name: an
+                # expression (and so a nested call) has no such name.
+                if args[0][0] != "array":
+                    _fail(
+                        f"'{value}' needs a point_data array name, not an expression "
+                        "(for a second derivative use hessian)",
+                        pos,
+                    )
+                return (value, args[0][1], None, pos)
+            if value in _MEASURES:
+                return (value, None, None, pos)
             return (value, args[0], args[1] if len(args) > 1 else None, pos)
         _fail("unexpected token", pos)
 
@@ -241,18 +323,115 @@ def _eval(node, arrays, rows):
         return arrays[lhs]
     if kind == "neg":
         return -_eval(lhs, arrays, rows)
+    if kind in _DERIVATIVES:
+        return arrays[(kind, lhs)]
+    if kind in _MEASURES:
+        return arrays[(kind, None)]
     if kind == "abs":
         return np.abs(_eval(lhs, arrays, rows))
     if kind == "sqrt":
         with np.errstate(invalid="ignore"):
             return np.sqrt(_eval(lhs, arrays, rows))
-    if kind == "norm":
+    if kind in _UNARY:
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            return _UNARY[kind](_eval(lhs, arrays, rows))
+    if kind in ("norm", "mag"):
         v = _eval(lhs, arrays, rows)
         return np.sqrt((v * v).sum(axis=1)).reshape(rows, 1)
+    if kind == "inv":
+        v = _eval(lhs, arrays, rows)
+        if v.shape[1] not in (6, 9):
+            _fail(
+                "'inv' needs a 6-component (symmetric) or 9-component (3x3) "
+                f"operand (got {v.shape[1]})",
+                pos,
+            )
+        from ._tensor_invariants import _inverse
+
+        return _inverse(v, v.shape[1])
+    if kind in ("det", "trace", "transpose"):
+        v = _eval(lhs, arrays, rows)
+        if v.shape[1] not in (6, 9) or (kind == "transpose" and v.shape[1] != 9):
+            need = (
+                "a 9-component (3x3) operand"
+                if kind == "transpose"
+                else "a 6-component (symmetric) or 9-component (3x3) operand"
+            )
+            _fail(f"'{kind}' needs {need} (got {v.shape[1]})", pos)
+        if v.shape[1] == 6:
+            m = [
+                v[:, 0],
+                v[:, 3],
+                v[:, 5],
+                v[:, 3],
+                v[:, 1],
+                v[:, 4],
+                v[:, 5],
+                v[:, 4],
+                v[:, 2],
+            ]
+        else:
+            m = [v[:, k] for k in range(9)]
+        if kind == "trace":
+            return (m[0] + m[4] + m[8]).reshape(rows, 1)
+        if kind == "det":
+            det = (
+                m[0] * (m[4] * m[8] - m[5] * m[7])
+                + m[1] * (m[5] * m[6] - m[3] * m[8])
+                + m[2] * (m[3] * m[7] - m[4] * m[6])
+            )
+            return det.reshape(rows, 1)
+        return np.stack([m[j * 3 + i] for i in range(3) for j in range(3)], axis=1)
     a = _eval(lhs, arrays, rows)
     b = _eval(rhs, arrays, rows)
+    if kind == "matmul":
+        if a.shape[1] != 9 or b.shape[1] not in (3, 9):
+            _fail(
+                "'matmul' needs a 9-component (3x3) operand and a 9-component "
+                f"(3x3) or 3-component (vector) operand (got {a.shape[1]} and {b.shape[1]})",
+                pos,
+            )
+        am = a.reshape(rows, 3, 3)
+        cols = 3 if b.shape[1] == 9 else 1
+        bm = b.reshape(rows, 3, cols)
+        out = np.zeros((rows, 3, cols))
+        for k in range(3):  # k ascending, as the core sums
+            out = out + am[:, :, k : k + 1] * bm[:, k : k + 1, :]
+        return out.reshape(rows, 3 * cols)
+    if kind == "outer":
+        if a.shape[1] != 3 or b.shape[1] != 3:
+            _fail(
+                f"'outer' needs two 3-component operands (got {a.shape[1]} and {b.shape[1]})",
+                pos,
+            )
+        return (a[:, :, None] * b[:, None, :]).reshape(rows, 9)
+    if kind in ("dot", "cross"):
+        if kind == "dot" and a.shape[1] != b.shape[1]:
+            _fail(
+                f"'dot' needs two operands of the same width (got {a.shape[1]} and {b.shape[1]})",
+                pos,
+            )
+        if kind == "cross" and (a.shape[1] != 3 or b.shape[1] != 3):
+            _fail(
+                f"'cross' needs two 3-component operands (got {a.shape[1]} and {b.shape[1]})",
+                pos,
+            )
+        if kind == "dot":
+            return (a * b).sum(axis=1).reshape(rows, 1)
+        return np.stack(
+            [
+                a[:, 1] * b[:, 2] - a[:, 2] * b[:, 1],
+                a[:, 2] * b[:, 0] - a[:, 0] * b[:, 2],
+                a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0],
+            ],
+            axis=1,
+        )
     a, b = _combine(a, b, kind, pos)
-    with np.errstate(divide="ignore", invalid="ignore"):
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        if kind == "atan2":
+            return np.arctan2(a, b)
+        if kind == "pow":
+            return np.power(a, b)
         if kind == "+":
             return a + b
         if kind == "-":
@@ -282,6 +461,74 @@ def _collect_names(node, out):
         _collect_names(rhs, out)
 
 
+def _collect_calls(node, out):
+    """Gather every ``(kind, array name or None, position)`` mesh-aware call."""
+    kind, lhs, rhs, pos = node
+    if kind in _DERIVATIVES or kind in _MEASURES:
+        out.add((kind, lhs, pos))
+        return
+    if isinstance(lhs, tuple):
+        _collect_calls(lhs, out)
+    if isinstance(rhs, tuple):
+        _collect_calls(rhs, out)
+
+
+def _precompute_calls(mesh, tree, loc):
+    """Evaluate the mesh-aware calls once: ``{(kind, name): [array per block]}``
+    (a single array at the point location)."""
+    from ._data_average import _DIM, _cell_measures
+    from ._gradient import _gradient_py, _validate
+
+    calls = set()
+    _collect_calls(tree, calls)
+    out = {}
+    for kind, name, pos in sorted(calls, key=lambda c: (c[0], str(c[1]), c[2])):
+        if loc == "field_data":
+            _fail(
+                f"'{kind}' needs the point or cell location: field_data has no mesh to read",
+                pos,
+            )
+        if kind in _DERIVATIVES:
+            if name not in mesh.point_data:
+                _fail(
+                    f"'{kind}' differentiates a point_data array and '{name}' is not one",
+                    pos,
+                )
+            where = "point" if loc == "point_data" else "cell"
+            op = _DERIVATIVES[kind]
+            try:
+                _validate(mesh, name, op, "green-gauss", where, "\x01calc", None, True)
+            except ValueError as exc:
+                _fail(f"'{kind}': {exc}", pos)
+            res, _skipped, _fallback = _gradient_py(
+                mesh, name, op, "green-gauss", where, "\x01calc", None, True
+            )
+            if loc == "point_data":
+                out[(kind, name)] = [np.asarray(res.point_data["\x01calc"])]
+            else:
+                out[(kind, name)] = [np.asarray(b) for b in res.cell_data["\x01calc"]]
+            continue
+        if loc != "cell_data":
+            _fail(f"'{kind}' is a per-cell quantity: use the cell location", pos)
+        want = _MEASURES[kind]
+        blocks = []
+        for block in mesh.cells:
+            n = len(block.data)
+            ctype = block.type.split("_")[0] if "_" in block.type else block.type
+            if block.type.startswith("polyhedron"):
+                dim = 3
+            elif block.type.startswith("polygon") or isinstance(block.data, list):
+                dim = 2
+            else:
+                dim = _DIM.get(ctype)
+            meas = _cell_measures(mesh, block)
+            if meas is None or (want != 0 and dim != want):
+                meas = np.full(n, np.nan)
+            blocks.append(np.asarray(meas, dtype=float))
+        out[(kind, None)] = blocks
+    return out
+
+
 def _calc_py(mesh, expression, location, output, overwrite):
     """Pure-Python reference for :func:`data_calc`."""
     loc = normalize_location(location)
@@ -301,7 +548,14 @@ def _calc_py(mesh, expression, location, output, overwrite):
     referenced = set()
     _collect_names(tree, referenced)
     source = location_map(mesh, loc)
-    for name in sorted(referenced):
+    # A name that no data array has but that is `x`, `y`, `z` or `coords` is a
+    # coordinate (a point's, or a cell's centroid); an array of that name wins.
+    coord_names = (
+        {n for n in referenced if n in _COORDS and n not in source}
+        if loc != "field_data"
+        else set()
+    )
+    for name in sorted(referenced - coord_names):
         if name not in source:
             keys = available_keys(mesh, loc)
             detail = (
@@ -310,9 +564,16 @@ def _calc_py(mesh, expression, location, output, overwrite):
             _fail(f"unknown {loc} array '{name}' ({detail})")
 
     out = copy.deepcopy(mesh)
+    call_values = _precompute_calls(mesh, tree, loc)
 
-    def run(rows, fetch):
-        arrays = {n: _as_2d(fetch(n), rows) for n in referenced}
+    def run(rows, fetch, block=0):
+        arrays = {n: _as_2d(fetch(n), rows) for n in referenced - coord_names}
+        for key, values in call_values.items():
+            arrays[key] = _as_2d(values[min(block, len(values) - 1)], rows)
+        for n in coord_names:
+            xyz = fetch(n)
+            arrays[n] = xyz[:, _COORDS[n]] if n != "coords" else xyz
+            arrays[n] = _as_2d(arrays[n], rows)
         for n, a in arrays.items():
             if a.shape[1] > MAX_COMPONENTS:
                 _fail(
@@ -324,11 +585,18 @@ def _calc_py(mesh, expression, location, output, overwrite):
 
     if loc == "point_data":
         rows = len(mesh.points)
-        for name in referenced:
+        for name in referenced - coord_names:
             got = len(np.asarray(source[name]))
             if got != rows:
                 _fail(f"array '{name}' has {got} rows but point_data needs {rows}")
-        out.point_data[output] = run(rows, lambda n: source[n])
+        xyz = None
+        if coord_names:
+            pts = np.asarray(mesh.points, dtype=float)
+            xyz = np.zeros((rows, 3))
+            xyz[:, : min(pts.shape[1], 3)] = pts[:, :3]
+        out.point_data[output] = run(
+            rows, lambda n: xyz if n in coord_names else source[n]
+        )
         return out
 
     if loc == "field_data":
@@ -342,16 +610,27 @@ def _calc_py(mesh, expression, location, output, overwrite):
         return out
 
     nblocks = len(mesh.cells)
-    for name in referenced:
+    for name in referenced - coord_names:
         if len(source[name]) != nblocks:
             _fail(
                 f"cell_data '{name}' has {len(source[name])} block(s) but the "
                 f"mesh has {nblocks} cell block(s)"
             )
+    centroids = None
+    if coord_names:
+        from ._partition import _centroids
+
+        total = sum(len(block.data) for block in mesh.cells)
+        centroids = _centroids(mesh, total)
     blocks = []
+    base = 0
     for b, block in enumerate(mesh.cells):
         rows = len(block.data)
-        blocks.append(run(rows, lambda n, b=b: source[n][b]))
+        cent = centroids[base : base + rows] if centroids is not None else None
+        blocks.append(
+            run(rows, lambda n, b=b, c=cent: c if n in coord_names else source[n][b], b)
+        )
+        base += rows
     out.cell_data[output] = blocks
     return out
 

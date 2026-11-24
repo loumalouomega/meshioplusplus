@@ -14524,6 +14524,19 @@ MESHIOPLUSPLUS_API double sym3_mises(const double* pT);
  */
 MESHIOPLUSPLUS_API void sym3_principal(const double* pT, double* pOut);
 
+/**
+ * @brief Eigenvalues and eigenvectors of a symmetric tensor, by the same cyclic
+ * Jacobi as `sym3_principal` (whose values this returns, bit for bit).
+ * @param pT six components, `xx yy zz xy yz zx`.
+ * @param pValues the three eigenvalues, ascending.
+ * @param pVectors the row-major 3x3 whose column `k` (entries `k`, `k + 3`,
+ *        `k + 6`) is the unit eigenvector of `pValues[k]`. Each vector's sign is
+ *        fixed: its first component of magnitude above `1e-8` is positive. A
+ *        repeated eigenvalue has no unique eigenvectors; the pair returned is
+ *        one orthonormal basis of its eigenspace.
+ */
+MESHIOPLUSPLUS_API void sym3_eigen(const double* pT, double* pValues, double* pVectors);
+
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/sym3_eigen.hpp =====
@@ -28791,7 +28804,24 @@ MESHIOPLUSPLUS_API CellPointWeight cell_point_weight_from_name(const std::string
  * @endcode
  *
  * Functions: `abs(x)`, `sqrt(x)`, `min(a,b)`, `max(a,b)`, and `norm(v)` for the
- * Euclidean magnitude of a vector. Exponentiation is deliberately absent.
+ * Euclidean magnitude of a vector, then the elementwise math functions `exp`,
+ * `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`,
+ * `tanh`, `floor`, `ceil`, `sign` (all width-preserving) and `atan2(y,x)`,
+ * `pow(a,b)` (scalar-broadcasting, like `min`), then the tuple functions that read
+ * a whole row: `dot(a,b)` (equal widths, a scalar), `cross(a,b)` (3-component
+ * operands), `det(t)` and `trace(t)` (a 6-component symmetric `xx yy zz xy yz zx`
+ * or 9-component row-major 3x3 tensor, a scalar), `transpose(t)` (9 components)
+ * `mag(v)` (an alias of `norm`), `matmul(a,b)` (a 3x3 by a 3x3 or by a 3-vector),
+ * `outer(a,b)` (two 3-vectors to a 3x3) and `inv(t)` (the inverse of a 6- or
+ * 9-component tensor, in its own width; NaN where the determinant is zero).
+ *
+ * The mesh-aware calls read the mesh, not just the arrays: `grad(a)`, `div(a)`
+ * and `curl(a)` differentiate a point_data array by name (`gradient`'s defaults,
+ * at the expression's location; not nested), and `area()`, `volume()` and
+ * `size()` are the unsigned measure of every cell (the cell location only;
+ * `area` is NaN outside 2-D cells and `volume` outside 3-D ones). Exponentiation is a function,
+ * `pow`, not an operator, so the grammar's precedence is unchanged; a domain
+ * error (`log(-1)`, `asin(2)`) is a NaN, as division by zero is an infinity.
  *
  * Identifiers may contain `:` and `.` after their first character, so a mesh's
  * own conventional names (`gmsh:physical`, `quality:scaled_jacobian`) can be
@@ -32490,7 +32520,17 @@ namespace meshioplusplus {
 enum class GradientOperator {
     Gradient,    ///< `grad f`; `3 * nc` components, row-major `[i][j]` at `i * 3 + j`.
     Divergence,  ///< `div u`; one component. Needs a 2- or 3-component input.
-    Curl         ///< `curl u`; three components. Needs a 2- or 3-component input.
+    Curl,        ///< `curl u`; three components. Needs a 2- or 3-component input.
+    // The quantities below are built from the per-cell gradient block `G = grad u` alone
+    // (`G[i][j] = du_i/dx_j`, a 2-component field padded to (u, v, 0)), so each is exact
+    // wherever the method's gradient is. All need a 2- or 3-component input.
+    VorticityMagnitude,  ///< `|curl u|`; one component.
+    QCriterion,  ///< `Q = (|Omega|^2 - |S|^2) / 2`, `S`/`Omega` the symmetric/skew parts of `G`.
+    Lambda2,     ///< The middle eigenvalue of `S^2 + Omega^2` (Jeong and Hussain 1995).
+    StrainRate,  ///< `S = (G + G^T) / 2`; six components `xx yy zz xy yz zx`.
+    GreenLagrangeStrain,  ///< `E = (F^T F - I) / 2`, `F = I + G`, for a displacement; six
+                          ///< components.
+    Helicity              ///< `u . curl u`, `u` the cell's corner-mean field value; one component.
 };
 
 /// How the per-cell derivative is reconstructed.
@@ -32503,6 +32543,36 @@ enum class GradientMethod {
 inline constexpr const char* kGradientSuffix = ":gradient";
 inline constexpr const char* kDivergenceSuffix = ":divergence";
 inline constexpr const char* kCurlSuffix = ":curl";
+inline constexpr const char* kVorticityMagnitudeSuffix = ":vorticity_magnitude";
+inline constexpr const char* kQCriterionSuffix = ":q_criterion";
+inline constexpr const char* kLambda2Suffix = ":lambda2";
+inline constexpr const char* kStrainRateSuffix = ":strain_rate";
+inline constexpr const char* kGreenLagrangeStrainSuffix = ":green_lagrange";
+inline constexpr const char* kHelicitySuffix = ":helicity";
+
+/// The default output-name suffix of an operator (`":gradient"`, `":curl"`, ...).
+inline const char* gradient_suffix(GradientOperator Op) {
+    switch (Op) {
+        case GradientOperator::Divergence:
+            return kDivergenceSuffix;
+        case GradientOperator::Curl:
+            return kCurlSuffix;
+        case GradientOperator::VorticityMagnitude:
+            return kVorticityMagnitudeSuffix;
+        case GradientOperator::QCriterion:
+            return kQCriterionSuffix;
+        case GradientOperator::Lambda2:
+            return kLambda2Suffix;
+        case GradientOperator::StrainRate:
+            return kStrainRateSuffix;
+        case GradientOperator::GreenLagrangeStrain:
+            return kGreenLagrangeStrainSuffix;
+        case GradientOperator::Helicity:
+            return kHelicitySuffix;
+        default:
+            return kGradientSuffix;
+    }
+}
 
 /// Options for `gradient`.
 struct GradientOptions {
@@ -34393,6 +34463,81 @@ triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>>& rL
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/mesh_cad.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/mesh_operator.hpp =====
+/**
+ * @file operations/mesh_operator.hpp
+ * @brief The mesh's own finite-element operators exported as sparse matrices:
+ * the cotangent Laplacian, the lumped and the consistent mass, and the
+ * per-triangle gradient of a triangle surface (roadmap 15.2.1).
+ *
+ * The same P1 operators `geodesic_distance`, `laplacian_eigenmodes` and
+ * `sobolev_deform` solve with, returned as data so an application can build its
+ * own systems on them. Nothing is solved here and no physics is assembled.
+ *
+ * | Kind | Matrix | Shape |
+ * | --- | --- | --- |
+ * | `Laplacian` | `K_ij = ∫ ∇φ_i · ∇φ_j dA`, the cotangent stiffness: symmetric, positive
+ * semidefinite, rows summing to 0, the natural (Neumann) boundary | `n × n` | | `MassLumped` |
+ * `M_ii = Σ A_t / 3` over the triangles at `i`, diagonal | `n × n` | | `MassConsistent` | `M_ij = ∫
+ * φ_i φ_j dA`, `A_t / 12 (1 + δ_ij)` per triangle | `n × n` | | `Gradient` | row `3 t + k` is
+ * component `k` of the gradient of the P1 field on triangle `t`, so `G f` is the per-triangle
+ * gradient, laid out `(t, k)` | `3 T × n` |
+ *
+ * `n` is the point count and `T` the number of triangles of the mesh's
+ * `triangle` blocks in input order (the `Gradient` rows of a zero-area
+ * triangle are empty). The matrices are compressed rows with ascending,
+ * unique columns, built serially, so they are the same on every backend.
+ *
+ * **Scope.** The surface is the mesh's `triangle` blocks, as for
+ * `geodesic_distance`: a volume cell, a quad, a polygon or a higher-order
+ * surface cell is refused naming the operation that fixes it. Tetrahedra wait
+ * on the shared simplex kernels (roadmap 3.4.4).
+ */
+
+// System includes
+#include <cstdint>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which operator `mesh_operator` returns.
+enum class MeshOperatorKind : std::int32_t {
+    Laplacian = 0,
+    MassLumped = 1,
+    MassConsistent = 2,
+    Gradient = 3,
+};
+
+/// What `mesh_operator` builds.
+struct MeshOperatorOptions {
+    MeshOperatorKind mKind = MeshOperatorKind::Laplacian;
+};
+
+/// A compressed-row sparse matrix.
+struct MeshOperatorResult {
+    std::int64_t mRows = 0;
+    std::int64_t mCols = 0;
+    /// `mRows + 1` row starts into `mIndices` and `mValues`.
+    std::vector<std::int64_t> mIndptr;
+    std::vector<std::int64_t> mIndices;
+    std::vector<double> mValues;
+    /// Zero-area triangles left out.
+    std::int64_t mNumDegenerate = 0;
+};
+
+/**
+ * @brief The operator of @p rOptions over the triangle surface of @p rMesh.
+ * @throws std::invalid_argument on a cell type outside the scope, a triangle
+ *         naming a point outside the mesh, no triangle or every triangle
+ *         degenerate.
+ */
+MESHIOPLUSPLUS_API MeshOperatorResult mesh_operator(const Mesh& rMesh,
+                                                    const MeshOperatorOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/mesh_operator.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/metric.hpp =====
 /**
  * @file operations/metric.hpp
@@ -41358,6 +41503,72 @@ MESHIOPLUSPLUS_API SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/smooth.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/smooth_field.hpp =====
+/**
+ * @file operations/smooth_field.hpp
+ * @brief Screened-Poisson smoothing of a point field on a triangle surface
+ * (roadmap 15.2.2): the field `g` solving `(M + l^2 K) g = M f` over the
+ * lumped mass `M` and the cotangent stiffness `K` of `mesh_operator`, `l` a
+ * length. A field varying on a scale much shorter than `l` is flattened, one
+ * varying on a longer scale passes nearly unchanged; the mean (the `M`-weighted
+ * average) is preserved exactly, and `l = 0` returns the field. The points do
+ * not move (that is `sobolev_deform`'s job).
+ *
+ * `smooth_field(mesh, {array, length})` adds `point_data["<array>:smooth"]`
+ * (or `mOutput`), each component solved on its own by Jacobi-preconditioned
+ * conjugate gradients, serially and in input order: the same on every backend.
+ * A point in no triangle keeps its value. The surface is the mesh's `triangle`
+ * blocks, with `mesh_operator`'s scope and refusals.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The suffix of the smoothed array's default name (`<array>:smooth`).
+inline constexpr const char* kSmoothFieldSuffix = ":smooth";
+
+/// What `smooth_field` smooths, and how much.
+struct SmoothFieldOptions {
+    /// The point array to smooth: Float64-convertible, `(n,)` or `(n, k)`.
+    std::string mArray;
+    /// The smoothing length, in the mesh's units; 0 returns the field.
+    double mLength = 0.0;
+    /// The output name; empty takes `<mArray>:smooth`.
+    std::string mOutput;
+    /// Relative residual tolerance of the solve.
+    double mTolerance = 1e-12;
+    /// The iteration cap of each component's solve; 0 takes the point count plus 100.
+    std::int64_t mMaxIterations = 0;
+};
+
+/// What `smooth_field` did.
+struct SmoothFieldResult {
+    /// The input mesh with the smoothed array.
+    Mesh mMesh;
+    /// Zero-area triangles left out.
+    std::int64_t mNumDegenerate = 0;
+    /// Conjugate-gradient iterations, summed over the components.
+    std::int64_t mIterations = 0;
+    /// False when a solve hit its cap; the last iterate is still used.
+    bool mConverged = true;
+};
+
+/**
+ * @brief Smooth @p rOptions.mArray over the triangle surface of @p rMesh.
+ * @throws std::invalid_argument on an unknown or non-numeric array, one whose
+ *         rows are not the point count, a negative length or tolerance, or a
+ *         mesh outside `mesh_operator`'s scope.
+ */
+MESHIOPLUSPLUS_API SmoothFieldResult smooth_field(const Mesh& rMesh,
+                                                  const SmoothFieldOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/smooth_field.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/sniff.hpp =====
 /**
  * @file operations/sniff.hpp
@@ -41669,6 +41880,114 @@ MESHIOPLUSPLUS_API StatsReport compute_stats(const Mesh& rMesh);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/stats.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/streamlines.hpp =====
+/**
+ * @file operations/streamlines.hpp
+ * @brief Streamlines of a point vector field, as a mesh of line segments.
+ *
+ * The field is the piecewise-linear interpolation of the 2- or 3-component
+ * point array `mArray` over the mesh's cells (each split into simplices: a
+ * volume mesh is traced in its volume, a surface mesh on its surface, the
+ * field projected onto the triangle it is on). Each line is traced from its
+ * seed by the **field's own velocity** (`dx/dt = v`), forward, backward or both,
+ * with fixed-step RK4 or adaptive Dormand-Prince 5(4), so `IntegrationTime` is
+ * the field's time. The result is a new mesh: the points of every line, one
+ * `line` segment between consecutive points, and the point data
+ * `IntegrationTime` (negative backward of the seed), `Speed`, `SeedId` and the
+ * field itself under its own name; the cell data `SeedId` per segment.
+ *
+ * Seeds are `mSeeds` simplex centroids ranked at equal measure along a
+ * golden-ratio sequence (the choice `render`'s streamlines make), or explicit
+ * points. A line stops in each direction because it left the mesh, the speed
+ * fell to `mTerminalSpeed`, the path reached `mMaxLength` or the step limit was
+ * used up; the reasons are in the result. Lines are traced in parallel into
+ * per-seed buffers joined in seed order, so the result does not depend on the
+ * backend or the thread count. `render`'s streamlines keep their own fixed
+ * arc-length tracer.
+ *
+ * C++ core only, with no numpy twin: the adaptive step control branches on
+ * rounded error estimates, which a second implementation could decide
+ * differently.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which way from each seed.
+enum class StreamlineDirection : std::int32_t { Both = 0, Forward = 1, Backward = 2 };
+
+/// The integrator.
+enum class StreamlineIntegrator : std::int32_t { RK4 = 0, RK45 = 1 };
+
+/// Why a line stopped growing in one direction (`StreamlinesResult::mEnd*`).
+enum class StreamlineStop : std::int32_t {
+    LeftDomain = 0,
+    Stagnation = 1,
+    MaxLength = 2,
+    MaxSteps = 3,
+};
+
+/// Point data written by `streamlines` (the field keeps its own name).
+inline constexpr const char* kStreamlineTimeName = "IntegrationTime";
+inline constexpr const char* kStreamlineSpeedName = "Speed";
+inline constexpr const char* kStreamlineSeedIdName = "SeedId";
+
+/// Options for `streamlines`.
+struct StreamlinesOptions {
+    /// The point array to follow: 2 or 3 components (a 2-component field is
+    /// `(u, v, 0)`). Required.
+    std::string mArray;
+    /// About this many seeds, used when `mSeedPoints` is empty.
+    std::int64_t mSeeds = 40;
+    /// Explicit seeds, 3 coordinates each.
+    std::vector<double> mSeedPoints;
+    StreamlineDirection mDirection = StreamlineDirection::Both;
+    StreamlineIntegrator mIntegrator = StreamlineIntegrator::RK4;
+    /// The step as a length at the fastest speed; 0 is `0.005` of the diagonal.
+    double mStep = 0.0;
+    /// The longest path in each direction, as a fraction of the diagonal.
+    double mMaxLength = 0.5;
+    /// The step limit in each direction; 0 is 20000.
+    std::int64_t mMaxSteps = 0;
+    /// The speed at or below which a line stops; 0 is `1e-9` of the fastest.
+    double mTerminalSpeed = 0.0;
+    /// The adaptive integrator's tolerance as a fraction of the diagonal.
+    double mTolerance = 1e-6;
+};
+
+/// The lines, and how each one ended.
+struct StreamlinesResult {
+    /// Points and `line` segments, with the data described above.
+    Mesh mMesh;
+    std::int64_t mNumLines = 0;
+    /// Explicit seeds that were not inside the mesh (no line is made for them).
+    std::int64_t mNumSeedsOutside = 0;
+    /// Per line: the seed (an index into the seeds as listed) and the
+    /// `StreamlineStop` of the backward and the forward end.
+    std::vector<std::int64_t> mSeedIds;
+    std::vector<std::int32_t> mEndBackward;
+    std::vector<std::int32_t> mEndForward;
+    /// 2 (traced on a surface) or 3 (in a volume).
+    std::int32_t mDim = 0;
+};
+
+/**
+ * @brief Traces streamlines of `mArray` over @p rMesh.
+ * @throws std::invalid_argument on an unknown array or one that is not 2- or
+ *         3-component, on a mesh with no triangle, quad, tetra, hexahedron,
+ *         wedge or pyramid cell, or on invalid options.
+ */
+MESHIOPLUSPLUS_API StreamlinesResult streamlines(const Mesh& rMesh,
+                                                 const StreamlinesOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/streamlines.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/subdivide.hpp =====
 /**
  * @file operations/subdivide.hpp
@@ -41956,12 +42275,24 @@ MESHIOPLUSPLUS_API Mesh surface_extract(const Mesh& rMesh, bool forceFaceMode, b
 namespace meshioplusplus {
 
 /// Which invariants to compute; combine with `|`.
+///
+/// `All` is the four original flags and stays so: the algebraic flags below
+/// (`Trace` to `Eigenvectors`) are opt-in, so a default call writes the same arrays
+/// it always did. They read the tensor as given (a 9-component input is not
+/// symmetrised, like `Hydrostatic` and `Deviatoric`).
 enum class TensorInvariant : unsigned {
     Mises = 1u << 0,
     Principal = 1u << 1,
     Hydrostatic = 1u << 2,
     Deviatoric = 1u << 3,
     All = Mises | Principal | Hydrostatic | Deviatoric,
+    Trace = 1u << 4,        ///< `xx + yy + zz`; one component.
+    Determinant = 1u << 5,  ///< `det A`; one component.
+    Invariants = 1u << 6,   ///< `I1 = trace`, `I2 = sum of the principal 2x2 minors`, `I3 = det`.
+    Inverse = 1u << 7,      ///< `adj(A) / det(A)`, in the input's shape; NaN where `det == 0`.
+    /// The unit eigenvectors of the symmetric part, nine components: the row-major 3x3
+    /// whose column `k` belongs to the k-th (ascending) `principal` value.
+    Eigenvectors = 1u << 8,
 };
 
 /// `a | b` for `TensorInvariant` flags.
@@ -41996,8 +42327,8 @@ struct TensorInvariantsOptions {
 };
 
 /**
- * @brief Computes von Mises, principal, hydrostatic and/or deviatoric fields
- * for the selected tensor arrays.
+ * @brief Computes von Mises, principal, hydrostatic, deviatoric, trace,
+ * determinant, invariant and/or inverse fields for the selected tensor arrays.
  * @param rMesh the source mesh (unmodified).
  * @param rOpts which arrays, which outputs, and how to name them.
  * @return a new mesh with the source data plus the requested invariant arrays;
@@ -58447,6 +58778,7 @@ void step_write_wireframe(const std::string& rPath, const Mesh& rMesh);
 
 // System includes
 #include <cstddef>
+#include <cstdint>
 #include <vector>
 
 // Project includes
@@ -58478,6 +58810,59 @@ struct Streamlines {
 /// mesh has no cell of a supported type.
 Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
                               const StreamlineOptions& rOptions);
+
+/// Why a streamline stopped growing in one direction.
+enum class StreamlineEnd : int {
+    LeftDomain = 0,  ///< the next point is outside the mesh
+    Stagnation = 1,  ///< the speed fell to the terminal speed or below
+    MaxLength = 2,   ///< the path reached the length limit
+    MaxSteps = 3,    ///< the step limit was used up
+};
+
+/// The options of the time-domain tracer behind the public `streamlines`.
+struct StreamlineTraceOptions {
+    /// About this many seeds when `mSeedPoints` is empty (at most the number of
+    /// simplices), chosen as `trace_streamlines` chooses them.
+    std::size_t mSeeds = 40;
+    /// Explicit seeds, 3 doubles each; used instead of the count when not empty.
+    std::vector<double> mSeedPoints;
+    bool mBackward = true;
+    bool mForward = true;
+    /// Dormand-Prince 5(4) with step control, instead of fixed-step RK4.
+    bool mAdaptive = false;
+    /// The step as a length, at the fastest speed; 0 is `0.005` of the diagonal.
+    double mStep = 0.0;
+    /// The longest path in each direction, as a fraction of the diagonal.
+    double mMaxLength = 0.5;
+    /// The step limit in each direction; 0 is 20000.
+    std::size_t mMaxSteps = 0;
+    /// The speed at or below which a line stops; 0 is `1e-9` of the fastest.
+    double mTerminalSpeed = 0.0;
+    /// The adaptive integrator's tolerance as a fraction of the diagonal.
+    double mTolerance = 1e-6;
+};
+
+/// One line: the points in order along the path (backward end first), the
+/// velocity of the field there, and the time since the seed (negative backward).
+struct StreamlineTrace {
+    std::vector<double> mXyz;       ///< 3 per point
+    std::vector<double> mVelocity;  ///< 3 per point
+    std::vector<double> mTime;      ///< 1 per point
+    std::int64_t mSeedId = 0;
+    StreamlineEnd mBackwardEnd = StreamlineEnd::LeftDomain;
+    StreamlineEnd mForwardEnd = StreamlineEnd::LeftDomain;
+};
+
+struct StreamlineTraces {
+    std::vector<StreamlineTrace> mLines;
+    std::int64_t mNumSeedsOutside = 0;  ///< explicit seeds that were not in the mesh
+    int mDim = 0;                       ///< 2 (on a surface) or 3 (in a volume)
+};
+
+/// Trace by true velocity (`dx/dt = v`), so the time is the field's own time.
+/// Throws std::invalid_argument, naming the cell types, as `trace_streamlines`.
+StreamlineTraces trace_streamlines_timed(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                                         const StreamlineTraceOptions& rOptions);
 
 }  // namespace detail
 }  // namespace meshioplusplus
@@ -58670,6 +59055,9 @@ struct SurfaceFemTriangle {
     std::array<std::int64_t, 3> mNodes;
     std::array<double, 3> mCot;
     double mDoubleArea;
+    /// The triangle's position among the triangle blocks' cells, in input order
+    /// (a degenerate triangle left out keeps its neighbours' numbers).
+    std::int64_t mIndex = 0;
 };
 
 struct SurfaceFem {
@@ -58677,6 +59065,8 @@ struct SurfaceFem {
     std::vector<std::array<double, 3>> mPoints;
     /// The non-degenerate triangles, in input order.
     std::vector<SurfaceFemTriangle> mTriangles;
+    /// Every triangle of the triangle blocks, kept or not.
+    std::int64_t mNumInput = 0;
     /// Triangles left out for (near) zero area.
     std::int64_t mNumDegenerate = 0;
     /// The mean edge length of the kept triangles (each edge once per triangle).
@@ -121444,12 +121834,22 @@ void sl_trace(const SlField& rField, double Floor, const Vec3& rSeed, double Sig
     }
 }
 
-}  // namespace
+// What both tracers take from the mesh and the field before they seed: the
+// simplices, the diagonal of the box around them, the fastest speed and the
+// speed floor. `mOk` is false where there is nothing to trace (a zero-size mesh
+// or a zero field).
+struct SlSetup {
+    SlSoup mSoup;
+    double mDiag = 0.0;
+    double mFloor = 0.0;
+    double mMaxMag = 0.0;
+    bool mOk = false;
+};
 
-Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
-                              const StreamlineOptions& rOptions) {
-    const SlSoup soup = sl_collect(rMesh);
-    Streamlines out;
+SlSetup sl_setup(const Mesh& rMesh, const double* pXyz, const double* pVec) {
+    SlSetup out;
+    out.mSoup = sl_collect(rMesh);
+    const SlSoup& soup = out.mSoup;
     if (soup.mSimplices.empty()) {
         std::string seen;
         for (const std::string& type : soup.mSeen)
@@ -121459,9 +121859,6 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
             "mesh has: " +
             (seen.empty() ? std::string("no cells") : seen) + ")");
     }
-    out.mDim = soup.mDim;
-    out.mNumSimplices = soup.mSimplices.size();
-
     // The box around the traced cells, and the scales taken from its diagonal.
     double lo[3] = {std::numeric_limits<double>::infinity(), 0, 0};
     double hi[3] = {0, 0, 0};
@@ -121475,51 +121872,219 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
             }
             first = false;
         }
-    const double diag =
-        std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
-                  (hi[2] - lo[2]) * (hi[2] - lo[2]));
-    if (!(diag > 0.0) || !std::isfinite(diag))
+    out.mDiag = std::sqrt((hi[0] - lo[0]) * (hi[0] - lo[0]) + (hi[1] - lo[1]) * (hi[1] - lo[1]) +
+                          (hi[2] - lo[2]) * (hi[2] - lo[2]));
+    if (!(out.mDiag > 0.0) || !std::isfinite(out.mDiag))
         return out;
-    const double step = 0.005 * diag;
-    const std::size_t max_steps = static_cast<std::size_t>(
-        std::clamp(std::ceil(rOptions.mLength * diag / step), 1.0, 2000.0));
-
     // The slowest speed that still counts as moving, from the fastest corner.
-    double max_mag = 0.0;
     for (const SlSimplex& s : soup.mSimplices)
         for (std::size_t k = 0; k < static_cast<std::size_t>(soup.mDim) + 1; ++k) {
             const double* v = pVec + 3 * static_cast<std::size_t>(s.mNode[k]);
             const double m = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
             if (std::isfinite(m))
-                max_mag = std::max(max_mag, m);
+                out.mMaxMag = std::max(out.mMaxMag, m);
         }
-    if (!(max_mag > 0.0))
+    if (!(out.mMaxMag > 0.0))
         return out;
-    const double floor = 1e-9 * max_mag;
+    out.mFloor = 1e-9 * out.mMaxMag;
+    out.mOk = true;
+    return out;
+}
 
-    const SlField field(soup, pXyz, pVec, diag, soup.mDim == 2 ? 0.5 * step : 1e-9 * diag);
-
-    // Seeds: simplices ranked at equal measure along a golden-ratio sequence
-    // (a plain stride would line up with the rows of a structured mesh), each
-    // started at its centroid.
-    const std::size_t count = soup.mSimplices.size();
-    std::vector<double> cumulative(count);
+// The seeds: simplices ranked at equal measure along a golden-ratio sequence (a
+// plain stride would line up with the rows of a structured mesh), each started
+// at its centroid.
+std::vector<Vec3> sl_seed_points(const SlField& rField, std::size_t Count, std::size_t Seeds) {
+    std::vector<double> cumulative(Count);
     double total = 0.0;
-    for (std::size_t s = 0; s < count; ++s) {
-        const double m = field.Measure(s);
+    for (std::size_t s = 0; s < Count; ++s) {
+        const double m = rField.Measure(s);
         total += std::isfinite(m) ? m : 0.0;
         cumulative[s] = total;
     }
-    const std::size_t seeds = std::min(rOptions.mSeeds, count);
+    const std::size_t seeds = std::min(Seeds, Count);
     std::vector<Vec3> seed_points;
     for (std::size_t k = 0; k < seeds && total > 0.0; ++k) {
         double t = 0.5 + static_cast<double>(k) * 0.6180339887498949;
         t -= std::floor(t);
         const auto it = std::lower_bound(cumulative.begin(), cumulative.end(), t * total);
         const std::size_t s =
-            std::min<std::size_t>(static_cast<std::size_t>(it - cumulative.begin()), count - 1);
-        seed_points.push_back(field.Centroid(s));
+            std::min<std::size_t>(static_cast<std::size_t>(it - cumulative.begin()), Count - 1);
+        seed_points.push_back(rField.Centroid(s));
     }
+    return seed_points;
+}
+
+// The field's locator tolerance: half a render step on a surface, a whisker in
+// a volume.
+double sl_tolerance(int Dim, double Diag) {
+    return Dim == 2 ? 0.5 * (0.005 * Diag) : 1e-9 * Diag;
+}
+
+struct SlTimePoint {
+    Vec3 mP;
+    Vec3 mV;  // the field's velocity at mP (not signed by the direction)
+    double mT;
+};
+
+// Trace one way from the seed by true velocity (`dx/dt = sign * v`), with fixed
+// RK4 or adaptive Dormand-Prince 5(4). The seed is not added. Returns why the
+// line stopped.
+StreamlineEnd sl_trace_timed(const SlField& rField, double Floor, const Vec3& rSeed, double Sign,
+                             const StreamlineTraceOptions& rOptions, double StepTime,
+                             double MaxLength, double ToleranceLength, std::size_t MaxSteps,
+                             std::vector<SlTimePoint>& rOut) {
+    // The velocity at x, signed by the direction; false outside the mesh.
+    auto velocity = [&](const Vec3& x, Vec3& v) {
+        double q[3] = {x[0], x[1], x[2]};
+        double vv[3];
+        if (!rField.Sample(q, vv))
+            return false;
+        v = {Sign * vv[0], Sign * vv[1], Sign * vv[2]};
+        return true;
+    };
+    auto add = [](const Vec3& a, const Vec3& b, double s) {
+        return Vec3{a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2]};
+    };
+    auto norm = [](const Vec3& a) { return std::sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]); };
+
+    Vec3 p = rSeed;
+    Vec3 v;
+    if (!velocity(p, v))
+        return StreamlineEnd::LeftDomain;
+    double t = 0.0;
+    double length = 0.0;
+    double h = StepTime;
+    for (std::size_t it = 0; it < MaxSteps; ++it) {
+        if (!(norm(v) > Floor))
+            return StreamlineEnd::Stagnation;
+        Vec3 next;
+        Vec3 vnext;
+        double used = h;
+        if (!rOptions.mAdaptive) {
+            // Fixed RK4. A stage that leaves the mesh keeps the last slope.
+            Vec3 k1 = v;
+            Vec3 k2;
+            Vec3 k3;
+            Vec3 k4;
+            if (!velocity(add(p, k1, 0.5 * h), k2))
+                k2 = k1;
+            if (!velocity(add(p, k2, 0.5 * h), k3))
+                k3 = k2;
+            if (!velocity(add(p, k3, h), k4))
+                k4 = k3;
+            for (std::size_t c = 0; c < 3; ++c)
+                next[c] = p[c] + h / 6.0 * (k1[c] + 2.0 * k2[c] + 2.0 * k3[c] + k4[c]);
+            if (!velocity(next, vnext))
+                return StreamlineEnd::LeftDomain;
+        } else {
+            // Dormand-Prince 5(4): retry the step with a smaller h until its
+            // error estimate is within the tolerance; a stage outside the mesh
+            // counts as a failure.
+            bool accepted = false;
+            for (int attempt = 0; attempt < 16 && !accepted; ++attempt) {
+                Vec3 k[7];
+                k[0] = v;
+                bool ok = true;
+                auto stage = [&](int i, std::initializer_list<std::pair<int, double>> terms) {
+                    Vec3 x = p;
+                    for (const auto& term : terms)
+                        x = add(x, k[term.first], h * term.second);
+                    if (!velocity(x, k[i]))
+                        ok = false;
+                };
+                stage(1, {{0, 1.0 / 5.0}});
+                if (ok)
+                    stage(2, {{0, 3.0 / 40.0}, {1, 9.0 / 40.0}});
+                if (ok)
+                    stage(3, {{0, 44.0 / 45.0}, {1, -56.0 / 15.0}, {2, 32.0 / 9.0}});
+                if (ok)
+                    stage(4, {{0, 19372.0 / 6561.0},
+                              {1, -25360.0 / 2187.0},
+                              {2, 64448.0 / 6561.0},
+                              {3, -212.0 / 729.0}});
+                if (ok)
+                    stage(5, {{0, 9017.0 / 3168.0},
+                              {1, -355.0 / 33.0},
+                              {2, 46732.0 / 5247.0},
+                              {3, 49.0 / 176.0},
+                              {4, -5103.0 / 18656.0}});
+                if (ok) {
+                    // The fifth-order solution, which is also where k7 is taken (FSAL).
+                    Vec3 y = p;
+                    const double b[6] = {35.0 / 384.0,     0.0,
+                                         500.0 / 1113.0,   125.0 / 192.0,
+                                         -2187.0 / 6784.0, 11.0 / 84.0};
+                    for (int i = 0; i < 6; ++i)
+                        y = add(y, k[i], h * b[i]);
+                    if (!velocity(y, k[6])) {
+                        ok = false;
+                    } else {
+                        const double e[7] = {
+                            71.0 / 57600.0,      0.0,          -71.0 / 16695.0, 71.0 / 1920.0,
+                            -17253.0 / 339200.0, 22.0 / 525.0, -1.0 / 40.0};
+                        Vec3 err = {0, 0, 0};
+                        for (int i = 0; i < 7; ++i)
+                            err = add(err, k[i], h * e[i]);
+                        const double en = norm(err);
+                        if (en <= ToleranceLength) {
+                            accepted = true;
+                            next = y;
+                            vnext = k[6];
+                            used = h;
+                            // Grow for the next step, within bounds of the first.
+                            const double grow =
+                                en > 0.0 ? 0.9 * std::pow(ToleranceLength / en, 0.2) : 5.0;
+                            h = std::clamp(h * std::clamp(grow, 0.2, 5.0), StepTime * 1e-6,
+                                           StepTime * 50.0);
+                        } else {
+                            h = std::max(
+                                h * std::clamp(0.9 * std::pow(ToleranceLength / en, 0.2), 0.1, 0.9),
+                                StepTime * 1e-6);
+                        }
+                    }
+                }
+                if (!ok)
+                    h *= 0.5;
+            }
+            if (!accepted)
+                return StreamlineEnd::LeftDomain;
+        }
+        length += norm(Vec3{next[0] - p[0], next[1] - p[1], next[2] - p[2]});
+        t += used;
+        p = next;
+        v = vnext;
+        SlTimePoint pt;
+        pt.mP = p;
+        pt.mV = {Sign * vnext[0], Sign * vnext[1], Sign * vnext[2]};  // the field's own velocity
+        pt.mT = Sign * t;
+        rOut.push_back(pt);
+        if (length >= MaxLength)
+            return StreamlineEnd::MaxLength;
+    }
+    return StreamlineEnd::MaxSteps;
+}
+
+}  // namespace
+
+Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                              const StreamlineOptions& rOptions) {
+    const SlSetup setup = sl_setup(rMesh, pXyz, pVec);
+    const SlSoup& soup = setup.mSoup;
+    Streamlines out;
+    out.mDim = soup.mDim;
+    out.mNumSimplices = soup.mSimplices.size();
+    if (!setup.mOk)
+        return out;
+    const double diag = setup.mDiag;
+    const double floor = setup.mFloor;
+    const double step = 0.005 * diag;
+    const std::size_t max_steps = static_cast<std::size_t>(
+        std::clamp(std::ceil(rOptions.mLength * diag / step), 1.0, 2000.0));
+
+    const SlField field(soup, pXyz, pVec, diag, sl_tolerance(soup.mDim, diag));
+    const std::vector<Vec3> seed_points =
+        sl_seed_points(field, soup.mSimplices.size(), rOptions.mSeeds);
 
     std::vector<std::vector<Vec3>> lines(seed_points.size());
     parallel_for(seed_points.size(), [&](std::size_t i) {
@@ -121544,6 +122109,85 @@ Streamlines trace_streamlines(const Mesh& rMesh, const double* pXyz, const doubl
         for (const Vec3& p : line)
             out.mXyz.insert(out.mXyz.end(), p.begin(), p.end());
         out.mStart.push_back(out.mXyz.size() / 3);
+    }
+    return out;
+}
+
+StreamlineTraces trace_streamlines_timed(const Mesh& rMesh, const double* pXyz, const double* pVec,
+                                         const StreamlineTraceOptions& rOptions) {
+    const SlSetup setup = sl_setup(rMesh, pXyz, pVec);
+    const SlSoup& soup = setup.mSoup;
+    StreamlineTraces out;
+    out.mDim = soup.mDim;
+    if (!setup.mOk)
+        return out;
+    const double diag = setup.mDiag;
+    const double floor = rOptions.mTerminalSpeed > 0.0 ? rOptions.mTerminalSpeed : setup.mFloor;
+    const double step_length = rOptions.mStep > 0.0 ? rOptions.mStep : 0.005 * diag;
+    const double step_time = step_length / setup.mMaxMag;
+    const double max_length = rOptions.mMaxLength * diag;
+    const std::size_t max_steps = rOptions.mMaxSteps > 0 ? rOptions.mMaxSteps : 20000;
+    const double tolerance = rOptions.mTolerance * diag;
+
+    const SlField field(soup, pXyz, pVec, diag, sl_tolerance(soup.mDim, diag));
+    std::vector<Vec3> seeds;
+    if (!rOptions.mSeedPoints.empty()) {
+        for (std::size_t i = 0; i + 2 < rOptions.mSeedPoints.size(); i += 3)
+            seeds.push_back({rOptions.mSeedPoints[i], rOptions.mSeedPoints[i + 1],
+                             rOptions.mSeedPoints[i + 2]});
+    } else {
+        seeds = sl_seed_points(field, soup.mSimplices.size(), rOptions.mSeeds);
+    }
+
+    struct SlOne {
+        bool mValid = false;
+        std::vector<SlTimePoint> mBack;
+        std::vector<SlTimePoint> mForward;
+        Vec3 mSeed = {0, 0, 0};
+        Vec3 mSeedVelocity = {0, 0, 0};
+        StreamlineEnd mBackEnd = StreamlineEnd::LeftDomain;
+        StreamlineEnd mForwardEnd = StreamlineEnd::LeftDomain;
+    };
+    std::vector<SlOne> traced(seeds.size());
+    parallel_for(seeds.size(), [&](std::size_t i) {
+        SlOne& one = traced[i];
+        Vec3 seed = seeds[i];
+        double v[3];
+        if (!field.Sample(seed.data(), v))
+            return;  // the seed (moved onto a surface) is outside the mesh
+        one.mValid = true;
+        one.mSeed = seed;
+        one.mSeedVelocity = {v[0], v[1], v[2]};
+        if (rOptions.mBackward)
+            one.mBackEnd = sl_trace_timed(field, floor, seed, -1.0, rOptions, step_time, max_length,
+                                          tolerance, max_steps, one.mBack);
+        if (rOptions.mForward)
+            one.mForwardEnd = sl_trace_timed(field, floor, seed, +1.0, rOptions, step_time,
+                                             max_length, tolerance, max_steps, one.mForward);
+    });
+    for (std::size_t i = 0; i < traced.size(); ++i) {
+        const SlOne& one = traced[i];
+        if (!one.mValid) {
+            ++out.mNumSeedsOutside;
+            continue;
+        }
+        if (one.mBack.size() + one.mForward.size() < 1)
+            continue;  // a point, not a line
+        StreamlineTrace line;
+        line.mSeedId = static_cast<std::int64_t>(i);
+        line.mBackwardEnd = one.mBackEnd;
+        line.mForwardEnd = one.mForwardEnd;
+        auto push = [&](const Vec3& p, const Vec3& v, double t) {
+            line.mXyz.insert(line.mXyz.end(), p.begin(), p.end());
+            line.mVelocity.insert(line.mVelocity.end(), v.begin(), v.end());
+            line.mTime.push_back(t);
+        };
+        for (auto it = one.mBack.rbegin(); it != one.mBack.rend(); ++it)
+            push(it->mP, it->mV, it->mT);
+        push(one.mSeed, one.mSeedVelocity, 0.0);
+        for (const SlTimePoint& pt : one.mForward)
+            push(pt.mP, pt.mV, pt.mT);
+        out.mLines.push_back(std::move(line));
     }
     return out;
 }
@@ -122836,9 +123480,12 @@ SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
 
     // --- cotangents, areas, the mean edge length ---------------------------
     fem.mTriangles.reserve(tris.size());
+    fem.mNumInput = static_cast<std::int64_t>(tris.size());
     double edge_sum = 0.0;
     std::size_t edge_count = 0;
+    std::int64_t input_index = -1;
     for (SurfaceFemTriangle t : tris) {
+        t.mIndex = ++input_index;
         const Vec3& a = fem.mPoints[t.mNodes[0]];
         const Vec3& b = fem.mPoints[t.mNodes[1]];
         const Vec3& c = fem.mPoints[t.mNodes[2]];
@@ -123657,8 +124304,24 @@ double sym3_mises(const double* pT) {
                             6.0 * (xy * xy + yz * yz + xz * xz)));
 }
 
-void sym3_principal(const double* pT, double* pOut) {
-    double a[3][3] = {{pT[0], pT[3], pT[5]}, {pT[3], pT[1], pT[4]}, {pT[5], pT[4], pT[2]}};
+namespace {
+
+/// Cyclic Jacobi on the symmetric matrix of @p pT: leaves the (diagonalised)
+/// matrix in @p a and, when @p pV is non-null, accumulates the rotations into
+/// it (the columns of @p pV are the eigenvectors, unsorted). The matrix update
+/// does not depend on @p pV, so `sym3_principal`'s values are the same with or
+/// without it.
+void sym3_jacobi(const double* pT, double a[3][3], double (*pV)[3]) {
+    a[0][0] = pT[0];
+    a[0][1] = a[1][0] = pT[3];
+    a[0][2] = a[2][0] = pT[5];
+    a[1][1] = pT[1];
+    a[1][2] = a[2][1] = pT[4];
+    a[2][2] = pT[2];
+    if (pV != nullptr)
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                pV[i][j] = i == j ? 1.0 : 0.0;
     for (int sweep = 0; sweep < 60; ++sweep) {
         const double off = std::fabs(a[0][1]) + std::fabs(a[0][2]) + std::fabs(a[1][2]);
         const double diag = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]);
@@ -123685,13 +124348,56 @@ void sym3_principal(const double* pT, double* pOut) {
                     a[p][k] = c * apk - s * aqk;
                     a[q][k] = s * apk + c * aqk;
                 }
+                if (pV != nullptr) {
+                    for (int k = 0; k < 3; ++k) {
+                        const double vkp = pV[k][p];
+                        const double vkq = pV[k][q];
+                        pV[k][p] = c * vkp - s * vkq;
+                        pV[k][q] = s * vkp + c * vkq;
+                    }
+                }
             }
         }
     }
+}
+
+}  // namespace
+
+void sym3_principal(const double* pT, double* pOut) {
+    double a[3][3];
+    sym3_jacobi(pT, a, nullptr);
     pOut[0] = a[0][0];
     pOut[1] = a[1][1];
     pOut[2] = a[2][2];
     std::sort(pOut, pOut + 3);
+}
+
+void sym3_eigen(const double* pT, double* pValues, double* pVectors) {
+    double a[3][3];
+    double v[3][3];
+    sym3_jacobi(pT, a, v);
+    int order[3] = {0, 1, 2};
+    // Ascending by value; the index breaks a tie, so equal eigenvalues keep a
+    // fixed order.
+    std::sort(order, order + 3,
+              [&](int x, int y) { return a[x][x] < a[y][y] || (a[x][x] == a[y][y] && x < y); });
+    for (int k = 0; k < 3; ++k) {
+        pValues[k] = a[order[k]][order[k]];
+        double col[3] = {v[0][order[k]], v[1][order[k]], v[2][order[k]]};
+        // The sign of an eigenvector is arbitrary: make its first component of
+        // magnitude above 1e-8 positive, so the result does not depend on how
+        // the rotations happened to land.
+        for (int i = 0; i < 3; ++i) {
+            if (std::fabs(col[i]) > 1e-8) {
+                if (col[i] < 0.0)
+                    for (int j = 0; j < 3; ++j)
+                        col[j] = -col[j];
+                break;
+            }
+        }
+        for (int i = 0; i < 3; ++i)
+            pVectors[i * 3 + k] = col[i];
+    }
 }
 
 }  // namespace detail
@@ -249091,10 +249797,12 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/data_average.cpp =====
 // ===== begin src/cpp/src/operations/data_calc.cpp =====
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -249256,6 +249964,43 @@ enum class CalcNodeType {
     Min,
     Max,
     Norm,
+    // Elementwise math functions: unary (width-preserving) ...
+    Exp,
+    Log,
+    Log10,
+    Sin,
+    Cos,
+    Tan,
+    Asin,
+    Acos,
+    Atan,
+    Sinh,
+    Cosh,
+    Tanh,
+    Floor,
+    Ceil,
+    Sign,
+    // ... and binary (scalar-broadcasting, like min and max).
+    Atan2,
+    Pow,
+    // Tuple functions: they read a whole row, so each checks its widths.
+    Dot,
+    Cross,
+    Det,
+    Trace,
+    Transpose,
+    Mag,
+    Matmul,
+    Outer,
+    Inv,
+    // Mesh-aware calls: evaluated once, before the element loop, into a
+    // precomputed operand (the node then reads it as an Array).
+    Grad,
+    Divergence,
+    Curl,
+    Area,
+    Volume,
+    Size,
 };
 
 struct CalcNode {
@@ -249277,8 +250022,43 @@ struct CalcFuncDef {
 };
 
 const CalcFuncDef CALC_FUNCS[] = {
-    {"abs", CalcNodeType::Abs, 1}, {"sqrt", CalcNodeType::Sqrt, 1}, {"min", CalcNodeType::Min, 2},
-    {"max", CalcNodeType::Max, 2}, {"norm", CalcNodeType::Norm, 1},
+    {"abs", CalcNodeType::Abs, 1},
+    {"sqrt", CalcNodeType::Sqrt, 1},
+    {"min", CalcNodeType::Min, 2},
+    {"max", CalcNodeType::Max, 2},
+    {"norm", CalcNodeType::Norm, 1},
+    {"exp", CalcNodeType::Exp, 1},
+    {"log", CalcNodeType::Log, 1},
+    {"log10", CalcNodeType::Log10, 1},
+    {"sin", CalcNodeType::Sin, 1},
+    {"cos", CalcNodeType::Cos, 1},
+    {"tan", CalcNodeType::Tan, 1},
+    {"asin", CalcNodeType::Asin, 1},
+    {"acos", CalcNodeType::Acos, 1},
+    {"atan", CalcNodeType::Atan, 1},
+    {"atan2", CalcNodeType::Atan2, 2},
+    {"sinh", CalcNodeType::Sinh, 1},
+    {"cosh", CalcNodeType::Cosh, 1},
+    {"tanh", CalcNodeType::Tanh, 1},
+    {"floor", CalcNodeType::Floor, 1},
+    {"ceil", CalcNodeType::Ceil, 1},
+    {"sign", CalcNodeType::Sign, 1},
+    {"pow", CalcNodeType::Pow, 2},
+    {"dot", CalcNodeType::Dot, 2},
+    {"cross", CalcNodeType::Cross, 2},
+    {"det", CalcNodeType::Det, 1},
+    {"trace", CalcNodeType::Trace, 1},
+    {"transpose", CalcNodeType::Transpose, 1},
+    {"mag", CalcNodeType::Mag, 1},
+    {"matmul", CalcNodeType::Matmul, 2},
+    {"outer", CalcNodeType::Outer, 2},
+    {"inv", CalcNodeType::Inv, 1},
+    {"grad", CalcNodeType::Grad, 1},
+    {"div", CalcNodeType::Divergence, 1},
+    {"curl", CalcNodeType::Curl, 1},
+    {"area", CalcNodeType::Area, 0},
+    {"volume", CalcNodeType::Volume, 0},
+    {"size", CalcNodeType::Size, 0},
 };
 
 std::string calc_known_funcs() {
@@ -249433,10 +250213,27 @@ private:
                              ident.mPos);
             CalcNode n;
             n.mType = def->mType;
-            n.mLhs = args[0];
+            if (!args.empty())
+                n.mLhs = args[0];
             if (args.size() > 1)
                 n.mRhs = args[1];
             n.mPos = ident.mPos;
+            if (def->mType == CalcNodeType::Grad || def->mType == CalcNodeType::Divergence ||
+                def->mType == CalcNodeType::Curl) {
+                // A mesh-aware derivative differentiates a point_data array by
+                // name: an expression (and so a nested call) has no such name.
+                CalcNode& arg = mrPool[args[0]];
+                if (arg.mType != CalcNodeType::Array)
+                    calc_fail_at("'" + ident.mText +
+                                     "' needs a point_data array name, not an expression (for a "
+                                     "second derivative use hessian)",
+                                 ident.mPos);
+                n.mName = arg.mName;
+                // The name is read by the call, not by the expression's own
+                // location, so the argument node is left as an inert constant.
+                arg.mType = CalcNodeType::Const;
+                arg.mConst = 0.0;
+            }
             return Emit(std::move(n));
         }
         calc_fail_at("unexpected token", tok.mPos);
@@ -249455,10 +250252,32 @@ private:
 struct CalcOperand {
     std::string mName;
     std::size_t mWidth = 1;
+    /// -1 for a data array; 0, 1, 2 for the coordinate `x`, `y`, `z` and 3 for
+    /// `coords` (the three together), which no data array of that name shadows.
+    int mCoord = -1;
     /// Values widened to double, laid out row-major as row * mWidth + k.
     /// Filled per cell block for the Cell location.
     std::vector<double> mValues;
+    /// A mesh-aware call's result, computed once in the inference pass: one
+    /// array at the point location, one per cell block at the cell location.
+    bool mPrecomputed = false;
+    std::vector<NDArray> mArrays;
 };
+
+/// The coordinate operand a name stands for when no data array has it: `x`, `y`,
+/// `z` (a point's coordinate, or a cell's centroid at the cell location) and
+/// `coords` (all three). -1 for any other name.
+int calc_coord_index(const std::string& rName) {
+    if (rName == "x")
+        return 0;
+    if (rName == "y")
+        return 1;
+    if (rName == "z")
+        return 2;
+    if (rName == "coords")
+        return 3;
+    return -1;
+}
 
 const char* calc_node_op_name(CalcNodeType t) {
     switch (t) {
@@ -249474,6 +250293,18 @@ const char* calc_node_op_name(CalcNodeType t) {
             return "min";
         case CalcNodeType::Max:
             return "max";
+        case CalcNodeType::Atan2:
+            return "atan2";
+        case CalcNodeType::Pow:
+            return "pow";
+        case CalcNodeType::Dot:
+            return "dot";
+        case CalcNodeType::Cross:
+            return "cross";
+        case CalcNodeType::Matmul:
+            return "matmul";
+        case CalcNodeType::Outer:
+            return "outer";
         default:
             return "?";
     }
@@ -249492,6 +250323,86 @@ std::size_t calc_combine_width(std::size_t a, std::size_t b, CalcNodeType t, std
                  pos);
 }
 
+/// The topological dimension of a block (a ragged polygon block is 2, a
+/// polyhedron block 3).
+int calc_block_dim(const Mesh::CellView& rBlock) {
+    if (rBlock.IsPolyhedron())
+        return 3;
+    if (rBlock.IsRagged())
+        return 2;
+    return cell_type_dimension(cell_type_from_name(rBlock.Type()));
+}
+
+/// The result of one mesh-aware call as a precomputed operand: gradient,
+/// divergence or curl of a point_data array (at the expression's location), or
+/// the unsigned area, volume or size of every cell.
+CalcOperand calc_precompute_call(const CalcNode& rNode, const Mesh& rMesh, DataLocation location) {
+    const char* fname = rNode.mType == CalcNodeType::Grad         ? "grad"
+                        : rNode.mType == CalcNodeType::Divergence ? "div"
+                        : rNode.mType == CalcNodeType::Curl       ? "curl"
+                        : rNode.mType == CalcNodeType::Area       ? "area"
+                        : rNode.mType == CalcNodeType::Volume     ? "volume"
+                                                                  : "size";
+    if (location == DataLocation::Field)
+        calc_fail_at(std::string("'") + fname +
+                         "' needs the point or cell location: field_data has no mesh to read",
+                     rNode.mPos);
+    CalcOperand op;
+    op.mPrecomputed = true;
+    if (rNode.mType == CalcNodeType::Grad || rNode.mType == CalcNodeType::Divergence ||
+        rNode.mType == CalcNodeType::Curl) {
+        op.mName = std::string("\x01") + fname + "(" + rNode.mName + ")";
+        if (!rMesh.HasPointData(rNode.mName))
+            calc_fail_at(std::string("'") + fname + "' differentiates a point_data array and '" +
+                             rNode.mName + "' is not one",
+                         rNode.mPos);
+        GradientOptions go;
+        go.mArrayName = rNode.mName;
+        go.mOperator = rNode.mType == CalcNodeType::Grad         ? GradientOperator::Gradient
+                       : rNode.mType == CalcNodeType::Divergence ? GradientOperator::Divergence
+                                                                 : GradientOperator::Curl;
+        go.mLocation = location == DataLocation::Point ? DataLocation::Point : DataLocation::Cell;
+        go.mOutputName = "\001calc";
+        go.mOverwrite = true;
+        Mesh res;
+        try {
+            res = gradient(rMesh, go).mMesh;
+        } catch (const std::invalid_argument& e) {
+            calc_fail_at(std::string("'") + fname + "': " + e.what(), rNode.mPos);
+        }
+        if (location == DataLocation::Point) {
+            op.mArrays.push_back(res.PointData(go.mOutputName));
+        } else {
+            for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+                op.mArrays.push_back(res.CellData(go.mOutputName, b));
+        }
+        op.mWidth = op.mArrays.empty() ? 1 : data_num_components(op.mArrays.front());
+        return op;
+    }
+    // area(), volume(), size(): a per-cell quantity.
+    op.mName = std::string("\x01") + fname + "()";
+    if (location != DataLocation::Cell)
+        calc_fail_at(std::string("'") + fname + "' is a per-cell quantity: use the cell location",
+                     rNode.mPos);
+    const int want = rNode.mType == CalcNodeType::Area     ? 2
+                     : rNode.mType == CalcNodeType::Volume ? 3
+                                                           : 0;
+    const NDArray& pts = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t n = cb.NumCells();
+        NDArray arr = NDArray::Uninit(DType::Float64, {n});
+        double* d = arr.As<double>();
+        const bool defined = want == 0 || calc_block_dim(cb) == want;
+        for (std::size_t c = 0; c < n; ++c)
+            d[c] = defined ? detail::cell_measure(pts, pdim, cb, c) : std::nan("");
+        op.mArrays.push_back(std::move(arr));
+    }
+    op.mWidth = 1;
+    return op;
+}
+
 /// Walks the pool, resolving array names and filling in every node's width.
 /// @return the widths of the distinct operands, in `rOperands` order.
 void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMesh,
@@ -249506,7 +250417,13 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
                 n.mWidth = 1;
                 break;
             case CalcNodeType::Array: {
-                if (!data_has(rMesh, location, n.mName))
+                // A data array named like a coordinate shadows it, so no
+                // existing expression changes meaning; field_data has no
+                // geometry to take a coordinate from.
+                const bool has_array = data_has(rMesh, location, n.mName);
+                const int coord = has_array ? -1 : calc_coord_index(n.mName);
+                const bool is_coord = coord >= 0 && location != DataLocation::Field;
+                if (!is_coord && !has_array)
                     calc_fail_at(
                         "unknown " + std::string(data_location_name(location)) + " array '" +
                             n.mName + "' (" +
@@ -249531,6 +250448,17 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
                     n.mWidth = rOperands[it->second].mWidth;
                     break;
                 }
+                if (is_coord) {
+                    CalcOperand cop;
+                    cop.mName = n.mName;
+                    cop.mCoord = coord;
+                    cop.mWidth = coord == 3 ? 3 : 1;
+                    n.mOperand = rOperands.size();
+                    n.mWidth = cop.mWidth;
+                    seen.emplace(n.mName, rOperands.size());
+                    rOperands.push_back(std::move(cop));
+                    break;
+                }
                 const NDArray& arr = location == DataLocation::Point  ? rMesh.PointData(n.mName)
                                      : location == DataLocation::Cell ? rMesh.CellData(n.mName, 0)
                                                                       : rMesh.FieldData(n.mName);
@@ -249548,13 +250476,116 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
                 rOperands.push_back(std::move(op));
                 break;
             }
+            case CalcNodeType::Grad:
+            case CalcNodeType::Divergence:
+            case CalcNodeType::Curl:
+            case CalcNodeType::Area:
+            case CalcNodeType::Volume:
+            case CalcNodeType::Size: {
+                CalcOperand op = calc_precompute_call(n, rMesh, location);
+                if (op.mWidth > DATA_CALC_MAX_COMPONENTS)
+                    calc_fail_at("the result of '" + op.mName.substr(1) + "' has " +
+                                     std::to_string(op.mWidth) +
+                                     " components, more than the supported maximum of " +
+                                     std::to_string(DATA_CALC_MAX_COMPONENTS),
+                                 n.mPos);
+                const auto it = seen.find(op.mName);
+                if (it != seen.end()) {
+                    n.mOperand = it->second;
+                } else {
+                    n.mOperand = rOperands.size();
+                    seen.emplace(op.mName, rOperands.size());
+                    rOperands.push_back(std::move(op));
+                }
+                n.mWidth = rOperands[n.mOperand].mWidth;
+                n.mType = CalcNodeType::Array;  // read like any operand from here on
+                break;
+            }
             case CalcNodeType::Neg:
             case CalcNodeType::Abs:
             case CalcNodeType::Sqrt:
+            case CalcNodeType::Exp:
+            case CalcNodeType::Log:
+            case CalcNodeType::Log10:
+            case CalcNodeType::Sin:
+            case CalcNodeType::Cos:
+            case CalcNodeType::Tan:
+            case CalcNodeType::Asin:
+            case CalcNodeType::Acos:
+            case CalcNodeType::Atan:
+            case CalcNodeType::Sinh:
+            case CalcNodeType::Cosh:
+            case CalcNodeType::Tanh:
+            case CalcNodeType::Floor:
+            case CalcNodeType::Ceil:
+            case CalcNodeType::Sign:
                 n.mWidth = rPool[n.mLhs].mWidth;
                 break;
             case CalcNodeType::Norm:
+            case CalcNodeType::Mag:
                 n.mWidth = 1;
+                break;
+            case CalcNodeType::Dot:
+                if (rPool[n.mLhs].mWidth != rPool[n.mRhs].mWidth)
+                    calc_fail_at("'dot' needs two operands of the same width (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + " and " +
+                                     std::to_string(rPool[n.mRhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 1;
+                break;
+            case CalcNodeType::Cross:
+                if (rPool[n.mLhs].mWidth != 3 || rPool[n.mRhs].mWidth != 3)
+                    calc_fail_at("'cross' needs two 3-component operands (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + " and " +
+                                     std::to_string(rPool[n.mRhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 3;
+                break;
+            case CalcNodeType::Det:
+            case CalcNodeType::Trace:
+                if (rPool[n.mLhs].mWidth != 6 && rPool[n.mLhs].mWidth != 9)
+                    calc_fail_at(std::string("'") +
+                                     (n.mType == CalcNodeType::Det ? "det" : "trace") +
+                                     "' needs a 6-component (symmetric) or 9-component (3x3) "
+                                     "operand (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 1;
+                break;
+            case CalcNodeType::Inv:
+                if (rPool[n.mLhs].mWidth != 6 && rPool[n.mLhs].mWidth != 9)
+                    calc_fail_at(
+                        "'inv' needs a 6-component (symmetric) or 9-component (3x3) "
+                        "operand (got " +
+                            std::to_string(rPool[n.mLhs].mWidth) + ")",
+                        n.mPos);
+                n.mWidth = rPool[n.mLhs].mWidth;
+                break;
+            case CalcNodeType::Matmul:
+                if (rPool[n.mLhs].mWidth != 9 ||
+                    (rPool[n.mRhs].mWidth != 9 && rPool[n.mRhs].mWidth != 3))
+                    calc_fail_at(
+                        "'matmul' needs a 9-component (3x3) operand and a 9-component "
+                        "(3x3) or 3-component (vector) operand (got " +
+                            std::to_string(rPool[n.mLhs].mWidth) + " and " +
+                            std::to_string(rPool[n.mRhs].mWidth) + ")",
+                        n.mPos);
+                n.mWidth = rPool[n.mRhs].mWidth;
+                break;
+            case CalcNodeType::Outer:
+                if (rPool[n.mLhs].mWidth != 3 || rPool[n.mRhs].mWidth != 3)
+                    calc_fail_at("'outer' needs two 3-component operands (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + " and " +
+                                     std::to_string(rPool[n.mRhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 9;
+                break;
+            case CalcNodeType::Transpose:
+                if (rPool[n.mLhs].mWidth != 9)
+                    calc_fail_at("'transpose' needs a 9-component (3x3) operand (got " +
+                                     std::to_string(rPool[n.mLhs].mWidth) + ")",
+                                 n.mPos);
+                n.mWidth = 9;
                 break;
             case CalcNodeType::Add:
             case CalcNodeType::Sub:
@@ -249562,6 +250593,8 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
             case CalcNodeType::Div:
             case CalcNodeType::Min:
             case CalcNodeType::Max:
+            case CalcNodeType::Atan2:
+            case CalcNodeType::Pow:
                 n.mWidth =
                     calc_combine_width(rPool[n.mLhs].mWidth, rPool[n.mRhs].mWidth, n.mType, n.mPos);
                 break;
@@ -249572,6 +250605,45 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
 // ---------------------------------------------------------------------------
 // Pass C: the element evaluator
 // ---------------------------------------------------------------------------
+
+/// One unary math function of the libm. A domain error is a NaN (and `log(0)`
+/// an infinity), per the policy in `operations/data_common.hpp`.
+double calc_unary(CalcNodeType t, double x) {
+    switch (t) {
+        case CalcNodeType::Exp:
+            return std::exp(x);
+        case CalcNodeType::Log:
+            return std::log(x);
+        case CalcNodeType::Log10:
+            return std::log10(x);
+        case CalcNodeType::Sin:
+            return std::sin(x);
+        case CalcNodeType::Cos:
+            return std::cos(x);
+        case CalcNodeType::Tan:
+            return std::tan(x);
+        case CalcNodeType::Asin:
+            return std::asin(x);
+        case CalcNodeType::Acos:
+            return std::acos(x);
+        case CalcNodeType::Atan:
+            return std::atan(x);
+        case CalcNodeType::Sinh:
+            return std::sinh(x);
+        case CalcNodeType::Cosh:
+            return std::cosh(x);
+        case CalcNodeType::Tanh:
+            return std::tanh(x);
+        case CalcNodeType::Floor:
+            return std::floor(x);
+        case CalcNodeType::Ceil:
+            return std::ceil(x);
+        case CalcNodeType::Sign:
+            return std::isnan(x) ? x : (x > 0.0 ? 1.0 : (x < 0.0 ? -1.0 : 0.0));
+        default:
+            return x;
+    }
+}
 
 /// Evaluates node `idx` for row `row`, writing up to DATA_CALC_MAX_COMPONENTS
 /// values into `pOut`. Returns the width actually produced.
@@ -249607,7 +250679,28 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
                 pOut[k] = std::sqrt(pOut[k]);
             return w;
         }
-        case CalcNodeType::Norm: {
+        case CalcNodeType::Exp:
+        case CalcNodeType::Log:
+        case CalcNodeType::Log10:
+        case CalcNodeType::Sin:
+        case CalcNodeType::Cos:
+        case CalcNodeType::Tan:
+        case CalcNodeType::Asin:
+        case CalcNodeType::Acos:
+        case CalcNodeType::Atan:
+        case CalcNodeType::Sinh:
+        case CalcNodeType::Cosh:
+        case CalcNodeType::Tanh:
+        case CalcNodeType::Floor:
+        case CalcNodeType::Ceil:
+        case CalcNodeType::Sign: {
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, pOut);
+            for (std::size_t k = 0; k < w; ++k)
+                pOut[k] = calc_unary(n.mType, pOut[k]);
+            return w;
+        }
+        case CalcNodeType::Norm:
+        case CalcNodeType::Mag: {
             double buf[DATA_CALC_MAX_COMPONENTS];
             const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, buf);
             double acc = 0.0;
@@ -249615,6 +250708,123 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
                 acc += buf[k] * buf[k];
             pOut[0] = std::sqrt(acc);
             return 1;
+        }
+        case CalcNodeType::Dot: {
+            double a[DATA_CALC_MAX_COMPONENTS];
+            double b[DATA_CALC_MAX_COMPONENTS];
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, a);
+            calc_eval(rPool, n.mRhs, rOperands, row, b);
+            double acc = 0.0;
+            for (std::size_t k = 0; k < w; ++k)
+                acc += a[k] * b[k];
+            pOut[0] = acc;
+            return 1;
+        }
+        case CalcNodeType::Cross: {
+            double a[DATA_CALC_MAX_COMPONENTS];
+            double b[DATA_CALC_MAX_COMPONENTS];
+            calc_eval(rPool, n.mLhs, rOperands, row, a);
+            calc_eval(rPool, n.mRhs, rOperands, row, b);
+            pOut[0] = a[1] * b[2] - a[2] * b[1];
+            pOut[1] = a[2] * b[0] - a[0] * b[2];
+            pOut[2] = a[0] * b[1] - a[1] * b[0];
+            return 3;
+        }
+        case CalcNodeType::Matmul: {
+            double a[DATA_CALC_MAX_COMPONENTS];
+            double b[DATA_CALC_MAX_COMPONENTS];
+            calc_eval(rPool, n.mLhs, rOperands, row, a);
+            const std::size_t rw = calc_eval(rPool, n.mRhs, rOperands, row, b);
+            // C[i][j] = sum_k A[i][k] * B[k][j], k ascending; a vector is a column.
+            const std::size_t cols = rw == 9 ? 3 : 1;
+            for (std::size_t i = 0; i < 3; ++i) {
+                for (std::size_t j = 0; j < cols; ++j) {
+                    double acc = 0.0;
+                    for (std::size_t k = 0; k < 3; ++k)
+                        acc += a[i * 3 + k] * b[k * cols + j];
+                    pOut[i * cols + j] = acc;
+                }
+            }
+            return rw;
+        }
+        case CalcNodeType::Outer: {
+            double a[DATA_CALC_MAX_COMPONENTS];
+            double b[DATA_CALC_MAX_COMPONENTS];
+            calc_eval(rPool, n.mLhs, rOperands, row, a);
+            calc_eval(rPool, n.mRhs, rOperands, row, b);
+            for (std::size_t i = 0; i < 3; ++i)
+                for (std::size_t j = 0; j < 3; ++j)
+                    pOut[i * 3 + j] = a[i] * b[j];
+            return 9;
+        }
+        case CalcNodeType::Det:
+        case CalcNodeType::Trace:
+        case CalcNodeType::Inv:
+        case CalcNodeType::Transpose: {
+            double buf[DATA_CALC_MAX_COMPONENTS];
+            const std::size_t w = calc_eval(rPool, n.mLhs, rOperands, row, buf);
+            // The row-major 3x3: a 6-component row is the symmetric
+            // `xx yy zz xy yz zx`, a 9-component row is `xx xy xz yx yy yz zx zy zz`.
+            double m[9];
+            if (w == 6) {
+                m[0] = buf[0];
+                m[1] = buf[3];
+                m[2] = buf[5];
+                m[3] = buf[3];
+                m[4] = buf[1];
+                m[5] = buf[4];
+                m[6] = buf[5];
+                m[7] = buf[4];
+                m[8] = buf[2];
+            } else {
+                for (int k = 0; k < 9; ++k)
+                    m[k] = buf[k];
+            }
+            if (n.mType == CalcNodeType::Trace) {
+                pOut[0] = m[0] + m[4] + m[8];
+                return 1;
+            }
+            if (n.mType == CalcNodeType::Det) {
+                pOut[0] = detail::det3({m[0], m[1], m[2]}, {m[3], m[4], m[5]}, {m[6], m[7], m[8]});
+                return 1;
+            }
+            if (n.mType == CalcNodeType::Inv) {
+                // adj(A) / det(A), as tensor_invariants' inverse: a zero or
+                // non-finite determinant is NaN, there being no warning channel.
+                const double det =
+                    detail::det3({m[0], m[1], m[2]}, {m[3], m[4], m[5]}, {m[6], m[7], m[8]});
+                double inv[9];
+                if (!std::isfinite(det) || det == 0.0) {
+                    for (double& v : inv)
+                        v = std::numeric_limits<double>::quiet_NaN();
+                } else {
+                    inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;
+                    inv[1] = (m[2] * m[7] - m[1] * m[8]) / det;
+                    inv[2] = (m[1] * m[5] - m[2] * m[4]) / det;
+                    inv[3] = (m[5] * m[6] - m[3] * m[8]) / det;
+                    inv[4] = (m[0] * m[8] - m[2] * m[6]) / det;
+                    inv[5] = (m[2] * m[3] - m[0] * m[5]) / det;
+                    inv[6] = (m[3] * m[7] - m[4] * m[6]) / det;
+                    inv[7] = (m[1] * m[6] - m[0] * m[7]) / det;
+                    inv[8] = (m[0] * m[4] - m[1] * m[3]) / det;
+                }
+                if (w == 6) {
+                    pOut[0] = inv[0];
+                    pOut[1] = inv[4];
+                    pOut[2] = inv[8];
+                    pOut[3] = inv[1];
+                    pOut[4] = inv[5];
+                    pOut[5] = inv[2];
+                    return 6;
+                }
+                for (int k = 0; k < 9; ++k)
+                    pOut[k] = inv[k];
+                return 9;
+            }
+            for (int i = 0; i < 3; ++i)
+                for (int j = 0; j < 3; ++j)
+                    pOut[i * 3 + j] = m[j * 3 + i];
+            return 9;
         }
         default:
             break;
@@ -249647,6 +250857,12 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
             case CalcNodeType::Max:
                 pOut[k] = a > b ? a : b;
                 break;
+            case CalcNodeType::Atan2:
+                pOut[k] = std::atan2(a, b);
+                break;
+            case CalcNodeType::Pow:
+                pOut[k] = std::pow(a, b);
+                break;
             default:
                 pOut[k] = 0.0;
                 break;
@@ -249659,9 +250875,12 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
 /// @param rSource supplies the NDArray for an operand (differs per cell block).
 template <class TSource>
 void calc_load_operands(std::vector<CalcOperand>& rOperands, std::size_t rows, TSource&& rSource,
-                        const char* pWhat) {
+                        const char* pWhat, std::size_t Block = 0) {
     for (CalcOperand& op : rOperands) {
-        const NDArray& arr = rSource(op.mName);
+        if (op.mCoord >= 0)
+            continue;  // filled from the geometry by calc_fill_coordinates
+        const NDArray& arr = op.mPrecomputed ? op.mArrays[std::min(Block, op.mArrays.size() - 1)]
+                                             : rSource(op.mName);
         const std::size_t got = detail::rows(arr);
         if (got != rows)
             calc_fail("array '" + op.mName + "' has " + std::to_string(got) + " rows but " + pWhat +
@@ -249674,6 +250893,30 @@ void calc_load_operands(std::vector<CalcOperand>& rOperands, std::size_t rows, T
         parallel_for_bw(rows * op.mWidth,
                         [&](std::size_t i) { dst[i] = detail::read_double(arr, i); });
     }
+}
+
+/// Fills the coordinate operands from @p pXyz, three doubles per row.
+void calc_fill_coordinates(std::vector<CalcOperand>& rOperands, std::size_t rows,
+                           const double* pXyz) {
+    for (CalcOperand& op : rOperands) {
+        if (op.mCoord < 0)
+            continue;
+        op.mValues.resize(rows * op.mWidth);
+        double* dst = op.mValues.data();
+        const int c = op.mCoord;
+        if (op.mWidth == 3) {
+            parallel_for_bw(rows * 3, [&](std::size_t i) { dst[i] = pXyz[i]; });
+        } else {
+            parallel_for_bw(rows, [&](std::size_t r) { dst[r] = pXyz[r * 3 + c]; });
+        }
+    }
+}
+
+bool calc_has_coordinates(const std::vector<CalcOperand>& rOperands) {
+    for (const CalcOperand& op : rOperands)
+        if (op.mCoord >= 0)
+            return true;
+    return false;
 }
 
 /// Runs the element loop over `rows` entries into a fresh array.
@@ -249725,6 +250968,16 @@ Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalc
             operands, rows,
             [&](const std::string& n) -> const NDArray& { return rMesh.PointData(n); },
             "point_data");
+        if (calc_has_coordinates(operands)) {
+            // The points as three doubles per row, a 2D point padded with z = 0.
+            const NDArray& pts = rMesh.Points();
+            const std::size_t pdim = rMesh.PointDim();
+            std::vector<double> xyz(rows * 3, 0.0);
+            for (std::size_t r = 0; r < rows; ++r)
+                for (std::size_t c = 0; c < pdim && c < 3; ++c)
+                    xyz[r * 3 + c] = detail::read_double(pts, r * pdim + c);
+            calc_fill_coordinates(operands, rows, xyz.data());
+        }
         out.AddPointData(rOpts.output, calc_run(pool, root, operands, rows, width, rOpts.dtype));
         return out;
     }
@@ -249753,19 +251006,32 @@ Mesh data_calc(const Mesh& rMesh, const std::string& rExpression, const DataCalc
     // cell block as the uniform API requires.
     const std::size_t nblocks = rMesh.NumCellBlocks();
     for (const CalcOperand& op : operands)
-        if (rMesh.CellDataNumBlocks(op.mName) != nblocks)
+        if (op.mCoord < 0 && !op.mPrecomputed && rMesh.CellDataNumBlocks(op.mName) != nblocks)
             calc_fail("cell_data '" + op.mName + "' has " +
                       std::to_string(rMesh.CellDataNumBlocks(op.mName)) +
                       " block(s) but the mesh has " + std::to_string(nblocks) + " cell block(s)");
 
+    // At the cell location a coordinate is the cell's centroid.
+    std::vector<double> centroids;
+    const bool has_coords = calc_has_coordinates(operands);
+    if (has_coords) {
+        std::size_t total = 0;
+        for (std::size_t b = 0; b < nblocks; ++b)
+            total += rMesh.Cells(b).NumCells();
+        centroids = detail::cell_centroids(rMesh, total);
+    }
+    std::size_t cell_base = 0;
     std::vector<NDArray> blocks;
     blocks.reserve(nblocks);
     for (std::size_t b = 0; b < nblocks; ++b) {
         const std::size_t rows = rMesh.Cells(b).NumCells();
+        if (has_coords)
+            calc_fill_coordinates(operands, rows, centroids.data() + cell_base * 3);
+        cell_base += rows;
         calc_load_operands(
             operands, rows,
             [&](const std::string& n) -> const NDArray& { return rMesh.CellData(n, b); },
-            "cell_data");
+            "cell_data", b);
         blocks.push_back(calc_run(pool, root, operands, rows, width, rOpts.dtype));
     }
     out.AddCellData(rOpts.output, std::move(blocks));
@@ -250387,7 +251653,7 @@ std::string dint_unknown_or_point_message(const Mesh& rMesh, const std::string& 
 
 }  // namespace
 
-DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions& rOptions) {
+static DataIntegrateReport dint_core(const Mesh& rMesh, const DataIntegrateOptions& rOptions) {
     // --- resolve which arrays to integrate (validation before any work) -----
     std::vector<std::string> names = rOptions.mArrayNames;
     if (names.empty()) {
@@ -250506,6 +251772,178 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
     }
 
     return report;
+}
+
+// ---------------------------------------------------------------------------
+// Integration modes carried by the array name
+// ---------------------------------------------------------------------------
+//
+// An array name may carry a mode prefix, so no signature (and no binding)
+// changes: `point:<a>` integrates a point_data array (its cell means, exact
+// for a linear field on a simplex); `flux:<a>` integrates the flux `u . n` of a
+// 3-component cell_data or point_data array through the surface cells (the
+// unit cell normals of `compute_normals`); `boundary:` before either takes the
+// extracted boundary of a volume mesh instead of the mesh. A cell_data array
+// whose name is the whole string wins, so no existing name changes meaning.
+
+namespace {
+
+struct DintMode {
+    bool mBoundary = false;
+    bool mPoint = false;
+    bool mFlux = false;
+    std::string mBase;
+    bool Plain() const { return !mBoundary && !mPoint && !mFlux; }
+};
+
+bool dint_starts_with(const std::string& s, const char* p) {
+    return s.rfind(p, 0) == 0;
+}
+
+DintMode dint_parse(const Mesh& rMesh, const std::string& rName) {
+    DintMode m;
+    m.mBase = rName;
+    if (rMesh.HasCellData(rName))
+        return m;  // an array of exactly this name wins
+    std::string s = rName;
+    if (dint_starts_with(s, "boundary:")) {
+        m.mBoundary = true;
+        s = s.substr(9);
+    }
+    if (dint_starts_with(s, "point:")) {
+        m.mPoint = true;
+        s = s.substr(6);
+    } else if (dint_starts_with(s, "flux:")) {
+        m.mFlux = true;
+        s = s.substr(5);
+    }
+    if (m.Plain())
+        return m;  // no prefix: the unknown-name error follows
+    if (m.mBoundary && !m.mPoint && !m.mFlux)
+        throw std::invalid_argument(
+            "meshio++: data_integrate: 'boundary:' needs 'point:' or 'flux:' after it (the "
+            "boundary surface carries no cell_data)");
+    m.mBase = s;
+    return m;
+}
+
+[[noreturn]] void dint_fail(const std::string& rMessage) {
+    throw std::invalid_argument("meshio++: data_integrate: " + rMessage);
+}
+
+}  // namespace
+
+DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions& rOptions) {
+    std::vector<DintMode> modes;
+    bool any_mode = false;
+    for (const std::string& name : rOptions.mArrayNames) {
+        modes.push_back(dint_parse(rMesh, name));
+        any_mode = any_mode || !modes.back().Plain();
+    }
+    if (!any_mode)
+        return dint_core(rMesh, rOptions);
+
+    // Working meshes, built only when a mode needs them: the mesh itself and its
+    // boundary, each gaining one temporary cell_data array per mode entry.
+    Mesh plain = detail::clone_mesh(rMesh);
+    Mesh bound;
+    bool have_bound = false;
+    std::vector<std::string> temp_names(modes.size());
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        const DintMode& m = modes[i];
+        if (m.Plain())
+            continue;
+        const std::string temp = "\x01integrate" + std::to_string(i);
+        temp_names[i] = temp;
+        Mesh* wk = &plain;
+        if (m.mBoundary) {
+            if (!have_bound) {
+                if (!has_surface_extractable_cells(rMesh))
+                    dint_fail("'boundary:' needs a mesh with cells extract_surface can take");
+                bound = extract_surface(rMesh);
+                have_bound = true;
+            }
+            wk = &bound;
+        }
+        const bool as_point = wk->HasPointData(m.mBase);
+        const bool as_cell = !m.mPoint && wk->HasCellData(m.mBase);
+        if (m.mPoint && !as_point)
+            dint_fail("'point:" + m.mBase + "' names no point_data array");
+        if (!as_point && !as_cell)
+            dint_fail(data_unknown_key_message(*wk, DataLocation::Point, m.mBase));
+        // The cell values: the cell_data array itself, or the cell means of the point_data one.
+        std::string src = m.mBase;
+        if (!(as_cell && !m.mPoint)) {
+            DataAverageOptions avg;
+            avg.names = {m.mBase};
+            avg.prefix = "\x01u" + std::to_string(i) + ":";
+            *wk = point_data_to_cell_data(*wk, avg);
+            src = avg.prefix + m.mBase;
+        }
+        if (!m.mFlux) {
+            // point:<a> -- the cell means, under the temporary name.
+            std::vector<NDArray> blocks;
+            for (std::size_t b = 0; b < wk->NumCellBlocks(); ++b)
+                blocks.push_back(wk->CellData(src, b));
+            wk->AddCellData(temp, std::move(blocks));
+            continue;
+        }
+        // flux:<a> -- u . n per cell with the unit cell normals.
+        NormalsOptions no;
+        no.mPointNormals = false;
+        no.mCellNormals = true;
+        NormalsResult nr;
+        try {
+            nr = compute_normals(*wk, no);
+        } catch (const std::exception& e) {
+            dint_fail(std::string("flux needs a surface mesh: ") + e.what());
+        }
+        std::vector<NDArray> blocks;
+        for (std::size_t b = 0; b < wk->NumCellBlocks(); ++b) {
+            const NDArray& u = wk->CellData(src, b);
+            if (data_num_components(u) != 3)
+                dint_fail("flux:" + m.mBase + " needs a 3-component array (got " +
+                          std::to_string(data_num_components(u)) + ")");
+            const NDArray& nrm = nr.mMesh.CellData(kNormalsName, b);
+            const std::size_t rows = detail::rows(u);
+            NDArray dens = NDArray::Uninit(DType::Float64, {rows});
+            double* d = dens.As<double>();
+            for (std::size_t c = 0; c < rows; ++c) {
+                double acc = 0.0;
+                for (std::size_t k = 0; k < 3; ++k)
+                    acc += detail::read_double(u, c * 3 + k) * detail::read_double(nrm, c * 3 + k);
+                d[c] = acc;
+            }
+            blocks.push_back(std::move(dens));
+        }
+        wk->AddCellData(temp, std::move(blocks));
+    }
+
+    // Integrate each working mesh once over its temporary arrays and the plain
+    // names, then restore the requested names in the requested order.
+    DataIntegrateOptions plain_opts;
+    DataIntegrateOptions bound_opts;
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        if (modes[i].Plain())
+            plain_opts.mArrayNames.push_back(rOptions.mArrayNames[i]);
+        else if (modes[i].mBoundary)
+            bound_opts.mArrayNames.push_back(temp_names[i]);
+        else
+            plain_opts.mArrayNames.push_back(temp_names[i]);
+    }
+    const DataIntegrateReport pr = dint_core(plain, plain_opts);
+    const DataIntegrateReport br =
+        bound_opts.mArrayNames.empty() ? DataIntegrateReport{} : dint_core(bound, bound_opts);
+    DataIntegrateReport out;
+    std::size_t pi = 0;
+    std::size_t bi = 0;
+    for (std::size_t i = 0; i < modes.size(); ++i) {
+        FieldIntegralArray arr =
+            (!modes[i].Plain() && modes[i].mBoundary) ? br.mArrays[bi++] : pr.mArrays[pi++];
+        arr.mName = rOptions.mArrayNames[i];
+        out.mArrays.push_back(std::move(arr));
+    }
+    return out;
 }
 
 }  // namespace meshioplusplus
@@ -260080,22 +261518,44 @@ bool grad_least_squares(const GradStencil& rStencil, std::size_t NumComp, int Di
 
 /// Number of output components for one operator.
 std::size_t grad_out_components(GradientOperator Op, std::size_t NumComp) {
-    if (Op == GradientOperator::Divergence)
-        return 1;
-    if (Op == GradientOperator::Curl)
-        return 3;
-    return NumComp * 3;
+    switch (Op) {
+        case GradientOperator::Divergence:
+        case GradientOperator::VorticityMagnitude:
+        case GradientOperator::QCriterion:
+        case GradientOperator::Lambda2:
+        case GradientOperator::Helicity:
+            return 1;
+        case GradientOperator::Curl:
+            return 3;
+        case GradientOperator::StrainRate:
+        case GradientOperator::GreenLagrangeStrain:
+            return 6;
+        default:
+            return NumComp * 3;
+    }
+}
+
+/// A symmetric 3x3 (row-major) as the six components `xx yy zz xy yz zx`.
+void grad_sym6(const double* pM, double* pOut) {
+    pOut[0] = pM[0];
+    pOut[1] = pM[4];
+    pOut[2] = pM[8];
+    pOut[3] = pM[1];
+    pOut[4] = pM[5];
+    pOut[5] = pM[2];
 }
 
 /// Reduces a full `[component][derivative]` block to the requested operator.
-void grad_apply_operator(GradientOperator Op, const double* pGrad, std::size_t NumComp,
-                         double* pOut) {
+/// @p pValue is the cell's corner-mean field value (`NumComp` doubles), which
+/// only helicity reads.
+void grad_apply_operator(GradientOperator Op, const double* pGrad, const double* pValue,
+                         std::size_t NumComp, double* pOut) {
     if (Op == GradientOperator::Gradient) {
         for (std::size_t i = 0; i < NumComp * 3; ++i)
             pOut[i] = pGrad[i];
         return;
     }
-    // Divergence and curl read a 3x3 block; a 2-component field is (u, v, 0),
+    // The other operators read a 3x3 block; a 2-component field is (u, v, 0),
     // the same padding convention read_point applies to 2D points.
     double g[9] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     for (std::size_t k = 0; k < NumComp && k < 3; ++k)
@@ -260105,18 +261565,85 @@ void grad_apply_operator(GradientOperator Op, const double* pGrad, std::size_t N
         pOut[0] = g[0 * 3 + 0] + g[1 * 3 + 1] + g[2 * 3 + 2];
         return;
     }
-    pOut[0] = g[2 * 3 + 1] - g[1 * 3 + 2];
-    pOut[1] = g[0 * 3 + 2] - g[2 * 3 + 0];
-    pOut[2] = g[1 * 3 + 0] - g[0 * 3 + 1];
+    const double cx = g[2 * 3 + 1] - g[1 * 3 + 2];
+    const double cy = g[0 * 3 + 2] - g[2 * 3 + 0];
+    const double cz = g[1 * 3 + 0] - g[0 * 3 + 1];
+    if (Op == GradientOperator::Curl) {
+        pOut[0] = cx;
+        pOut[1] = cy;
+        pOut[2] = cz;
+        return;
+    }
+    if (Op == GradientOperator::Helicity) {
+        double u[3] = {0.0, 0.0, 0.0};
+        for (std::size_t k = 0; k < NumComp && k < 3; ++k)
+            u[k] = pValue[k];
+        pOut[0] = u[0] * cx + u[1] * cy + u[2] * cz;
+        return;
+    }
+    if (Op == GradientOperator::VorticityMagnitude) {
+        pOut[0] = std::sqrt(cx * cx + cy * cy + cz * cz);
+        return;
+    }
+    // S = (G + G^T) / 2 and Omega = (G - G^T) / 2, each entry formed as
+    // (a + b) / 2 so a symmetric block is bit-exactly symmetric.
+    double s[9];
+    double w[9];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            s[i * 3 + j] = 0.5 * (g[i * 3 + j] + g[j * 3 + i]);
+            w[i * 3 + j] = 0.5 * (g[i * 3 + j] - g[j * 3 + i]);
+        }
+    }
+    if (Op == GradientOperator::StrainRate) {
+        grad_sym6(s, pOut);
+        return;
+    }
+    if (Op == GradientOperator::QCriterion) {
+        double s2 = 0.0;
+        double w2 = 0.0;
+        for (int i = 0; i < 9; ++i) {
+            s2 += s[i] * s[i];
+            w2 += w[i] * w[i];
+        }
+        pOut[0] = 0.5 * (w2 - s2);
+        return;
+    }
+    if (Op == GradientOperator::Lambda2) {
+        // S^2 + Omega^2 is symmetric; its middle eigenvalue is lambda2.
+        double m[9];
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                double acc = 0.0;
+                for (int k = 0; k < 3; ++k)
+                    acc += s[i * 3 + k] * s[k * 3 + j] + w[i * 3 + k] * w[k * 3 + j];
+                m[i * 3 + j] = acc;
+            }
+        }
+        double sym[6];
+        grad_sym6(m, sym);
+        double ev[3];
+        detail::sym3_principal(sym, ev);
+        pOut[0] = ev[1];
+        return;
+    }
+    // GreenLagrangeStrain: E = S + G^T G / 2, which is (F^T F - I) / 2 for
+    // F = I + G without the cancellation of forming F^T F.
+    double e[9];
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            double acc = 0.0;
+            for (int k = 0; k < 3; ++k)
+                acc += g[k * 3 + i] * g[k * 3 + j];
+            e[i * 3 + j] = s[i * 3 + j] + 0.5 * acc;
+        }
+    }
+    grad_sym6(e, pOut);
 }
 
 /// The default output name for an operator.
 std::string grad_default_name(const std::string& rArray, GradientOperator Op) {
-    if (Op == GradientOperator::Divergence)
-        return rArray + kDivergenceSuffix;
-    if (Op == GradientOperator::Curl)
-        return rArray + kCurlSuffix;
-    return rArray + kGradientSuffix;
+    return rArray + gradient_suffix(Op);
 }
 
 /// `{rows}` for a scalar, `{rows, ncomp}` otherwise — data_average's rule, so a
@@ -260149,14 +261676,31 @@ int grad_mesh_dimension(const Mesh& rMesh) {
 }  // namespace
 
 GradientOperator gradient_operator_from_name(const std::string& rName) {
-    if (rName == "gradient" || rName == "grad" || rName.empty())
+    // Hyphens and underscores are interchangeable, as in the method names.
+    std::string n = rName;
+    std::replace(n.begin(), n.end(), '-', '_');
+    if (n == "gradient" || n == "grad" || n.empty())
         return GradientOperator::Gradient;
-    if (rName == "divergence" || rName == "div")
+    if (n == "divergence" || n == "div")
         return GradientOperator::Divergence;
-    if (rName == "curl" || rName == "rot")
+    if (n == "curl" || n == "rot")
         return GradientOperator::Curl;
+    if (n == "vorticity_magnitude" || n == "vorticity")
+        return GradientOperator::VorticityMagnitude;
+    if (n == "q_criterion" || n == "q")
+        return GradientOperator::QCriterion;
+    if (n == "lambda2")
+        return GradientOperator::Lambda2;
+    if (n == "strain_rate" || n == "strain")
+        return GradientOperator::StrainRate;
+    if (n == "green_lagrange" || n == "green_lagrange_strain")
+        return GradientOperator::GreenLagrangeStrain;
+    if (n == "helicity")
+        return GradientOperator::Helicity;
     throw std::invalid_argument(std::string(kGradPrefix) + "unknown operator '" + rName +
-                                "' (expected 'gradient', 'divergence', or 'curl')");
+                                "' (expected 'gradient', 'divergence', 'curl', "
+                                "'vorticity_magnitude', 'q_criterion', 'lambda2', "
+                                "'strain_rate', 'green_lagrange' or 'helicity')");
 }
 
 GradientMethod gradient_method_from_name(const std::string& rName) {
@@ -260203,7 +261747,7 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         if (rOptions.mOperator != GradientOperator::Gradient)
             throw std::invalid_argument(std::string(kGradPrefix) +
                                         "a component selection applies to the gradient only; "
-                                        "divergence and curl consume the whole vector");
+                                        "every other operator consumes the whole vector");
         const int c = *rOptions.mComponent;
         if (c < 0 || static_cast<std::size_t>(c) >= field_comp)
             throw std::invalid_argument(std::string(kGradPrefix) + "component " +
@@ -260215,7 +261759,7 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         throw std::invalid_argument(
             std::string(kGradPrefix) + "'" + rOptions.mArrayName + "' has " +
             std::to_string(field_comp) +
-            " components; divergence and curl need a vector field of 2 or 3");
+            " components; every operator but the gradient needs a vector field of 2 or 3");
 
     const std::string out_name = rOptions.mOutputName.empty()
                                      ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
@@ -260453,7 +261997,8 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
                 flag_skipped[c] = 1;
                 return;
             }
-            grad_apply_operator(rOptions.mOperator, grad.data(), work_comp, pdst + c * out_comp);
+            grad_apply_operator(rOptions.mOperator, grad.data(), cell.mValue0.data(), work_comp,
+                                pdst + c * out_comp);
         });
 
         for (std::size_t c = 0; c < ncells; ++c) {
@@ -273351,6 +274896,88 @@ Mesh triangulate_polygon_2d(const std::vector<std::vector<std::array<double, 2>>
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/mesh_cad.cpp =====
+// ===== begin src/cpp/src/operations/mesh_operator.cpp =====
+#include <array>
+#include <stdexcept>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+MeshOperatorResult mesh_operator(const Mesh& rMesh, const MeshOperatorOptions& rOptions) {
+    using detail::SparseTriplet;
+    using detail::Vec3;
+    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "mesh_operator");
+    const std::size_t n = fem.mPoints.size();
+
+    std::size_t rows = n;
+    std::vector<SparseTriplet> triplets;
+    switch (rOptions.mKind) {
+        case MeshOperatorKind::Laplacian: {
+            std::vector<double> mass;
+            detail::surface_fem_assemble(fem, mass, triplets);
+            break;
+        }
+        case MeshOperatorKind::MassLumped: {
+            std::vector<double> mass;
+            std::vector<SparseTriplet> stiffness;
+            detail::surface_fem_assemble(fem, mass, stiffness);
+            for (std::size_t i = 0; i < n; ++i)
+                if (mass[i] != 0.0)
+                    triplets.push_back({i, i, mass[i]});
+            break;
+        }
+        case MeshOperatorKind::MassConsistent: {
+            for (const detail::SurfaceFemTriangle& t : fem.mTriangles)
+                for (std::size_t a = 0; a < 3; ++a)
+                    for (std::size_t b = 0; b < 3; ++b)
+                        triplets.push_back({static_cast<std::size_t>(t.mNodes[a]),
+                                            static_cast<std::size_t>(t.mNodes[b]),
+                                            t.mDoubleArea / 24.0 * (a == b ? 2.0 : 1.0)});
+            break;
+        }
+        case MeshOperatorKind::Gradient: {
+            rows = 3 * static_cast<std::size_t>(fem.mNumInput);
+            for (const detail::SurfaceFemTriangle& t : fem.mTriangles) {
+                const std::array<Vec3, 3> p = {fem.mPoints[t.mNodes[0]], fem.mPoints[t.mNodes[1]],
+                                               fem.mPoints[t.mNodes[2]]};
+                const Vec3 normal =
+                    detail::vec3_cross(detail::vec3_sub(p[1], p[0]), detail::vec3_sub(p[2], p[0]));
+                // The unit normal; |normal| is the doubled area.
+                const Vec3 unit = {normal[0] / t.mDoubleArea, normal[1] / t.mDoubleArea,
+                                   normal[2] / t.mDoubleArea};
+                for (std::size_t i = 0; i < 3; ++i) {
+                    // grad(phi_i) = n x e_i / (2 A), e_i the opposite edge, counter-clockwise.
+                    const Vec3 edge = detail::vec3_sub(p[(i + 2) % 3], p[(i + 1) % 3]);
+                    const Vec3 g = detail::vec3_cross(unit, edge);
+                    for (std::size_t k = 0; k < 3; ++k)
+                        triplets.push_back({3 * static_cast<std::size_t>(t.mIndex) + k,
+                                            static_cast<std::size_t>(t.mNodes[i]),
+                                            g[k] / t.mDoubleArea});
+                }
+            }
+            break;
+        }
+        default:
+            throw std::invalid_argument("mesh_operator: unknown kind");
+    }
+
+    const detail::SparseCsr csr = detail::csr_from_triplets(rows, n, std::move(triplets));
+    MeshOperatorResult out;
+    out.mRows = static_cast<std::int64_t>(csr.mRows);
+    out.mCols = static_cast<std::int64_t>(csr.mCols);
+    out.mIndptr.assign(csr.mStart.begin(), csr.mStart.end());
+    out.mIndices.assign(csr.mCol.begin(), csr.mCol.end());
+    out.mValues = csr.mValue;
+    out.mNumDegenerate = fem.mNumDegenerate;
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/mesh_operator.cpp =====
 // ===== begin src/cpp/src/operations/metric.cpp =====
 #include <algorithm>
 #include <array>
@@ -290775,7 +292402,7 @@ namespace {
 
 using detail::Vec3;
 
-constexpr int NUM_METRICS = 11;
+constexpr int NUM_METRICS = 22;
 // Fixed metric order (index === position in QualityReport::mMetrics).
 enum QualityMetric {
     QM_VOLUME = 0,
@@ -290789,13 +292416,31 @@ enum QualityMetric {
     QM_MAX_DIHEDRAL,
     QM_INVERTED,
     QM_DEGENERATE,
+    // Cell measures: size is the unsigned area/volume, the rest are lengths.
+    QM_SIZE,
+    QM_DIAGONAL,
+    QM_MIN_EDGE,
+    QM_MAX_EDGE,
+    // The Verdict metrics beyond the ones above (SAND2007-1751): each is set
+    // only for the families it is defined for.
+    QM_EDGE_RATIO,
+    QM_CONDITION,
+    QM_SHAPE,
+    QM_ASPECT_GAMMA,
+    QM_STRETCH,
+    QM_TAPER,
+    QM_DIAGONAL_RATIO,
 };
 
 const char* const QUALITY_METRIC_NAMES[NUM_METRICS] = {
-    "quality:volume",   "quality:scaled_jacobian", "quality:aspect_ratio",
-    "quality:skewness", "quality:min_angle",       "quality:max_angle",
-    "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
-    "quality:inverted", "quality:degenerate",
+    "quality:volume",         "quality:scaled_jacobian", "quality:aspect_ratio",
+    "quality:skewness",       "quality:min_angle",       "quality:max_angle",
+    "quality:warpage",        "quality:min_dihedral",    "quality:max_dihedral",
+    "quality:inverted",       "quality:degenerate",      "quality:size",
+    "quality:diagonal",       "quality:min_edge",        "quality:max_edge",
+    "quality:edge_ratio",     "quality:condition",       "quality:shape",
+    "quality:aspect_gamma",   "quality:stretch",         "quality:taper",
+    "quality:diagonal_ratio",
 };
 
 constexpr double QUALITY_NAN = std::numeric_limits<double>::quiet_NaN();
@@ -291232,6 +292877,206 @@ void quality_pyramid(const std::vector<Vec3>& c, const std::vector<detail::CellF
     m[QM_SCALED_JACOBIAN] = std::sqrt(2.0) * sj;
 }
 
+// The edges of each family, as corner-index pairs in VTK order.
+constexpr int kQualityTriEdges[3][2] = {{0, 1}, {1, 2}, {2, 0}};
+constexpr int kQualityQuadEdges[4][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+constexpr int kQualityTetraEdges[6][2] = {{0, 1}, {1, 2}, {2, 0}, {0, 3}, {1, 3}, {2, 3}};
+constexpr int kQualityHexEdges[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                                         {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+constexpr int kQualityWedgeEdges[9][2] = {{0, 1}, {1, 2}, {2, 0}, {3, 4}, {4, 5},
+                                          {5, 3}, {0, 3}, {1, 4}, {2, 5}};
+constexpr int kQualityPyramidEdges[8][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0},
+                                            {0, 4}, {1, 4}, {2, 4}, {3, 4}};
+
+// Size, diagonal and the shortest and longest edge, written after the family's
+// own metrics so a cell that the family call left early (degenerate) still
+// reports its lengths. size is the unsigned area/volume the family computed.
+/// The Frobenius condition number `|F| |F^-1| / 3` of the 3x3 matrix whose
+/// columns are @p f1, @p f2, @p f3 (the inverse's rows are the columns' cross
+/// products over the determinant). NaN when the determinant is zero.
+double quality_cond3(const Vec3& f1, const Vec3& f2, const Vec3& f3) {
+    const double det = detail::det3(f1, f2, f3);
+    if (det == 0.0 || !std::isfinite(det))
+        return QUALITY_NAN;
+    const double fn2 =
+        detail::vec3_norm_sq(f1) + detail::vec3_norm_sq(f2) + detail::vec3_norm_sq(f3);
+    const double in2 = detail::vec3_norm_sq(detail::vec3_cross(f2, f3)) +
+                       detail::vec3_norm_sq(detail::vec3_cross(f3, f1)) +
+                       detail::vec3_norm_sq(detail::vec3_cross(f1, f2));
+    return std::sqrt(fn2) * std::sqrt(in2) / (std::fabs(det) * 3.0);
+}
+
+// The Verdict metrics after the cell measures (m holds the edge lengths).
+void quality_verdict_metrics(QualityFamily family, const std::vector<Vec3>& c, double* m) {
+    const double emin = m[QM_MIN_EDGE];
+    const double emax = m[QM_MAX_EDGE];
+    if (emin > 0.0 && std::isfinite(emax))
+        m[QM_EDGE_RATIO] = emax / emin;
+    const double s3 = 1.0 / std::sqrt(3.0);
+    const double s6 = 1.0 / std::sqrt(6.0);
+    switch (family) {
+        case QualityFamily::Tri: {
+            // F = [e1 e2] W^-1 against the equilateral triangle; condition is
+            // tr(M) / (2 sqrt(det M)) for M = F^T F, and shape its reciprocal.
+            const Vec3 e1 = detail::vec3_sub(c[1], c[0]);
+            const Vec3 e2 = detail::vec3_sub(c[2], c[0]);
+            const Vec3 f2 =
+                detail::vec3_add(detail::vec3_scale(e1, -s3), detail::vec3_scale(e2, 2.0 * s3));
+            const double m11 = detail::vec3_norm_sq(e1);
+            const double m22 = detail::vec3_norm_sq(f2);
+            const double m12 = detail::vec3_dot(e1, f2);
+            const double det = m11 * m22 - m12 * m12;
+            if (det > 0.0 && std::isfinite(det)) {
+                m[QM_CONDITION] = (m11 + m22) / (2.0 * std::sqrt(det));
+                m[QM_SHAPE] = 2.0 * std::sqrt(det) / (m11 + m22);
+            }
+            break;
+        }
+        case QualityFamily::Quad: {
+            double cond = 0.0;
+            bool ok = true;
+            for (int k = 0; k < 4 && ok; ++k) {
+                const Vec3 a = detail::vec3_sub(c[(k + 1) % 4], c[k]);
+                const Vec3 b = detail::vec3_sub(c[(k + 3) % 4], c[k]);
+                const double area = detail::vec3_norm(detail::vec3_cross(a, b));
+                if (!(area > 0.0)) {
+                    ok = false;
+                    break;
+                }
+                cond = std::max(cond,
+                                (detail::vec3_norm_sq(a) + detail::vec3_norm_sq(b)) / (2.0 * area));
+            }
+            if (ok)
+                m[QM_CONDITION] = cond;
+            const double d = std::max(quality_edge_len(c[0], c[2]), quality_edge_len(c[1], c[3]));
+            if (d > 0.0)
+                m[QM_STRETCH] = std::sqrt(2.0) * emin / d;
+            const Vec3 x1 =
+                detail::vec3_add(detail::vec3_sub(c[1], c[0]), detail::vec3_sub(c[2], c[3]));
+            const Vec3 x2 =
+                detail::vec3_add(detail::vec3_sub(c[3], c[0]), detail::vec3_sub(c[2], c[1]));
+            const Vec3 x12 =
+                detail::vec3_add(detail::vec3_sub(c[0], c[1]), detail::vec3_sub(c[2], c[3]));
+            const double den = std::min(detail::vec3_norm(x1), detail::vec3_norm(x2));
+            if (den > 0.0)
+                m[QM_TAPER] = detail::vec3_norm(x12) / den;
+            break;
+        }
+        case QualityFamily::Tetra: {
+            // F = [e1 e2 e3] W^-1 against the regular tetrahedron.
+            const Vec3 e1 = detail::vec3_sub(c[1], c[0]);
+            const Vec3 e2 = detail::vec3_sub(c[2], c[0]);
+            const Vec3 e3 = detail::vec3_sub(c[3], c[0]);
+            const Vec3 f2 =
+                detail::vec3_add(detail::vec3_scale(e1, -s3), detail::vec3_scale(e2, 2.0 * s3));
+            const Vec3 f3 = detail::vec3_add(
+                detail::vec3_add(detail::vec3_scale(e1, -s6), detail::vec3_scale(e2, -s6)),
+                detail::vec3_scale(e3, 3.0 * s6));
+            m[QM_CONDITION] = quality_cond3(e1, f2, f3);
+            const double det = detail::det3(e1, f2, f3);
+            if (det == 0.0 || !std::isfinite(det)) {
+                // degenerate: shape stays NaN
+            } else if (det < 0.0) {
+                m[QM_SHAPE] = 0.0;
+            } else {
+                const double fn2 =
+                    detail::vec3_norm_sq(e1) + detail::vec3_norm_sq(f2) + detail::vec3_norm_sq(f3);
+                m[QM_SHAPE] = 3.0 * std::cbrt(det * det) / fn2;
+            }
+            // aspect gamma: (root mean square edge)^3 / (6 sqrt(2) V).
+            const double vol = std::fabs(detail::det3(e1, e2, e3)) / 6.0;
+            double sum2 = 0.0;
+            for (int a = 0; a < 4; ++a)
+                for (int b = a + 1; b < 4; ++b)
+                    sum2 += detail::vec3_norm_sq(detail::vec3_sub(c[b], c[a]));
+            const double srms = std::sqrt(sum2 / 6.0);
+            if (vol > 0.0)
+                m[QM_ASPECT_GAMMA] = srms * srms * srms / (6.0 * std::sqrt(2.0) * vol);
+            break;
+        }
+        case QualityFamily::Hex: {
+            static const int kCorner[8][4] = {{0, 1, 3, 4}, {1, 2, 0, 5}, {2, 3, 1, 6},
+                                              {3, 0, 2, 7}, {4, 7, 5, 0}, {5, 4, 6, 1},
+                                              {6, 5, 7, 2}, {7, 6, 4, 3}};
+            double cond = 0.0;
+            bool ok = true;
+            for (int k = 0; k < 8 && ok; ++k) {
+                const int* q = kCorner[k];
+                const double cc = quality_cond3(detail::vec3_sub(c[q[1]], c[q[0]]),
+                                                detail::vec3_sub(c[q[2]], c[q[0]]),
+                                                detail::vec3_sub(c[q[3]], c[q[0]]));
+                if (!std::isfinite(cc))
+                    ok = false;
+                else
+                    cond = std::max(cond, cc);
+            }
+            if (ok)
+                m[QM_CONDITION] = cond;
+            const double d[4] = {quality_edge_len(c[0], c[6]), quality_edge_len(c[1], c[7]),
+                                 quality_edge_len(c[2], c[4]), quality_edge_len(c[3], c[5])};
+            const double dmax = std::max(std::max(d[0], d[1]), std::max(d[2], d[3]));
+            const double dmin = std::min(std::min(d[0], d[1]), std::min(d[2], d[3]));
+            if (dmax > 0.0) {
+                m[QM_DIAGONAL_RATIO] = dmin / dmax;
+                m[QM_STRETCH] = std::sqrt(3.0) * emin / dmax;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void quality_cell_measures(QualityFamily family, const std::vector<Vec3>& c, double* m) {
+    const int(*edges)[2] = nullptr;
+    int ne = 0;
+    switch (family) {
+        case QualityFamily::Tri:
+            edges = kQualityTriEdges;
+            ne = 3;
+            break;
+        case QualityFamily::Quad:
+            edges = kQualityQuadEdges;
+            ne = 4;
+            break;
+        case QualityFamily::Tetra:
+            edges = kQualityTetraEdges;
+            ne = 6;
+            break;
+        case QualityFamily::Hex:
+            edges = kQualityHexEdges;
+            ne = 12;
+            break;
+        case QualityFamily::Wedge:
+            edges = kQualityWedgeEdges;
+            ne = 9;
+            break;
+        case QualityFamily::Pyr:
+            edges = kQualityPyramidEdges;
+            ne = 8;
+            break;
+        default:
+            return;
+    }
+    if (std::isfinite(m[QM_VOLUME]))
+        m[QM_SIZE] = std::fabs(m[QM_VOLUME]);
+    double emin = std::numeric_limits<double>::infinity();
+    double emax = 0.0;
+    for (int k = 0; k < ne; ++k) {
+        const double l = quality_edge_len(c[edges[k][0]], c[edges[k][1]]);
+        emin = std::min(emin, l);
+        emax = std::max(emax, l);
+    }
+    m[QM_MIN_EDGE] = emin;
+    m[QM_MAX_EDGE] = emax;
+    double diag = 0.0;
+    for (std::size_t a = 0; a < c.size(); ++a)
+        for (std::size_t b = a + 1; b < c.size(); ++b)
+            diag = std::max(diag, quality_edge_len(c[a], c[b]));
+    m[QM_DIAGONAL] = diag;
+    quality_verdict_metrics(family, c, m);
+}
+
 // Evaluate one cell's metrics into m (assumed pre-filled with NaN).
 void quality_eval_cell(QualityFamily family, CellType ct, const std::vector<Vec3>& c, bool is2d,
                        double eps, double* m) {
@@ -291257,6 +293102,7 @@ void quality_eval_cell(QualityFamily family, CellType ct, const std::vector<Vec3
         default:
             break;
     }
+    quality_cell_measures(family, c, m);
 }
 
 using CellMetrics = std::array<double, NUM_METRICS>;
@@ -291310,6 +293156,7 @@ QualityReport compute_quality(const Mesh& rMesh) {
                 }
                 const detail::PolyMeasure pm = detail::poly_measure(rings, coords.data());
                 v[QM_VOLUME] = std::abs(pm.mVolume);
+                v[QM_SIZE] = v[QM_VOLUME];
                 // Relative to the cell's own size, never an absolute epsilon --
                 // the same rule grad_green_gauss_3d uses.
                 const double scale = pm.mSurfaceArea * std::sqrt(pm.mSurfaceArea);
@@ -291475,10 +293322,14 @@ constexpr const char* kQgPrefix = "meshio++: quality gate: ";
 // compute_quality's metrics, in its fixed order (pinned against the report
 // by tests/cpp/test_quality_gate.cpp).
 const char* const kQgMetrics[] = {
-    "quality:volume",   "quality:scaled_jacobian", "quality:aspect_ratio",
-    "quality:skewness", "quality:min_angle",       "quality:max_angle",
-    "quality:warpage",  "quality:min_dihedral",    "quality:max_dihedral",
-    "quality:inverted", "quality:degenerate",
+    "quality:volume",         "quality:scaled_jacobian", "quality:aspect_ratio",
+    "quality:skewness",       "quality:min_angle",       "quality:max_angle",
+    "quality:warpage",        "quality:min_dihedral",    "quality:max_dihedral",
+    "quality:inverted",       "quality:degenerate",      "quality:size",
+    "quality:diagonal",       "quality:min_edge",        "quality:max_edge",
+    "quality:edge_ratio",     "quality:condition",       "quality:shape",
+    "quality:aspect_gamma",   "quality:stretch",         "quality:taper",
+    "quality:diagonal_ratio",
 };
 
 std::string qg_full_name(const std::string& rMetric) {
@@ -308422,6 +310273,79 @@ std::int64_t smooth_odt_pass(std::vector<double>& rXyz,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/smooth.cpp =====
+// ===== begin src/cpp/src/operations/smooth_field.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+SmoothFieldResult smooth_field(const Mesh& rMesh, const SmoothFieldOptions& rOptions) {
+    const auto fail = [](const std::string& rMessage) {
+        throw std::invalid_argument("meshio++: smooth_field: " + rMessage);
+    };
+    if (rOptions.mArray.empty())
+        fail("an array name is required");
+    if (!rMesh.HasPointData(rOptions.mArray))
+        fail(data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArray));
+    if (!(rOptions.mLength >= 0.0) || !std::isfinite(rOptions.mLength))
+        fail("the length must be finite and not negative");
+    if (!(rOptions.mTolerance > 0.0))
+        fail("the tolerance must be positive");
+    const NDArray& field = rMesh.PointData(rOptions.mArray);
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t comps = data_num_components(field);
+    if (detail::rows(field) != n)
+        fail("'" + rOptions.mArray + "' has " + std::to_string(detail::rows(field)) +
+             " rows on a mesh of " + std::to_string(n) + " points");
+
+    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "smooth_field");
+    std::vector<double> mass;
+    std::vector<detail::SparseTriplet> triplets;
+    detail::surface_fem_assemble(fem, mass, triplets);
+    const double l2 = rOptions.mLength * rOptions.mLength;
+    for (detail::SparseTriplet& t : triplets)
+        t.mValue *= l2;
+    for (std::size_t i = 0; i < n; ++i)
+        // A point in no triangle has no mass and no stiffness: an identity row keeps it.
+        triplets.push_back({i, i, mass[i] > 0.0 ? mass[i] : 1.0});
+    const detail::SparseCsr a = detail::csr_from_triplets(n, n, std::move(triplets));
+
+    NDArray out(DType::Float64, field.Shape());
+    double* po = out.As<double>();
+    std::vector<double> rhs(n), x(n);
+    SmoothFieldResult result;
+    const std::size_t cap =
+        rOptions.mMaxIterations > 0 ? static_cast<std::size_t>(rOptions.mMaxIterations) : n + 100;
+    for (std::size_t c = 0; c < comps; ++c) {
+        for (std::size_t i = 0; i < n; ++i) {
+            const double f = detail::read_double(field, i * comps + c);
+            rhs[i] = (mass[i] > 0.0 ? mass[i] : 1.0) * f;
+            x[i] = f;
+        }
+        const detail::SparseSolveReport report =
+            detail::csr_pcg(a, rhs.data(), x.data(), rOptions.mTolerance, cap);
+        result.mIterations += static_cast<std::int64_t>(report.mIterations);
+        result.mConverged = result.mConverged && report.mConverged;
+        for (std::size_t i = 0; i < n; ++i)
+            po[i * comps + c] = x[i];
+    }
+    result.mNumDegenerate = fem.mNumDegenerate;
+    result.mMesh = detail::clone_mesh(rMesh);
+    result.mMesh.AddPointData(
+        rOptions.mOutput.empty() ? rOptions.mArray + kSmoothFieldSuffix : rOptions.mOutput,
+        std::move(out));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/smooth_field.cpp =====
 // ===== begin src/cpp/src/operations/sniff.cpp =====
 #include <algorithm>
 #include <bit>
@@ -310045,6 +311969,144 @@ StatsReport compute_stats(const Mesh& rMesh) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/stats.cpp =====
+// ===== begin src/cpp/src/operations/streamlines.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+[[noreturn]] void sl_fail(const std::string& rMessage) {
+    throw std::invalid_argument("meshio++: streamlines: " + rMessage);
+}
+
+}  // namespace
+
+StreamlinesResult streamlines(const Mesh& rMesh, const StreamlinesOptions& rOptions) {
+    if (rOptions.mArray.empty())
+        sl_fail("an array name is required");
+    if (!rMesh.HasPointData(rOptions.mArray))
+        sl_fail(data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArray));
+    if (rOptions.mSeeds < 0 || rOptions.mMaxSteps < 0)
+        sl_fail("the seed and step counts must not be negative");
+    if (!(rOptions.mMaxLength > 0.0) || rOptions.mStep < 0.0 || rOptions.mTerminalSpeed < 0.0 ||
+        !(rOptions.mTolerance > 0.0))
+        sl_fail(
+            "the length and the tolerance must be positive, the step and the terminal speed "
+            "not negative");
+    if (rOptions.mSeedPoints.size() % 3 != 0)
+        sl_fail("the seed points are 3 coordinates each");
+
+    const NDArray& field = rMesh.PointData(rOptions.mArray);
+    const std::size_t comps = data_num_components(field);
+    if (comps != 2 && comps != 3)
+        sl_fail("'" + rOptions.mArray + "' has " + std::to_string(comps) +
+                " component(s); a vector field of 2 or 3 is needed");
+    const std::size_t npoints = rMesh.NumPoints();
+    if (detail::rows(field) != npoints)
+        sl_fail("'" + rOptions.mArray + "' has " + std::to_string(detail::rows(field)) +
+                " rows on a mesh of " + std::to_string(npoints) + " points");
+
+    // Points and the field as 3 doubles each (a 2D point or field gets z = 0).
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    std::vector<double> xyz(npoints * 3, 0.0);
+    std::vector<double> vec(npoints * 3, 0.0);
+    for (std::size_t i = 0; i < npoints; ++i) {
+        for (std::size_t c = 0; c < pdim && c < 3; ++c)
+            xyz[i * 3 + c] = detail::read_double(points, i * pdim + c);
+        for (std::size_t c = 0; c < comps; ++c)
+            vec[i * 3 + c] = detail::read_double(field, i * comps + c);
+    }
+
+    detail::StreamlineTraceOptions to;
+    to.mSeeds = static_cast<std::size_t>(rOptions.mSeeds);
+    to.mSeedPoints = rOptions.mSeedPoints;
+    to.mBackward = rOptions.mDirection != StreamlineDirection::Forward;
+    to.mForward = rOptions.mDirection != StreamlineDirection::Backward;
+    to.mAdaptive = rOptions.mIntegrator == StreamlineIntegrator::RK45;
+    to.mStep = rOptions.mStep;
+    to.mMaxLength = rOptions.mMaxLength;
+    to.mMaxSteps = static_cast<std::size_t>(rOptions.mMaxSteps);
+    to.mTerminalSpeed = rOptions.mTerminalSpeed;
+    to.mTolerance = rOptions.mTolerance;
+    const detail::StreamlineTraces traces =
+        detail::trace_streamlines_timed(rMesh, xyz.data(), vec.data(), to);
+
+    StreamlinesResult result;
+    result.mDim = traces.mDim;
+    result.mNumSeedsOutside = traces.mNumSeedsOutside;
+    result.mNumLines = static_cast<std::int64_t>(traces.mLines.size());
+
+    std::size_t total_points = 0;
+    std::size_t total_segments = 0;
+    for (const detail::StreamlineTrace& line : traces.mLines) {
+        total_points += line.mTime.size();
+        total_segments += line.mTime.size() - 1;
+    }
+    NDArray out_points = NDArray::Uninit(DType::Float64, {total_points, std::size_t{3}});
+    NDArray out_time = NDArray::Uninit(DType::Float64, {total_points});
+    NDArray out_speed = NDArray::Uninit(DType::Float64, {total_points});
+    NDArray out_seed = NDArray::Uninit(DType::Int64, {total_points});
+    NDArray out_field = NDArray::Uninit(DType::Float64, {total_points, comps});
+    NDArray conn = NDArray::Uninit(DType::Int64, {total_segments, std::size_t{2}});
+    NDArray seg_seed = NDArray::Uninit(DType::Int64, {total_segments});
+    double* pp = out_points.As<double>();
+    double* pt = out_time.As<double>();
+    double* ps = out_speed.As<double>();
+    std::int64_t* pi = out_seed.As<std::int64_t>();
+    double* pf = out_field.As<double>();
+    std::int64_t* pc = conn.As<std::int64_t>();
+    std::int64_t* pg = seg_seed.As<std::int64_t>();
+    std::size_t base = 0;
+    std::size_t seg = 0;
+    for (const detail::StreamlineTrace& line : traces.mLines) {
+        const std::size_t n = line.mTime.size();
+        for (std::size_t k = 0; k < n; ++k) {
+            for (std::size_t c = 0; c < 3; ++c)
+                pp[(base + k) * 3 + c] = line.mXyz[k * 3 + c];
+            pt[base + k] = line.mTime[k];
+            const double* v = line.mVelocity.data() + k * 3;
+            ps[base + k] = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            pi[base + k] = line.mSeedId;
+            for (std::size_t c = 0; c < comps; ++c)
+                pf[(base + k) * comps + c] = v[c];
+            if (k + 1 < n) {
+                pc[seg * 2] = static_cast<std::int64_t>(base + k);
+                pc[seg * 2 + 1] = static_cast<std::int64_t>(base + k + 1);
+                pg[seg] = line.mSeedId;
+                ++seg;
+            }
+        }
+        base += n;
+        result.mSeedIds.push_back(line.mSeedId);
+        result.mEndBackward.push_back(static_cast<std::int32_t>(line.mBackwardEnd));
+        result.mEndForward.push_back(static_cast<std::int32_t>(line.mForwardEnd));
+    }
+    Mesh& out = result.mMesh;
+    out.AssignPoints(std::move(out_points));
+    if (total_segments > 0) {
+        out.AddCellBlock("line", std::move(conn));
+        std::vector<NDArray> seg_blocks;
+        seg_blocks.push_back(std::move(seg_seed));
+        out.AddCellData(kStreamlineSeedIdName, std::move(seg_blocks));
+    }
+    out.AddPointData(kStreamlineTimeName, std::move(out_time));
+    out.AddPointData(kStreamlineSpeedName, std::move(out_speed));
+    out.AddPointData(kStreamlineSeedIdName, std::move(out_seed));
+    out.AddPointData(rOptions.mArray, std::move(out_field));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/streamlines.cpp =====
 // ===== begin src/cpp/src/operations/subdivide.cpp =====
 #include <cstddef>
 #include <cstdint>
@@ -310987,6 +313049,143 @@ NDArray tinv_deviatoric(const NDArray& rSrc, std::size_t Ncomp) {
     return dst;
 }
 
+/// Reads row @p r as the row-major 3x3 `pM[9]`, as given (a 6-component row is
+/// `xx yy zz xy yz zx`, symmetric; a 9-component row is not symmetrised).
+/// Returns false when any component is non-finite.
+bool tinv_read_matrix(const NDArray& rArray, std::size_t Ncomp, std::size_t r, double* pM) {
+    double t[9];
+    for (std::size_t k = 0; k < Ncomp; ++k) {
+        t[k] = detail::read_double(rArray, r * Ncomp + k);
+        if (!std::isfinite(t[k]))
+            return false;
+    }
+    if (Ncomp == 6) {
+        pM[0] = t[0];
+        pM[1] = t[3];
+        pM[2] = t[5];
+        pM[3] = t[3];
+        pM[4] = t[1];
+        pM[5] = t[4];
+        pM[6] = t[5];
+        pM[7] = t[4];
+        pM[8] = t[2];
+    } else {
+        for (int k = 0; k < 9; ++k)
+            pM[k] = t[k];
+    }
+    return true;
+}
+
+/// `det A` of the row-major 3x3 as the triple product of its rows.
+double tinv_det(const double* pM) {
+    return detail::det3({pM[0], pM[1], pM[2]}, {pM[3], pM[4], pM[5]}, {pM[6], pM[7], pM[8]});
+}
+
+NDArray tinv_trace(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double m[9];
+        out[r] = tinv_read_matrix(rSrc, Ncomp, r, m) ? m[0] + m[4] + m[8]
+                                                     : std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+NDArray tinv_determinant(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double m[9];
+        out[r] = tinv_read_matrix(rSrc, Ncomp, r, m) ? tinv_det(m)
+                                                     : std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+NDArray tinv_invariants(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows, std::size_t{3}});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double m[9];
+        if (tinv_read_matrix(rSrc, Ncomp, r, m)) {
+            out[r * 3 + 0] = m[0] + m[4] + m[8];
+            out[r * 3 + 1] = (m[0] * m[4] - m[1] * m[3]) + (m[4] * m[8] - m[5] * m[7]) +
+                             (m[0] * m[8] - m[2] * m[6]);
+            out[r * 3 + 2] = tinv_det(m);
+        } else {
+            for (int k = 0; k < 3; ++k)
+                out[r * 3 + k] = std::numeric_limits<double>::quiet_NaN();
+        }
+    });
+    return dst;
+}
+
+/// The eigenvectors of the symmetric part: row r is the row-major 3x3 whose
+/// column k is the unit eigenvector of the k-th principal value (see
+/// `detail::sym3_eigen` for the sign rule).
+NDArray tinv_eigenvectors(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst(DType::Float64, {nrows, std::size_t{9}});
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double sym[6];
+        double values[3];
+        if (tinv_read_symmetric(rSrc, Ncomp, r, sym))
+            detail::sym3_eigen(sym, values, out + r * 9);
+        else
+            for (int k = 0; k < 9; ++k)
+                out[r * 9 + k] = std::numeric_limits<double>::quiet_NaN();
+    });
+    return dst;
+}
+
+/// `adj(A) / det(A)` in the input's shape (a 6-component input gives the six
+/// components of the symmetric inverse). A row whose determinant is exactly
+/// zero, or that holds a non-finite component, is NaN: there is no warning
+/// channel, so the NaN is the whole report.
+NDArray tinv_inverse(const NDArray& rSrc, std::size_t Ncomp) {
+    const std::size_t nrows = tinv_nrows(rSrc, Ncomp);
+    NDArray dst = NDArray::Uninit(DType::Float64, rSrc.Shape());
+    double* out = dst.As<double>();
+    parallel_for(nrows, [&](std::size_t r) {
+        double m[9];
+        double inv[9];
+        const double nan = std::numeric_limits<double>::quiet_NaN();
+        const double det = tinv_read_matrix(rSrc, Ncomp, r, m) ? tinv_det(m) : nan;
+        if (!std::isfinite(det) || det == 0.0) {
+            for (std::size_t k = 0; k < Ncomp; ++k)
+                out[r * Ncomp + k] = nan;
+            return;
+        }
+        // The adjugate (the transposed cofactor matrix), row by row.
+        inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;
+        inv[1] = (m[2] * m[7] - m[1] * m[8]) / det;
+        inv[2] = (m[1] * m[5] - m[2] * m[4]) / det;
+        inv[3] = (m[5] * m[6] - m[3] * m[8]) / det;
+        inv[4] = (m[0] * m[8] - m[2] * m[6]) / det;
+        inv[5] = (m[2] * m[3] - m[0] * m[5]) / det;
+        inv[6] = (m[3] * m[7] - m[4] * m[6]) / det;
+        inv[7] = (m[1] * m[6] - m[0] * m[7]) / det;
+        inv[8] = (m[0] * m[4] - m[1] * m[3]) / det;
+        if (Ncomp == 6) {
+            out[r * 6 + 0] = inv[0];
+            out[r * 6 + 1] = inv[4];
+            out[r * 6 + 2] = inv[8];
+            out[r * 6 + 3] = inv[1];
+            out[r * 6 + 4] = inv[5];
+            out[r * 6 + 5] = inv[2];
+        } else {
+            for (int k = 0; k < 9; ++k)
+                out[r * 9 + k] = inv[k];
+        }
+    });
+    return dst;
+}
+
 /// Whether an array's trailing component count is one `tensor_invariants` can
 /// process.
 bool tinv_is_tensor_shaped(const NDArray& rArray) {
@@ -311002,8 +313201,8 @@ TensorInvariant tensor_invariant_from_name(const std::string& rName) {
     bool any = false;
     while (start <= rName.size()) {
         const std::size_t comma = rName.find(',', start);
-        const std::string tok = rName.substr(start, comma == std::string::npos ? std::string::npos
-                                                                                : comma - start);
+        const std::string tok =
+            rName.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
         if (tok == "mises")
             mask |= static_cast<unsigned>(TensorInvariant::Mises);
         else if (tok == "principal")
@@ -311012,12 +313211,23 @@ TensorInvariant tensor_invariant_from_name(const std::string& rName) {
             mask |= static_cast<unsigned>(TensorInvariant::Hydrostatic);
         else if (tok == "deviatoric")
             mask |= static_cast<unsigned>(TensorInvariant::Deviatoric);
+        else if (tok == "trace")
+            mask |= static_cast<unsigned>(TensorInvariant::Trace);
+        else if (tok == "determinant")
+            mask |= static_cast<unsigned>(TensorInvariant::Determinant);
+        else if (tok == "invariants")
+            mask |= static_cast<unsigned>(TensorInvariant::Invariants);
+        else if (tok == "inverse")
+            mask |= static_cast<unsigned>(TensorInvariant::Inverse);
+        else if (tok == "eigenvectors")
+            mask |= static_cast<unsigned>(TensorInvariant::Eigenvectors);
         else if (tok == "all")
             mask |= static_cast<unsigned>(TensorInvariant::All);
         else
             throw std::invalid_argument(
                 "meshio++: unknown tensor invariant '" + tok +
-                "' (expected 'mises', 'principal', 'hydrostatic', 'deviatoric' or 'all')");
+                "' (expected 'mises', 'principal', 'hydrostatic', 'deviatoric', 'trace', "
+                "'determinant', 'invariants', 'inverse', 'eigenvectors' or 'all')");
         any = true;
         if (comma == std::string::npos)
             break;
@@ -311036,8 +313246,8 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
     std::vector<std::string> names = rOpts.names;
     if (names.empty()) {
         for (const std::string& n : data_names(rMesh, rOpts.location)) {
-            const NDArray& src = rOpts.location == DataLocation::Point ? rMesh.PointData(n)
-                                                                        : rMesh.CellData(n, 0);
+            const NDArray& src =
+                rOpts.location == DataLocation::Point ? rMesh.PointData(n) : rMesh.CellData(n, 0);
             if (rOpts.location == DataLocation::Cell && rMesh.CellDataNumBlocks(n) == 0)
                 continue;
             if (tinv_is_tensor_shaped(src))
@@ -311047,8 +313257,8 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
         for (const std::string& n : names) {
             if (!data_has(rMesh, rOpts.location, n))
                 throw std::invalid_argument(data_unknown_key_message(rMesh, rOpts.location, n));
-            const NDArray& src = rOpts.location == DataLocation::Point ? rMesh.PointData(n)
-                                                                        : rMesh.CellData(n, 0);
+            const NDArray& src =
+                rOpts.location == DataLocation::Point ? rMesh.PointData(n) : rMesh.CellData(n, 0);
             if (!tinv_is_tensor_shaped(src))
                 throw std::invalid_argument(
                     "meshio++: tensor_invariants: '" + n + "' has " +
@@ -311102,6 +313312,16 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
                 add_cell("_hydrostatic", tinv_hydrostatic_array);
             if ((rOpts.outputs & TensorInvariant::Deviatoric) != 0)
                 add_cell("_deviatoric", tinv_deviatoric);
+            if ((rOpts.outputs & TensorInvariant::Trace) != 0)
+                add_cell("_trace", tinv_trace);
+            if ((rOpts.outputs & TensorInvariant::Determinant) != 0)
+                add_cell("_determinant", tinv_determinant);
+            if ((rOpts.outputs & TensorInvariant::Invariants) != 0)
+                add_cell("_invariants", tinv_invariants);
+            if ((rOpts.outputs & TensorInvariant::Inverse) != 0)
+                add_cell("_inverse", tinv_inverse);
+            if ((rOpts.outputs & TensorInvariant::Eigenvectors) != 0)
+                add_cell("_eigenvectors", tinv_eigenvectors);
             continue;
         }
 
@@ -311112,9 +313332,20 @@ Mesh tensor_invariants(const Mesh& rMesh, const TensorInvariantsOptions& rOpts) 
         if ((rOpts.outputs & TensorInvariant::Principal) != 0)
             add_point(out, base + "_principal" + rOpts.suffix, tinv_principal(src, ncomp));
         if ((rOpts.outputs & TensorInvariant::Hydrostatic) != 0)
-            add_point(out, base + "_hydrostatic" + rOpts.suffix, tinv_hydrostatic_array(src, ncomp));
+            add_point(out, base + "_hydrostatic" + rOpts.suffix,
+                      tinv_hydrostatic_array(src, ncomp));
         if ((rOpts.outputs & TensorInvariant::Deviatoric) != 0)
             add_point(out, base + "_deviatoric" + rOpts.suffix, tinv_deviatoric(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Trace) != 0)
+            add_point(out, base + "_trace" + rOpts.suffix, tinv_trace(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Determinant) != 0)
+            add_point(out, base + "_determinant" + rOpts.suffix, tinv_determinant(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Invariants) != 0)
+            add_point(out, base + "_invariants" + rOpts.suffix, tinv_invariants(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Inverse) != 0)
+            add_point(out, base + "_inverse" + rOpts.suffix, tinv_inverse(src, ncomp));
+        if ((rOpts.outputs & TensorInvariant::Eigenvectors) != 0)
+            add_point(out, base + "_eigenvectors" + rOpts.suffix, tinv_eigenvectors(src, ncomp));
     }
     return out;
 }

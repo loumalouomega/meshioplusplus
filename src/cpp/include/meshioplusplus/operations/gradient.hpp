@@ -138,7 +138,17 @@ namespace meshioplusplus {
 enum class GradientOperator {
     Gradient,    ///< `grad f`; `3 * nc` components, row-major `[i][j]` at `i * 3 + j`.
     Divergence,  ///< `div u`; one component. Needs a 2- or 3-component input.
-    Curl         ///< `curl u`; three components. Needs a 2- or 3-component input.
+    Curl,        ///< `curl u`; three components. Needs a 2- or 3-component input.
+    // The quantities below are built from the per-cell gradient block `G = grad u` alone
+    // (`G[i][j] = du_i/dx_j`, a 2-component field padded to (u, v, 0)), so each is exact
+    // wherever the method's gradient is. All need a 2- or 3-component input.
+    VorticityMagnitude,  ///< `|curl u|`; one component.
+    QCriterion,  ///< `Q = (|Omega|^2 - |S|^2) / 2`, `S`/`Omega` the symmetric/skew parts of `G`.
+    Lambda2,     ///< The middle eigenvalue of `S^2 + Omega^2` (Jeong and Hussain 1995).
+    StrainRate,  ///< `S = (G + G^T) / 2`; six components `xx yy zz xy yz zx`.
+    GreenLagrangeStrain,  ///< `E = (F^T F - I) / 2`, `F = I + G`, for a displacement; six
+                          ///< components.
+    Helicity              ///< `u . curl u`, `u` the cell's corner-mean field value; one component.
 };
 
 /// How the per-cell derivative is reconstructed.
@@ -151,6 +161,36 @@ enum class GradientMethod {
 inline constexpr const char* kGradientSuffix = ":gradient";
 inline constexpr const char* kDivergenceSuffix = ":divergence";
 inline constexpr const char* kCurlSuffix = ":curl";
+inline constexpr const char* kVorticityMagnitudeSuffix = ":vorticity_magnitude";
+inline constexpr const char* kQCriterionSuffix = ":q_criterion";
+inline constexpr const char* kLambda2Suffix = ":lambda2";
+inline constexpr const char* kStrainRateSuffix = ":strain_rate";
+inline constexpr const char* kGreenLagrangeStrainSuffix = ":green_lagrange";
+inline constexpr const char* kHelicitySuffix = ":helicity";
+
+/// The default output-name suffix of an operator (`":gradient"`, `":curl"`, ...).
+inline const char* gradient_suffix(GradientOperator Op) {
+    switch (Op) {
+        case GradientOperator::Divergence:
+            return kDivergenceSuffix;
+        case GradientOperator::Curl:
+            return kCurlSuffix;
+        case GradientOperator::VorticityMagnitude:
+            return kVorticityMagnitudeSuffix;
+        case GradientOperator::QCriterion:
+            return kQCriterionSuffix;
+        case GradientOperator::Lambda2:
+            return kLambda2Suffix;
+        case GradientOperator::StrainRate:
+            return kStrainRateSuffix;
+        case GradientOperator::GreenLagrangeStrain:
+            return kGreenLagrangeStrainSuffix;
+        case GradientOperator::Helicity:
+            return kHelicitySuffix;
+        default:
+            return kGradientSuffix;
+    }
+}
 
 /// Options for `gradient`.
 struct GradientOptions {

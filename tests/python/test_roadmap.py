@@ -16,7 +16,7 @@ LINES = ROADMAP.read_text(encoding="utf-8").splitlines()
 
 _HEADING = re.compile(r"^#{2,6}\s+(\d+(?:\.\d+)*)\.?\s")
 _BOLD_ITEM = re.compile(r"\*\*(\d+(?:\.\d+)+)\b")
-_CITATION = re.compile(r"(?<![\w.\-/§v])((?:[1-9]|1[0-4])\.\d+(?:\.\d+)*)(?![\w]|\.\d)")
+_CITATION = re.compile(r"(?<![\w.\-/§v])((?:[1-9]|1[0-5])\.\d+(?:\.\d+)*)(?![\w]|\.\d)")
 _PATH = re.compile(
     r"`((?:src|tests|tools|bindings|doc|build|cmake|\.github|example|packages)/[\w./\-*<>{}]+)`"
 )

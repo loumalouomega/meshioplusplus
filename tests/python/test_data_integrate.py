@@ -213,3 +213,99 @@ def test_cpp_matches_python_on_ragged_and_nan_cells():
     cpp_report = mp.data_integrate(mesh)
     py_report = _data_integrate_py(mesh, [])
     assert cpp_report == py_report
+
+
+# --- mode prefixes: point:, flux:, boundary: --------------------------------
+
+
+def _unit_cube():
+    pts = np.array([[x, y, z] for z in (0, 1) for y in (0, 1) for x in (0, 1)], float)
+    mesh = mp.Mesh(pts, [("hexahedron", np.array([[0, 1, 3, 2, 4, 5, 7, 6]]))])
+    mesh.point_data["u"] = pts.copy()  # div u = 3
+    mesh.point_data["T"] = pts[:, 0] + 2 * pts[:, 1] + 3 * pts[:, 2]
+    return mesh
+
+
+def _flat_two_triangles():
+    pts = np.array([[0, 0, 0], [2, 0, 0], [2, 1, 0], [0, 1, 0.0]])
+    mesh = mp.Mesh(pts, [("triangle", np.array([[0, 1, 2], [0, 2, 3]]))])
+    mesh.point_data["T"] = pts[:, 0] + 10 * pts[:, 1]
+    mesh.point_data["w"] = np.tile([0.0, 0.0, 1.0], (4, 1))
+    return mesh
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+def test_point_data_is_integrated_through_its_cell_means(engine):
+    mesh = _flat_two_triangles()
+    run = data_integrate if engine == "core" else _data_integrate_py
+    r = run(mesh, ["point:T"])
+    assert r[0]["name"] == "point:T"
+    # exact for a linear field: the integral of x + 10 y over [0, 2] x [0, 1] is 12
+    assert r[0]["domain"]["total_per_component"][0] == pytest.approx(12.0)
+    assert r[0]["domain"]["domain_measure_per_component"][0] == pytest.approx(2.0)
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+def test_flux_through_a_surface_and_the_divergence_theorem(engine):
+    run = data_integrate if engine == "core" else _data_integrate_py
+    flat = run(_flat_two_triangles(), ["flux:w"])
+    assert flat[0]["domain"]["total_per_component"][0] == pytest.approx(
+        2.0
+    )  # area * (w . +z)
+    # the flux of u = (x, y, z) through the boundary of the unit cube equals the
+    # integral of div u = 3 over its volume 1
+    cube = run(_unit_cube(), ["boundary:flux:u"])
+    assert cube[0]["domain"]["total_per_component"][0] == pytest.approx(3.0)
+    # a constant field has zero flux through a closed surface
+    c = _unit_cube()
+    c.point_data["k"] = np.tile([1.0, -2.0, 3.0], (8, 1))
+    zero = run(c, ["boundary:flux:k"])
+    assert zero[0]["domain"]["total_per_component"][0] == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+def test_boundary_point_integral_of_a_linear_field(engine):
+    run = data_integrate if engine == "core" else _data_integrate_py
+    r = run(_unit_cube(), ["boundary:point:T"])
+    assert r[0]["domain"]["total_per_component"][0] == pytest.approx(18.0)  # six faces
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+def test_modes_keep_the_requested_order_and_mix_with_plain_names(engine):
+    run = data_integrate if engine == "core" else _data_integrate_py
+    mesh = _flat_two_triangles()
+    mesh.cell_data["c"] = [np.array([1.0, 3.0])]
+    r = run(mesh, ["point:T", "c", "flux:w"])
+    assert [a["name"] for a in r] == ["point:T", "c", "flux:w"]
+    assert r[1]["domain"]["total_per_component"][0] == pytest.approx(1.0 * 1 + 1.0 * 3)
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+def test_an_array_with_the_prefixed_name_wins(engine):
+    run = data_integrate if engine == "core" else _data_integrate_py
+    mesh = _flat_two_triangles()
+    mesh.cell_data["point:T"] = [np.array([1.0, 1.0])]
+    r = run(mesh, ["point:T"])
+    assert r[0]["domain"]["total_per_component"][0] == pytest.approx(
+        2.0
+    )  # the cell array, not T
+
+
+@pytest.mark.parametrize("engine", ["core", "twin"])
+@pytest.mark.parametrize(
+    "name,needle",
+    [
+        ("boundary:T", "needs 'point:' or 'flux:'"),
+        ("point:nothing", "names no point_data array"),
+        ("flux:T", "3-component"),
+    ],
+)
+def test_mode_errors(engine, name, needle):
+    run = data_integrate if engine == "core" else _data_integrate_py
+    with pytest.raises(ValueError, match=needle):
+        run(_flat_two_triangles(), [name])
+
+
+def test_flux_needs_surface_cells():
+    with pytest.raises(ValueError, match="surface"):
+        data_integrate(_unit_cube(), ["flux:u"])

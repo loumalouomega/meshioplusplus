@@ -27,6 +27,17 @@ _METRIC_NAMES = [
     "quality:max_dihedral",
     "quality:inverted",
     "quality:degenerate",
+    "quality:size",
+    "quality:diagonal",
+    "quality:min_edge",
+    "quality:max_edge",
+    "quality:edge_ratio",
+    "quality:condition",
+    "quality:shape",
+    "quality:aspect_gamma",
+    "quality:stretch",
+    "quality:taper",
+    "quality:diagonal_ratio",
 ]
 _M = {name: i for i, name in enumerate(_METRIC_NAMES)}
 _NUM_METRICS = len(_METRIC_NAMES)
@@ -340,6 +351,138 @@ def _pyramid(c, faces, m):
     m[_M["quality:scaled_jacobian"]] = np.sqrt(2.0) * sj
 
 
+_EDGES = {
+    "tri": ((0, 1), (1, 2), (2, 0)),
+    "quad": ((0, 1), (1, 2), (2, 3), (3, 0)),
+    "tetra": ((0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)),
+    "hex": (
+        (0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6),
+        (6, 7), (7, 4), (0, 4), (1, 5), (2, 6), (3, 7),
+    ),  # fmt: skip
+    "wedge": ((0, 1), (1, 2), (2, 0), (3, 4), (4, 5), (5, 3), (0, 3), (1, 4), (2, 5)),
+    "pyramid": ((0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)),
+}
+
+
+def _cell_measures(family, c, m):
+    """size, diagonal, shortest and longest edge (mirrors quality_cell_measures)."""
+    vol = m[_M["quality:volume"]]
+    if np.isfinite(vol):
+        m[_M["quality:size"]] = abs(vol)
+    lengths = [_norm(c[b] - c[a]) for a, b in _EDGES[family]]
+    m[_M["quality:min_edge"]] = min(lengths)
+    m[_M["quality:max_edge"]] = max(lengths)
+    n = len(c)
+    m[_M["quality:diagonal"]] = max(
+        _norm(c[b] - c[a]) for a in range(n) for b in range(a + 1, n)
+    )
+    _verdict_metrics(family, c, m)
+
+
+_S3 = 1.0 / np.sqrt(3.0)
+_S6 = 1.0 / np.sqrt(6.0)
+_HEX_CORNER = (
+    (0, 1, 3, 4),
+    (1, 2, 0, 5),
+    (2, 3, 1, 6),
+    (3, 0, 2, 7),
+    (4, 7, 5, 0),
+    (5, 4, 6, 1),
+    (6, 5, 7, 2),
+    (7, 6, 4, 3),
+)
+
+
+def _cond3(f1, f2, f3):
+    """Frobenius condition number ``|F| |F^-1| / 3`` of the matrix with columns f1..f3."""
+    det = _det3(f1, f2, f3)
+    if det == 0.0 or not np.isfinite(det):
+        return np.nan
+    fn2 = f1 @ f1 + f2 @ f2 + f3 @ f3
+    c1, c2, c3 = np.cross(f2, f3), np.cross(f3, f1), np.cross(f1, f2)
+    in2 = c1 @ c1 + c2 @ c2 + c3 @ c3
+    return float(np.sqrt(fn2) * np.sqrt(in2) / (abs(det) * 3.0))
+
+
+def _verdict_metrics(family, c, m):
+    """The Verdict metrics after the cell measures (mirrors quality_verdict_metrics)."""
+    emin = m[_M["quality:min_edge"]]
+    emax = m[_M["quality:max_edge"]]
+    if emin > 0.0 and np.isfinite(emax):
+        m[_M["quality:edge_ratio"]] = emax / emin
+    if family == "tri":
+        e1, e2 = c[1] - c[0], c[2] - c[0]
+        f2 = e1 * -_S3 + e2 * (2.0 * _S3)
+        m11, m22, m12 = e1 @ e1, f2 @ f2, e1 @ f2
+        det = m11 * m22 - m12 * m12
+        if det > 0.0 and np.isfinite(det):
+            m[_M["quality:condition"]] = (m11 + m22) / (2.0 * np.sqrt(det))
+            m[_M["quality:shape"]] = 2.0 * np.sqrt(det) / (m11 + m22)
+    elif family == "quad":
+        cond, ok = 0.0, True
+        for k in range(4):
+            a, b = c[(k + 1) % 4] - c[k], c[(k + 3) % 4] - c[k]
+            area = _norm(np.cross(a, b))
+            if not area > 0.0:
+                ok = False
+                break
+            cond = max(cond, float(a @ a + b @ b) / (2.0 * area))
+        if ok:
+            m[_M["quality:condition"]] = cond
+        d = max(_norm(c[2] - c[0]), _norm(c[3] - c[1]))
+        if d > 0.0:
+            m[_M["quality:stretch"]] = np.sqrt(2.0) * emin / d
+        x1 = (c[1] - c[0]) + (c[2] - c[3])
+        x2 = (c[3] - c[0]) + (c[2] - c[1])
+        x12 = (c[0] - c[1]) + (c[2] - c[3])
+        den = min(_norm(x1), _norm(x2))
+        if den > 0.0:
+            m[_M["quality:taper"]] = _norm(x12) / den
+    elif family == "tetra":
+        e1, e2, e3 = c[1] - c[0], c[2] - c[0], c[3] - c[0]
+        f2 = e1 * -_S3 + e2 * (2.0 * _S3)
+        f3 = e1 * -_S6 + e2 * -_S6 + e3 * (3.0 * _S6)
+        m[_M["quality:condition"]] = _cond3(e1, f2, f3)
+        det = _det3(e1, f2, f3)
+        if det == 0.0 or not np.isfinite(det):
+            pass
+        elif det < 0.0:
+            m[_M["quality:shape"]] = 0.0
+        else:
+            fn2 = e1 @ e1 + f2 @ f2 + f3 @ f3
+            m[_M["quality:shape"]] = 3.0 * np.cbrt(det * det) / fn2
+        vol = abs(_det3(e1, e2, e3)) / 6.0
+        sum2 = sum(
+            float((c[b] - c[a]) @ (c[b] - c[a]))
+            for a in range(4)
+            for b in range(a + 1, 4)
+        )
+        srms = np.sqrt(sum2 / 6.0)
+        if vol > 0.0:
+            m[_M["quality:aspect_gamma"]] = (
+                srms * srms * srms / (6.0 * np.sqrt(2.0) * vol)
+            )
+    elif family == "hex":
+        cond, ok = 0.0, True
+        for q in _HEX_CORNER:
+            cc = _cond3(c[q[1]] - c[q[0]], c[q[2]] - c[q[0]], c[q[3]] - c[q[0]])
+            if not np.isfinite(cc):
+                ok = False
+                break
+            cond = max(cond, cc)
+        if ok:
+            m[_M["quality:condition"]] = cond
+        d = [
+            _norm(c[0] - c[6]),
+            _norm(c[1] - c[7]),
+            _norm(c[2] - c[4]),
+            _norm(c[3] - c[5]),
+        ]
+        if max(d) > 0.0:
+            m[_M["quality:diagonal_ratio"]] = min(d) / max(d)
+            m[_M["quality:stretch"]] = np.sqrt(3.0) * emin / max(d)
+
+
 def _eval_cell(family, cell_type, c, is2d, m):
     if family == "tri":
         _tri(c, is2d, m)
@@ -353,6 +496,8 @@ def _eval_cell(family, cell_type, c, is2d, m):
         _wedge(c, _CELL_FACES[cell_type], m)
     elif family == "pyramid":
         _pyramid(c, _CELL_FACES[cell_type], m)
+    if family is not None:
+        _cell_measures(family, c, m)
 
 
 def _compute_quality_py(mesh) -> dict:

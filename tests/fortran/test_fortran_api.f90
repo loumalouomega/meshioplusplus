@@ -874,7 +874,7 @@ program test_fortran_api
         call d%free()
 
         ierr = 0
-        d = m%data_calc('log(temperature)', 'bad', stat=ierr, errmsg=msg)
+        d = m%data_calc('foo(temperature)', 'bad', stat=ierr, errmsg=msg)
         call check(ierr /= 0, 'data_calc rejects an unknown function')
         call check(len(msg) > 0, 'data_calc failure sets errmsg')
 

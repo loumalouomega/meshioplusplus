@@ -230,6 +230,7 @@ from .. import (
     spherical_shell,
     split,
     split_interface,
+    streamlines,
     subdivide,
     subsample_points,
     surface_watertight_check,
@@ -1082,6 +1083,38 @@ def tool_data_integrate(input_path, file_format=None, arrays=None):
     per named Cell region."""
     mesh = _load(input_path, file_format, readonly=True)
     return _json_safe({"arrays": data_integrate(mesh, arrays=arrays)})
+
+
+def tool_data_statistics(
+    input_path,
+    file_format=None,
+    arrays=None,
+    location="point",
+    per_region=True,
+    quantiles=None,
+    bins=0,
+    ddof=0,
+    weighted=False,
+):
+    """Variance, std, sum, quantiles and histograms of data arrays, whole mesh
+    and per named region."""
+    from .. import data_statistics
+
+    mesh = _load(input_path, file_format, readonly=True)
+    return _json_safe(
+        {
+            "arrays": data_statistics(
+                mesh,
+                arrays=arrays,
+                location=location,
+                per_region=per_region,
+                quantiles=(0.05, 0.5, 0.95) if quantiles is None else quantiles,
+                bins=bins,
+                ddof=ddof,
+                weighted=weighted,
+            )
+        }
+    )
 
 
 def tool_regions(input_path, file_format=None):
@@ -4971,6 +5004,174 @@ def tool_delaunay_2d(input_path, output_path, input_format=None, output_format=N
     )
 
 
+def tool_sequence_statistics(
+    output_path,
+    input_pattern=None,
+    input_paths=None,
+    arrays=None,
+    stats=None,
+    location="point",
+    ddof=0,
+    time_from="auto",
+    input_format=None,
+    output_format=None,
+):
+    """Per-point or per-cell statistics (mean, std, min, max, sum) of data
+    arrays over the steps of a sequence; writes one mesh with <array>:<stat>."""
+    from .. import sequence_statistics
+
+    resolved_in, resolved_out = _resolve_sequence_io(
+        input_pattern, input_paths, output_path
+    )
+    out, report = sequence_statistics(
+        resolved_in,
+        list(arrays) if arrays else None,
+        tuple(stats) if stats else ("mean", "std"),
+        location=location,
+        ddof=ddof,
+        file_format=input_format,
+        time_from=time_from,
+        return_report=True,
+    )
+    write(resolved_out, out, file_format=output_format)
+    _cache_invalidate(resolved_out)
+    return _result(
+        resolved_out,
+        out,
+        num_steps=int(report["num_steps"]),
+        first_time=float(report["first_time"]),
+        last_time=float(report["last_time"]),
+        arrays=list(report["arrays"]),
+    )
+
+
+def tool_sequence_derivative(
+    output_path,
+    array,
+    input_pattern=None,
+    input_paths=None,
+    location="point",
+    scheme="central",
+    output_name=None,
+    time_from="auto",
+    input_format=None,
+):
+    """The time derivative of an array over a sequence (central or forward
+    difference from the step times); writes a sequence with <array>:dt."""
+    from .. import sequence_derivative
+    from .._sequence import write_sequence
+
+    resolved_in, resolved_out = _resolve_sequence_io(
+        input_pattern, input_paths, output_path
+    )
+    steps = sequence_derivative(
+        resolved_in,
+        array,
+        location=location,
+        scheme=scheme,
+        output=output_name,
+        file_format=input_format,
+        time_from=time_from,
+    )
+    written = write_sequence(resolved_out, steps)
+    return {"output_path": resolved_out, "num_steps": len(written), "files": written}
+
+
+def tool_streamlines(
+    input_path,
+    output_path,
+    array,
+    seeds=40,
+    seed_points=None,
+    direction="both",
+    integrator="rk4",
+    step=0.0,
+    max_length=0.5,
+    max_steps=0,
+    terminal_speed=0.0,
+    tolerance=1e-6,
+    input_format=None,
+    output_format=None,
+):
+    """Streamlines of a point vector field, as a mesh of line segments; writes
+    point_data IntegrationTime, Speed, SeedId and the field."""
+    mesh = _load(input_path, input_format)
+    out, report = streamlines(
+        mesh,
+        array,
+        seeds=seeds,
+        seed_points=seed_points,
+        direction=direction,
+        integrator=integrator,
+        step=step,
+        max_length=max_length,
+        max_steps=max_steps,
+        terminal_speed=terminal_speed,
+        tolerance=tolerance,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_lines=int(report["num_lines"]),
+        num_seeds_outside=int(report["num_seeds_outside"]),
+        dim=int(report["dim"]),
+    )
+
+
+def tool_mesh_operator(input_path, output_path, kind="laplacian", file_format=None):
+    """Export a P1 operator of a triangle surface (laplacian, mass_lumped,
+    mass_consistent, gradient) as a sparse matrix in an .npz file."""
+    from .._mesh_operator import mesh_operator
+
+    mesh = _load(input_path, file_format, readonly=True)
+    (indptr, indices, values, shape), report = mesh_operator(
+        mesh, kind, sparse=False, return_report=True
+    )
+    resolved_out = _resolve(output_path, for_write=True)
+    np.savez(
+        resolved_out,
+        indptr=indptr,
+        indices=indices,
+        values=values,
+        shape=np.asarray(shape),
+    )
+    return _json_safe(
+        {
+            "output": str(resolved_out),
+            "kind": kind,
+            "shape": list(shape),
+            "nnz": int(len(values)),
+            "num_degenerate": report["num_degenerate"],
+        }
+    )
+
+
+def tool_smooth_field(
+    input_path,
+    output_path,
+    array,
+    length,
+    output_name=None,
+    input_format=None,
+    output_format=None,
+):
+    """Smooth a point array over a triangle surface on a length scale
+    (screened Poisson); writes <array>:smooth."""
+    from .._smooth_field import smooth_field
+
+    mesh = _load(input_path, input_format)
+    out, report = smooth_field(
+        mesh, array, length, output=output_name, return_report=True
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        iterations=int(report["iterations"]),
+        num_degenerate=int(report["num_degenerate"]),
+    )
+
+
 def tool_geodesic_distance(
     input_path,
     output_path,
@@ -7822,6 +8023,22 @@ TOOL_REGISTRY = OrderedDict(
             "data_integrate",
             {"fn": tool_data_integrate, "wraps": ("data_integrate",), "gated": None},
         ),
+        (
+            "data_statistics",
+            {
+                "fn": tool_data_statistics,
+                "wraps": ("data_statistics",),
+                "gated": None,
+            },
+        ),
+        (
+            "smooth_field",
+            {"fn": tool_smooth_field, "wraps": ("smooth_field",), "gated": None},
+        ),
+        (
+            "mesh_operator",
+            {"fn": tool_mesh_operator, "wraps": ("mesh_operator",), "gated": None},
+        ),
         ("regions", {"fn": tool_regions, "wraps": (), "gated": None}),
         (
             "bandwidth",
@@ -8210,6 +8427,30 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_geodesic_distance,
                 "wraps": ("geodesic_distance",),
+                "gated": None,
+            },
+        ),
+        (
+            "streamlines",
+            {
+                "fn": tool_streamlines,
+                "wraps": ("streamlines",),
+                "gated": None,
+            },
+        ),
+        (
+            "sequence_statistics",
+            {
+                "fn": tool_sequence_statistics,
+                "wraps": ("sequence_statistics",),
+                "gated": None,
+            },
+        ),
+        (
+            "sequence_derivative",
+            {
+                "fn": tool_sequence_derivative,
+                "wraps": ("sequence_derivative",),
                 "gated": None,
             },
         ),

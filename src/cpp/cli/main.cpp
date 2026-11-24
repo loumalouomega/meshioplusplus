@@ -167,6 +167,7 @@
 #include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/periodic.hpp"
 #include "meshioplusplus/operations/quality_gate.hpp"
@@ -4850,6 +4851,99 @@ int cmd_geodesic(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+// streamlines: lines along a point vector field, as a mesh of segments. See
+// operations/streamlines.hpp and doc/streamlines.md.
+int cmd_streamlines(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"array", {}, true},
+                                          {"seeds", {}, true},
+                                          {"seed-points", {}, true},
+                                          {"direction", {}, true},
+                                          {"integrator", {}, true},
+                                          {"step", {}, true},
+                                          {"max-length", {}, true},
+                                          {"max-steps", {}, true},
+                                          {"terminal-speed", {}, true},
+                                          {"tolerance", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("streamlines requires INFILE OUTFILE");
+    if (!has_opt(p, "array"))
+        throw std::runtime_error("streamlines requires --array NAME");
+    meshioplusplus::StreamlinesOptions o;
+    o.mArray = opt_value(p, "array");
+    cli_opt_int64(p, "seeds", o.mSeeds);
+    if (has_opt(p, "seed-points")) {
+        // "x,y,z;x,y,z": one seed per semicolon-separated triple.
+        const std::string text = opt_value(p, "seed-points");
+        std::size_t at = 0;
+        while (at <= text.size()) {
+            const std::size_t semi = std::min(text.find(';', at), text.size());
+            const std::string triple = text.substr(at, semi - at);
+            at = semi + 1;
+            if (triple.find_first_not_of(" \t") == std::string::npos)
+                continue;
+            std::size_t from = 0;
+            std::vector<double> v;
+            while (from <= triple.size()) {
+                const std::size_t comma = std::min(triple.find(',', from), triple.size());
+                try {
+                    v.push_back(meshioplusplus::detail::stod_c(triple.substr(from, comma - from)));
+                } catch (const std::exception&) {
+                    throw std::runtime_error("streamlines: --seed-points expects x,y,z;x,y,z");
+                }
+                from = comma + 1;
+            }
+            if (v.size() == 2)
+                v.push_back(0.0);
+            if (v.size() != 3)
+                throw std::runtime_error("streamlines: --seed-points expects x,y,z;x,y,z");
+            o.mSeedPoints.insert(o.mSeedPoints.end(), v.begin(), v.end());
+        }
+    }
+    const std::string direction = opt_value(p, "direction", "both");
+    if (direction == "both")
+        o.mDirection = meshioplusplus::StreamlineDirection::Both;
+    else if (direction == "forward")
+        o.mDirection = meshioplusplus::StreamlineDirection::Forward;
+    else if (direction == "backward")
+        o.mDirection = meshioplusplus::StreamlineDirection::Backward;
+    else
+        throw std::runtime_error("streamlines: --direction is both, forward or backward");
+    const std::string integrator = opt_value(p, "integrator", "rk4");
+    if (integrator == "rk4")
+        o.mIntegrator = meshioplusplus::StreamlineIntegrator::RK4;
+    else if (integrator == "rk45")
+        o.mIntegrator = meshioplusplus::StreamlineIntegrator::RK45;
+    else
+        throw std::runtime_error("streamlines: --integrator is rk4 or rk45");
+    cli_opt_double(p, "step", o.mStep);
+    cli_opt_double(p, "max-length", o.mMaxLength);
+    cli_opt_int64(p, "max-steps", o.mMaxSteps);
+    cli_opt_double(p, "terminal-speed", o.mTerminalSpeed);
+    cli_opt_double(p, "tolerance", o.mTolerance);
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::StreamlinesResult r = meshioplusplus::streamlines(mesh, o);
+    const std::int64_t num_points = static_cast<std::int64_t>(r.mMesh.NumPoints());
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_lines", r.mNumLines);
+        json.Field("num_points", num_points);
+        json.Field("num_seeds_outside", r.mNumSeedsOutside);
+        json.Field("dim", static_cast<std::int64_t>(r.mDim));
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "traced " << r.mNumLines << " streamline(s), " << num_points << " point(s)";
+    if (r.mNumSeedsOutside > 0)
+        std::cout << ", " << r.mNumSeedsOutside << " seed(s) outside the mesh";
+    std::cout << "\n";
+    return 0;
+}
+
 // parameterize: a UV atlas of a triangle surface. See operations/parameterize.hpp
 // and doc/parameterize.md.
 // bake-texture: a point or cell array baked into a texture through uv. See
@@ -4891,8 +4985,8 @@ int cmd_bake_texture(const std::vector<std::string>& rArgs) {
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
     if (has_opt(p, "image")) {
         const meshioplusplus::NDArray& png = r.mMesh.FieldData("texture:png");
-        auto os = meshioplusplus::detail::make_classic_ofstream(opt_value(p, "image"),
-                                                                std::ios::binary);
+        auto os =
+            meshioplusplus::detail::make_classic_ofstream(opt_value(p, "image"), std::ios::binary);
         if (!os)
             throw std::runtime_error("cannot write " + opt_value(p, "image"));
         os.write(reinterpret_cast<const char*>(png.Data()),
@@ -6926,8 +7020,8 @@ int cmd_octree_mesh(const std::vector<std::string>& rArgs) {
     o.mAdapt.mMaxIterations =
         static_cast<int>(integer("adapt-max-iterations", o.mAdapt.mMaxIterations));
     o.mAdapt.mPreserveBoundary = has_flag(p, "adapt-preserve-boundary");
-    o.mAdapt.mBoundarySizing = mio::adapt_volume_boundary_sizing_from_name(
-        opt_value(p, "adapt-boundary-sizing", "input"));
+    o.mAdapt.mBoundarySizing =
+        mio::adapt_volume_boundary_sizing_from_name(opt_value(p, "adapt-boundary-sizing", "input"));
 
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     mio::OctreeMeshResult r = mio::octree_mesh(mesh, o);
@@ -9646,11 +9740,7 @@ int cmd_data_gradient(const std::vector<std::string>& rArgs) {
     if (!has_flag(p, "quiet")) {
         const std::string name =
             opts.mOutputName.empty()
-                ? opts.mArrayName + std::string(opt_value(p, "op", "gradient") == "divergence"
-                                                    ? meshioplusplus::kDivergenceSuffix
-                                                    : (opt_value(p, "op", "gradient") == "curl"
-                                                           ? meshioplusplus::kCurlSuffix
-                                                           : meshioplusplus::kGradientSuffix))
+                ? opts.mArrayName + meshioplusplus::gradient_suffix(opts.mOperator)
                 : opts.mOutputName;
         std::cout << "wrote " << meshioplusplus::data_location_name(opts.mLocation) << " '" << name
                   << "' (" << opt_value(p, "method", "green-gauss") << ")\n";
@@ -9997,7 +10087,8 @@ void print_data_usage(std::ostream& rOut) {
             "  clamp       Clamp values into [--min, --max]\n"
             "  normalize   Rescale to --to LO,HI (or --zero-mean)\n"
             "  gradient    Differentiate a point_data field (--array NAME --op "
-            "gradient|divergence|curl)\n"
+            "gradient|divergence|curl|vorticity_magnitude|q_criterion|lambda2|strain_rate|"
+            "green_lagrange|helicity)\n"
             "  hessian     Second derivative of a scalar point_data field "
             "(--array NAME), gradient's companion one order further\n"
             "  integrate   Cell-measure-weighted total/mean of a cell_data field, "
@@ -10515,6 +10606,9 @@ const CliVerb kCliVerbs[] = {
     {"geodesic", nullptr,
      "  geodesic                Surface distance from source points (heat method)\n",
      &cmd_geodesic},
+    {"streamlines", nullptr,
+     "  streamlines             Lines along a point vector field, as a mesh of segments\n",
+     &cmd_streamlines},
     {"bake-texture", nullptr,
      "  bake-texture            Bake a point or cell array into a texture through uv\n",
      &cmd_bake_texture},

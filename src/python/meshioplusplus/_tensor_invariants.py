@@ -31,7 +31,16 @@ import numpy as np
 from ._data_common import location_map, normalize_location, num_components, require_key
 from ._fallback import core_op_declined
 
+#: What an unqualified call computes: the four original invariants.
 _ALL_OUTPUTS = ("mises", "principal", "hydrostatic", "deviatoric")
+#: Every accepted name; the algebraic ones read the tensor as given and are opt-in.
+_VALID_OUTPUTS = _ALL_OUTPUTS + (
+    "trace",
+    "determinant",
+    "invariants",
+    "inverse",
+    "eigenvectors",
+)
 
 
 def _symmetric6(flat, ncomp):
@@ -43,6 +52,107 @@ def _symmetric6(flat, ncomp):
     return np.stack(
         [xx, yy, zz, 0.5 * (xy + yx), 0.5 * (yz + zy), 0.5 * (xz + zx)], axis=1
     )
+
+
+def _matrix9(flat, ncomp):
+    """Rows as the nine entries of the row-major 3x3, as given (not symmetrised)."""
+    if ncomp == 9:
+        return [flat[:, k] for k in range(9)]
+    xx, yy, zz, xy, yz, xz = (flat[:, k] for k in range(6))
+    return [xx, xy, xz, xy, yy, yz, xz, yz, zz]
+
+
+def _finite_rows(flat):
+    return np.isfinite(flat).all(axis=1)
+
+
+def _det9(m):
+    """The triple product of the rows, in the arithmetic order of the core."""
+    return (
+        m[0] * (m[4] * m[8] - m[5] * m[7])
+        + m[1] * (m[5] * m[6] - m[3] * m[8])
+        + m[2] * (m[3] * m[7] - m[4] * m[6])
+    )
+
+
+def _trace(flat, ncomp):
+    m = _matrix9(flat, ncomp)
+    return np.where(_finite_rows(flat), m[0] + m[4] + m[8], np.nan)
+
+
+def _determinant(flat, ncomp):
+    m = _matrix9(flat, ncomp)
+    return np.where(_finite_rows(flat), _det9(m), np.nan)
+
+
+def _invariants(flat, ncomp):
+    m = _matrix9(flat, ncomp)
+    i1 = m[0] + m[4] + m[8]
+    i2 = (
+        (m[0] * m[4] - m[1] * m[3])
+        + (m[4] * m[8] - m[5] * m[7])
+        + (m[0] * m[8] - m[2] * m[6])
+    )
+    out = np.stack([i1, i2, _det9(m)], axis=1)
+    return np.where(_finite_rows(flat)[:, None], out, np.nan)
+
+
+def _inverse(flat, ncomp):
+    """``adj(A) / det(A)`` in the input's width; NaN for a zero determinant."""
+    m = _matrix9(flat, ncomp)
+    det = np.where(_finite_rows(flat), _det9(m), np.nan)
+    bad = ~np.isfinite(det) | (det == 0.0)
+    safe = np.where(bad, 1.0, det)
+    inv = [
+        (m[4] * m[8] - m[5] * m[7]) / safe,
+        (m[2] * m[7] - m[1] * m[8]) / safe,
+        (m[1] * m[5] - m[2] * m[4]) / safe,
+        (m[5] * m[6] - m[3] * m[8]) / safe,
+        (m[0] * m[8] - m[2] * m[6]) / safe,
+        (m[2] * m[3] - m[0] * m[5]) / safe,
+        (m[3] * m[7] - m[4] * m[6]) / safe,
+        (m[1] * m[6] - m[0] * m[7]) / safe,
+        (m[0] * m[4] - m[1] * m[3]) / safe,
+    ]
+    if ncomp == 6:
+        cols = [inv[0], inv[4], inv[8], inv[1], inv[5], inv[2]]
+    else:
+        cols = inv
+    out = np.stack(cols, axis=1)
+    return np.where(bad[:, None], np.nan, out)
+
+
+_ALGEBRAIC = {
+    "trace": _trace,
+    "determinant": _determinant,
+    "invariants": _invariants,
+    "inverse": _inverse,
+}
+
+
+def _eigenvectors(sym6):
+    """Unit eigenvectors of the symmetric tensors, as the row-major 3x3 whose column
+    ``k`` belongs to the k-th ascending eigenvalue (nine components per row).
+
+    The sign of each vector is fixed as in ``detail::sym3_eigen``: its first
+    component of magnitude above ``1e-8`` is positive.
+    """
+    out = np.full((len(sym6), 9), np.nan)
+    ok = np.isfinite(sym6).all(axis=1)
+    if ok.any():
+        s = sym6[ok]
+        m = np.empty((len(s), 3, 3))
+        m[:, 0, 0], m[:, 1, 1], m[:, 2, 2] = s[:, 0], s[:, 1], s[:, 2]
+        m[:, 0, 1] = m[:, 1, 0] = s[:, 3]
+        m[:, 1, 2] = m[:, 2, 1] = s[:, 4]
+        m[:, 0, 2] = m[:, 2, 0] = s[:, 5]
+        _values, vec = np.linalg.eigh(m)  # columns are the eigenvectors
+        big = np.abs(vec) > 1e-8
+        first = np.argmax(big, axis=1)  # (n, 3): first big component per column
+        lead = np.take_along_axis(vec, first[:, None, :], axis=1)[:, 0, :]
+        flip = np.where(big.any(axis=1) & (lead < 0.0), -1.0, 1.0)
+        out[ok] = (vec * flip[:, None, :]).reshape(len(s), 9)
+    return out
 
 
 def _mises(sym6):
@@ -104,10 +214,10 @@ def _tensor_invariants_py(mesh, location, names, outputs, prefix, suffix, overwr
     source = location_map(mesh, loc)
     outs = list(outputs) if outputs else list(_ALL_OUTPUTS)
     for o in outs:
-        if o not in _ALL_OUTPUTS:
+        if o not in _VALID_OUTPUTS:
             raise ValueError(
                 f"meshio++: unknown tensor invariant '{o}' (expected one of "
-                f"{', '.join(_ALL_OUTPUTS)})"
+                f"{', '.join(_VALID_OUTPUTS)})"
             )
 
     if names:
@@ -163,12 +273,20 @@ def _tensor_invariants_py(mesh, location, names, outputs, prefix, suffix, overwr
                     per_output["mises"].append(_mises(sym6))
                 if "principal" in outs:
                     per_output["principal"].append(_principal(sym6))
+                if "eigenvectors" in outs:
+                    per_output["eigenvectors"].append(_eigenvectors(sym6))
                 if "hydrostatic" in outs:
                     per_output["hydrostatic"].append(hydro)
                 if "deviatoric" in outs:
                     per_output["deviatoric"].append(
                         _deviatoric(flat, ncomp, hydro).reshape(np.asarray(b).shape)
                     )
+                for o in outs:
+                    if o in _ALGEBRAIC:
+                        value = _ALGEBRAIC[o](flat, ncomp)
+                        if o == "inverse":
+                            value = value.reshape(np.asarray(b).shape)
+                        per_output[o].append(value)
             for o in outs:
                 _store(base + f"_{o}" + suffix, "cell_data", per_output[o])
             continue
@@ -181,6 +299,8 @@ def _tensor_invariants_py(mesh, location, names, outputs, prefix, suffix, overwr
             _store(base + "_mises" + suffix, loc, _mises(sym6))
         if "principal" in outs:
             _store(base + "_principal" + suffix, loc, _principal(sym6))
+        if "eigenvectors" in outs:
+            _store(base + "_eigenvectors" + suffix, loc, _eigenvectors(sym6))
         hydro = None
         if "hydrostatic" in outs or "deviatoric" in outs:
             hydro = _hydrostatic(flat, ncomp)
@@ -192,6 +312,12 @@ def _tensor_invariants_py(mesh, location, names, outputs, prefix, suffix, overwr
                 loc,
                 _deviatoric(flat, ncomp, hydro).reshape(arr.shape),
             )
+        for o in outs:
+            if o in _ALGEBRAIC:
+                value = _ALGEBRAIC[o](flat, ncomp)
+                if o == "inverse":
+                    value = value.reshape(arr.shape)
+                _store(base + f"_{o}" + suffix, loc, value)
     return out
 
 
@@ -204,7 +330,7 @@ def tensor_invariants(
     suffix: str = "",
     overwrite: bool = True,
 ):
-    """Compute von Mises / principal / hydrostatic / deviatoric fields.
+    """Compute von Mises / principal / hydrostatic / deviatoric (and algebraic) fields.
 
     Args:
         mesh: the source mesh (unmodified).
@@ -212,7 +338,13 @@ def tensor_invariants(
         keys: names to process; ``None`` means every 6- or 9-component array
             at ``location``.
         outputs: any of ``"mises"``, ``"principal"``, ``"hydrostatic"``,
-            ``"deviatoric"``; ``None`` means all four.
+            ``"deviatoric"``, ``"trace"``, ``"determinant"``, ``"invariants"``
+            (``I1, I2, I3``, three components), ``"inverse"`` (the input's
+            width; NaN where the determinant is zero) and ``"eigenvectors"``
+            (nine components, the row-major 3x3 whose column ``k`` is the unit
+            eigenvector of the k-th ascending ``principal`` value); ``None``
+            means the first four. The algebraic ones read the tensor as given: a 9-component input is
+            not symmetrised, unlike ``mises``, ``principal`` and ``eigenvectors``.
         prefix: prepended to every output array's name.
         suffix: appended after the invariant's own name segment.
         overwrite: throw instead of silently overwriting an existing array of

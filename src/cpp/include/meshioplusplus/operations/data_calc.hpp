@@ -35,7 +35,24 @@
  * @endcode
  *
  * Functions: `abs(x)`, `sqrt(x)`, `min(a,b)`, `max(a,b)`, and `norm(v)` for the
- * Euclidean magnitude of a vector. Exponentiation is deliberately absent.
+ * Euclidean magnitude of a vector, then the elementwise math functions `exp`,
+ * `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`,
+ * `tanh`, `floor`, `ceil`, `sign` (all width-preserving) and `atan2(y,x)`,
+ * `pow(a,b)` (scalar-broadcasting, like `min`), then the tuple functions that read
+ * a whole row: `dot(a,b)` (equal widths, a scalar), `cross(a,b)` (3-component
+ * operands), `det(t)` and `trace(t)` (a 6-component symmetric `xx yy zz xy yz zx`
+ * or 9-component row-major 3x3 tensor, a scalar), `transpose(t)` (9 components)
+ * `mag(v)` (an alias of `norm`), `matmul(a,b)` (a 3x3 by a 3x3 or by a 3-vector),
+ * `outer(a,b)` (two 3-vectors to a 3x3) and `inv(t)` (the inverse of a 6- or
+ * 9-component tensor, in its own width; NaN where the determinant is zero).
+ *
+ * The mesh-aware calls read the mesh, not just the arrays: `grad(a)`, `div(a)`
+ * and `curl(a)` differentiate a point_data array by name (`gradient`'s defaults,
+ * at the expression's location; not nested), and `area()`, `volume()` and
+ * `size()` are the unsigned measure of every cell (the cell location only;
+ * `area` is NaN outside 2-D cells and `volume` outside 3-D ones). Exponentiation is a function,
+ * `pow`, not an operator, so the grammar's precedence is unchanged; a domain
+ * error (`log(-1)`, `asin(2)`) is a NaN, as division by zero is an infinity.
  *
  * Identifiers may contain `:` and `.` after their first character, so a mesh's
  * own conventional names (`gmsh:physical`, `quality:scaled_jacobian`) can be

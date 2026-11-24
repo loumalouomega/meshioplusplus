@@ -238,6 +238,9 @@ export default defineConfig({
         items: [
           { text: "Settings pipeline", link: "/pipeline" },
           { text: "Sequences (transient)", link: "/sequences" },
+          { text: "Statistics over time", link: "/sequence_stats" },
+          { text: "Statistics per region", link: "/data_statistics" },
+          { text: "Mesh operators", link: "/mesh_operator" },
           { text: "CLI reference", link: "/cli" },
           { text: "MCP server", link: "/mcp" },
           { text: "Interactive viewer", link: "/viewer" },
@@ -289,6 +292,7 @@ export default defineConfig({
           { text: "Mesh morphing", link: "/morph" },
           { text: "Untangling", link: "/untangle" },
           { text: "Geodesic distance (heat method)", link: "/geodesic" },
+          { text: "Streamlines", link: "/streamlines" },
           { text: "UV parameterization", link: "/parameterize" },
           { text: "Baking a texture", link: "/bake_texture" },
           { text: "Laplacian eigenmodes", link: "/eigenmodes" },

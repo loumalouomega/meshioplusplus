@@ -147,6 +147,8 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
+#include "meshioplusplus/operations/mesh_operator.hpp"
+#include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/metric.hpp"
@@ -846,6 +848,8 @@ MIO_ABI_LAYOUT(meshioplusplus::PolyToTetOptions, 1, 1);
 MIO_ABI_LAYOUT(meshioplusplus::GraphSummary, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::Adjacency, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GeodesicOptions, 80, 8);
+MIO_ABI_LAYOUT(meshioplusplus::StreamlinesOptions, 112, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshOperatorOptions, 4, 4);
 MIO_ABI_LAYOUT(meshioplusplus::CoordinateOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ConvexHullOptions, 4, 4);
 MIO_ABI_LAYOUT(meshioplusplus::PointNormalsOptions, 48, 8);

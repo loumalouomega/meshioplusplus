@@ -140,8 +140,8 @@ def _region_dict(name, num_cells, num_skipped, total, domain_measure, mean, num_
     }
 
 
-def _data_integrate_py(mesh, names):
-    """Pure-numpy reference implementation of :func:`data_integrate`."""
+def _integrate_plain(mesh, names):
+    """The reduction of ``cell_data`` arrays by name, with no mode prefixes."""
     selected = list(names) if names else sorted(mesh.cell_data.keys())
     for name in selected:
         if name not in mesh.cell_data:
@@ -238,6 +238,122 @@ def _data_integrate_py(mesh, names):
                 "regions": regions,
             }
         )
+    return out
+
+
+def _parse_mode(mesh, name):
+    """``(boundary, point, flux, base)``: a mode prefix on an array name.
+
+    A ``cell_data`` array of exactly this name wins, so no existing name changes
+    meaning; see the C++ ``dint_parse``.
+    """
+    if name in mesh.cell_data:
+        return (False, False, False, name)
+    s, boundary, point, flux = name, False, False, False
+    if s.startswith("boundary:"):
+        boundary, s = True, s[len("boundary:") :]
+    if s.startswith("point:"):
+        point, s = True, s[len("point:") :]
+    elif s.startswith("flux:"):
+        flux, s = True, s[len("flux:") :]
+    if not (boundary or point or flux):
+        return (False, False, False, name)
+    if boundary and not (point or flux):
+        raise ValueError(
+            "meshio++: data_integrate: 'boundary:' needs 'point:' or 'flux:' after it "
+            "(the boundary surface carries no cell_data)"
+        )
+    return (boundary, point, flux, s)
+
+
+def _data_integrate_py(mesh, names):
+    """Pure-numpy reference implementation of :func:`data_integrate`."""
+    names = list(names) if names else []
+    modes = [_parse_mode(mesh, n) for n in names]
+    if not any(m[0] or m[1] or m[2] for m in modes):
+        return _integrate_plain(mesh, names)
+
+    from ._data_average import point_data_to_cell_data
+    from ._normals import compute_normals
+    from ._surface import _has_surface_extractable_cells, extract_surface
+
+    plain = mesh.copy()
+    bound = None
+    temp = {}
+    for i, (boundary, point, flux, base) in enumerate(modes):
+        if not (boundary or point or flux):
+            continue
+        t = f"\x01integrate{i}"
+        temp[i] = t
+        if boundary:
+            if bound is None:
+                if not _has_surface_extractable_cells(mesh):
+                    raise ValueError(
+                        "meshio++: data_integrate: 'boundary:' needs a mesh with "
+                        "cells extract_surface can take"
+                    )
+                bound = extract_surface(mesh)
+            wk = bound
+        else:
+            wk = plain
+        as_point = base in wk.point_data
+        as_cell = (not point) and base in wk.cell_data
+        if point and not as_point:
+            raise ValueError(
+                f"meshio++: data_integrate: 'point:{base}' names no point_data array"
+            )
+        if not as_point and not as_cell:
+            raise ValueError(
+                f"meshio++: data_integrate: no array named {base!r} to integrate"
+            )
+        src = base
+        if not (as_cell and not point):
+            prefix = f"\x01u{i}:"
+            averaged = point_data_to_cell_data(wk, keys=[base], prefix=prefix)
+            wk.cell_data.update({prefix + base: averaged.cell_data[prefix + base]})
+            src = prefix + base
+        if not flux:
+            wk.cell_data[t] = [np.asarray(b) for b in wk.cell_data[src]]
+            continue
+        try:
+            nr = compute_normals(wk, point_normals=False, cell_normals=True)
+        except Exception as exc:  # the same refusal the core words as "a surface mesh"
+            raise ValueError(
+                f"meshio++: data_integrate: flux needs a surface mesh: {exc}"
+            ) from exc
+        dens = []
+        for ub, nb in zip(wk.cell_data[src], nr.cell_data["normals"]):
+            u = np.asarray(ub, dtype=float)
+            if u.ndim != 2 or u.shape[1] != 3:
+                raise ValueError(
+                    f"meshio++: data_integrate: flux:{base} needs a 3-component array "
+                    f"(got {1 if u.ndim == 1 else u.shape[1]})"
+                )
+            dens.append((u * np.asarray(nb, dtype=float)).sum(axis=1))
+        wk.cell_data[t] = dens
+
+    plain_names, bound_names = [], []
+    for i, m in enumerate(modes):
+        if not (m[0] or m[1] or m[2]):
+            plain_names.append(names[i])
+        elif m[0]:
+            bound_names.append(temp[i])
+        else:
+            plain_names.append(temp[i])
+    pr = _integrate_plain(plain, plain_names)
+    br = _integrate_plain(bound, bound_names) if bound_names else []
+    pi = bi = 0
+    out = []
+    for i, m in enumerate(modes):
+        if (m[0] or m[1] or m[2]) and m[0]:
+            arr = br[bi]
+            bi += 1
+        else:
+            arr = pr[pi]
+            pi += 1
+        arr = dict(arr)
+        arr["name"] = names[i]
+        out.append(arr)
     return out
 
 

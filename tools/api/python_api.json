@@ -4270,6 +4270,52 @@
     ]
    }
   },
+  "data_statistics": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "arrays"
+     },
+     {
+      "default": "'point'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "per_region"
+     },
+     {
+      "default": "(0.05, 0.5, 0.95)",
+      "kind": "KEYWORD_ONLY",
+      "name": "quantiles"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "bins"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "ddof"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "weighted"
+     }
+    ]
+   }
+  },
   "decimate": {
    "kind": "function",
    "signature": {
@@ -7147,6 +7193,32 @@
      {
       "kind": "VAR_KEYWORD",
       "name": "options"
+     }
+    ]
+   }
+  },
+  "mesh_operator": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'laplacian'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "kind"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "sparse"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
      }
     ]
    }
@@ -10048,6 +10120,60 @@
     ]
    }
   },
+  "sequence_derivative": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "source"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "default": "'point'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
+     },
+     {
+      "default": "'central'",
+      "kind": "KEYWORD_ONLY",
+      "name": "scheme"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "output"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "file_format"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "times"
+     },
+     {
+      "default": "'auto'",
+      "kind": "KEYWORD_ONLY",
+      "name": "time_from"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "sort"
+     },
+     {
+      "kind": "VAR_KEYWORD",
+      "name": "read_kwargs"
+     }
+    ]
+   }
+  },
   "sequence_entries": {
    "kind": "function",
    "signature": {
@@ -10075,6 +10201,66 @@
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "sort"
+     }
+    ]
+   }
+  },
+  "sequence_statistics": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "source"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "arrays"
+     },
+     {
+      "default": "('mean', 'std')",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "stats"
+     },
+     {
+      "default": "'point'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "ddof"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "file_format"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "times"
+     },
+     {
+      "default": "'auto'",
+      "kind": "KEYWORD_ONLY",
+      "name": "time_from"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "sort"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     },
+     {
+      "kind": "VAR_KEYWORD",
+      "name": "read_kwargs"
      }
     ]
    }
@@ -10277,6 +10463,45 @@
      {
       "default": "False",
       "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "smooth_field": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "length"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "output"
+     },
+     {
+      "default": "1e-12",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_iterations"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
       "name": "return_report"
      }
     ]
@@ -10594,6 +10819,71 @@
   },
   "stl": {
    "kind": "module"
+  },
+  "streamlines": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "default": "40",
+      "kind": "KEYWORD_ONLY",
+      "name": "seeds"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "seed_points"
+     },
+     {
+      "default": "'both'",
+      "kind": "KEYWORD_ONLY",
+      "name": "direction"
+     },
+     {
+      "default": "'rk4'",
+      "kind": "KEYWORD_ONLY",
+      "name": "integrator"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "step"
+     },
+     {
+      "default": "0.5",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_length"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_steps"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "terminal_speed"
+     },
+     {
+      "default": "1e-06",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
   },
   "su2": {
    "kind": "module"

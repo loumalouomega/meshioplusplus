@@ -295,6 +295,24 @@ _VERBS = (
         "Surface distance from source points (heat method)",
     ),
     _Verb(
+        "mesh-operator",
+        "_mesh_operator",
+        "mesh_operator_cmd",
+        "Export a P1 operator (Laplacian, mass, gradient) as a sparse matrix",
+    ),
+    _Verb(
+        "smooth-field",
+        "_smooth_field",
+        "smooth_field_cmd",
+        "Smooth a point array over a triangle surface on a length scale",
+    ),
+    _Verb(
+        "streamlines",
+        "_streamlines",
+        "streamlines_cmd",
+        "Lines along a point vector field, as a mesh of segments",
+    ),
+    _Verb(
         "bake-texture",
         "_bake_texture",
         "bake_texture_cmd",
@@ -734,6 +752,20 @@ _VERBS = (
             "Resample a sequence onto new times (linear blend, nearest or "
             "previous), holding at most two steps in memory"
         ),
+    ),
+    _Verb(
+        "sequence-stats",
+        "_sequence_stats",
+        "sequence_stats_cmd",
+        "Per-point or per-cell statistics of data arrays over a sequence",
+        add_args="add_stats_args",
+    ),
+    _Verb(
+        "sequence-derivative",
+        "_sequence_stats",
+        "sequence_derivative_cmd",
+        "The time derivative of an array over a sequence, as a sequence",
+        add_args="add_derivative_args",
     ),
     _Verb(
         "refine",

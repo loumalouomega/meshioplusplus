@@ -145,6 +145,7 @@ if TYPE_CHECKING:
     from ._data_info import data_info
     from ._data_integrate import data_integrate
     from ._data_manage import data_drop, data_keep, data_manage, data_rename
+    from ._data_statistics import data_statistics
     from ._dataset import DatasetEntry, DatasetManifest
     from ._decimate import decimate
     from ._decimate_volume import decimate_volume
@@ -222,6 +223,7 @@ if TYPE_CHECKING:
     from ._measure import align_datums, measure, measure_table
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
+    from ._mesh_operator import mesh_operator
     from ._metric import prepare_metric
     from ._mirror import mirror
     from ._ml import FeatureMatrix, edge_index, feature_matrix, has_zarr, write_dataset
@@ -330,16 +332,19 @@ if TYPE_CHECKING:
         sequence_entries,
         write_sequence,
     )
+    from ._sequence_stats import sequence_derivative, sequence_statistics
     from ._shrinkwrap import shrinkwrap
     from ._silhouette import silhouette
     from ._skin import extract_skin
     from ._slice import sections, slice
     from ._smooth import smooth
+    from ._smooth_field import smooth_field
     from ._sniff import detect, sniff_format
     from ._sobolev_deform import sobolev_deform
     from ._split import split
     from ._stats import compute_stats
     from ._step_elements import write_step_elements
+    from ._streamlines import streamlines
     from ._subdivide import subdivide
     from ._surface import extract_surface
     from ._tensor_invariants import tensor_invariants
@@ -394,6 +399,12 @@ _LAZY_ATTRS = {
     "to_blender": "_blender",
     "adjacency": "_adjacency",
     "geodesic_distance": "_geodesic",
+    "streamlines": "_streamlines",
+    "data_statistics": "_data_statistics",
+    "mesh_operator": "_mesh_operator",
+    "smooth_field": "_smooth_field",
+    "sequence_statistics": "_sequence_stats",
+    "sequence_derivative": "_sequence_stats",
     "parameterize": "_parameterize",
     "laplacian_eigenmodes": "_eigenmodes",
     "convex_hull": "_hull",
@@ -838,6 +849,12 @@ __all__ = [
     "adjacency",
     "write_graph",
     "geodesic_distance",
+    "streamlines",
+    "data_statistics",
+    "mesh_operator",
+    "smooth_field",
+    "sequence_statistics",
+    "sequence_derivative",
     "parameterize",
     "laplacian_eigenmodes",
     "convex_hull",

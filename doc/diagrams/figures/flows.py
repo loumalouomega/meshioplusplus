@@ -596,7 +596,7 @@ def data_locations():
         (
             "data_calc",
             "expression → new array",
-            "own parser: + − * / abs sqrt min max norm",
+            "own parser: + − * / and math functions",
             P.FORMATS,
             [0, 1],
         ),
@@ -1167,6 +1167,16 @@ def roadmap_map():
                 ("review · posting · citation", "S"),
             ],
             [(0, 1), (3, 4)],
+        ),
+        (
+            "§15 math on meshes",
+            [
+                ("integrals: quadrature", "S"),
+                ("operators: tetrahedra · bindings", "M"),
+                ("high-order fields (design first)", "L"),
+                ("streamlines: flat bindings", "M"),
+            ],
+            [(0, 1)],
         ),
     ]
     per_row = 4

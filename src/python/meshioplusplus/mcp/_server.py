@@ -173,6 +173,56 @@ def _register_inspection(server: FastMCP) -> None:
         min/max/mean (whole-array and per component), NaN/Inf counts."""
 
     @server.tool()
+    @_forward(_tools.tool_data_statistics)
+    def data_statistics(
+        input_path: str,
+        file_format: Optional[str] = None,
+        arrays: Optional[List[str]] = None,
+        location: str = "point",
+        per_region: bool = True,
+        quantiles: Optional[List[float]] = None,
+        bins: int = 0,
+        ddof: int = 0,
+        weighted: bool = False,
+    ) -> dict:
+        """Descriptive statistics of point or cell data arrays, whole mesh and
+        per named region: per component the count, NaN/Inf counts, sum, mean,
+        variance, std, min, max, quantiles (default 0.05, 0.5, 0.95) and, with
+        bins, a histogram. A cell region also covers point data through its
+        cells' nodes. weighted (cell location) weights mean/variance by cell
+        measure so the mean equals data_integrate's."""
+
+    @server.tool()
+    @_forward(_tools.tool_smooth_field)
+    def smooth_field(
+        input_path: str,
+        output_path: str,
+        array: str,
+        length: float,
+        output_name: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Smooth a numeric point array over a triangle surface on a length scale
+        by solving (M + length^2 K) g = M f (lumped mass, cotangent stiffness):
+        features shorter than length are flattened, the mass-weighted mean is
+        kept, the points do not move. Writes <array>:smooth (or output_name)."""
+
+    @server.tool()
+    @_forward(_tools.tool_mesh_operator)
+    def mesh_operator(
+        input_path: str,
+        output_path: str,
+        kind: str = "laplacian",
+        file_format: Optional[str] = None,
+    ) -> dict:
+        """Export a P1 finite-element operator of a triangle surface as a sparse
+        matrix in an .npz file (indptr, indices, values, shape): kind is
+        laplacian (cotangent stiffness), mass_lumped, mass_consistent or gradient
+        (3T x n, row 3t+k is component k of the gradient on triangle t). Reports
+        the shape and the entry count."""
+
+    @server.tool()
     @_forward(_tools.tool_data_integrate)
     def data_integrate(
         input_path: str,
@@ -181,7 +231,10 @@ def _register_inspection(server: FastMCP) -> None:
     ) -> dict:
         """Cell-measure-weighted total/mean of cell_data arrays (whole mesh,
         and independently for every named Cell region) -- gradient's
-        integration companion. arrays defaults to every cell_data array."""
+        integration companion. arrays defaults to every cell_data array; a name may
+        carry a prefix: point:<a> (a point_data array through its cell means),
+        flux:<a> (the flux of a 3-component array through a surface mesh) and
+        boundary:point:<a> / boundary:flux:<a> (over a volume mesh's boundary)."""
 
     @server.tool()
     @_forward(_tools.tool_regions)
@@ -1995,7 +2048,9 @@ def _register_operations(server: FastMCP) -> None:
     ) -> dict:
         """Gradient, divergence or curl of a point_data field.
 
-        operator: gradient|divergence|curl. method: green-gauss|least-squares.
+        operator: gradient|divergence|curl|vorticity_magnitude|q_criterion|lambda2|
+        strain_rate|green_lagrange|helicity (strain_rate and green_lagrange give six components xx yy zz xy yz zx;
+        all but gradient need a 2- or 3-component field). method: green-gauss|least-squares.
         location: cell|point. The result is named <array>:<operator> unless
         `output` overrides it; a gradient of an nc-component field has 3*nc
         components laid out [component][derivative]. Divergence and curl need a
@@ -3404,6 +3459,80 @@ def _register_operations(server: FastMCP) -> None:
         heat_iterations, poisson_iterations and converged."""
 
     @server.tool()
+    @_forward(_tools.tool_sequence_statistics)
+    def sequence_statistics(
+        output_path: str,
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        arrays: Optional[List[str]] = None,
+        stats: Optional[List[str]] = None,
+        location: str = "point",
+        ddof: int = 0,
+        time_from: str = "auto",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Statistics of data arrays over the steps of a sequence, streaming one
+        step at a time: for each array a and statistic s in stats (mean, std,
+        min, max, sum; default mean and std), writes <a>:<s> at the location
+        (point or cell) of a mesh with the first step's geometry. std is the
+        population one (ddof 0) unless ddof is 1. Every step must have the same
+        points, cells and array shapes. Give the sequence as input_pattern (a
+        glob) or input_paths. Reports num_steps, first_time, last_time and the
+        arrays."""
+
+    @server.tool()
+    @_forward(_tools.tool_sequence_derivative)
+    def sequence_derivative(
+        output_path: str,
+        array: str,
+        input_pattern: Optional[str] = None,
+        input_paths: Optional[List[str]] = None,
+        location: str = "point",
+        scheme: str = "central",
+        output_name: Optional[str] = None,
+        time_from: str = "auto",
+        input_format: Optional[str] = None,
+    ) -> dict:
+        """The time derivative of an array over a sequence, from the step times:
+        scheme central (second order inside, one-sided at the two ends) or
+        forward. Writes a sequence (output_path a {step}/{index} pattern or a
+        series file) of the steps' meshes with <array>:dt (or output_name) added
+        at the location. Holds at most three steps. Needs at least two steps
+        with increasing times and one topology."""
+
+    @server.tool()
+    @_forward(_tools.tool_streamlines)
+    def streamlines(
+        input_path: str,
+        output_path: str,
+        array: str,
+        seeds: int = 40,
+        seed_points: Optional[List[List[float]]] = None,
+        direction: str = "both",
+        integrator: str = "rk4",
+        step: float = 0.0,
+        max_length: float = 0.5,
+        max_steps: int = 0,
+        terminal_speed: float = 0.0,
+        tolerance: float = 1e-6,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Streamlines of a 2- or 3-component point_data vector field, as a new
+        mesh of line segments, traced by the field's own velocity (dx/dt = v)
+        over the mesh's cells (a volume in its volume, a surface on its
+        surface). Writes point_data IntegrationTime (negative backward), Speed,
+        SeedId and the field itself, and cell_data SeedId. Seeds: about `seeds`
+        simplex centroids, or explicit seed_points [[x, y, z], ...] (a seed
+        outside the mesh makes no line). direction: both|forward|backward.
+        integrator: rk4 (fixed step) or rk45 (adaptive Dormand-Prince).
+        max_length is a fraction of the mesh diagonal per direction; a line
+        stops where it leaves the mesh, the speed falls to terminal_speed, the
+        length or max_steps is reached. Reports num_lines, num_seeds_outside and
+        dim."""
+
+    @server.tool()
     @_forward(_tools.tool_bake_texture)
     def bake_texture(
         input_path: str,
@@ -4617,8 +4746,11 @@ def _register_data(server: FastMCP) -> None:
         overwrite: bool = False,
     ) -> dict:
         """Evaluate an arithmetic expression over data arrays into a new array
-        (operators + - * /, functions abs/sqrt/min/max/norm; back-tick-quote
-        names with spaces, e.g. "speed = norm(velocity)")."""
+        (operators + - * /, functions abs/sqrt/min/max/norm and exp/log/log10/
+        sin/cos/tan/asin/acos/atan/atan2/sinh/cosh/tanh/floor/ceil/sign/pow and
+        dot/cross/det/trace/transpose/mag/matmul/outer/inv and the mesh-aware
+        grad/div/curl (of a point_data array) and area()/volume()/size();
+        back-tick-quote names with spaces, e.g. "speed = norm(velocity)")."""
 
     @server.tool()
     @_forward(_tools.tool_data_condition)
@@ -4657,7 +4789,8 @@ def _register_data(server: FastMCP) -> None:
     ) -> dict:
         """von Mises / principal / hydrostatic / deviatoric of a symmetric
         (6-component) or general 3x3 (9-component) tensor array. outputs: any
-        of mises | principal | hydrostatic | deviatoric (default: all four)."""
+        of mises | principal | hydrostatic | deviatoric (default: these four) or the
+        opt-in trace | determinant | invariants | inverse | eigenvectors."""
 
 
 # --------------------------------------------------------------------------- #

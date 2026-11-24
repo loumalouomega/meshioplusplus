@@ -682,6 +682,10 @@ out = meshioplusplus.geodesic_distance(skin, "inlet")   # the points of a region
 d = out.point_data["geodesic:distance"]
 ```
 
+#### Streamlines
+
+**`meshioplusplus.streamlines(mesh, "U", seeds=200)`** follows a point vector field through the mesh and returns the paths as a mesh of line segments with `IntegrationTime` (the field's own time, negative behind the seed), `Speed`, `SeedId` and the field, by fixed-step RK4 or adaptive Dormand–Prince 5(4), in a volume or on a surface, from a count of seeds or explicit points; the reason each line stopped is in the report. C++ core only. See `doc/streamlines.md`.
+
 #### UV parameterization
 
 **`meshioplusplus.parameterize(mesh)`** gives a triangle surface a UV atlas: it cuts the surface into charts, flattens each without flipping a triangle (least-squares conformal maps, else mean-value coordinates, the kernels `fit_cad` uses), halves a chart that stretches too much, and shelf-packs the charts into the unit square. The result is split at its seams and carries `uv` point data, which the OBJ (`vt`), glTF (`TEXCOORD_0`) and USD (`primvars:st`) writers turn into texture coordinates, and their readers turn back. On every surface — Python, C++, C, Fortran, Julia, R, WASM, both CLIs (`parameterize`), the pipeline (`Parameterize`) and MCP. See `doc/parameterize.md`.
@@ -1078,9 +1082,9 @@ A second bundle operates on the **data arrays** a mesh carries (`point_data` / `
 
 - **`meshioplusplus.data_rename` / `data_drop` / `data_keep`** — rewrite which arrays a mesh carries and under what names; values, dtypes and shapes are copied verbatim. See `doc/data_manage.md`.
 - **`meshioplusplus.point_data_to_cell_data` / `cell_data_to_point_data`** — move data between locations by averaging, optionally weighted by cell area/volume. See `doc/data_average.md`.
-- **`meshioplusplus.data_calc`** — derive a new array from an elementwise expression (`+ - * /`, parentheses, `abs`/`sqrt`/`min`/`max`/`norm`) evaluated by a hand-written parser — no external parser library, no arbitrary-code path. See `doc/data_calc.md`.
+- **`meshioplusplus.data_calc`** — derive a new array from an elementwise expression (`+ - * /`, parentheses, `abs`/`sqrt`/`min`/`max`/`norm` and the math functions `exp`/`log`/`sin`/…/`pow`) evaluated by a hand-written parser — no external parser library, no arbitrary-code path. See `doc/data_calc.md`.
 - **`meshioplusplus.data_condition`** — clamp, normalize to a target range, or standardize to zero mean / unit standard deviation, per component or by row magnitude. See `doc/data_condition.md`.
-- **`meshioplusplus.tensor_invariants`** — von Mises, principal, hydrostatic and deviatoric fields of a symmetric or general 3x3 tensor array. See `doc/tensor_invariants.md`.
+- **`meshioplusplus.tensor_invariants`** — von Mises, principal, hydrostatic and deviatoric fields (and, opt-in, trace, determinant, the invariants I1 to I3, the inverse and the eigenvectors) of a symmetric or general 3x3 tensor array. See `doc/tensor_invariants.md`.
 - **`meshioplusplus.data_info`** — a read-only per-array summary (dtype, shape, components, min/max/mean, NaN/inf counts) — the data-side complement to `info` and `compute_stats`. See `doc/data_info.md`.
 
 <!--pytest-codeblocks:skip-->

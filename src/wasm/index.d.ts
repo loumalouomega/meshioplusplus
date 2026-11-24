@@ -2011,7 +2011,16 @@ export interface SurfaceBuffers {
 }
 
 /** `gradient`'s differential operator. See doc/gradient.md. */
-export type GradientOperator = 'gradient' | 'divergence' | 'curl';
+export type GradientOperator =
+  | 'gradient'
+  | 'divergence'
+  | 'curl'
+  | 'vorticity_magnitude'
+  | 'q_criterion'
+  | 'lambda2'
+  | 'strain_rate'
+  | 'green_lagrange'
+  | 'helicity';
 
 /** Which cells `voxelize` keeps. See doc/voxelize.md. */
 export type VoxelFill = 'all' | 'surface' | 'inside';
@@ -2078,7 +2087,16 @@ export type CellPointWeight = 'uniform' | 'measure';
 export type NanPolicy = 'ignore' | 'replace' | 'fail';
 
 /** `tensorInvariants`' selectable outputs. See doc/tensor_invariants.md. */
-export type TensorInvariantOutput = 'mises' | 'principal' | 'hydrostatic' | 'deviatoric';
+export type TensorInvariantOutput =
+  | 'mises'
+  | 'principal'
+  | 'hydrostatic'
+  | 'deviatoric'
+  | 'trace'
+  | 'determinant'
+  | 'invariants'
+  | 'inverse'
+  | 'eigenvectors';
 
 /** Cell-keeping rule for the crop operations: every node inside, or any. */
 export type CropMode = 'all' | 'any';
@@ -3803,7 +3821,11 @@ export interface MeshioPlusPlusModule {
    * An `nc`-component input yields `3 * nc` gradient components, flat and
    * row-major as `[component][derivative]`, so a scalar gives `(n, 3)` and a
    * 3-vector `(n, 9)`; divergence gives 1 and curl always 3, both needing a 2-
-   * or 3-component field. The width travels with the array in the returned
+   * or 3-component field, as do the quantities built from the gradient:
+   * `vorticity_magnitude`, `q_criterion` and `lambda2` give 1 component, and
+   * `strain_rate` and `green_lagrange` the six of a symmetric tensor
+   * (`xx yy zz xy yz zx`); `helicity` is `u . curl u` with `u` the cell's
+   * corner-mean value, one component. The width travels with the array in the returned
    * mesh's `point_data_components` / `cell_data_components` maps.
    *
    * `component` is negative for EVERY component — the opposite of
@@ -3812,7 +3834,7 @@ export interface MeshioPlusPlusModule {
    * @throws {Error} when `array` names a `cell_data` array (piecewise constant,
    *   so it has no derivative — convert it with `dataCellToPoint` first), an
    *   unknown array, an unknown operator/method, an out-of-range component, or
-   *   a component count divergence/curl cannot use.
+   *   a component count the vector operators cannot use.
    */
   gradient(
     mesh: Mesh,
@@ -5618,7 +5640,11 @@ export interface MeshioPlusPlusModule {
 
   /**
    * Evaluate an elementwise expression (`+ - * /`, parens, numbers, array
-   * names, `abs`/`sqrt`/`min`/`max`/`norm`) and store the result as a new
+   * names, `abs`/`sqrt`/`min`/`max`/`norm` and the math functions `exp`, `log`,
+   * `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2`, `sinh`, `cosh`,
+   * `tanh`, `floor`, `ceil`, `sign` and `pow`, and the tuple functions `dot`,
+   * `cross`, `det`, `trace`, `transpose`, `mag`, `matmul`, `outer` and `inv`, and the mesh-aware calls `grad`, `div`, `curl`,
+   * `area`, `volume` and `size`) and store the result as a new
    * array at `location`.
    * @throws {Error} on any lexical, syntactic, or name-resolution error.
    */
@@ -5648,7 +5674,10 @@ export interface MeshioPlusPlusModule {
    * von Mises / principal / hydrostatic / deviatoric fields of a symmetric
    * (6-component, `xx yy zz xy yz zx`) or general 3x3 (9-component,
    * row-major) tensor array. `mises`/`principal` use the symmetric part of a
-   * 9-component input. `names` empty processes every 6- or 9-component array
+   * 9-component input; the opt-in `trace`, `determinant`, `invariants` (I1, I2,
+   * I3) and `inverse` read the tensor as given, and `eigenvectors` (nine
+   * components, column `k` the unit vector of the k-th ascending principal
+   * value) uses the symmetric part. `names` empty processes every 6- or 9-component array
    * at `location` (`'field'` throws). `outputs` empty means all four.
    */
   tensorInvariants(
@@ -5667,8 +5696,12 @@ export interface MeshioPlusPlusModule {
   /**
    * Cell-measure-weighted total/mean of one or more cell_data arrays --
    * gradient's integration counterpart. `arrays` empty/undefined means
-   * every cell_data array. A point_data-only name throws naming
-   * dataPointToCell as the fix. See doc/field_integration.md.
+   * every cell_data array. A plain point_data-only name throws naming
+   * dataPointToCell as the fix; a name may instead carry a mode prefix:
+   * `point:<a>` (a point_data array through its cell means), `flux:<a>` (the
+   * flux of a 3-component array through a surface mesh) and
+   * `boundary:point:<a>` / `boundary:flux:<a>` (over a volume mesh's boundary).
+   * See doc/field_integration.md.
    */
   dataIntegrate(mesh: Mesh, arrays?: string[]): FieldIntegralArray[];
 

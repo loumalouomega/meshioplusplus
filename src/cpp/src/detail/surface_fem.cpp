@@ -83,9 +83,12 @@ SurfaceFem build_surface_fem(const Mesh& rMesh, const std::string& rOp) {
 
     // --- cotangents, areas, the mean edge length ---------------------------
     fem.mTriangles.reserve(tris.size());
+    fem.mNumInput = static_cast<std::int64_t>(tris.size());
     double edge_sum = 0.0;
     std::size_t edge_count = 0;
+    std::int64_t input_index = -1;
     for (SurfaceFemTriangle t : tris) {
+        t.mIndex = ++input_index;
         const Vec3& a = fem.mPoints[t.mNodes[0]];
         const Vec3& b = fem.mPoints[t.mNodes[1]];
         const Vec3& c = fem.mPoints[t.mNodes[2]];

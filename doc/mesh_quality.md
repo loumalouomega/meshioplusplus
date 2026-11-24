@@ -28,9 +28,25 @@ meshioplusplus.write("part_quality.vtu", annotated)
 | `quality:warpage` | – | ✓ | – | – | – | – |
 | `quality:min_dihedral` / `quality:max_dihedral` | – | – | ✓ | – | – | – |
 | `quality:inverted` / `quality:degenerate` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `quality:size` (unsigned area or volume) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `quality:diagonal`, `quality:min_edge` / `quality:max_edge` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `quality:edge_ratio` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `quality:condition` | ✓ | ✓ | ✓ | ✓ | – | – |
+| `quality:shape` | ✓ | – | ✓ | – | – | – |
+| `quality:aspect_gamma` | – | – | ✓ | – | – | – |
+| `quality:stretch` | – | ✓ | – | ✓ | – | – |
+| `quality:taper` | – | ✓ | – | – | – | – |
+| `quality:diagonal_ratio` | – | – | – | ✓ | – | – |
 
-A metric that does not apply to a cell type is `NaN` for that cell. Ideal (perfectly regular) elements give the ideal value: `scaled_jacobian = 1`, `aspect_ratio = 1`, `skewness = 0`, `warpage = 0`, triangle angles `= 60°`, tetra dihedral `≈ 70.53°`.
+A metric that does not apply to a cell type is `NaN` for that cell. The cell measures are lengths in the mesh's units (`size` is the area or volume): `size` is `abs(quality:volume)`, `quality:diagonal` the longest distance between two corner nodes (VTK's `diagonal`), and `quality:min_edge` and `quality:max_edge` the shortest and longest edge of the corner cell. They are set for every scored cell, including a degenerate one (whose `size` is then about zero); a polyhedron block gets `size` only, and 1-D cells are not scored. `attach_quality` always attaches all of them: there is no option to select metrics. Ideal (perfectly regular) elements give the ideal value: `scaled_jacobian = 1`, `aspect_ratio = 1`, `skewness = 0`, `warpage = 0`, triangle angles `= 60°`, tetra dihedral `≈ 70.53°`.
 
+- **The Verdict metrics** (Stimpson, Ernst, Knupp, Pébay and Thompson, *The Verdict Geometric Quality Library*, SAND2007-1751) are set for the families they are defined for, `NaN` elsewhere and for a degenerate cell; each has `1` as its ideal value except `taper` (ideal `0`):
+  - `edge_ratio` is `max_edge / min_edge`.
+  - `condition` is the Frobenius condition number of the Jacobian against the ideal element. For a triangle it is `tr(M) / (2 √det M)` with `M = FᵀF`, `F = [e₁ e₂] W⁻¹` and `W` the equilateral triangle (so it equals the Frobenius aspect `(a² + b² + c²) / (4 √3 A)`); for a tetrahedron `‖F‖ ‖F⁻¹‖ / 3` with `F = [e₁ e₂ e₃] W⁻¹` and `W` the regular tetrahedron; for a quadrilateral the largest over its corners of `(|e₁|² + |e₂|²) / (2 |e₁ × e₂|)`; for a hexahedron the largest over its corners of `‖J‖ ‖J⁻¹‖ / 3`.
+  - `shape` is the reciprocal of `condition` for a triangle and `3 (det F)^(2/3) / ‖F‖²` for a tetrahedron (`0` for an inverted one).
+  - `aspect_gamma` is `srms³ / (6 √2 V)` with `srms` the root mean square of the six edge lengths.
+  - `stretch` is `√2 · min edge / max diagonal` of a quadrilateral and `√3 · min edge / max body diagonal` of a hexahedron; `taper` of a quadrilateral is `|X₁₂| / min(|X₁|, |X₂|)` with `X₁ = (p₁ − p₀) + (p₂ − p₃)`, `X₂ = (p₃ − p₀) + (p₂ − p₁)` and `X₁₂ = (p₀ − p₁) + (p₂ − p₃)`; `diagonal_ratio` is the smallest over the largest of a hexahedron's four body diagonals.
+  - **Not offered**, against `vtkMeshQuality`: `jacobian` (Verdict's includes the element's centre and the edge cases of an inverted cell; `scaled_jacobian` here covers the corner sign), `shear`, `skew`, `oddy` and `relative_size_squared` (the last needs a reference size the mesh does not carry), and every metric of the wedge and the pyramid beyond `scaled_jacobian` and `edge_ratio`. `aspect_ratio` is Verdict's radius ratio for the families that have it.
 - **`quality:scaled_jacobian`** of a quad (v17.23.0) is Verdict's: the least over its corners of `(e1 × e2) · n / (|e1| |e2|)`, `e1` and `e2` the corner's edges and `n` the quad's unit normal (`+z` in 2D, its vector area in 3D); 1 for a rectangle, below 0 at a reflex or inverted corner.
 - **`quality:inverted`** is `1.0` when the signed volume/area is negative (a 2D triangle/quad embedded in 3D is unsigned, so never flagged).
 - **`quality:degenerate`** is `1.0` when the cell is near-zero (collapsed volume/area, a zero-length edge, or a vanishing Jacobian); its divide-prone metrics are then `NaN`.

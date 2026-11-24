@@ -3524,15 +3524,20 @@ mio_data_info <- function(mesh) .Call(R_mio_data_info, mesh)
 #' @export
 mio_tensor_invariants <- function(mesh, location, names = NULL, outputs = NULL,
                                   prefix = NULL, suffix = NULL, overwrite = TRUE) {
-  flags <- c(mises = 1L, principal = 2L, hydrostatic = 4L, deviatoric = 8L)
+  flags <- c(
+    mises = 1L, principal = 2L, hydrostatic = 4L, deviatoric = 8L,
+    trace = 16L, determinant = 32L, invariants = 64L, inverse = 128L,
+    eigenvectors = 256L
+  )
   mask <- if (is.null(outputs) || length(outputs) == 0) {
     15L
   } else {
     unmatched <- setdiff(outputs, names(flags))
     if (length(unmatched) > 0) {
       stop(
-        "`outputs` entries must be \"mises\", \"principal\", \"hydrostatic\" or ",
-        "\"deviatoric\", got \"", unmatched[1], "\""
+        "`outputs` entries must be \"mises\", \"principal\", \"hydrostatic\", ",
+        "\"deviatoric\", \"trace\", \"determinant\", \"invariants\", \"inverse\" or \"eigenvectors\", ",
+        "got \"", unmatched[1], "\""
       )
     }
     Reduce(bitwOr, flags[outputs])

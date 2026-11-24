@@ -52,6 +52,9 @@ struct SurfaceFemTriangle {
     std::array<std::int64_t, 3> mNodes;
     std::array<double, 3> mCot;
     double mDoubleArea;
+    /// The triangle's position among the triangle blocks' cells, in input order
+    /// (a degenerate triangle left out keeps its neighbours' numbers).
+    std::int64_t mIndex = 0;
 };
 
 struct SurfaceFem {
@@ -59,6 +62,8 @@ struct SurfaceFem {
     std::vector<std::array<double, 3>> mPoints;
     /// The non-degenerate triangles, in input order.
     std::vector<SurfaceFemTriangle> mTriangles;
+    /// Every triangle of the triangle blocks, kept or not.
+    std::int64_t mNumInput = 0;
     /// Triangles left out for (near) zero area.
     std::int64_t mNumDegenerate = 0;
     /// The mean edge length of the kept triangles (each edge once per triangle).

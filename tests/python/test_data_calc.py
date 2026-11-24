@@ -118,9 +118,9 @@ def test_unknown_array_name_raises():
 def test_unknown_function_raises_and_lists_known_ones():
     m = data_mesh()
     with pytest.raises(ValueError) as exc:
-        mp.data_calc(m, "log(T)", location="point", output="o")
+        mp.data_calc(m, "foo(T)", location="point", output="o")
     msg = str(exc.value)
-    assert "log" in msg
+    assert "foo" in msg
     assert "sqrt" in msg
 
 
@@ -165,6 +165,487 @@ def test_existing_output_name_needs_overwrite():
         mp.data_calc(m, "T * 2", location="point", output="T")
     out = mp.data_calc(m, "T * 2", location="point", output="T", overwrite=True)
     assert out.point_data["T"] == pytest.approx(m.point_data["T"] * 2)
+
+
+_MATH = {
+    "exp": np.exp,
+    "log": np.log,
+    "log10": np.log10,
+    "sin": np.sin,
+    "cos": np.cos,
+    "tan": np.tan,
+    "atan": np.arctan,
+    "sinh": np.sinh,
+    "cosh": np.cosh,
+    "tanh": np.tanh,
+    "floor": np.floor,
+    "ceil": np.ceil,
+    "sign": np.sign,
+}
+
+
+@pytest.mark.parametrize("name", sorted(_MATH))
+def test_unary_math_functions_match_numpy(name):
+    m = data_mesh()
+    # T - 5.5 spans negative, zero-adjacent and positive values; exp stays finite.
+    out = mp.data_calc(m, f"{name}((T - 5.5) / 4)", location="point", output="o")
+    t = (m.point_data["T"] - 5.5) / 4
+    with np.errstate(all="ignore"):
+        expect = _MATH[name](t)
+    np.testing.assert_allclose(out.point_data["o"], expect, rtol=1e-12, equal_nan=True)
+
+
+def test_inverse_trigonometric_functions_and_their_domain():
+    m = data_mesh()
+    out = mp.data_calc(m, "asin(T / 12)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.arcsin(m.point_data["T"] / 12))
+    out = mp.data_calc(m, "acos(T / 6)", location="point", output="o")
+    got = out.point_data["o"]
+    # |T / 6| > 1 for T = 11, 10, 12: a domain error is NaN, not an exception.
+    assert np.isnan(got[[2, 3, 5]]).all() and np.isfinite(got[[0, 1, 4]]).all()
+
+
+def test_log_of_zero_and_of_a_negative():
+    m = data_mesh()
+    out = mp.data_calc(m, "log(T)", location="point", output="o")
+    got = out.point_data["o"]
+    assert got[0] == -np.inf
+    out = mp.data_calc(m, "log(-T)", location="point", output="o")
+    assert np.isnan(out.point_data["o"][1])
+
+
+def test_binary_math_functions_broadcast_like_min_and_max():
+    m = data_mesh()
+    out = mp.data_calc(m, "pow(T, 2)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], m.point_data["T"] ** 2)
+    out = mp.data_calc(m, "pow(2, T / 4)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 2.0 ** (m.point_data["T"] / 4))
+    out = mp.data_calc(m, "atan2(v, 2)", location="point", output="o")
+    assert out.point_data["o"].shape == (6, 3)
+    np.testing.assert_allclose(out.point_data["o"], np.arctan2(m.point_data["v"], 2.0))
+    # pow of a negative base to a fractional exponent is a domain error: NaN.
+    out = mp.data_calc(m, "pow(0 - T, 0.5)", location="point", output="o")
+    assert np.isnan(out.point_data["o"][1])
+
+
+def test_math_functions_keep_a_vector_a_vector():
+    m = data_mesh()
+    out = mp.data_calc(m, "exp(v)", location="point", output="o")
+    assert out.point_data["o"].shape == (6, 3)
+    np.testing.assert_allclose(out.point_data["o"], np.exp(m.point_data["v"]))
+
+
+def test_math_function_arity():
+    m = data_mesh()
+    with pytest.raises(ValueError, match="takes exactly 2 arguments"):
+        mp.data_calc(m, "pow(T)", location="point", output="o")
+    with pytest.raises(ValueError, match="takes exactly 1 argument"):
+        mp.data_calc(m, "sin(T, T)", location="point", output="o")
+
+
+def test_math_functions_match_between_the_core_and_the_twin():
+    pytest.importorskip("meshioplusplus._core")
+    m = data_mesh()
+    exprs = [f"{n}((T - 5.5) / 4)" for n in sorted(_MATH)] + [
+        "asin(T / 12)",
+        "acos(T / 6)",
+        "atan2(T - 5, v)",
+        "pow(T, 0.5)",
+        "pow(T - 5, 2)",
+        "log10(T + 1) * exp(-T / 8)",
+    ]
+    for expr in exprs:
+        cpp = mp.data_calc(m, expr, location="point", output="o")
+        py = _calc_py(m, expr, "point_data", "o", False)
+        np.testing.assert_allclose(
+            cpp.point_data["o"],
+            py.point_data["o"],
+            rtol=1e-12,
+            equal_nan=True,
+            err_msg=expr,
+        )
+
+
+def tensor_mesh():
+    m = data_mesh()
+    t9 = np.array(
+        [
+            [1, 2, 3, 0, 1, 4, 5, 6, 0],
+            [2, 0, 0, 0, 3, 0, 0, 0, 5],
+            [1, 0, 0, 0, 1, 0, 0, 0, 1],
+            [0, 1, 0, -1, 0, 0, 0, 0, 2],
+            [4, 1, 2, 1, 5, 3, 2, 3, 6],
+            [1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ],
+        dtype=float,
+    )
+    m.point_data["t9"] = t9
+    # The same symmetric tensors as 6 components: xx yy zz xy yz zx.
+    m.point_data["t6"] = (
+        np.array([[2, 3, 5, 0.5, 0.25, 0.75]] * 6, dtype=float)
+        * np.arange(1, 7)[:, None]
+    )
+    return m, t9
+
+
+def test_dot_and_cross_match_numpy():
+    m, _ = tensor_mesh()
+    v = m.point_data["v"]
+    out = mp.data_calc(m, "dot(v, v)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], (v * v).sum(axis=1))
+    out = mp.data_calc(m, "cross(v, v * 0 + 1)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.cross(v, np.ones((6, 3))))
+    out = mp.data_calc(m, "dot(cross(v, 1 + v), v)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 0.0, atol=1e-12)  # a x b . a = 0
+
+
+def test_det_trace_and_transpose_of_a_nine_component_tensor():
+    m, t9 = tensor_mesh()
+    a = t9.reshape(-1, 3, 3)
+    out = mp.data_calc(m, "det(t9)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.linalg.det(a), atol=1e-10)
+    assert out.point_data["o"][0] == pytest.approx(1.0)  # the integer-inverse matrix
+    out = mp.data_calc(m, "trace(t9)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.trace(a, axis1=1, axis2=2))
+    out = mp.data_calc(m, "transpose(t9)", location="point", output="o")
+    assert out.point_data["o"].shape == (6, 9)
+    np.testing.assert_allclose(out.point_data["o"], a.transpose(0, 2, 1).reshape(-1, 9))
+    out = mp.data_calc(m, "transpose(transpose(t9))", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], t9)
+
+
+def test_det_and_trace_of_a_symmetric_six_component_tensor():
+    m, _ = tensor_mesh()
+    s = m.point_data["t6"]
+    full = np.zeros((6, 3, 3))
+    full[:, 0, 0], full[:, 1, 1], full[:, 2, 2] = s[:, 0], s[:, 1], s[:, 2]
+    full[:, 0, 1] = full[:, 1, 0] = s[:, 3]
+    full[:, 1, 2] = full[:, 2, 1] = s[:, 4]
+    full[:, 0, 2] = full[:, 2, 0] = s[:, 5]
+    out = mp.data_calc(m, "det(t6)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.linalg.det(full), rtol=1e-10)
+    out = mp.data_calc(m, "trace(t6)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], np.trace(full, axis1=1, axis2=2))
+
+
+def test_matmul_outer_and_inv_match_numpy():
+    m, t9 = tensor_mesh()
+    a = t9.reshape(-1, 3, 3)
+    v = m.point_data["v"]
+    out = mp.data_calc(m, "matmul(t9, t9)", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], (a @ a).reshape(-1, 9))
+    out = mp.data_calc(m, "matmul(t9, v)", location="point", output="o")
+    assert out.point_data["o"].shape == (6, 3)
+    np.testing.assert_allclose(out.point_data["o"], np.einsum("nij,nj->ni", a, v))
+    out = mp.data_calc(m, "outer(v, v + 1)", location="point", output="o")
+    np.testing.assert_allclose(
+        out.point_data["o"], np.einsum("ni,nj->nij", v, v + 1).reshape(-1, 9)
+    )
+    out = mp.data_calc(m, "inv(t9)", location="point", output="o")
+    got = out.point_data["o"].reshape(-1, 3, 3)
+    for r in range(5):  # row 5 is singular
+        np.testing.assert_allclose(got[r], np.linalg.inv(a[r]), atol=1e-10)
+    assert np.isnan(got[5]).all()
+    np.testing.assert_allclose(
+        got[0], [[-24, 18, 5], [20, -15, -4], [-5, 4, 1]], atol=1e-12
+    )
+
+
+def test_matmul_of_a_matrix_and_its_inverse_is_the_identity():
+    m, _ = tensor_mesh()
+    out = mp.data_calc(m, "matmul(t9, inv(t9))", location="point", output="o")
+    got = out.point_data["o"].reshape(-1, 3, 3)
+    for r in range(5):
+        np.testing.assert_allclose(got[r], np.eye(3), atol=1e-10)
+
+
+def test_inv_of_a_symmetric_six_component_tensor_keeps_six_components():
+    m, _ = tensor_mesh()
+    s = m.point_data["t6"]
+    out = mp.data_calc(m, "inv(t6)", location="point", output="o")
+    got = out.point_data["o"]
+    assert got.shape == (6, 6)
+    full = np.zeros((6, 3, 3))
+    full[:, 0, 0], full[:, 1, 1], full[:, 2, 2] = s[:, 0], s[:, 1], s[:, 2]
+    full[:, 0, 1] = full[:, 1, 0] = s[:, 3]
+    full[:, 1, 2] = full[:, 2, 1] = s[:, 4]
+    full[:, 0, 2] = full[:, 2, 0] = s[:, 5]
+    inv = np.linalg.inv(full)
+    expect = np.stack(
+        [
+            inv[:, 0, 0],
+            inv[:, 1, 1],
+            inv[:, 2, 2],
+            inv[:, 0, 1],
+            inv[:, 1, 2],
+            inv[:, 0, 2],
+        ],
+        axis=1,
+    )
+    np.testing.assert_allclose(got, expect, rtol=1e-9)
+
+
+def test_inv_equals_tensor_invariants_inverse():
+    m, _ = tensor_mesh()
+    a = mp.data_calc(m, "inv(t9)", location="point", output="o").point_data["o"]
+    b = mp.tensor_invariants(m, "point", ["t9"], outputs=["inverse"]).point_data[
+        "t9_inverse"
+    ]
+    np.testing.assert_allclose(a, b, atol=1e-12, equal_nan=True)
+
+
+def test_matmul_outer_inv_width_errors():
+    m, _ = tensor_mesh()
+    for expr, needle in [
+        ("matmul(v, v)", "matmul' needs a 9-component"),
+        ("matmul(t9, T)", r"3-component \(vector\)"),
+        ("outer(t9, v)", "outer' needs two 3-component"),
+        ("inv(v)", "inv' needs a 6-component"),
+    ]:
+        with pytest.raises(ValueError, match=needle):
+            mp.data_calc(m, expr, location="point", output="o")
+
+
+def test_coordinates_at_points():
+    m, _ = tensor_mesh()
+    # The fixture has T = x + 10 y at every point.
+    out = mp.data_calc(m, "x + 10 * y - T", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 0.0, atol=1e-12)
+    out = mp.data_calc(m, "coords", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], m.points)
+    out = mp.data_calc(
+        m, "norm(coords) - sqrt(x * x + y * y + z * z)", location="point", output="o"
+    )
+    np.testing.assert_allclose(out.point_data["o"], 0.0, atol=1e-12)
+    out = mp.data_calc(m, "z", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 0.0)
+
+
+def test_coordinates_at_cells_are_the_centroids():
+    m, _ = tensor_mesh()
+    out = mp.data_calc(m, "coords", location="cell", output="c")
+    np.testing.assert_allclose(
+        out.cell_data["c"][0], [[2 / 3, 1 / 3, 0], [1 / 3, 2 / 3, 0]], atol=1e-12
+    )
+    np.testing.assert_allclose(out.cell_data["c"][1], [[1.5, 0.5, 0]], atol=1e-12)
+    out = mp.data_calc(m, "x + y", location="cell", output="s")
+    np.testing.assert_allclose(out.cell_data["s"][0], [1.0, 1.0], atol=1e-12)
+    np.testing.assert_allclose(out.cell_data["s"][1], [2.0], atol=1e-12)
+
+
+def test_a_data_array_named_like_a_coordinate_shadows_it():
+    m, _ = tensor_mesh()
+    m.point_data["x"] = np.arange(6.0) * 100
+    out = mp.data_calc(m, "x + y", location="point", output="o")
+    np.testing.assert_allclose(
+        out.point_data["o"], np.arange(6.0) * 100 + m.points[:, 1]
+    )
+
+
+def test_coordinates_are_not_available_in_field_data():
+    m, _ = tensor_mesh()
+    with pytest.raises(ValueError, match="unknown field_data array 'x'"):
+        mp.data_calc(m, "x + 1", location="field", output="o")
+
+
+def test_coordinates_of_a_two_dimensional_mesh():
+    pts = np.array([[0.0, 0.0], [2.0, 0.0], [0.0, 3.0]])
+    m = mp.Mesh(pts, [("triangle", np.array([[0, 1, 2]]))])
+    out = mp.data_calc(m, "x + 10 * y + 100 * z", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], [0.0, 2.0, 30.0])
+
+
+def test_coordinates_match_between_the_core_and_the_twin():
+    pytest.importorskip("meshioplusplus._core")
+    m, _ = tensor_mesh()
+    for loc, key in (("point", "point_data"), ("cell", "cell_data")):
+        for expr in ["x", "y + z", "coords", "norm(coords) * 2", "dot(coords, coords)"]:
+            cpp = mp.data_calc(m, expr, location=loc, output="o")
+            py = _calc_py(m, expr, key, "o", False)
+            if loc == "point":
+                np.testing.assert_allclose(
+                    cpp.point_data["o"], py.point_data["o"], rtol=1e-12, err_msg=expr
+                )
+            else:
+                for a, b in zip(cpp.cell_data["o"], py.cell_data["o"]):
+                    np.testing.assert_allclose(a, b, rtol=1e-12, err_msg=expr)
+
+
+def test_grad_div_curl_of_a_point_array_match_the_gradient_operation():
+    m, _ = tensor_mesh()
+    m.point_data["u"] = np.column_stack(
+        [
+            m.points[:, 0] * 2 + m.points[:, 1],
+            m.points[:, 1] * 3,
+            m.points[:, 0] - m.points[:, 1],
+        ]
+    )
+    for call, op in (
+        ("div(u)", "divergence"),
+        ("curl(u)", "curl"),
+        ("grad(T)", "gradient"),
+    ):
+        name = "T" if call.startswith("grad") else "u"
+        for where, key in (("cell", "cell"), ("point", "point")):
+            out = mp.data_calc(m, call, location=where, output="o")
+            ref = mp.gradient(m, name, operator=op, location=where)
+            refname = f"{name}:{op}"
+            if where == "cell":
+                for a, b in zip(out.cell_data["o"], ref.cell_data[refname]):
+                    np.testing.assert_allclose(
+                        np.asarray(a).reshape(len(a), -1),
+                        np.asarray(b).reshape(len(b), -1),
+                        atol=1e-12,
+                    )
+            else:
+                np.testing.assert_allclose(
+                    np.asarray(out.point_data["o"]).reshape(6, -1),
+                    np.asarray(ref.point_data[refname]).reshape(6, -1),
+                    atol=1e-12,
+                )
+
+
+def test_a_gradient_call_combines_with_the_expression_location_arrays():
+    m, _ = tensor_mesh()
+    # T = x + 10 y: |grad T| = sqrt(101) in every cell; mat is a cell array.
+    out = mp.data_calc(m, "mat * norm(grad(T))", location="cell", output="o")
+    np.testing.assert_allclose(
+        out.cell_data["o"][0], np.array([1.0, 2.0]) * np.sqrt(101.0), rtol=1e-10
+    )
+    np.testing.assert_allclose(
+        out.cell_data["o"][1], [3.0 * np.sqrt(101.0)], rtol=1e-10
+    )
+    out = mp.data_calc(m, "dot(grad(T), grad(T))", location="point", output="o")
+    np.testing.assert_allclose(out.point_data["o"], 101.0, rtol=1e-10)
+
+
+def test_area_volume_and_size_of_the_cells():
+    m, _ = tensor_mesh()  # two triangles of area 1/2 and a unit quad
+    out = mp.data_calc(m, "area()", location="cell", output="o")
+    np.testing.assert_allclose(out.cell_data["o"][0], [0.5, 0.5])
+    np.testing.assert_allclose(out.cell_data["o"][1], [1.0])
+    out = mp.data_calc(m, "size() * 2", location="cell", output="o")
+    np.testing.assert_allclose(out.cell_data["o"][1], [2.0])
+    out = mp.data_calc(m, "volume()", location="cell", output="o")
+    assert all(np.isnan(b).all() for b in out.cell_data["o"])  # no 3-D cell here
+    hexa = mp.Mesh(
+        np.array(
+            [
+                [0, 0, 0],
+                [2, 0, 0],
+                [2, 1, 0],
+                [0, 1, 0],
+                [0, 0, 1],
+                [2, 0, 1],
+                [2, 1, 1],
+                [0, 1, 1],
+            ],
+            float,
+        ),
+        [("hexahedron", np.array([[0, 1, 2, 3, 4, 5, 6, 7]]))],
+    )
+    out = mp.data_calc(hexa, "volume()", location="cell", output="o")
+    np.testing.assert_allclose(out.cell_data["o"][0], [2.0])
+    out = mp.data_calc(hexa, "area()", location="cell", output="o")
+    assert np.isnan(out.cell_data["o"][0]).all()
+
+
+def test_mesh_aware_call_errors():
+    m, _ = tensor_mesh()
+    for expr, loc, needle in [
+        ("grad(T + 1)", "point", "needs a point_data array name"),
+        ("grad(grad(T))", "point", "needs a point_data array name"),
+        ("grad(mat)", "point", "is not one"),
+        ("div(T)", "point", "gradient"),
+        ("area()", "point", "per-cell quantity"),
+        ("grad(T)", "field", "field_data has no mesh"),
+        ("area(T)", "cell", "takes exactly 0 arguments"),
+    ]:
+        with pytest.raises(ValueError, match=needle):
+            mp.data_calc(m, expr, location=loc, output="o")
+
+
+def test_mesh_aware_calls_match_between_the_core_and_the_twin():
+    pytest.importorskip("meshioplusplus._core")
+    m, _ = tensor_mesh()
+    m.point_data["u"] = np.column_stack(
+        [np.sin(m.points[:, 0]), m.points[:, 1] ** 2, m.points[:, 0] * m.points[:, 1]]
+    )
+    cases = [
+        ("point_data", "point", "grad(T)"),
+        ("point_data", "point", "div(u) * 2 + T"),
+        ("point_data", "point", "norm(curl(u))"),
+        ("cell_data", "cell", "grad(T)"),
+        ("cell_data", "cell", "mat * norm(curl(u))"),
+        ("cell_data", "cell", "area() + size()"),
+    ]
+    for key, loc, expr in cases:
+        cpp = mp.data_calc(m, expr, location=loc, output="o")
+        py = _calc_py(m, expr, key, "o", False)
+        if loc == "point":
+            np.testing.assert_allclose(
+                cpp.point_data["o"],
+                py.point_data["o"],
+                rtol=1e-10,
+                atol=1e-12,
+                err_msg=expr,
+            )
+        else:
+            for a, b in zip(cpp.cell_data["o"], py.cell_data["o"]):
+                np.testing.assert_allclose(
+                    a, b, rtol=1e-10, atol=1e-12, err_msg=expr, equal_nan=True
+                )
+
+
+def test_mag_is_norm():
+    m, _ = tensor_mesh()
+    a = mp.data_calc(m, "mag(v)", location="point", output="o")
+    b = mp.data_calc(m, "norm(v)", location="point", output="o")
+    np.testing.assert_array_equal(a.point_data["o"], b.point_data["o"])
+
+
+def test_tuple_function_width_errors():
+    m, _ = tensor_mesh()
+    for expr, needle in [
+        ("dot(v, t9)", "same width"),
+        ("cross(v, t9)", "3-component"),
+        ("det(v)", "6-component"),
+        ("trace(T)", "6-component"),
+        ("transpose(t6)", "9-component"),
+    ]:
+        with pytest.raises(ValueError, match=needle):
+            mp.data_calc(m, expr, location="point", output="o")
+
+
+def test_tuple_functions_match_between_the_core_and_the_twin():
+    pytest.importorskip("meshioplusplus._core")
+    m, _ = tensor_mesh()
+    for expr in [
+        "dot(v, v * 2)",
+        "cross(v, 1 + v)",
+        "det(t9)",
+        "trace(t9) * 2",
+        "transpose(t9)",
+        "det(t6)",
+        "trace(t6)",
+        "mag(cross(v, 2 + v))",
+        "dot(transpose(t9), t9)",
+        "matmul(t9, t9)",
+        "matmul(t9, v)",
+        "outer(v, 1 + v)",
+        "inv(t9)",
+        "inv(t6)",
+        "matmul(t9, inv(t9))",
+    ]:
+        cpp = mp.data_calc(m, expr, location="point", output="o")
+        py = _calc_py(m, expr, "point_data", "o", False)
+        np.testing.assert_allclose(
+            cpp.point_data["o"],
+            py.point_data["o"],
+            rtol=1e-12,
+            equal_nan=True,
+            err_msg=expr,
+        )
 
 
 def test_cpp_matches_python():
