@@ -226,6 +226,39 @@ MESHIOPLUSPLUS_API NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_
                                               const std::vector<double>& rKnots, double Tolerance,
                                               IgaRemoveKnotsReport* pReport = nullptr);
 
+/// What `iga_closest_point` found, one row per query point.
+struct IgaClosestPoint {
+    /// Float64 `(N, d)`: the parameters of the closest point on the patch.
+    NDArray mParams{DType::Float64, {0, 0}};
+    /// Float64 `(N, space dim)`: the closest points.
+    NDArray mPoints{DType::Float64, {0, 0}};
+    /// Float64 `(N)`: the distances from the query points to them.
+    NDArray mDistances{DType::Float64, {0}};
+};
+
+/**
+ * @brief The point of patch @p Patch closest to each of @p rPoints (roadmap 9.8.4).
+ *
+ * For a curve (one parametric direction, in 1, 2 or 3 space dimensions) or a
+ * surface (two directions, in 2 or 3), rational or not: a lattice of samples
+ * (`degree + 1` per knot span and direction, at most about 64 per direction on
+ * a surface) seeds a Newton iteration on `|x(u) - p|^2` with the exact second
+ * derivatives (`iga_evaluate` with `Derivatives = 2`), clamped to the knot
+ * range (a point beyond the patch's edge lands on the edge), falling back on
+ * Gauss-Newton where the Hessian is not positive definite and halving the step
+ * until the distance drops; the three nearest samples seed three runs and the
+ * closest result wins, so a point near a fold of the patch usually finds the
+ * global minimum, though a global guarantee is not given. Each point is
+ * independent and the result does not depend on the thread count. A volume
+ * (three directions) is refused: the closest point of a solid is the point
+ * itself unless it is outside, and that is a different problem.
+ * @param rPoints Float64 `(N, space dim)`, finite.
+ * @throws std::invalid_argument for a bad patch, a volume, or points that are
+ *         not Float64 `(N, space dim)` and finite.
+ */
+MESHIOPLUSPLUS_API IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
+                                                     const NDArray& rPoints);
+
 /**
  * @brief Bezier extraction of one patch (roadmap 9.8.2): the patch as VTK Bezier cells.
  *

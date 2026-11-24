@@ -44,6 +44,7 @@
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
 #include "../../src/cpp/src/detail/edge_sampler.hpp"
+#include "../../src/cpp/src/detail/surface_project.hpp"
 #include "../../src/cpp/src/formats/lagrange_common.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 
@@ -608,6 +609,94 @@ TEST(Iga, KnotRemovalRefusesWhatItCannotDo) {
     EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 0, {0.6}, 0.0), std::invalid_argument);
     EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 0, {0.0}, 0.0), std::invalid_argument);
     EXPECT_THROW(meshioplusplus::iga_remove_knots(in, 0, 0, {0.4, 0.4, 0.4}, 0.0),
+                 std::invalid_argument);
+}
+
+// --- Closest point (roadmap 9.8.4) --------------------------------------------
+
+TEST(Iga, ClosestPointOnTheArcIsTheRadialProjection) {
+    const NurbsInfo in = one_patch(arc());
+    std::vector<double> pts;
+    for (const double th : {0.1, 0.5, 0.9, 1.4})
+        for (const double r : {0.3, 2.5})
+            pts.insert(pts.end(), {r * std::cos(th), r * std::sin(th)});
+    pts.insert(pts.end(), {1.0, -1.0, -1.0, 1.0});  // beyond either end
+    const auto res = meshioplusplus::iga_closest_point(in, 0, doubles({pts.size() / 2, 2}, pts));
+    const double* x = res.mPoints.As<double>();
+    const double* d = res.mDistances.As<double>();
+    for (std::size_t i = 0; i < 8; ++i) {
+        const double r = std::hypot(pts[i * 2], pts[i * 2 + 1]);
+        EXPECT_NEAR(x[i * 2], pts[i * 2] / r, 1e-12);
+        EXPECT_NEAR(x[i * 2 + 1], pts[i * 2 + 1] / r, 1e-12);
+        EXPECT_NEAR(d[i], std::abs(r - 1.0), 1e-12);
+    }
+    EXPECT_NEAR(x[16], 1.0, 1e-12);  // clamped to the first end
+    EXPECT_NEAR(x[17], 0.0, 1e-12);
+    EXPECT_NEAR(x[18], 0.0, 1e-12);  // and to the last
+    EXPECT_NEAR(x[19], 1.0, 1e-12);
+    EXPECT_NEAR(res.mParams.As<double>()[8], 0.0, 1e-12);
+}
+
+TEST(Iga, ClosestPointOnACubicCurveBeatsADenseSampling) {
+    const NurbsInfo in = one_patch(cubic_curve());
+    std::vector<double> pts;
+    for (int i = 0; i < 12; ++i)
+        pts.insert(pts.end(), {0.4 * i - 0.5, 4.0 - 0.5 * i});
+    const NDArray q = doubles({12, 2}, pts);
+    const auto res = meshioplusplus::iga_closest_point(in, 0, q);
+    const NDArray u = grid(in.mPatches[0], 20001);
+    const auto dense = meshioplusplus::iga_evaluate(in, 0, u);
+    for (std::size_t i = 0; i < 12; ++i) {
+        double best = 1e300;
+        for (std::size_t k = 0; k < 20001; ++k)
+            best =
+                std::min(best, std::hypot(dense.mPoints.As<double>()[k * 2] - pts[i * 2],
+                                          dense.mPoints.As<double>()[k * 2 + 1] - pts[i * 2 + 1]));
+        EXPECT_LE(res.mDistances.As<double>()[i], best + 1e-12) << "point " << i;
+        EXPECT_NEAR(res.mDistances.As<double>()[i], best, 1e-6) << "point " << i;
+    }
+}
+
+TEST(Iga, ClosestPointOnASurfaceAgreesWithTheSurfaceProjector) {
+    const NurbsPatch patch = annulus();
+    const NurbsInfo in = one_patch(patch);
+    std::vector<double> pts;
+    for (const double th : {0.2, 0.7, 1.2})
+        for (const double r : {1.1, 1.5, 1.9})
+            for (const double z : {-0.4, 0.3})
+                pts.insert(pts.end(), {r * std::cos(th), r * std::sin(th), z});
+    pts.insert(pts.end(), {3.0, 3.0, 0.5, -0.5, 0.2, 0.1, 0.3, 0.1, 1.0});  // outside the patch
+    const std::size_t n = pts.size() / 3;
+    const auto res = meshioplusplus::iga_closest_point(in, 0, doubles({n, 3}, pts));
+    const meshioplusplus::detail::BrepSurfaceEval eval(patch, true);
+    const meshioplusplus::detail::SurfaceProjector projector(eval, patch);
+    for (std::size_t i = 0; i < n; ++i) {
+        meshioplusplus::detail::EdgeVec3 px{};
+        projector.Project({pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2]}, px);
+        for (std::size_t d = 0; d < 3; ++d)
+            EXPECT_NEAR(res.mPoints.As<double>()[i * 3 + d], px[d], 1e-8) << "point " << i;
+    }
+    // A point beyond the inner edge lands on it, exactly (the projector's own
+    // polish stops about 1e-9 short there).
+    const double rr = std::hypot(0.3, 0.1);
+    EXPECT_NEAR(res.mPoints.As<double>()[20 * 3], 0.3 / rr, 1e-12);
+    EXPECT_NEAR(res.mPoints.As<double>()[20 * 3 + 1], 0.1 / rr, 1e-12);
+    // On the quarter annulus in z = 0 the closest point drops the z.
+    for (std::size_t i = 0; i < 18; ++i) {
+        EXPECT_NEAR(res.mPoints.As<double>()[i * 3 + 2], 0.0, 1e-12);
+        EXPECT_NEAR(res.mDistances.As<double>()[i], std::abs(pts[i * 3 + 2]), 1e-10);
+    }
+}
+
+TEST(Iga, ClosestPointRefusesWhatItCannotDo) {
+    const NDArray p3 = doubles({1, 3}, {0.5, 0.5, 0.5});
+    EXPECT_THROW(meshioplusplus::iga_closest_point(one_patch(hexahedron()), 0, p3),
+                 std::invalid_argument);
+    const NurbsInfo in = one_patch(arc());
+    EXPECT_THROW(meshioplusplus::iga_closest_point(in, 1, doubles({1, 2}, {0, 0})),
+                 std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_closest_point(in, 0, p3), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_closest_point(in, 0, doubles({1, 2}, {std::nan(""), 0.0})),
                  std::invalid_argument);
 }
 

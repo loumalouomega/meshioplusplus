@@ -989,3 +989,91 @@ def test_knot_removal_through_the_cli_and_the_mcp_tool(tmp_path, capsys):
     )  # fmt: skip
     res = json.loads(res) if isinstance(res, str) else res
     assert res["num_removed"] == 1
+
+
+# --- closest point (roadmap 9.8.4) -----------------------------------------------
+
+
+def _annulus_model():
+    s = math.sqrt(0.5)
+    pts, w = [], []
+    for r in (1.0, 2.0):
+        pts += [[r, 0, 0], [r, r, 0], [0, r, 0]]
+        w += [1.0, s, 1.0]
+    return {
+        "patches": [
+            {
+                "degrees": [2, 1],
+                "knots": [[0, 0, 0, 1, 1, 1], [0, 0, 1, 1]],
+                "control_points": np.array(pts, dtype=float),
+                "weights": np.array(w),
+            }
+        ]
+    }
+
+
+def test_closest_point_on_a_curve_and_a_surface():
+    res = mp.iga_closest_point(_arc_model(), [[2.0, 2.0], [0.3, 0.0], [1.0, -1.0]])
+    np.testing.assert_allclose(res["points"][0], [math.sqrt(0.5)] * 2, atol=1e-12)
+    np.testing.assert_allclose(res["distances"][0], 2 * math.sqrt(2) - 1, atol=1e-12)
+    np.testing.assert_allclose(res["points"][2], [1.0, 0.0], atol=1e-12)  # clamped
+    assert res["params"].shape == (3, 1)
+    rng = np.random.default_rng(3)
+    th = rng.uniform(0.1, 1.4, 20)
+    r = rng.uniform(1.1, 1.9, 20)
+    z = rng.uniform(-0.5, 0.5, 20)
+    pts = np.stack([r * np.cos(th), r * np.sin(th), z], axis=1)
+    surf = mp.iga_closest_point(_annulus_model(), pts)
+    np.testing.assert_allclose(surf["points"][:, :2], pts[:, :2], atol=1e-10)
+    np.testing.assert_allclose(surf["points"][:, 2], 0.0, atol=1e-12)
+    np.testing.assert_allclose(surf["distances"], np.abs(z), atol=1e-10)
+    assert surf["params"].shape == (20, 2)
+    uv = surf["params"]
+    back = mp.iga_evaluate(_annulus_model(), uv)["points"]
+    np.testing.assert_allclose(back, surf["points"], atol=1e-12)
+
+
+def test_closest_point_refuses_volumes_and_bad_points():
+    box = {
+        "patches": [
+            {
+                "degrees": [1, 1, 1],
+                "knots": [[0, 0, 1, 1]] * 3,
+                "control_points": np.array(
+                    [[i, j, k] for k in (0, 1) for j in (0, 1) for i in (0, 1)],
+                    dtype=float,
+                ),
+                "weights": np.ones(8),
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="volume"):
+        mp.iga_closest_point(box, [[0.5, 0.5, 0.5]])
+    with pytest.raises(ValueError, match="Float64"):
+        mp.iga_closest_point(_arc_model(), [[0.0, 0.0, 0.0]])
+    with pytest.raises(ValueError, match="non-finite"):
+        mp.iga_closest_point(_arc_model(), [[float("nan"), 0.0]])
+    with pytest.raises(ValueError, match="patch 3"):
+        mp.iga_closest_point(_arc_model(), [[0.0, 0.0]], patch=3)
+    with pytest.raises(ValueError, match="'nurbs' model"):
+        mp.iga_closest_point({"faces": [], "patches": []}, [[0.0, 0.0]])
+
+
+def test_closest_point_through_the_cli_and_the_mcp_tool(tmp_path, capsys):
+    import json
+
+    from meshioplusplus._cli._main import main
+    from meshioplusplus.mcp import _tools
+
+    square = tmp_path / "square.mesh"
+    square.write_text(SQUARE_MESH)
+    assert (
+        main(["iga-closest-point", str(square), "-p", "1.5,0.5", "-p", "0.25,-1"]) == 0
+    )
+    got = json.loads(capsys.readouterr().out)
+    assert got["num_points"] == 2 and got["space_dim"] == 2
+    assert got["points"] == pytest.approx([1.0, 0.5, 0.25, 0.0])
+    assert got["distances"] == pytest.approx([0.5, 1.0])
+    res = _tools.tool_iga_closest_point(str(square), [[2.0, 2.0]])
+    res = json.loads(res) if isinstance(res, str) else res
+    assert res["points"] == [[1.0, 1.0]] and res["num_points"] == 1

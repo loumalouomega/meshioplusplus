@@ -9783,6 +9783,48 @@ mio_mesh* mio_iga_sample(const mio_format_info* info, const mio_iga_opts* opts,
     });
 }
 
+mio_status mio_iga_closest_point(const mio_format_info* info, int64_t patch, const double* points,
+                                 int64_t num_points, double* params, double* closest,
+                                 double* distances, int32_t* param_dim) {
+    return guarded([&]() -> mio_status {
+        if (!info || num_points < 0 || (num_points > 0 && !points) || patch < 0)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: iga_closest_point: info/points is NULL, or the patch or the "
+                        "point count is negative");
+        const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo);
+        if (!p_nurbs)
+            return fail(MIO_ERR_INVALID_ARG, kCapiIgaNotNurbs);
+        const auto pi = static_cast<std::size_t>(patch);
+        if (pi >= p_nurbs->mPatches.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: iga: patch " + std::to_string(patch) + " is out of range");
+        const std::size_t sdim = p_nurbs->mPatches[pi].mControlPoints.Shape().size() == 2
+                                     ? p_nurbs->mPatches[pi].mControlPoints.Shape()[1]
+                                     : 0;
+        meshioplusplus::NDArray q(meshioplusplus::DType::Float64,
+                                  {static_cast<std::size_t>(num_points), sdim});
+        if (sdim > 0 && num_points > 0)
+            std::copy(points, points + static_cast<std::size_t>(num_points) * sdim, q.As<double>());
+        try {
+            const meshioplusplus::IgaClosestPoint r =
+                meshioplusplus::iga_closest_point(*p_nurbs, pi, q);
+            const auto n = static_cast<std::size_t>(num_points);
+            const std::size_t dim = r.mParams.Shape()[1];
+            if (param_dim)
+                *param_dim = static_cast<int32_t>(dim);
+            if (params)
+                std::copy(r.mParams.As<double>(), r.mParams.As<double>() + n * dim, params);
+            if (closest)
+                std::copy(r.mPoints.As<double>(), r.mPoints.As<double>() + n * sdim, closest);
+            if (distances)
+                std::copy(r.mDistances.As<double>(), r.mDistances.As<double>() + n, distances);
+        } catch (const std::invalid_argument& e) {
+            return fail(MIO_ERR_INVALID_ARG, e.what());
+        }
+        return MIO_OK;
+    });
+}
+
 static_assert(sizeof(mio_iga_remove_opts) == 72, "mio_iga_remove_opts layout changed");
 static_assert(offsetof(mio_iga_remove_opts, reserved) == 40,
               "mio_iga_remove_opts: the reserved tail moved");

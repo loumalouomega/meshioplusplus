@@ -9277,6 +9277,20 @@ PYBIND11_MODULE(_core, m) {
             py::arg("knots") = std::vector<double>{}, py::arg("tolerance") = 0.0,
             py::arg("sample_subdivisions") = 0);
         m.def(
+            "iga_closest_point_nurbs",
+            [=](py::object nurbs, std::size_t patch, py::object points) {
+                const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);
+                const meshioplusplus::NDArray q = params_view(points);
+                meshioplusplus::IgaClosestPoint r =
+                    core_nogil([&] { return meshioplusplus::iga_closest_point(in, patch, q); });
+                py::dict out;
+                out["params"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mParams));
+                out["points"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPoints));
+                out["distances"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mDistances));
+                return out;
+            },
+            py::arg("nurbs"), py::arg("patch"), py::arg("points"));
+        m.def(
             "iga_bezier_extract_nurbs",
             [=](py::object nurbs, std::size_t patch) {
                 const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);

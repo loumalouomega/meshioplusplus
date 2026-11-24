@@ -1671,6 +1671,27 @@ meshioplusplus iga-sample plate.cad.json plate.vtu -s 8
 
 ---
 
+## meshioplusplus iga-closest-point
+
+Print, as JSON, the point of a NURBS patch closest to each query point (see [isogeometric layer](/iga#closest-point)).
+
+```text
+meshioplusplus iga-closest-point [options] INFILE
+```
+
+| Option | Meaning |
+|---|---|
+| `-p`, `--point x[,y[,z]]` | A query point with the patch's space dimension; repeat for more |
+| `--patch N` | The patch, 0-based (default 0) |
+
+The JSON carries `num_points`, `space_dim` and the flat row-major arrays `params`, `points` (the closest points) and `distances`.
+
+```sh
+meshioplusplus iga-closest-point pipe.mesh -p 1.5,0.2,0.1 --patch 1
+```
+
+---
+
 ## meshioplusplus iga-remove-knots
 
 Remove knots from one patch of a NURBS model within a tolerance (see [isogeometric layer](/iga#knot-removal)). Takes `iga-refine`'s input, format and summary options; the JSON summary adds `knots`, `requested`, `removed` and `num_removed`.

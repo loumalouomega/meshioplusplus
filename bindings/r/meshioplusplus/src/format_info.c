@@ -512,6 +512,36 @@ SEXP R_mio_iga_sample(SEXP x, SEXP sample_subdivisions, SEXP trim_samples, SEXP 
     return iga_mesh_and_info(mesh, mapped, "iga_sample");
 }
 
+SEXP R_mio_iga_closest_point(SEXP x, SEXP patch, SEXP points) {
+    const mio_format_info *info = info_of(x, 0);
+    if (!Rf_isMatrix(points)) Rf_error("'points' must be a (space_dim, N) matrix, one column per point");
+    SEXP q = PROTECT(Rf_coerceVector(points, REALSXP));
+    const int sdim = Rf_nrows(points);
+    const int n = Rf_ncols(points);
+    SEXP params = PROTECT(Rf_allocMatrix(REALSXP, 2, n));
+    SEXP closest = PROTECT(Rf_allocMatrix(REALSXP, sdim, n));
+    SEXP dist = PROTECT(Rf_allocVector(REALSXP, n));
+    int32_t pdim = 0;
+    mio_status st = mio_iga_closest_point(info, (int64_t)mio_r_int(patch, "patch") - 1, REAL(q),
+                                          (int64_t)n, REAL(params), REAL(closest), REAL(dist),
+                                          &pdim);
+    if (st != MIO_OK) {
+        UNPROTECT(4);
+        mio_r_check(st, "iga_closest_point");
+    }
+    /* the C library wrote rows of pdim (1 or 2) doubles: reshape to (pdim, N) */
+    SEXP prm = PROTECT(Rf_allocMatrix(REALSXP, pdim, n));
+    for (R_xlen_t i = 0; i < (R_xlen_t)pdim * n; ++i) REAL(prm)[i] = REAL(params)[i];
+    SEXP values[3];
+    values[0] = prm;
+    values[1] = closest;
+    values[2] = dist;
+    const char *names[3] = {"params", "points", "distances"};
+    SEXP out = mio_r_named_list(3, names, values);
+    UNPROTECT(5);
+    return out;
+}
+
 SEXP R_mio_iga_remove_knots(SEXP x, SEXP patch, SEXP direction, SEXP knots, SEXP tolerance,
                             SEXP sample_subdivisions) {
     const mio_format_info *info = info_of(x, 0);

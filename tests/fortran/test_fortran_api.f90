@@ -253,6 +253,20 @@ program test_fortran_api
                 ev_a = info%iga_evaluate(1, reshape([2.0_real64, 0.5_real64], [2, 1]), stat=ierr)
                 call check(ierr /= 0, 'an out-of-range parameter fails')
                 call ev_a%free()
+                ! ---- closest point: the annulus is a surface in 2-D here
+                block
+                    real(real64) :: q(2, 2), prm(2, 2), dst(2)
+                    real(real64), allocatable :: cls(:, :), prm_a(:, :), dst_a(:)
+                    q = reshape([3.0_real64, 0.0_real64, 0.0_real64, 1.5_real64], [2, 2])
+                    cls = info%iga_closest_point(1, q, params=prm_a, distances=dst_a, stat=ierr)
+                    call check(ierr == 0, 'iga_closest_point succeeds')
+                    call check(all(shape(cls) == [2, 2]) .and. all(shape(prm_a) == [2, 2]), &
+                               'closest point shapes')
+                    call check(abs(cls(1, 1) - 2.0_real64) < 1.0e-12_real64 .and. &
+                               abs(dst_a(1) - 1.0_real64) < 1.0e-12_real64, 'closest point value')
+                    cls = info%iga_closest_point(4, q, stat=ierr)
+                    call check(ierr /= 0, 'a patch out of range is refused')
+                end block
                 ! ---- knot removal undoes the refinement's insertions: two knots per direction
                 block
                     type(mio_format_info) :: reduced

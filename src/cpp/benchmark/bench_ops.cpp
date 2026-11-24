@@ -2824,6 +2824,44 @@ int main(int argc, char** argv) {
             info.mPatches.push_back(std::move(p));
             return info;
         };
+        row("iga_closest_point", [&](MeshDigest* pD) {
+            mio::NurbsPatch sheet;
+            sheet.mDegrees = {3, 3};
+            sheet.mKnots = {{0, 0, 0, 0, 1, 1, 1, 1}, {0, 0, 0, 0, 1, 1, 1, 1}};
+            sheet.mControlPoints = mio::NDArray(mio::DType::Float64, {16, 3});
+            sheet.mWeights = mio::NDArray(mio::DType::Float64, {16});
+            for (std::size_t j = 0; j < 4; ++j)
+                for (std::size_t i = 0; i < 4; ++i) {
+                    double* x = sheet.mControlPoints.As<double>() + 3 * (i + 4 * j);
+                    x[0] = static_cast<double>(i);
+                    x[1] = static_cast<double>(j);
+                    x[2] = 0.3 * static_cast<double>((i * j) % 3) - 0.2 * static_cast<double>(i);
+                    sheet.mWeights.As<double>()[i + 4 * j] =
+                        1.0 + 0.1 * static_cast<double>((i + j) % 3);
+                }
+            mio::NurbsInfo info;
+            info.mPatches.push_back(std::move(sheet));
+            mio::IgaRefineOptions o;
+            o.mSubdivisions = {2, 2, 1};
+            info = mio::iga_refine(info, o);
+            const std::size_t m = 64 * static_cast<std::size_t>(n);
+            mio::NDArray q(mio::DType::Float64, {m, 3});
+            for (std::size_t i = 0; i < m; ++i) {
+                const double a = static_cast<double>(i % 37) / 37.0,
+                             b = static_cast<double>(i % 29) / 29.0;
+                double* x = q.As<double>() + 3 * i;
+                x[0] = -0.2 + 3.4 * a;
+                x[1] = -0.2 + 3.4 * b;
+                x[2] = 0.7 * std::sin(6.0 * a + 3.0 * b);
+            }
+            const mio::IgaClosestPoint r = mio::iga_closest_point(info, 0, q);
+            doubles(pD, std::vector<double>(r.mParams.As<double>(),
+                                            r.mParams.As<double>() + r.mParams.Size()));
+            doubles(pD, std::vector<double>(r.mPoints.As<double>(),
+                                            r.mPoints.As<double>() + r.mPoints.Size()));
+            doubles(pD, std::vector<double>(r.mDistances.As<double>(),
+                                            r.mDistances.As<double>() + r.mDistances.Size()));
+        });
         row("iga_remove_knots", [&](MeshDigest* pD) {
             mio::IgaRefineOptions o;
             o.mSubdivisions = {static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), 2};

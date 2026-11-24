@@ -6611,6 +6611,31 @@
     ]
    }
   },
+  "iga_closest_point": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "points"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "patch"
+     },
+     {
+      "default": "'auto'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "model"
+     }
+    ]
+   }
+  },
   "iga_evaluate": {
    "kind": "function",
    "signature": {

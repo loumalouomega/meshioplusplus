@@ -4378,6 +4378,24 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; info: MfemInfo | CadJsonInfo };
 
   /**
+   * The point of patch `patch` (0-based) of an MFEM NURBS model closest to
+   * each query point (`points`: `spaceDim` numbers per point, flat), for a
+   * curve or a surface, rational or not. A point beyond the patch's edge lands
+   * on the edge; a volume and a B-rep are refused.
+   */
+  igaClosestPoint(
+    info: MfemInfo,
+    patch: number,
+    points: ArrayLike<number>,
+  ): {
+    paramDim: number;
+    spaceDim: number;
+    params: Float64Array;
+    points: Float64Array;
+    distances: Float64Array;
+  };
+
+  /**
    * Remove knots from one patch of an MFEM NURBS model (The NURBS Book's
    * A5.8): interior knots of `direction` (0-based) go while the geometry and
    * the NURBS fields move by at most `tolerance` (0 removes only what is

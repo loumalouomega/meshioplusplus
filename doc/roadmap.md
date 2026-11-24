@@ -942,16 +942,15 @@ Reopened from the non-goals, which record why a native `mesh_boolean` was not qu
   - **9.7.3 Connected parts.** KaHIP's `--connected_blocks` is not reachable through the `kaffpa` C interface ([partition](./partition.md) records it). A method-independent post-pass `mConnectedParts`: label components per part with `cell_components` (`detail/cell_components.hpp` lines 55–60), keep each part's largest, and reassign every other component to the neighbouring part it shares most facets with, repeating until none remains; report the balance after it.
 - **Done when.** `partition(mesh, 8, method="metis")` works with the provider present and refuses by name without, and `connected_parts=True` gives one component per part on the space-filling curve's output. **S–M**
 
-### 9.8 The isogeometric layer's open list
+### 9.8 The isogeometric layer's open list: remaining
 
-[IGA](./iga.md) marks four things as not yet. **M**
+[IGA](./iga.md) shipped second derivatives (`iga_evaluate(..., derivatives=2)`), `iga_bezier_extract`, `iga_remove_knots` and `iga_closest_point` for NURBS patches. What is left of the list is the cases those refuse. **S–M**
 
-- **State today.** `iga_evaluate(info, patch, params, Derivatives)` accepts 0 or 1 (`operations/iga.hpp` line 154); second derivatives exist internally (`iga_basis_ders2`, `iga_eval_surface_d2`, `detail/iga_kernels.hpp` lines 514 and 574; `BrepSurfaceEval::Eval2`); closest-point projection exists for B-rep faces (`SurfaceProjector::Project` and `Polish`, `detail/surface_project.hpp`, used by `project_to_cad`); knot insertion and degree elevation are public (`iga_insert_knots`, `iga_elevate_degree`); VTK Bézier cell types are in `cell_type.hpp` (lines 126–132) with `RationalWeights`/`HigherOrderDegrees` read by `vtu_read.cpp`.
+- **State today.** The three new operations take a `NurbsInfo` patch; a `BrepInfo` model is refused by name; knot removal refuses a model whose patch topology joins several patches (they share knot vectors); Bézier extraction produces cells, not operators; the closest point takes curves and surfaces.
 - **Steps.**
-  - **9.8.1 Second derivatives.** `Derivatives = 2` in `iga_evaluate` over the internal kernels; `IgaEvaluation::mDerivatives` gains the second-order block (its layout documented); the twin repeats the arithmetic order. **S**
-  - **9.8.2 Bézier extraction.** `iga_bezier_extract(info, patch)`: knot insertion to full multiplicity per span (the existing line-wise kernel), returning either the extraction operators per element (what an IGA code assembles with) or a mesh of VTK Bézier cells with `RationalWeights`, which the VTU writer already writes. **S–M**
-  - **9.8.3 Knot removal.** `iga_remove_knots(patch, dir, knots, tolerance)` (The NURBS Book A5.8), reporting the knots it could not remove within tolerance. **S–M**
-  - **9.8.4 Closest point on a patch.** `iga_closest_point(info, patch, points) -> {params, points, distances}` generalising `SurfaceProjector` from B-rep faces to `NurbsInfo` patches (curves and surfaces; volumes by inversion, later). **S**
+  - **9.8.5 Extraction operators.** `iga_bezier_extract` could also return the extraction operator per element (the matrix taking the B-spline basis of the element to the Bernstein basis, what an IGA code assembles with), beside the cells it returns now. **S**
+  - **9.8.6 Closest point on a volume.** A volume needs a point-in-solid test first (the closest point of a solid is the query point itself unless it is outside): the parameters by Newton inversion, then the boundary patches for a point outside. **S–M**
+  - **9.8.7 B-rep faces and joined patches.** `iga_bezier_extract`, `iga_remove_knots` and `iga_closest_point` on the faces of a `BrepInfo` (the trims would follow the parametrisation, which removal only preserves within the tolerance), and knot removal on a model whose patch topology joins several patches (a knot goes only if it goes from every patch sharing the knot vector). **M**
 - **Done when.** The *Not yet* line of the page holds only refinement of one patch of an MFEM model.
 
 ### 9.9 Point-cloud conditioning: remaining

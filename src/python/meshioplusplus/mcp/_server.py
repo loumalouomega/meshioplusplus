@@ -2754,6 +2754,27 @@ def _register_operations(server: FastMCP) -> None:
         keep every cell)."""
 
     @server.tool()
+    @_forward(_tools.tool_iga_closest_point)
+    def iga_closest_point(
+        input_path: str,
+        points: List[List[float]],
+        input_format: Optional[str] = None,
+        patch: int = 0,
+        model: str = "auto",
+    ) -> dict:
+        """The point of a NURBS patch (an MFEM NURBS mesh) closest to each of
+        points, a list of [x], [x, y] or [x, y, z] (at most 10000 per call),
+        for a curve (one parametric direction) or a surface (two), rational or
+        not, in 1 to 3 space dimensions.
+
+        A lattice of samples seeds a Newton iteration on the squared distance
+        with the exact second derivatives, clamped to the patch's knot range:
+        a point beyond an edge lands on the edge. The answer carries
+        num_points, params (N x d), points (the closest points, N x space
+        dimension) and distances (N). A volume and a B-rep are refused by
+        name."""
+
+    @server.tool()
     @_forward(_tools.tool_iga_remove_knots)
     def iga_remove_knots(
         input_path: str,

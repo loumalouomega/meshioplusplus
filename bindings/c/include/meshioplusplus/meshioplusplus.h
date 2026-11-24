@@ -7488,6 +7488,21 @@ MIO_API mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation
 MIO_API void mio_iga_evaluation_free(mio_iga_evaluation* evaluation);
 
 /**
+ * The point of patch `patch` (0-based) of a NURBS model closest to each of
+ * `num_points` query points: `points` is `num_points * space_dim` doubles
+ * (row-major, space_dim the patch's), a curve or a surface, rational or not
+ * (see doc/iga.md). Each output pointer is optional and caller-allocated:
+ * `params` `num_points * d` doubles (d the patch's parametric dimension, 1 or
+ * 2, so `2 * num_points` always suffices), `closest` `num_points * space_dim`,
+ * `distances` `num_points`; `param_dim` receives d.
+ * @return MIO_OK, or MIO_ERR_INVALID_ARG with mio_last_error() for a volume, a
+ *         B-rep, a bad patch or a non-finite point.
+ */
+MIO_API mio_status mio_iga_closest_point(const mio_format_info* info, int64_t patch,
+                                         const double* points, int64_t num_points, double* params,
+                                         double* closest, double* distances, int32_t* param_dim);
+
+/**
  * Options for mio_iga_remove_knots (72 bytes). Initialize through
  * mio_iga_remove_opts_init().
  */

@@ -284,6 +284,12 @@ end
         @test size(a.derivatives) == (2, 2, 2)
         @test a.normals === nothing && a.inside === nothing && isempty(a.fields)
         @test_throws MeshioError iga_evaluate(info, 1, reshape([2.0, 0.5], 2, 1))
+        # closest point: the annulus is a surface in 2-D here
+        cp = iga_closest_point(info, [3.0 0.0; 0.0 1.5])
+        @test size(cp.params) == (2, 2)
+        @test cp.points[:, 1] ≈ [2.0, 0.0] atol = 1e-12
+        @test cp.distances ≈ [1.0, 0.0] atol = 1e-10
+        @test_throws MeshioError iga_closest_point(info, reshape([3.0, 0.0], 2, 1); patch=4)
         # knot removal undoes the refinement's insertions: two knots per direction
         red_mesh, red_info, rep = iga_remove_knots(refined; direction=1)
         @test rep.num_removed == 2 && rep.removed == [1, 1] && rep.requested == [1, 1]

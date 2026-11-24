@@ -54,6 +54,12 @@ test_that("An MFEM NURBS mesh keeps its patches in the format side channel", {
   expect_null(a$inside)
   expect_length(a$fields, 0)
   expect_error(mio_iga_evaluate(r$info, 1, matrix(c(2, 0.5), nrow = 2)), "knot range")
+  # closest point: the annulus is a surface in 2-D here
+  cp <- mio_iga_closest_point(r$info, matrix(c(3, 0, 0, 1.5), nrow = 2))
+  expect_equal(dim(cp$params), c(2, 2))
+  expect_equal(cp$points[, 1], c(2, 0), tolerance = 1e-12)
+  expect_equal(cp$distances, c(1, 0), tolerance = 1e-10)
+  expect_error(mio_iga_closest_point(r$info, matrix(c(3, 0), nrow = 2), patch = 4), "patch")
   # knot removal undoes the refinement's insertions: two knots per direction
   red <- mio_iga_remove_knots(fine$info, direction = 1)
   expect_equal(red$report$num_removed, 2)

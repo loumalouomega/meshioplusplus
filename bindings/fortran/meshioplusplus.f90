@@ -3360,6 +3360,7 @@ module meshioplusplus
         procedure :: iga_sample => format_info_iga_sample
         procedure :: iga_bezier_extract => format_info_iga_bezier_extract
         procedure :: iga_remove_knots => format_info_iga_remove_knots
+        procedure :: iga_closest_point => format_info_iga_closest_point
         procedure :: iga_evaluate => format_info_iga_evaluate
         procedure :: mesh_cad_surface => format_info_mesh_cad_surface
     end type mio_format_info
@@ -7271,6 +7272,18 @@ module meshioplusplus
             type(mio_iga_opts_t), intent(in) :: opts
             type(c_ptr), intent(out) :: mapped
             type(c_ptr) :: h
+        end function
+
+        function c_mio_iga_closest_point(info, patch, points, num_points, params, closest, &
+                                         distances, param_dim) bind(c, name="mio_iga_closest_point") &
+                result(st)
+            import :: c_ptr, c_double, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int64_t), value :: patch, num_points
+            real(c_double), intent(in) :: points(*)
+            real(c_double), intent(out) :: params(*), closest(*), distances(*)
+            integer(c_int32_t), intent(out) :: param_dim
+            integer(c_int) :: st
         end function
 
         function c_mio_iga_remove_knots(info, opts, reduced, capacity, report_knots, &
@@ -18499,6 +18512,40 @@ contains
         else
             call c_mio_format_info_free(ih)
         end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The point of patch `patch` (1-based) of this NURBS model closest to each
+    !> column of `points(space_dim, N)` (a curve or a surface, rational or not):
+    !> the closest points `(space_dim, N)`, with `params(d, N)` their parameters
+    !> and `distances(N)` the distances. A point beyond the patch's edge lands on
+    !> the edge; a volume is refused.
+    function format_info_iga_closest_point(self, patch, points, params, distances, stat, &
+                                           errmsg) result(closest)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        real(real64), intent(in) :: points(:, :)
+        real(real64), allocatable, intent(out), optional :: params(:, :), distances(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: closest(:, :)
+        real(c_double), allocatable :: flat(:), p_out(:), c_out(:), d_out(:)
+        integer :: d, n, st
+        integer(c_int32_t) :: pdim
+        n = size(points, 2)
+        flat = reshape(real(points, c_double), [size(points)])
+        allocate (p_out(max(1, 2*n)), c_out(max(1, size(points))), d_out(max(1, n)))
+        st = c_mio_iga_closest_point(self%handle, int(patch - 1, c_int64_t), flat, &
+                                     int(n, c_int64_t), p_out, c_out, d_out, pdim)
+        d = int(pdim)
+        if (st /= 0) then
+            allocate (closest(size(points, 1), 0))
+            call handle_failure('iga_closest_point', mio_error_message(), stat, errmsg)
+            return
+        end if
+        closest = reshape(real(c_out(1:size(points)), real64), shape(points))
+        if (present(params)) params = reshape(real(p_out(1:d*n), real64), [d, n])
+        if (present(distances)) distances = real(d_out(1:n), real64)
         call clear_status(stat, errmsg)
     end function
 

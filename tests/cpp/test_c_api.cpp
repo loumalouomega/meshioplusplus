@@ -1903,6 +1903,31 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     mio_mesh_free(cells);
     mio_format_info_free(mapped);
 
+    // The closest point: the annulus is a surface in 2-D here.
+    {
+        const double q[4] = {3.0, 0.0, 0.0, 1.5};
+        double prm[4], cls[4], dst[2];
+        int32_t pdim = 0;
+        ASSERT_EQ(mio_iga_closest_point(info, 0, q, 2, prm, cls, dst, &pdim), MIO_OK)
+            << mio_last_error();
+        EXPECT_EQ(pdim, 2);
+        EXPECT_NEAR(cls[0], 2.0, 1e-12);
+        EXPECT_NEAR(cls[1], 0.0, 1e-12);
+        EXPECT_NEAR(dst[0], 1.0, 1e-12);
+        EXPECT_NEAR(cls[2], 0.0, 1e-12);  // (0, 1.5) is on the patch's edge x = 0
+        EXPECT_NEAR(cls[3], 1.5, 1e-12);
+        EXPECT_NEAR(dst[1], 0.0, 1e-12);
+        EXPECT_EQ(mio_iga_closest_point(info, 0, q, 2, nullptr, nullptr, nullptr, nullptr), MIO_OK);
+        EXPECT_EQ(mio_iga_closest_point(info, 5, q, 2, prm, cls, dst, nullptr),
+                  MIO_ERR_INVALID_ARG);
+        EXPECT_EQ(mio_iga_closest_point(info, -1, q, 2, prm, cls, dst, nullptr),
+                  MIO_ERR_INVALID_ARG);
+        EXPECT_EQ(mio_iga_closest_point(nullptr, 0, q, 2, prm, cls, dst, nullptr),
+                  MIO_ERR_INVALID_ARG);
+        const double bad[2] = {std::nan(""), 0.0};
+        EXPECT_EQ(mio_iga_closest_point(info, 0, bad, 1, prm, cls, dst, nullptr),
+                  MIO_ERR_INVALID_ARG);
+    }
     // Knot removal undoes the insertion of the refinement: two knots per direction.
     {
         mio_iga_remove_opts ro;

@@ -559,6 +559,30 @@ static mxArray *ofi_iga_array(const mio_iga_evaluation *ev, int32_t which, int64
 
 /* iga_evaluate(info, patch, params, derivatives, trim_samples) -- params is
  * (N x d), one row per point: exactly the row-major (N, d) the C API takes. */
+/* iga_closest_point(info, patch, points): points is N x space_dim */
+static mxArray *O_mio_iga_closest_point(const mxArray **a) {
+    const mio_format_info *info = ofi_info_of(a[0], 0);
+    int64_t n = 0, sdim = 0;
+    double *q = mio_o_rows_to_c(a[2], &n, &sdim, 0.0, "points");
+    double *params = (double *)mxCalloc((size_t)(2 * n) + 1, sizeof(double));
+    double *closest = (double *)mxCalloc((size_t)(n * sdim) + 1, sizeof(double));
+    double *dist = (double *)mxCalloc((size_t)n + 1, sizeof(double));
+    int32_t pdim = 0;
+    mio_status st = mio_iga_closest_point(info, (int64_t)mio_o_int(a[1], "patch") - 1, q, n,
+                                          params, closest, dist, &pdim);
+    mxFree(q);
+    if (st != MIO_OK) mio_o_check(st, "iga_closest_point");
+    mxArray *values[3];
+    values[0] = mio_o_rows_from_c(params, MIO_FLOAT64, n, pdim, 0.0);
+    values[1] = mio_o_rows_from_c(closest, MIO_FLOAT64, n, sdim, 0.0);
+    values[2] = mio_o_rows_from_c(dist, MIO_FLOAT64, n, 1, 0.0);
+    mxFree(params);
+    mxFree(closest);
+    mxFree(dist);
+    const char *names[3] = {"params", "points", "distances"};
+    return mio_o_struct(3, names, values);
+}
+
 /* iga_remove_knots(info, patch, direction, knots, tolerance, sample_subdivisions) */
 static mxArray *O_mio_iga_remove_knots(const mxArray **a) {
     const mio_format_info *info = ofi_info_of(a[0], 0);
@@ -1281,6 +1305,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_iga_sample, 5),
     MIO_O_ENTRY(mio_iga_bezier_extract, 2),
     MIO_O_ENTRY(mio_iga_remove_knots, 6),
+    MIO_O_ENTRY(mio_iga_closest_point, 3),
     MIO_O_ENTRY(mio_project_to_cad, 6),
     MIO_O_ENTRY(mio_mesh_cad_surface, 36),
     MIO_O_ENTRY(mio_iga_evaluate, 5),

@@ -1276,8 +1276,39 @@ def iga_remove_knots(
     return (out, report) if return_report else out
 
 
+def iga_closest_point(mesh, points, patch=0, model="auto"):
+    """The point of a NURBS patch closest to each of ``points`` (roadmap 9.8.4).
+
+    A curve (one parametric direction, in 1-3 space dimensions) or a surface
+    (two directions, in 2 or 3), rational or not. A lattice of samples seeds a
+    Newton iteration on the squared distance with the exact second
+    derivatives (``iga_evaluate(..., derivatives=2)``), clamped to the knot
+    range: a point beyond the patch's edge lands on the edge. The three
+    nearest samples seed three runs and the closest result wins, so a point
+    near a fold usually finds the global minimum, though that is not
+    guaranteed. A volume is refused.
+
+    :param points: ``(N, space dim)`` finite coordinates.
+    :param patch: the patch of the ``nurbs`` model.
+    :returns: a dict with ``params`` ``(N, d)``, ``points`` ``(N, space dim)``
+        (the closest points) and ``distances`` ``(N,)``.
+    :raises ValueError: on a bad patch, a volume, a ``brep`` model or points
+        that are not finite ``(N, space dim)``.
+    :raises NotImplementedError: when the compiled C++ core is unavailable.
+    """
+    from ._hull import _core_op
+
+    kind, data = _model(mesh, model)
+    if kind != "nurbs":
+        _fail("the closest point takes a 'nurbs' model, not a 'brep'")
+    return _core_op("iga_closest_point_nurbs")(
+        data, int(patch), np.ascontiguousarray(np.asarray(points, dtype=np.float64))
+    )
+
+
 __all__ = [
     "iga_bezier_extract",
+    "iga_closest_point",
     "iga_evaluate",
     "iga_refine",
     "iga_remove_knots",

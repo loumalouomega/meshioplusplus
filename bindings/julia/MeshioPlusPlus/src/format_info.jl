@@ -465,6 +465,29 @@ function iga_sample(info::FormatInfo; kwargs...)
 end
 
 """
+    iga_closest_point(info, points; patch=1) -> (; params, points, distances)
+
+The point of patch `patch` of a NURBS model closest to each column of the
+`(space_dim, N)` matrix `points` (a curve or a surface, rational or not): the
+parameters `(d, N)`, the closest points `(space_dim, N)` and the distances `N`.
+A point beyond the patch's edge lands on the edge; a volume is refused.
+"""
+function iga_closest_point(info::FormatInfo, points::AbstractMatrix{<:Real}; patch::Integer=1)
+    q = Matrix{Float64}(points)
+    n = size(q, 2)
+    params = Matrix{Float64}(undef, 2, n)
+    closest = Matrix{Float64}(undef, size(q, 1), n)
+    dist = Vector{Float64}(undef, n)
+    pdim = Ref{Int32}(0)
+    st = ccall(_sym(:mio_iga_closest_point), Cint,
+               (Ptr{Cvoid}, Int64, Ptr{Cdouble}, Int64, Ptr{Cdouble}, Ptr{Cdouble},
+                Ptr{Cdouble}, Ptr{Int32}),
+               _handle(info), Int64(patch - 1), q, Int64(n), params, closest, dist, pdim)
+    _check(st)
+    return (params=params[1:pdim[], :], points=closest, distances=dist)
+end
+
+"""
     iga_remove_knots(info; direction=1, knots=Float64[], tolerance=0.0, patch=1,
                      sample_subdivisions=0) -> (Mesh, FormatInfo, report)
 

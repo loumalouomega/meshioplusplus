@@ -196,6 +196,7 @@ if TYPE_CHECKING:
     from ._hull import convex_hull, delaunay_2d
     from ._iga import (
         iga_bezier_extract,
+        iga_closest_point,
         iga_evaluate,
         iga_refine,
         iga_remove_knots,
@@ -468,6 +469,7 @@ _LAZY_ATTRS = {
     "fit_cad": "_fit_cad",
     "fit_primitives": "_fit_primitives",
     "iga_bezier_extract": "_iga",
+    "iga_closest_point": "_iga",
     "iga_evaluate": "_iga",
     "iga_refine": "_iga",
     "iga_remove_knots": "_iga",
@@ -793,6 +795,7 @@ __all__ = [
     "fit_cad",
     "fit_primitives",
     "iga_bezier_extract",
+    "iga_closest_point",
     "iga_evaluate",
     "iga_refine",
     "iga_remove_knots",

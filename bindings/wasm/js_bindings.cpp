@@ -6782,6 +6782,33 @@ val iga_sample_js(const val& rInfo, const val& rOptions) {
     });
 }
 
+// `igaClosestPoint(info, patch, points)`: the closest point of one patch (0-based)
+// of an MFEM NURBS model to each query point (`points` flat, `spaceDim` numbers each).
+val iga_closest_point_js(const val& rInfo, double patch, const val& rPoints) {
+    return with_js_errors([&]() -> val {
+        if (iga_js_format(rInfo) != "mfem")
+            throw std::invalid_argument(
+                "meshio++: iga: the closest point takes a NURBS model, not a B-rep");
+        if (!std::isfinite(patch) || patch != std::floor(patch) || patch < 0)
+            throw std::invalid_argument("meshio++: iga: patch must be a non-negative integer");
+        const auto index = static_cast<std::size_t>(patch);
+        const meshioplusplus::NurbsInfo nurbs = val_to_nurbs_info(rInfo);
+        if (index >= nurbs.mPatches.size())
+            throw std::invalid_argument("meshio++: iga: patch out of range");
+        const std::size_t sdim = nurbs.mPatches[index].mControlPoints.Shape()[1];
+        const NDArray points = nurbs_js_doubles(rPoints, sdim, "points");
+        const meshioplusplus::IgaClosestPoint r =
+            meshioplusplus::iga_closest_point(nurbs, index, points);
+        val out = val::object();
+        out.set("paramDim", static_cast<double>(cols_of(r.mParams)));
+        out.set("spaceDim", static_cast<double>(sdim));
+        out.set("params", ndarray_to_typed_array(r.mParams));
+        out.set("points", ndarray_to_typed_array(r.mPoints));
+        out.set("distances", ndarray_to_typed_array(r.mDistances));
+        return out;
+    });
+}
+
 // `igaRemoveKnots(info, options)`: knot removal on one patch (0-based) of an
 // MFEM NURBS model; `options` is `{direction, knots, tolerance, patch,
 // sampleSubdivisions}`. Returns `{mesh, info, report}`.
@@ -11458,6 +11485,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("igaEvaluate", &iga_evaluate_js);
     emscripten::function("igaBezierExtract", &iga_bezier_extract_js);
     emscripten::function("igaRemoveKnots", &iga_remove_knots_js);
+    emscripten::function("igaClosestPoint", &iga_closest_point_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);
     emscripten::function("renderPng", &render_png_js);

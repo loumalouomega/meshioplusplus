@@ -74,6 +74,7 @@ Jupyter notebooks demonstrating meshio++'s Python bindings on the bundled
 | [`73_mass_properties.ipynb`](73_mass_properties.ipynb) | Unreleased: mass, centre of mass, inertia tensor and principal axes of a box, a bar of two densities, a UV sphere and a shell, checked against closed forms, with the centre of mass drawn beside the mean of the points. |
 | [`74_ray_queries.ipynb`](74_ray_queries.ipynb) | Unreleased: rays at a sphere (hit distance against the analytic distance, normals, cells hit), seams and limits, and point location in a hexahedral mesh with barycentric weights that reproduce `interpolate` bit for bit. |
 | [`75_filter_points.ipynb`](75_filter_points.ipynb) | Unreleased: a noisy sphere scan cleaned of stray points (statistical and radius outlier removal), thinned by voxel and Poisson-disk sampling, and reconstructed. |
+| [`76_iga_extras.ipynb`](76_iga_extras.ipynb) | Unreleased: the second derivatives of a rational arc (its curvature), the Bezier cells of a refined annulus and their VTU round trip, knot removal undoing a refinement and removing a needed knot within a tolerance, and the closest points of a curve and a surface. |
 
 See [`../cpp/`](../cpp/) for the same tour written directly against the **C++ core** (no Python), running on the [xeus-cpp](https://github.com/compiler-research/xeus-cpp) Jupyter kernel.
 

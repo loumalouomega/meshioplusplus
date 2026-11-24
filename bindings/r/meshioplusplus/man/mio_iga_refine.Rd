@@ -3,6 +3,7 @@
 \alias{mio_iga_sample}
 \alias{mio_iga_bezier_extract}
 \alias{mio_iga_remove_knots}
+\alias{mio_iga_closest_point}
 \alias{mio_iga_evaluate}
 \title{Refine, sample and evaluate a NURBS model}
 \usage{
@@ -13,6 +14,8 @@ mio_iga_sample(info, sample_subdivisions = 0L, trim_samples = 16L, edges = TRUE,
   trim = TRUE)
 
 mio_iga_bezier_extract(info, patch = 1L)
+
+mio_iga_closest_point(info, points, patch = 1L)
 
 mio_iga_remove_knots(info, direction = 1L, knots = numeric(), tolerance = 0, patch = 1L,
   sample_subdivisions = 0L)
@@ -49,7 +52,10 @@ a patch with unequal degrees is refused. \code{mio_iga_remove_knots()} removes k
 direction \code{direction} (1-based) of patch \code{patch} of a NURBS model while the
 geometry moves by at most \code{tolerance} (The NURBS Book's A5.8; 0 removes only what
 is exact up to rounding); \code{knots} lists the values to remove, one copy per entry
-(default every copy of every interior knot).}
+(default every copy of every interior knot). \code{mio_iga_closest_point()} finds, for
+each column of the \code{(space_dim, N)} matrix \code{points}, the closest point of
+patch \code{patch} (a curve or a surface, rational or not): a point beyond the patch's
+edge lands on the edge, and a volume is refused.}
 \value{\code{mio_iga_refine()} and \code{mio_iga_sample()}: \code{list(mesh = , info = )}, the
 sampled mesh and the model (refined, or with the sampling's cell maps), for
 \code{mio_write_with_info()}. \code{mio_iga_evaluate()}: a list with \code{points}
@@ -59,4 +65,5 @@ NURBS field), \code{derivatives} (\code{(space_dimension, d, N)}) and \code{norm
 (\code{(space_dimension, d, d, N)}, \code{NULL} unless \code{derivatives = 2}), and \code{inside}
 (a logical vector for a B-rep face, else \code{NULL}). \code{mio_iga_bezier_extract()}: the mesh. \code{mio_iga_remove_knots()}: \code{list(mesh = , info = , report = )},
 the report holding \code{knots}, \code{requested}, \code{removed} (per distinct knot value) and
-\code{num_removed}.}
+\code{num_removed}. \code{mio_iga_closest_point()}: \code{list(params = , points = , distances = )},
+the parameters \code{(d, N)}, the closest points \code{(space_dim, N)} and the distances.}

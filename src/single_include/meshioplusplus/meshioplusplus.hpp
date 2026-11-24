@@ -33365,6 +33365,39 @@ MESHIOPLUSPLUS_API NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_
                                               const std::vector<double>& rKnots, double Tolerance,
                                               IgaRemoveKnotsReport* pReport = nullptr);
 
+/// What `iga_closest_point` found, one row per query point.
+struct IgaClosestPoint {
+    /// Float64 `(N, d)`: the parameters of the closest point on the patch.
+    NDArray mParams{DType::Float64, {0, 0}};
+    /// Float64 `(N, space dim)`: the closest points.
+    NDArray mPoints{DType::Float64, {0, 0}};
+    /// Float64 `(N)`: the distances from the query points to them.
+    NDArray mDistances{DType::Float64, {0}};
+};
+
+/**
+ * @brief The point of patch @p Patch closest to each of @p rPoints (roadmap 9.8.4).
+ *
+ * For a curve (one parametric direction, in 1, 2 or 3 space dimensions) or a
+ * surface (two directions, in 2 or 3), rational or not: a lattice of samples
+ * (`degree + 1` per knot span and direction, at most about 64 per direction on
+ * a surface) seeds a Newton iteration on `|x(u) - p|^2` with the exact second
+ * derivatives (`iga_evaluate` with `Derivatives = 2`), clamped to the knot
+ * range (a point beyond the patch's edge lands on the edge), falling back on
+ * Gauss-Newton where the Hessian is not positive definite and halving the step
+ * until the distance drops; the three nearest samples seed three runs and the
+ * closest result wins, so a point near a fold of the patch usually finds the
+ * global minimum, though a global guarantee is not given. Each point is
+ * independent and the result does not depend on the thread count. A volume
+ * (three directions) is refused: the closest point of a solid is the point
+ * itself unless it is outside, and that is a different problem.
+ * @param rPoints Float64 `(N, space dim)`, finite.
+ * @throws std::invalid_argument for a bad patch, a volume, or points that are
+ *         not Float64 `(N, space dim)` and finite.
+ */
+MESHIOPLUSPLUS_API IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
+                                                     const NDArray& rPoints);
+
 /**
  * @brief Bezier extraction of one patch (roadmap 9.8.2): the patch as VTK Bezier cells.
  *
@@ -265073,6 +265106,210 @@ NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch, std::int32
     out.mBoundaryCellPatch = NDArray(DType::Int64, {0});
     if (pReport)
         *pReport = std::move(report);
+    return out;
+}
+
+IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
+                                  const NDArray& rPoints) {
+    if (Patch >= rInfo.mPatches.size())
+        iga_fail("patch " + std::to_string(Patch) + " is out of range (the model has " +
+                 std::to_string(rInfo.mPatches.size()) + ")");
+    NurbsPatch patch = rInfo.mPatches[Patch];
+    const std::string what = "patch " + std::to_string(Patch);
+    patch.mFields.clear();  // only the geometry takes part
+    const bool rational = iga_is_rational(patch);
+    const IgaTable t = iga_make_table(patch, what, rational);
+    const IgaShape& sh = t.mShape;
+    const std::size_t dim = sh.mDim, sdim = sh.mSdim;
+    if (dim > 2)
+        iga_fail("the closest point on a volume is not computed; " + what + " has " +
+                 std::to_string(dim) + " parametric directions (curves and surfaces only)");
+    if (rPoints.Dtype() != DType::Float64 || rPoints.Shape().size() != 2 ||
+        rPoints.Shape()[1] != sdim)
+        iga_fail("points are not Float64 (N, " + std::to_string(sdim) + ")");
+    const std::size_t n = rPoints.Shape()[0];
+    const double* q = rPoints.As<double>();
+    for (std::size_t i = 0; i < n * sdim; ++i)
+        if (!std::isfinite(q[i]))
+            iga_fail("a query point has a non-finite coordinate");
+
+    std::array<double, 2> lo{0, 0}, hi{0, 0};
+    for (std::size_t d = 0; d < dim; ++d) {
+        lo[d] = patch.mKnots[d][static_cast<std::size_t>(patch.mDegrees[d])];
+        hi[d] = patch.mKnots[d][sh.mCounts[d]];
+    }
+    const auto eval = [&](const double* pU, double* pX, double* pD1, double* pD2) {
+        std::array<std::size_t, 3> span{0, 0, 0};
+        std::array<double, 3> u{0, 0, 0};
+        for (std::size_t d = 0; d < dim; ++d) {
+            u[d] = std::min(std::max(pU[d], lo[d]), hi[d]);
+            span[d] =
+                detail::nurbs_find_span(patch.mDegrees[d], patch.mKnots[d], sh.mCounts[d], u[d]);
+        }
+        if (pD2)
+            detail::iga_eval_point_d2(t.mNet, span.data(), u.data(), pX, pD1, pD2);
+        else
+            detail::iga_eval_point(t.mNet, span.data(), u.data(), 0, pX, nullptr);
+    };
+
+    // The seed lattice: degree + 1 samples per nonzero knot span.
+    std::array<std::vector<double>, 2> axis;
+    for (std::size_t d = 0; d < dim; ++d) {
+        const std::vector<double>& k = patch.mKnots[d];
+        std::size_t spans = 0;
+        for (std::size_t s = static_cast<std::size_t>(patch.mDegrees[d]); s < sh.mCounts[d]; ++s)
+            spans += k[s] < k[s + 1] ? 1 : 0;
+        const std::size_t cap = dim == 1 ? 4096 : 64;
+        std::size_t per = static_cast<std::size_t>(patch.mDegrees[d]) + 1;
+        per = std::max<std::size_t>(1, std::min(per, cap > spans ? (cap - 1) / spans : 1));
+        axis[d].push_back(lo[d]);
+        for (std::size_t s = static_cast<std::size_t>(patch.mDegrees[d]); s < sh.mCounts[d]; ++s)
+            if (k[s] < k[s + 1])
+                for (std::size_t j = 1; j <= per; ++j)
+                    axis[d].push_back(j == per ? k[s + 1]
+                                               : k[s] + (k[s + 1] - k[s]) * static_cast<double>(j) /
+                                                            static_cast<double>(per));
+    }
+    const std::size_t n0 = axis[0].size(), n1 = dim == 2 ? axis[1].size() : 1;
+    std::vector<double> seed_x(n0 * n1 * sdim);
+    for (std::size_t b = 0; b < n1; ++b)
+        for (std::size_t a = 0; a < n0; ++a) {
+            const double u[2] = {axis[0][a], dim == 2 ? axis[1][b] : 0.0};
+            eval(u, seed_x.data() + (a + n0 * b) * sdim, nullptr, nullptr);
+        }
+
+    IgaClosestPoint out;
+    out.mParams = NDArray(DType::Float64, {n, dim});
+    out.mPoints = NDArray(DType::Float64, {n, sdim});
+    out.mDistances = NDArray(DType::Float64, {n});
+    double* op = out.mParams.As<double>();
+    double* ox = out.mPoints.As<double>();
+    double* od = out.mDistances.As<double>();
+    parallel_for(n, [&](std::size_t i) {
+        const double* p = q + i * sdim;
+        // The three nearest samples, ascending distance then index.
+        std::array<std::size_t, 3> best{0, 0, 0};
+        std::array<double, 3> bestd{1e300, 1e300, 1e300};
+        for (std::size_t s = 0; s < n0 * n1; ++s) {
+            double d2 = 0.0;
+            for (std::size_t d = 0; d < sdim; ++d)
+                d2 += (seed_x[s * sdim + d] - p[d]) * (seed_x[s * sdim + d] - p[d]);
+            for (std::size_t r = 0; r < 3; ++r)
+                if (d2 < bestd[r]) {
+                    for (std::size_t m = 2; m > r; --m) {
+                        best[m] = best[m - 1];
+                        bestd[m] = bestd[m - 1];
+                    }
+                    best[r] = s;
+                    bestd[r] = d2;
+                    break;
+                }
+        }
+        double win_f = 1e300;
+        std::array<double, 2> win_u{lo[0], dim == 2 ? lo[1] : 0.0};
+        std::array<double, 3> x{0, 0, 0};
+        std::array<double, 12> dd1{}, dd2{};
+        for (std::size_t r = 0; r < 3; ++r) {
+            if (bestd[r] >= 1e300)
+                break;
+            std::array<double, 2> u{axis[0][best[r] % n0], dim == 2 ? axis[1][best[r] / n0] : 0.0};
+            const auto residual = [&](const std::array<double, 2>& rU, double* pX, double* pRes) {
+                eval(rU.data(), pX, nullptr, nullptr);
+                double f = 0.0;
+                for (std::size_t d = 0; d < sdim; ++d) {
+                    pRes[d] = pX[d] - p[d];
+                    f += 0.5 * pRes[d] * pRes[d];
+                }
+                return f;
+            };
+            std::array<double, 3> res{0, 0, 0};
+            double f = residual(u, x.data(), res.data());
+            for (int iter = 0; iter < 80; ++iter) {
+                eval(u.data(), x.data(), dd1.data(), dd2.data());
+                double g[2] = {0, 0}, H[2][2] = {{0, 0}, {0, 0}}, G[2][2] = {{0, 0}, {0, 0}};
+                for (std::size_t d = 0; d < sdim; ++d)
+                    res[d] = x[d] - p[d];
+                for (std::size_t k = 0; k < dim; ++k) {
+                    for (std::size_t d = 0; d < sdim; ++d)
+                        g[k] += res[d] * dd1[k * sdim + d];
+                    for (std::size_t l = 0; l < dim; ++l)
+                        for (std::size_t d = 0; d < sdim; ++d) {
+                            G[k][l] += dd1[k * sdim + d] * dd1[l * sdim + d];
+                            H[k][l] += dd1[k * sdim + d] * dd1[l * sdim + d] +
+                                       res[d] * dd2[(k * dim + l) * sdim + d];
+                        }
+                }
+                bool free_[2] = {true, true};
+                std::size_t nfree = 0;
+                for (std::size_t k = 0; k < dim; ++k) {
+                    if ((u[k] <= lo[k] && g[k] > 0.0) || (u[k] >= hi[k] && g[k] < 0.0))
+                        free_[k] = false;
+                    nfree += free_[k] ? 1 : 0;
+                }
+                if (nfree == 0)
+                    break;
+                double step[2] = {0, 0};
+                if (dim == 2 && nfree == 2) {
+                    auto solve = [&](double A[2][2]) {
+                        const double det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
+                        if (!(A[0][0] > 0.0 && det > 0.0))
+                            return false;
+                        step[0] = -(A[1][1] * g[0] - A[0][1] * g[1]) / det;
+                        step[1] = -(-A[1][0] * g[0] + A[0][0] * g[1]) / det;
+                        return true;
+                    };
+                    if (!solve(H) && !solve(G)) {
+                        const double scale = G[0][0] + G[1][1] + 1e-300;
+                        step[0] = -g[0] / scale;
+                        step[1] = -g[1] / scale;
+                    }
+                } else {
+                    for (std::size_t k = 0; k < dim; ++k) {
+                        if (!free_[k])
+                            continue;
+                        const double h = H[k][k] > 0.0 ? H[k][k] : G[k][k] > 0.0 ? G[k][k] : 1e300;
+                        step[k] = -g[k] / h;
+                    }
+                }
+                double alpha = 1.0;
+                bool moved = false;
+                std::array<double, 2> trial = u;
+                std::array<double, 3> xt{0, 0, 0}, rt{0, 0, 0};
+                double ft = f;
+                for (int half = 0; half < 40 && !moved; ++half, alpha *= 0.5) {
+                    for (std::size_t k = 0; k < dim; ++k)
+                        trial[k] = std::min(std::max(u[k] + alpha * step[k], lo[k]), hi[k]);
+                    ft = residual(trial, xt.data(), rt.data());
+                    // A step that does not raise f beyond rounding: near the minimum f is flat,
+                    // and a strict test would stop a few ulps short of it.
+                    moved = ft <= f + 1e-14 * f;
+                }
+                if (!moved)
+                    break;
+                double change = 0.0;
+                for (std::size_t k = 0; k < dim; ++k)
+                    change = std::max(change, std::abs(trial[k] - u[k]) / (hi[k] - lo[k]));
+                u = trial;
+                x = xt;
+                f = ft;
+                if (change < 1e-15)
+                    break;
+            }
+            if (f < win_f) {
+                win_f = f;
+                win_u = u;
+            }
+        }
+        eval(win_u.data(), x.data(), nullptr, nullptr);
+        double dist2 = 0.0;
+        for (std::size_t d = 0; d < sdim; ++d) {
+            ox[i * sdim + d] = x[d];
+            dist2 += (x[d] - p[d]) * (x[d] - p[d]);
+        }
+        for (std::size_t k = 0; k < dim; ++k)
+            op[i * dim + k] = win_u[k];
+        od[i] = std::sqrt(dist2);
+    });
     return out;
 }
 

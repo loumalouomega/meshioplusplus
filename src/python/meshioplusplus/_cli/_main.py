@@ -167,6 +167,13 @@ _VERBS = (
         add_args="add_remove_knots_args",
     ),
     _Verb(
+        "iga-closest-point",
+        "_iga",
+        "closest_point_cmd",
+        "Closest point of a NURBS patch to query points (JSON)",
+        add_args="add_closest_point_args",
+    ),
+    _Verb(
         "iga-bezier",
         "_iga",
         "bezier_cmd",

@@ -146,6 +146,12 @@ function t_mfem_nurbs()
     assert(isempty(b.derivatives));
     expect_error(@() mio.iga_evaluate(r.info, 1, [2, 0.5]), 'knot range');
     expect_error(@() mio.iga_evaluate(r.info, 1, [0.5, 0.5, 0.5]), 'params');
+    % closest point: the annulus is a surface in 2-D here
+    cp = mio.iga_closest_point(r.info, [3 0; 0 1.5]);
+    expect_equal(size(cp.params), [2 2]);
+    assert(max(abs(cp.points(1, :) - [2 0])) < 1e-12);
+    assert(max(abs(cp.distances - [1; 0])) < 1e-10);
+    expect_error(@() mio.iga_closest_point(r.info, [3 0], 4), 'patch');
     % knot removal undoes the refinement's insertions: two knots per direction
     red = mio.iga_remove_knots(fine.info, 'direction', 1);
     expect_equal(red.report.num_removed, 2);

@@ -148,6 +148,7 @@ from .. import (
     honeycomb,
     icosa_sphere,
     iga_bezier_extract,
+    iga_closest_point,
     iga_evaluate,
     iga_refine,
     iga_remove_knots,
@@ -4050,6 +4051,26 @@ def tool_iga_sample(
     Lagrange cells, subdivisions cells per knot span and direction (0 is
     automatic), the exact rational geometry at each cell's lattice."""
     return _run_op(iga_sample, locals(), report=False)
+
+
+def tool_iga_closest_point(
+    input_path, points, input_format=None, patch=0, model="auto"
+):
+    """The point of a NURBS patch (a curve or a surface) closest to each of
+    points (a list of [x], [x, y] or [x, y, z], at most 10000): the parameters
+    of the closest point, the point and its distance, found by a seeded,
+    clamped Newton iteration on the exact second derivatives. A point beyond
+    the patch's edge lands on the edge."""
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim == 1:
+        pts = pts[:, None]
+    if len(pts) > _IGA_MAX_POINTS:
+        raise ValueError(
+            f"iga_closest_point: {len(pts)} points; at most {_IGA_MAX_POINTS} per call"
+        )
+    mesh = _load(input_path, input_format)
+    res = iga_closest_point(mesh, pts, patch=patch, model=model)
+    return _json_safe({"num_points": int(len(pts)), **res})
 
 
 def tool_iga_remove_knots(
@@ -8388,6 +8409,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "iga_sample",
             {"fn": tool_iga_sample, "wraps": ("iga_sample",), "gated": None},
+        ),
+        (
+            "iga_closest_point",
+            {
+                "fn": tool_iga_closest_point,
+                "wraps": ("iga_closest_point",),
+                "gated": None,
+            },
         ),
         (
             "iga_remove_knots",

@@ -3737,6 +3737,11 @@ step('igaRefine, igaSample, igaEvaluate: a NURBS model refined exactly and writt
     const s = m.igaSample(mesh.info);
     assert.equal(s.info.format, 'mfem');
     assert.equal(s.mesh.cells[0].type, 'quad9');
+    // The closest point: the annulus is a surface in 2-D here.
+    const cp = m.igaClosestPoint(mesh.info, 0, [3, 0, 0, 1.5]);
+    assert.equal(cp.paramDim, 2);
+    assert.ok(Math.abs(cp.points[0] - 2) < 1e-12 && Math.abs(cp.distances[0] - 1) < 1e-12);
+    assert.throws(() => m.igaClosestPoint(mesh.info, 4, [3, 0]), /patch/);
     // Knot removal undoes the refinement's insertions: two knots per direction.
     const red = m.igaRemoveKnots(fine.info, { direction: 0 });
     assert.equal(red.report.numRemoved, 2);

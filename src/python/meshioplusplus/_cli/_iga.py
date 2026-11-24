@@ -314,3 +314,41 @@ def evaluate_cmd(args):
             out[key] = res[key].ravel()
     emit_json(out)
     return 0
+
+
+def add_closest_point_args(parser):
+    _add_io(parser, None)
+    parser.add_argument(
+        "--point",
+        "-p",
+        action="append",
+        required=True,
+        help="a query point x[,y[,z]]; repeat for more points",
+    )
+    parser.add_argument(
+        "--patch", type=int, default=0, help="the patch to project onto (default: 0)"
+    )
+    # The verb prints JSON regardless, as iga-evaluate does.
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="emit a summary as JSON (always; accepted for uniformity)",
+    )
+
+
+def closest_point_cmd(args):
+    from .._iga import iga_closest_point
+
+    mesh = read(args.infile, file_format=args.input_format)
+    points = [[float(v) for v in text.split(",")] for text in args.point]
+    res = iga_closest_point(mesh, points, patch=args.patch, model=args.model)
+    emit_json(
+        {
+            "num_points": len(points),
+            "space_dim": res["points"].shape[1],
+            "params": res["params"].ravel(),
+            "points": res["points"].ravel(),
+            "distances": res["distances"].ravel(),
+        }
+    )
+    return 0

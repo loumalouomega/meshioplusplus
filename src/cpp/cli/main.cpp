@@ -2751,6 +2751,60 @@ int cmd_iga_sample(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_iga_closest_point(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(
+        rArgs, cli_specs({input_flag_specs(),
+                          {{"point", {"-p"}, true}, {"patch", {}, true}, {"json", {}, false}}}));
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("iga-closest-point requires exactly INFILE");
+    if (!has_opt(p, "point"))
+        throw std::runtime_error("iga-closest-point requires at least one --point x[,y[,z]]");
+    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    if (!model.mNurbs)
+        throw std::runtime_error(
+            "iga-closest-point takes a NURBS model (an MFEM NURBS mesh), not a B-rep");
+    const auto patch =
+        static_cast<std::size_t>(has_opt(p, "patch") ? std::stoll(opt_value(p, "patch")) : 0);
+    const std::size_t sdim = patch < model.mNurbs->mPatches.size()
+                                 ? model.mNurbs->mPatches[patch].mControlPoints.Shape()[1]
+                                 : 0;
+    std::vector<double> flat;
+    for (const std::string& text : opt_values(p, "point")) {
+        std::size_t n = 0;
+        for (std::size_t at = 0; at <= text.size();) {
+            const std::size_t comma = std::min(text.find(',', at), text.size());
+            flat.push_back(meshioplusplus::detail::stod_c(text.substr(at, comma - at)));
+            at = comma + 1;
+            ++n;
+        }
+        if (sdim && n != sdim)
+            throw std::runtime_error("--point needs " + std::to_string(sdim) +
+                                     " numbers per point");
+    }
+    const std::size_t d = sdim ? sdim : 3;
+    NDArray points(meshioplusplus::DType::Float64, {flat.size() / d, d});
+    std::copy(flat.begin(), flat.end(), points.As<double>());
+    const meshioplusplus::IgaClosestPoint r =
+        meshioplusplus::iga_closest_point(*model.mNurbs, patch, points);
+    meshioplusplus::cli::JsonOut json(std::cout);
+    const auto array = [&](const char* pName, const NDArray& rA) {
+        json.Key(pName);
+        json.BeginArray();
+        for (std::size_t i = 0; i < rA.Size(); ++i)
+            json.Number(rA.As<double>()[i]);
+        json.EndArray();
+    };
+    json.BeginObject();
+    json.Field("num_points", points.Shape()[0]);
+    json.Field("space_dim", r.mPoints.Shape()[1]);
+    array("params", r.mParams);
+    array("points", r.mPoints);
+    array("distances", r.mDistances);
+    json.EndObject();
+    std::cout << "\n";
+    return 0;
+}
+
 int cmd_iga_remove_knots(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"direction", {"-d"}, true},
@@ -10917,6 +10971,9 @@ const CliVerb kCliVerbs[] = {
      &cmd_iga_refine},
     {"iga-sample", nullptr, "  iga-sample              Sample a NURBS model into Lagrange cells\n",
      &cmd_iga_sample},
+    {"iga-closest-point", nullptr,
+     "  iga-closest-point       Closest point of a NURBS patch to query points (JSON)\n",
+     &cmd_iga_closest_point},
     {"iga-remove-knots", nullptr,
      "  iga-remove-knots        Remove knots from a NURBS patch within a tolerance\n",
      &cmd_iga_remove_knots},
