@@ -44,7 +44,14 @@ from collections import OrderedDict
 
 import numpy as np
 
-from .. import GeometryGuard, GridArray, GridSpec, adapt, adapt_volume, agglomerate
+from .. import (
+    GeometryGuard,
+    GridArray,
+    GridSpec,
+    adapt,
+    adapt_volume,
+    agglomerate,
+)
 from .. import align_datums as _align_datums_op
 from .. import (
     annulus,
@@ -150,9 +157,9 @@ from .. import (
     laplacian_eigenmodes,
     line,
     lshape,
-    match_periodic_nodes,
 )
 from .. import mass_properties as _mass_properties_op
+from .. import match_periodic_nodes
 from .. import measure as _measure_op
 from .. import (
     merge,

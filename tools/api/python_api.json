@@ -6854,6 +6854,42 @@
   "marc": {
    "kind": "module"
   },
+  "mass_properties": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "1.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "density"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "density_array"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "region"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "thickness"
+     },
+     {
+      "default": "'centroid'",
+      "kind": "KEYWORD_ONLY",
+      "name": "about"
+     }
+    ]
+   }
+  },
   "match_periodic_nodes": {
    "kind": "function",
    "signature": {

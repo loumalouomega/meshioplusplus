@@ -81,7 +81,14 @@ def test_parallel_axis_about_the_origin():
     d2 = d @ d
     ic = np.array(c["inertia"])
     expect = ic + m * np.array(
-        [d2 - d[0] ** 2, d2 - d[1] ** 2, d2 - d[2] ** 2, -d[0] * d[1], -d[1] * d[2], -d[2] * d[0]]
+        [
+            d2 - d[0] ** 2,
+            d2 - d[1] ** 2,
+            d2 - d[2] ** 2,
+            -d[0] * d[1],
+            -d[1] * d[2],
+            -d[2] * d[0],
+        ]
     )
     assert np.array(g["inertia"]) == pytest.approx(expect, rel=1e-9, abs=1e-9)
 

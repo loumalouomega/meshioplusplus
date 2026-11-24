@@ -918,13 +918,15 @@ Reopened from the non-goals, which record why a native `mesh_boolean` was not qu
 - **Tests.** Rays against an analytic sphere and a box; grazing rays (edge and vertex hits counted once); `locate_points` on every volume cell type with points on faces; agreement with `interpolate` on a field (`f(locate(p))` equals `interpolate`'s value bit for bit).
 - **Done when.** `cast_rays` and `locate_points` on every surface; the handle only on request. **M**
 
-### 9.4 Mass properties
+### 9.4 Mass properties: remaining
 
-- **State today.** `compute_stats` (`operations/stats.hpp` line 47: `StatsReport`) gives `mTotalArea`, `mSignedVolume`, `mUnsignedVolume` and an `mCentroid` that is the mean of the points, not the centre of mass; [`measure`](./measure.md) is GD&T, not mass. `data_integrate` integrates a field per region with `detail::cell_measure` (`detail/data_ops.hpp` line 243). `poly_measure` (`detail/polyhedron.hpp` line 198) returns a true centroid per polyhedral cell; `closed_surface_volume` is private to the boolean spike.
-- **Design.** `mass_properties(mesh, MassOptions {mDensity (a scalar or a cell array name), mRegion, mAbout: Centroid|Origin})` returning, per region and in total: `mMeasure` (volume, or area for a shell with `mThickness`), `mMass`, `mCentre`, the inertia tensor as six components `xx yy zz xy yz zx` (the symmetric-tensor order the data model uses), principal moments and axes (the Jacobi solver in `detail/`), radii of gyration. For a closed triangle surface: the divergence-theorem polynomials (Eberly's formulation; exact for a polyhedron), sharing 3.4.2's `ClosedSurfaceVolume`; for volume cells: tetrahedra exactly, other types by simplexification (`convert_cells`' tables) so curved cells are approximated as elsewhere and the page says so; an open surface is refused by name unless treated as a shell.
-- **Also.** State in [stats](./stats.md) that `centroid` is the point mean, and add `centre_of_mass` there from this kernel; changing what `centroid` means would be a silent change of a reported number, so it is not changed.
-- **Tests.** Box, cylinder, sphere and torus against closed forms; a translated and rotated body obeying the parallel-axis theorem; density per region.
-- **Done when.** `meshioplusplus mass part.stl --density 7850 --json` on every surface. **S**
+`mass_properties` landed in the C++ core, Python, both CLIs (`mass`) and the MCP server ([mass properties](./mass_properties.md)). What remains is the flat bindings and the release files. **S**
+
+- **State today.** `operations/mass_properties.hpp` (`MassPropertiesOptions`, 88 bytes, pinned in `test_abi_layout.cpp`), `src/operations/mass_properties.cpp`, the `mass_properties` entry of `_core.cpp` and `_mass_properties.py` (core only, no numpy twin).
+- **Steps.**
+  - **9.4.1 The flat bindings.** C (`mio_mass_properties_opts`, `_report` and accessors for the per-region entries), Fortran, Julia, R, Octave and WASM, by [checklist O](#landing-checklists) item 3 and 4.
+  - **9.4.2 Measurement and release files.** A `row("mass_properties", ...)` in `bench_ops.cpp` and the determinism hash; the [ABI review](./abi_reviews.md) row at the release; a notebook in `example/python/`.
+- **Done when.** `mio_mass_properties` and its wrappers agree with the Python report on a box and a closed surface.
 
 ### 9.5 Elevation beyond order 2
 

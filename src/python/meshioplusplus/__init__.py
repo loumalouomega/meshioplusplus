@@ -220,6 +220,7 @@ if TYPE_CHECKING:
     )
     from ._interpolate import interpolate
     from ._isosurface import isosurface
+    from ._mass_properties import mass_properties
     from ._measure import align_datums, measure, measure_table
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
@@ -237,7 +238,6 @@ if TYPE_CHECKING:
         move,
     )
     from ._morph import morph
-    from ._mass_properties import mass_properties
     from ._normals import compute_normals
     from ._octree import octree
     from ._octree_mesh import octree_mesh
