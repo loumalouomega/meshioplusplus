@@ -150,6 +150,7 @@
 #include "meshioplusplus/operations/remove_islands.hpp"
 #include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/tensor_invariants.hpp"
@@ -2673,6 +2674,21 @@ int main(int argc, char** argv) {
             f64(pD, r.mSignedVolume);
             if (pD)
                 pD->Bytes(r.mCentroid, sizeof r.mCentroid);
+        });
+        row("mass_properties", [&](MeshDigest* pD) {
+            // The tetrahedral cube (volume cells) and its closed skin (a body
+            // by the divergence theorem); the digest covers both reports.
+            for (const Mesh* pMesh : {&volume, &surface}) {
+                const mio::MassPropertiesReport r = mio::mass_properties(*pMesh);
+                f64(pD, r.mTotal.mMeasure);
+                f64(pD, r.mTotal.mMass);
+                if (pD) {
+                    pD->Bytes(r.mTotal.mCentre.data(), sizeof r.mTotal.mCentre);
+                    pD->Bytes(r.mTotal.mInertia.data(), sizeof r.mTotal.mInertia);
+                    pD->Bytes(r.mTotal.mPrincipalMoments.data(),
+                              sizeof r.mTotal.mPrincipalMoments);
+                }
+            }
         });
         row("check_quality", [&](MeshDigest* pD) {
             mio::QualityGateOptions o;

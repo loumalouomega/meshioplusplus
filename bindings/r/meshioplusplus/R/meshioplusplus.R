@@ -2911,6 +2911,39 @@ mio_hausdorff_distance <- function(a, b, face_samples = 0, region_a = "", region
   )
 }
 
+#' Mass, centre of mass and inertia of a body
+#'
+#' Integrates a density over the volume cells of a mesh, over the body a closed
+#' triangle or polygon surface encloses, or (with `thickness`) over a shell,
+#' and reports the mass, centre of mass, inertia tensor, principal moments and
+#' axes and radii of gyration for the whole selection and for every named cell
+#' region. See `doc/mass_properties.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param density Density of every cell.
+#' @param density_array Name of a scalar `cell_data` array of per-cell
+#'   densities, replacing `density`; `""` uses `density`.
+#' @param region Restrict the total to this named cell region; `""` for all.
+#' @param thickness Above zero, surface cells are a shell of this thickness.
+#' @param about `"centroid"` (default) or `"origin"`: the point the inertia
+#'   tensor is taken about.
+#' @return A list of `kind` (`"solid"` or `"shell"`), `total` (a list of `name`,
+#'   `num_cells`, `measure`, `mass`, `centre`, `inertia` (`xx yy zz xy yz zx`),
+#'   `principal_moments` (ascending), `principal_axes` (a 3 x 3 matrix with one
+#'   axis per column) and `gyration_radii`), `regions` (a list of such lists,
+#'   one per named cell region) and `warnings` (a character vector).
+#' @export
+mio_mass_properties <- function(mesh, density = 1, density_array = "", region = "",
+                                thickness = 0, about = c("centroid", "origin")) {
+  about <- match.arg(about)
+  res <- .Call(
+    R_mio_mass_properties, mesh, as.numeric(density), as.character(density_array),
+    as.character(region), as.numeric(thickness), if (about == "origin") 1L else 0L
+  )
+  res$warnings <- if (nzchar(res$warnings)) strsplit(res$warnings, "\n", fixed = TRUE)[[1]] else character()
+  res
+}
+
 #' Repair a surface mesh's orientation, holes and pinched vertices
 #'
 #' Surface repair beyond `mio_clean()`: weld (opt-in) -> triangulate (blocks

@@ -382,6 +382,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
  *   renderPng: (mesh: Mesh, options?: RenderOptions, compress?: number) => Uint8Array,
  *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
+ *   massProperties: (mesh: Mesh, density?: number, densityArray?: string, region?: string, thickness?: number, about?: string) => {kind: string, total: object, regions: object[], warnings: string[]},
  *   editRegions: (mesh: Mesh, edits: Array<{op: string, inputs: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>, output?: string, dim?: number, tag?: number, keepInputs?: boolean}>) => Mesh,
  *   regionAdjacency: (mesh: Mesh, regions?: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>) => Mesh,
  *   findInterface: (meshA: Mesh, regionA: string | object, regionB: string | object, options?: {meshB?: Mesh, mode?: 'conforming'|'proximity', master?: 'a'|'b', gapTolerance?: number, angleTolerance?: number, overlapTolerance?: number}) => {mesh: Mesh, report: object},
@@ -1321,6 +1322,8 @@ export async function loadMeshioPlusPlus(
         renderPng: (mesh, options = {}, compress = 0) => Module.renderPng(mesh, options, compress),
         hausdorffDistance: (a, b, faceSamples = 0, regionA = '', regionB = '') =>
             Module.hausdorffDistance(a, b, faceSamples, regionA, regionB),
+        massProperties: (mesh, density = 1, densityArray = '', region = '', thickness = 0, about = 'centroid') =>
+            Module.massProperties(mesh, density, densityArray, region, thickness, about),
         editRegions: (mesh, edits) =>
             Module.editRegions(mesh, Array.isArray(edits) ? edits : [edits]),
         regionAdjacency: (mesh, regions = []) => Module.regionAdjacency(mesh, regions),

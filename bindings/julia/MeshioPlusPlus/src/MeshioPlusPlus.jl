@@ -137,6 +137,7 @@ export deviation, deviation_regions, exaggerate, colorize
 export tetrahedralize, has_netgen, tetrahedralize_backends
 export remesh_quads, remesh_quads_backends
 export cut_level_set, cut_quadrature, has_cutcells
+export mass_properties
 export has_mmg, has_mmg_elas, adapt, metric_from_hessian, discretize_levelset, mesh_domain, move
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point

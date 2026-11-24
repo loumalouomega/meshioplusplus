@@ -1612,6 +1612,95 @@ static mxArray *O_mio_hausdorff_distance(const mxArray **a) {
     return mio_o_struct(11, names, values);
 }
 
+/* --- mass properties (roadmap 9.4) --------------------------------------- */
+
+typedef struct {
+    const mio_mass_report *report;
+    int64_t index;
+} oc_mass_ctx;
+
+static int64_t oc_mass_kind_getter(void *c, char *buf, int64_t buflen) {
+    return mio_mass_report_kind((const mio_mass_report *)c, buf, buflen);
+}
+
+static int64_t oc_mass_warnings_getter(void *c, char *buf, int64_t buflen) {
+    return mio_mass_report_warnings((const mio_mass_report *)c, buf, buflen);
+}
+
+static int64_t oc_mass_name_getter(void *c, char *buf, int64_t buflen) {
+    oc_mass_ctx *x = (oc_mass_ctx *)c;
+    return mio_mass_report_entry_name(x->report, x->index, buf, buflen);
+}
+
+static const char *kMassFields[] = {"name",    "num_cells",         "measure",
+                                    "mass",    "centre",            "inertia",
+                                    "principal_moments", "principal_axes", "gyration_radii"};
+
+static mxArray *oc_mass_row(const double *v, int64_t n) {
+    mxArray *m = mio_o_matrix(1, n);
+    memcpy(mxGetPr(m), v, (size_t)n * sizeof(double));
+    return m;
+}
+
+/* Fill element k of a struct array with entry `index` of the report. Frees the
+ * report and raises on a C API failure. */
+static void oc_mass_fill(mxArray *arr, mwIndex k, mio_mass_report *report, int64_t index) {
+    mio_mass_entry e;
+    memset(&e, 0, sizeof(e));
+    if (mio_mass_report_entry(report, index, &e) != MIO_OK) {
+        mio_mass_report_free(report);
+        mio_o_fail("mass_properties entry");
+    }
+    oc_mass_ctx ctx = {report, index};
+    mxSetField(arr, k, "name", mio_o_getstring(oc_mass_name_getter, &ctx, "mass_properties name"));
+    mxSetField(arr, k, "num_cells", mio_o_scalar((double)e.num_cells));
+    mxSetField(arr, k, "measure", mio_o_scalar(e.measure));
+    mxSetField(arr, k, "mass", mio_o_scalar(e.mass));
+    mxSetField(arr, k, "centre", oc_mass_row(e.centre, 3));
+    mxSetField(arr, k, "inertia", oc_mass_row(e.inertia, 6));
+    mxSetField(arr, k, "principal_moments", oc_mass_row(e.principal_moments, 3));
+    /* The C array is a row-major 3x3 whose column k is the axis of moment k;
+     * a MATLAB matrix is column-major, so element (i, j) is axes[3 * i + j]. */
+    mxArray *axes = mio_o_matrix(3, 3);
+    double *ad = mxGetPr(axes);
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j)
+            ad[i + 3 * j] = e.principal_axes[3 * i + j];
+    mxSetField(arr, k, "principal_axes", axes);
+    mxSetField(arr, k, "gyration_radii", oc_mass_row(e.gyration_radii, 3));
+}
+
+/* mass_properties(mesh, density, density_array, region, thickness, about) */
+static mxArray *O_mio_mass_properties(const mxArray **a) {
+    mio_mass_properties_opts opts;
+    mio_mass_properties_opts_init(&opts);
+    opts.density = mio_o_double(a[1], "density");
+    opts.density_array = mio_o_opt_string(a[2]);
+    opts.region = mio_o_opt_string(a[3]);
+    opts.thickness = mio_o_double(a[4], "thickness");
+    opts.about = (int32_t)mio_o_int(a[5], "about");
+    mio_mass_report *report = (mio_mass_report *)mio_o_check_ptr(
+        mio_mass_properties(mio_o_mesh(a[0]), &opts), "mass_properties");
+
+    int64_t n = mio_mass_report_count(report);
+    if (n < 1) {
+        mio_mass_report_free(report);
+        mio_o_fail("mass_properties count");
+    }
+    mxArray *total = mio_o_struct_array(1, 9, kMassFields);
+    oc_mass_fill(total, 0, report, 0);
+    mxArray *regions = mio_o_struct_array(n - 1, 9, kMassFields);
+    for (int64_t i = 1; i < n; ++i)
+        oc_mass_fill(regions, (mwIndex)(i - 1), report, i);
+    const char *names[] = {"kind", "total", "regions", "warnings"};
+    mxArray *values[] = {mio_o_getstring(oc_mass_kind_getter, report, "mass_properties kind"),
+                         total, regions,
+                         mio_o_getstring(oc_mass_warnings_getter, report,
+                                         "mass_properties warnings")};
+    mio_mass_report_free(report);
+    return mio_o_struct(4, names, values);
+}
+
 /* repair(mesh, fix_orientation, orient_outward, fill_holes, split_non_manifold,
  *        max_hole_edges, weld_tolerance, record_provenance, fill_style) */
 static mxArray *O_mio_repair(const mxArray **a) {
@@ -2182,6 +2271,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_split_interface, 3),
     MIO_O_ENTRY(mio_check_quality, 4),
     MIO_O_ENTRY(mio_hausdorff_distance, 5),
+    MIO_O_ENTRY(mio_mass_properties, 6),
     MIO_O_ENTRY(mio_repair, 9),
     MIO_O_ENTRY(mio_shrinkwrap, 9),
     MIO_O_ENTRY(mio_sobolev_deform, 8),

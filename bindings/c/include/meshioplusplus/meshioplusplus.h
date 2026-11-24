@@ -9412,6 +9412,72 @@ MIO_API mio_mesh* mio_metric_from_hessian(const mio_mesh* mesh, const char* hess
                                           double error, double hmin, double hmax,
                                           const char* output);
 
+/**
+ * Options for mio_mass_properties (roadmap 9.4). Same ABI rules as above:
+ * initialize through mio_mass_properties_opts_init(). Size: 56 bytes. The
+ * strings are borrowed for the call only.
+ */
+typedef struct mio_mass_properties_opts {
+    double density;            /**< density of every cell (default 1) */
+    const char* density_array; /**< scalar cell_data array of per-cell densities; NULL or "" for `density` */
+    const char* region;        /**< restrict the total to this cell region; NULL or "" for all cells */
+    double thickness;          /**< above 0, surface cells are a shell of this thickness */
+    int32_t about;             /**< 0: inertia about the centre of mass; 1: about the origin */
+    int32_t reserved0;         /**< must be zero */
+    int64_t reserved[2];       /**< must be zero; room for additive growth */
+} mio_mass_properties_opts;
+
+/** Initialize mass-properties options: density 1, no array or region, no shell, about the centre. */
+MIO_API void mio_mass_properties_opts_init(mio_mass_properties_opts* opts);
+
+/** One set of cells' mass properties (the whole selection, or one cell region).
+ *  Size: 232 bytes. */
+typedef struct mio_mass_entry {
+    int64_t num_cells;           /**< cells that took part */
+    double measure;              /**< volume, or area for a shell */
+    double mass;
+    double centre[3];            /**< centre of mass */
+    double inertia[6];           /**< xx yy zz xy yz zx, about the chosen point */
+    double principal_moments[3]; /**< ascending */
+    double principal_axes[9];    /**< row-major 3x3; column k belongs to moment k */
+    double gyration_radii[3];
+    int64_t reserved[2];         /**< zero; room for additive growth */
+} mio_mass_entry;
+
+/** Opaque mass-properties report; see mio_mass_properties. */
+typedef struct mio_mass_report mio_mass_report;
+
+/**
+ * Mass, centre of mass and inertia of a body: volume cells, a closed surface,
+ * or a shell when opts->thickness > 0 (operations/mass_properties.hpp).
+ * @return a report the caller frees with mio_mass_report_free, or NULL with
+ *         the error set (an open surface without a thickness, an unknown
+ *         region or density array, a non-finite density, nothing to integrate).
+ */
+MIO_API mio_mass_report* mio_mass_properties(const mio_mesh* mesh,
+                                             const mio_mass_properties_opts* opts);
+
+/** "solid" or "shell", copied by the string-getter rule 5; -1 on error. */
+MIO_API int64_t mio_mass_report_kind(const mio_mass_report* report, char* buf, int64_t buflen);
+
+/** Number of entries: 1 (the total, index 0) plus one per named cell region; -1 on error. */
+MIO_API int64_t mio_mass_report_count(const mio_mass_report* report);
+
+/** Fill `out` with entry `index` (0 is the total). */
+MIO_API mio_status mio_mass_report_entry(const mio_mass_report* report, int64_t index,
+                                         mio_mass_entry* out);
+
+/** The name of entry `index` ("" for the total), string-getter rule 5; -1 on error. */
+MIO_API int64_t mio_mass_report_entry_name(const mio_mass_report* report, int64_t index, char* buf,
+                                           int64_t buflen);
+
+/** The report's warnings joined by '\n', string-getter rule 5; -1 on error. */
+MIO_API int64_t mio_mass_report_warnings(const mio_mass_report* report, char* buf, int64_t buflen);
+
+/** Free a report; NULL is a no-op. */
+MIO_API void mio_mass_report_free(mio_mass_report* report);
+
+
 #ifdef __cplusplus
 }
 #endif

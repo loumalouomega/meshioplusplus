@@ -3038,7 +3038,9 @@ contains
         real(real64) :: g_matrix(4, 4)
         logical :: g_ok
         integer :: ierr
-        real(real64) :: cube_points(3, 8), d, ab
+        real(real64) :: cube_points(3, 8), d, ab, mass
+        type(mio_mass_entry) :: mtotal
+        character(:), allocatable :: mkind
         logical :: passed
         integer(int64) :: nchecks
         character(:), allocatable :: text
@@ -3339,6 +3341,16 @@ contains
         d = sq%hausdorff_distance(other, a_to_b=ab, stat=ierr)
         call check(ierr == 0, 'hausdorff_distance succeeded')
         call check(d == 0.0_real64 .and. ab == 0.0_real64, 'a cube is at distance 0 from itself')
+        ! Mass properties of the same closed cube.
+        mass = other%mass_properties(density=2.0_real64, total=mtotal, body_kind=mkind, stat=ierr)
+        call check(ierr == 0, 'mass_properties succeeded')
+        call check(mkind == 'solid', 'a closed surface is a solid')
+        call check(mtotal%measure > 0.0_real64, 'the enclosed volume is positive')
+        call check(abs(mass - 2.0_real64*mtotal%measure) < 1.0e-12_real64, 'mass is density times volume')
+        call check(mtotal%principal_moments(1) <= mtotal%principal_moments(3), &
+                   'principal moments are ascending')
+        mass = other%mass_properties(about='moon', stat=ierr)
+        call check(ierr /= 0, 'mass_properties rejects an unknown reference point')
         call other%free()
 
         ! Regions: bottom and top faces' nodes, then their union, then periodic

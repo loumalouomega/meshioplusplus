@@ -117,6 +117,7 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
@@ -357,6 +358,10 @@ struct mio_data_info {
 
 struct mio_data_integrate {
     meshioplusplus::DataIntegrateReport mReport;
+};
+
+struct mio_mass_report {
+    meshioplusplus::MassPropertiesReport mReport;
 };
 
 /// Opaque handle behind mio_read_metadata_*; modelled on mio_data_info above,
@@ -12708,5 +12713,109 @@ mio_mesh* mio_metric_from_hessian(const mio_mesh* mesh, const char* hessian, dou
         return new mio_mesh{meshioplusplus::metric_from_hessian(mesh->mMesh, o)};
     });
 }
+
+// ---------------------------------------------------------------------------
+// Mass properties (roadmap 9.4)
+// ---------------------------------------------------------------------------
+
+static_assert(sizeof(mio_mass_properties_opts) == 56,
+              "mio_mass_properties_opts layout changed: update the size in meshioplusplus.h");
+static_assert(offsetof(mio_mass_properties_opts, reserved) == 40,
+              "mio_mass_properties_opts: the reserved tail moved");
+static_assert(sizeof(mio_mass_entry) == 232,
+              "mio_mass_entry layout changed: update the size in meshioplusplus.h");
+
+void mio_mass_properties_opts_init(mio_mass_properties_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_mass_properties_opts{};
+    opts->density = 1.0;
+}
+
+mio_mass_report* mio_mass_properties(const mio_mesh* mesh, const mio_mass_properties_opts* opts) {
+    return capi_guarded_null<mio_mass_report>([&]() -> mio_mass_report* {
+        capi_require(mesh, "meshio++: mass_properties: mesh is NULL");
+        meshioplusplus::MassPropertiesOptions options;
+        if (opts) {
+            options.mDensity = opts->density;
+            options.mThickness = opts->thickness;
+            if (opts->density_array)
+                options.mDensityArray = opts->density_array;
+            if (opts->region)
+                options.mRegion = opts->region;
+            options.mAbout = opts->about == 1 ? meshioplusplus::MassAbout::Origin
+                                              : meshioplusplus::MassAbout::Centroid;
+            if (opts->about != 0 && opts->about != 1)
+                throw std::invalid_argument("meshio++: mass_properties: about must be 0 or 1");
+        }
+        return new mio_mass_report{meshioplusplus::mass_properties(mesh->mMesh, options)};
+    });
+}
+
+int64_t mio_mass_report_kind(const mio_mass_report* report, char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(report, "meshio++: report is NULL");
+        return copy_string(report->mReport.mKind, buf, buflen);
+    });
+}
+
+int64_t mio_mass_report_count(const mio_mass_report* report) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(report, "meshio++: report is NULL");
+        return static_cast<int64_t>(1 + report->mReport.mRegions.size());
+    });
+}
+
+namespace {
+const meshioplusplus::MassProperties& capi_mass_entry(const mio_mass_report* pReport,
+                                                      int64_t Index) {
+    capi_require(pReport, "meshio++: report is NULL");
+    if (Index < 0 || static_cast<std::size_t>(Index) > pReport->mReport.mRegions.size())
+        throw meshioplusplus::ReadError("meshio++: mass entry index out of range");
+    return Index == 0 ? pReport->mReport.mTotal
+                      : pReport->mReport.mRegions[static_cast<std::size_t>(Index - 1)];
+}
+}  // namespace
+
+mio_status mio_mass_report_entry(const mio_mass_report* report, int64_t index,
+                                 mio_mass_entry* out) {
+    return guarded([&]() -> mio_status {
+        if (!out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mass entry: out is NULL");
+        const meshioplusplus::MassProperties& e = capi_mass_entry(report, index);
+        *out = mio_mass_entry{};
+        out->num_cells = e.mNumCells;
+        out->measure = e.mMeasure;
+        out->mass = e.mMass;
+        std::copy(e.mCentre.begin(), e.mCentre.end(), out->centre);
+        std::copy(e.mInertia.begin(), e.mInertia.end(), out->inertia);
+        std::copy(e.mPrincipalMoments.begin(), e.mPrincipalMoments.end(), out->principal_moments);
+        std::copy(e.mPrincipalAxes.begin(), e.mPrincipalAxes.end(), out->principal_axes);
+        std::copy(e.mGyrationRadii.begin(), e.mGyrationRadii.end(), out->gyration_radii);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_mass_report_entry_name(const mio_mass_report* report, int64_t index, char* buf,
+                                   int64_t buflen) {
+    return capi_guarded_count([&]() -> int64_t {
+        return copy_string(capi_mass_entry(report, index).mName, buf, buflen);
+    });
+}
+
+int64_t mio_mass_report_warnings(const mio_mass_report* report, char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(report, "meshio++: report is NULL");
+        std::string joined;
+        for (const std::string& w : report->mReport.mWarnings)
+            joined += (joined.empty() ? "" : "\n") + w;
+        return copy_string(joined, buf, buflen);
+    });
+}
+
+void mio_mass_report_free(mio_mass_report* report) {
+    delete report;
+}
+
 
 }  // extern "C"

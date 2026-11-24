@@ -4879,6 +4879,73 @@ function hausdorff_distance(a::Mesh, b::Mesh; face_samples::Integer=0,
 end
 
 """
+    mass_properties(m; density=1.0, density_array="", region="", thickness=0.0,
+                    about=:centroid)
+        -> (; kind, total, regions, warnings)
+
+Mass, centre of mass and inertia of a body: the volume cells of `m`, the body a
+closed triangle or polygon surface encloses, or (with `thickness > 0`) a shell.
+`density_array` names a scalar `cell_data` array of per-cell densities,
+`region` restricts the total to a named cell region and `about` is `:centroid`
+or `:origin`, the point the inertia tensor is taken about. `total` and each of
+`regions` (one per named cell region) is a named tuple of `name`, `num_cells`,
+`measure` (volume, or area for a shell), `mass`, `centre`, `inertia`
+(`xx yy zz xy yz zx`), `principal_moments` (ascending), `principal_axes` (a
+3x3 matrix, one axis per column) and `gyration_radii`. See
+`doc/mass_properties.md`.
+"""
+function mass_properties(m::Mesh; density::Real=1.0, density_array::AbstractString="",
+                         region::AbstractString="", thickness::Real=0.0,
+                         about::Union{Symbol,AbstractString}=:centroid)
+    about_code = Symbol(about) === :centroid ? Int32(0) :
+                 Symbol(about) === :origin ? Int32(1) :
+                 throw(ArgumentError("about must be :centroid or :origin"))
+    da = Vector{UInt8}(codeunits(String(density_array) * "\0"))
+    rg = Vector{UInt8}(codeunits(String(region) * "\0"))
+    h = _handle(m)
+    handle = GC.@preserve da rg begin
+        opts = _CMassPropertiesOpts(Float64(density), Cstring(pointer(da)), Cstring(pointer(rg)),
+                                    Float64(thickness), about_code, Int32(0),
+                                    ntuple(_ -> Int64(0), 2))
+        _check_ptr(ccall(_sym(:mio_mass_properties), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CMassPropertiesOpts}),
+                          h, Ref(opts)))
+    end
+    try
+        function entry(i::Int64)
+            e = Ref{_CMassEntry}()
+            _check(ccall(_sym(:mio_mass_report_entry), Cint, (Ptr{Cvoid}, Int64, Ptr{_CMassEntry}),
+                         handle, i, e))
+            name = _getstring() do buf, len
+                ccall(_sym(:mio_mass_report_entry_name), Int64,
+                      (Ptr{Cvoid}, Int64, Ptr{UInt8}, Int64), handle, i, buf, len)
+            end
+            r = e[]
+            (name=name, num_cells=Int(r.num_cells), measure=r.measure, mass=r.mass,
+             centre=collect(r.centre), inertia=collect(r.inertia),
+             principal_moments=collect(r.principal_moments),
+             principal_axes=[r.principal_axes[3 * i0 + j0 + 1] for i0 in 0:2, j0 in 0:2],
+             gyration_radii=collect(r.gyration_radii))
+        end
+        n = _check_count(ccall(_sym(:mio_mass_report_count), Int64, (Ptr{Cvoid},), handle),
+                         "mio_mass_report_count")
+        kind = _getstring() do buf, len
+            ccall(_sym(:mio_mass_report_kind), Int64, (Ptr{Cvoid}, Ptr{UInt8}, Int64),
+                  handle, buf, len)
+        end
+        text = _getstring() do buf, len
+            ccall(_sym(:mio_mass_report_warnings), Int64, (Ptr{Cvoid}, Ptr{UInt8}, Int64),
+                  handle, buf, len)
+        end
+        total = entry(Int64(0))
+        regions = [entry(Int64(i)) for i in 1:(n - 1)]
+        return (kind=kind, total=total, regions=regions,
+                warnings=isempty(text) ? String[] : String.(split(text, '\n')))
+    finally
+        ccall(_sym(:mio_mass_report_free), Cvoid, (Ptr{Cvoid},), handle)
+    end
+end
+
+"""
     check_quality(m; require="", max_inverted=0, max_degenerate=0)
         -> (; passed, num_checks, num_failed, num_cells, num_inverted, num_degenerate, summary)
 

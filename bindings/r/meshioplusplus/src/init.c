@@ -143,6 +143,7 @@ extern SEXP R_mio_find_interface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
 extern SEXP R_mio_contact_pairs(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_split_interface(SEXP, SEXP, SEXP);
 extern SEXP R_mio_hausdorff_distance(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_mass_properties(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_check_quality(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_repair(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_shrinkwrap(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -422,6 +423,7 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_contact_pairs, 6),
                                               CALLDEF(R_mio_split_interface, 3),
                                               CALLDEF(R_mio_hausdorff_distance, 5),
+                                              CALLDEF(R_mio_mass_properties, 6),
                                               CALLDEF(R_mio_check_quality, 4),
                                               CALLDEF(R_mio_repair, 9),
                                               CALLDEF(R_mio_shrinkwrap, 9),

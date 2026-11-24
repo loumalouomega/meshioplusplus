@@ -2438,6 +2438,25 @@ export interface SequenceReader {
  * mesh file there before calling `readMesh`, and read them back out after
  * `writeMesh`/`convert`. See https://emscripten.org/docs/api_reference/Filesystem-API.html
  */
+/** One set of cells' mass properties (the whole selection, or a cell region). */
+export interface MassPropertiesEntry {
+  /** The region's name; empty for the total. */
+  name: string;
+  numCells: number;
+  /** Volume, or area for a shell. */
+  measure: number;
+  mass: number;
+  /** Centre of mass. */
+  centre: Float64Array;
+  /** `xx yy zz xy yz zx`, about the chosen point. */
+  inertia: Float64Array;
+  /** Ascending. */
+  principalMoments: Float64Array;
+  /** A row-major 3x3; column k is the axis of moment k. */
+  principalAxes: Float64Array;
+  gyrationRadii: Float64Array;
+}
+
 export interface MeshioPlusPlusModule {
   FS: {
     writeFile(path: string, data: string | ArrayBufferView, opts?: object): void;
@@ -4569,6 +4588,29 @@ export interface MeshioPlusPlusModule {
     numSamplesB: number;
     worstPointA: Float64Array;
     worstPointB: Float64Array;
+  };
+
+  /**
+   * Mass, centre of mass and inertia of a body: the volume cells of `mesh`, the
+   * body a closed triangle or polygon surface encloses, or (with
+   * `thickness > 0`) a shell. `densityArray` names a scalar cell array of
+   * per-cell densities; `region` restricts the total to a cell region;
+   * `about` is `'centroid'` (default) or `'origin'`. See doc/mass_properties.md.
+   * @throws {Error} on an open surface without a thickness, an unknown region
+   *   or array, a non-finite density, or nothing to integrate.
+   */
+  massProperties(
+    mesh: Mesh,
+    density?: number,
+    densityArray?: string,
+    region?: string,
+    thickness?: number,
+    about?: 'centroid' | 'origin',
+  ): {
+    kind: 'solid' | 'shell';
+    total: MassPropertiesEntry;
+    regions: MassPropertiesEntry[];
+    warnings: string[];
   };
 
   /**

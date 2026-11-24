@@ -9340,3 +9340,113 @@ TEST(CApi, ProfileSolidFeaturesAndRefusals) {
     EXPECT_EQ(mio_has_profile_solid_provider() == 0 || mio_has_profile_solid_provider() == 1, true);
     mio_mesh_free(s);
 }
+
+// ---- mass properties (roadmap 9.4) ---------------------------------------
+
+namespace {
+
+// Two unit hexahedra stacked along z (0 <= z <= 2), with a per-cell density.
+mio_mesh* build_mass_mesh() {
+    std::vector<double> pts;
+    for (int z = 0; z < 3; ++z)
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 2; ++x) {
+                pts.push_back(x);
+                pts.push_back(y);
+                pts.push_back(z);
+            }
+    const std::int64_t conn[16] = {0, 1, 3, 2, 4, 5, 7, 6, 4, 5, 7, 6, 8, 9, 11, 10};
+    const std::array<double, 2> rho = {1.0, 3.0};
+    std::int64_t sc[1] = {2};
+    const std::int64_t top[1] = {1};
+    mio_mesh* m = mio_mesh_create();
+    EXPECT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 12, 3, pts.data()), MIO_OK);
+    EXPECT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 2, 8, MIO_INT64, conn), MIO_OK);
+    EXPECT_EQ(mio_mesh_append_cell_data(m, "rho", MIO_FLOAT64, 1, sc, rho.data()), MIO_OK);
+    EXPECT_EQ(mio_mesh_add_region(m, "top", MIO_REGION_CELL, -1, -1, top, 1), MIO_OK);
+    return m;
+}
+
+}  // namespace
+
+TEST(CApi, MassPropertiesHandle) {
+    mio_mesh* m = build_mass_mesh();
+    mio_mass_properties_opts opts;
+    mio_mass_properties_opts_init(&opts);
+    EXPECT_EQ(opts.density, 1.0);
+    opts.density_array = "rho";
+    mio_mass_report* r = mio_mass_properties(m, &opts);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+
+    char buf[64] = {};
+    EXPECT_EQ(mio_mass_report_kind(r, buf, sizeof(buf)), 5);
+    EXPECT_STREQ(buf, "solid");
+    ASSERT_EQ(mio_mass_report_count(r), 2);  // the total and region "top"
+
+    mio_mass_entry total{};
+    ASSERT_EQ(mio_mass_report_entry(r, 0, &total), MIO_OK);
+    EXPECT_EQ(total.num_cells, 2);
+    EXPECT_NEAR(total.measure, 2.0, 1e-12);
+    EXPECT_NEAR(total.mass, 4.0, 1e-12);
+    EXPECT_NEAR(total.centre[2], (0.5 + 3.0 * 1.5) / 4.0, 1e-12);
+    EXPECT_GT(total.principal_moments[2], total.principal_moments[0] - 1e-12);
+
+    mio_mass_entry top{};
+    ASSERT_EQ(mio_mass_report_entry(r, 1, &top), MIO_OK);
+    EXPECT_NEAR(top.mass, 3.0, 1e-12);
+    EXPECT_GE(mio_mass_report_entry_name(r, 0, buf, sizeof(buf)), 0);
+    EXPECT_STREQ(buf, "");
+    EXPECT_EQ(mio_mass_report_entry_name(r, 1, buf, sizeof(buf)), 3);
+    EXPECT_STREQ(buf, "top");
+    EXPECT_EQ(mio_mass_report_warnings(r, nullptr, 0), 0);
+
+    // Out of range, NULL out and NULL handle.
+    EXPECT_NE(mio_mass_report_entry(r, 2, &top), MIO_OK);
+    EXPECT_NE(mio_mass_report_entry(r, -1, &top), MIO_OK);
+    EXPECT_NE(mio_mass_report_entry(r, 0, nullptr), MIO_OK);
+    EXPECT_EQ(mio_mass_report_count(nullptr), -1);
+    mio_mass_report_free(r);
+    mio_mass_report_free(nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, MassPropertiesOptionsAndErrors) {
+    mio_mesh* m = build_mass_mesh();
+    // Defaults with a NULL opts: density 1, about the centre.
+    mio_mass_report* r = mio_mass_properties(m, nullptr);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    mio_mass_entry e{};
+    ASSERT_EQ(mio_mass_report_entry(r, 0, &e), MIO_OK);
+    EXPECT_NEAR(e.mass, 2.0, 1e-12);
+    mio_mass_report_free(r);
+
+    // A region restricts the total and lists no sub-regions.
+    mio_mass_properties_opts opts;
+    mio_mass_properties_opts_init(&opts);
+    opts.region = "top";
+    r = mio_mass_properties(m, &opts);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mass_report_count(r), 1);
+    mio_mass_report_free(r);
+
+    // About the origin: the second moment grows by m |c|^2 terms.
+    mio_mass_properties_opts_init(&opts);
+    opts.about = 1;
+    r = mio_mass_properties(m, &opts);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    mio_mass_entry about_origin{};
+    ASSERT_EQ(mio_mass_report_entry(r, 0, &about_origin), MIO_OK);
+    EXPECT_GT(about_origin.inertia[0], e.inertia[0]);
+    mio_mass_report_free(r);
+
+    // Refusals: an unknown region, a bad `about`, a NULL mesh.
+    mio_mass_properties_opts_init(&opts);
+    opts.region = "nope";
+    EXPECT_EQ(mio_mass_properties(m, &opts), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("nope"), std::string::npos);
+    mio_mass_properties_opts_init(&opts);
+    opts.about = 7;
+    EXPECT_EQ(mio_mass_properties(m, &opts), nullptr);
+    EXPECT_EQ(mio_mass_properties(nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}

@@ -1868,6 +1868,30 @@ struct _CHausdorffReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_mass_properties_opts` (roadmap 9.4)."""
+struct _CMassPropertiesOpts
+    density::Cdouble
+    density_array::Cstring
+    region::Cstring
+    thickness::Cdouble
+    about::Int32
+    reserved0::Int32
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_mass_entry`."""
+struct _CMassEntry
+    num_cells::Int64
+    measure::Cdouble
+    mass::Cdouble
+    centre::NTuple{3,Cdouble}
+    inertia::NTuple{6,Cdouble}
+    principal_moments::NTuple{3,Cdouble}
+    principal_axes::NTuple{9,Cdouble}
+    gyration_radii::NTuple{3,Cdouble}
+    reserved::NTuple{2,Int64}
+end
+
 """Mirror of C `mio_region_selector` (v16.23.0); `-2` is `MIO_REGION_ANY`."""
 struct _CRegionSelector
     name::Cstring
@@ -2879,6 +2903,11 @@ function _check_abi_layout()
         error("meshio++: mio_snapshot_opts layout mismatch ($(sizeof(_CSnapshotOpts)) bytes)")
     sizeof(_CHausdorffOpts) == 80 ||
         error("meshio++: mio_hausdorff_opts layout mismatch ($(sizeof(_CHausdorffOpts)) bytes)")
+    sizeof(_CMassPropertiesOpts) == 56 ||
+        error("meshio++: mio_mass_properties_opts layout mismatch " *
+              "($(sizeof(_CMassPropertiesOpts)) bytes)")
+    sizeof(_CMassEntry) == 232 ||
+        error("meshio++: mio_mass_entry layout mismatch ($(sizeof(_CMassEntry)) bytes)")
     sizeof(_CHausdorffReport) == 152 ||
         error("meshio++: mio_hausdorff_report layout mismatch " *
               "($(sizeof(_CHausdorffReport)) bytes)")

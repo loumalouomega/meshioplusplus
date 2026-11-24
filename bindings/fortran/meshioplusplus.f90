@@ -135,6 +135,7 @@ module meshioplusplus
     public :: mio_detect_color_depth
     public :: mio_data_array_info
     public :: mio_field_integral_info
+    public :: mio_mass_entry
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_cell_type_dimension, mio_cell_type_num_nodes
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
@@ -1406,6 +1407,34 @@ module meshioplusplus
         integer(c_int32_t) :: pole = 0
         integer(c_int32_t) :: reserved0 = 0
         integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_mass_properties_opts` (56 bytes).
+    type, bind(c) :: mio_mass_properties_opts_t
+        real(c_double) :: density = 1.0_c_double
+        type(c_ptr) :: density_array = c_null_ptr
+        type(c_ptr) :: region = c_null_ptr
+        real(c_double) :: thickness = 0.0_c_double
+        integer(c_int32_t) :: about = 0
+        integer(c_int32_t) :: reserved0 = 0
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> One set of cells' mass properties (bind(c); layout must match
+    !> `mio_mass_entry` in meshioplusplus.h, 232 bytes): the whole selection or
+    !> one named cell region. `inertia` is `xx yy zz xy yz zx`; `principal_axes`
+    !> is a row-major 3x3, so axis k of the moment `principal_moments(k)` is
+    !> `principal_axes(k), principal_axes(k + 3), principal_axes(k + 6)`.
+    type, bind(c) :: mio_mass_entry
+        integer(c_int64_t) :: num_cells = 0
+        real(c_double) :: measure = 0.0_c_double
+        real(c_double) :: mass = 0.0_c_double
+        real(c_double) :: centre(3) = 0.0_c_double
+        real(c_double) :: inertia(6) = 0.0_c_double
+        real(c_double) :: principal_moments(3) = 0.0_c_double
+        real(c_double) :: principal_axes(9) = 0.0_c_double
+        real(c_double) :: gyration_radii(3) = 0.0_c_double
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_hausdorff_opts`.
@@ -2900,6 +2929,7 @@ module meshioplusplus
         procedure :: render_text => mesh_render_text
         procedure :: write_snapshot => mesh_write_snapshot
         procedure :: hausdorff_distance => mesh_hausdorff_distance
+        procedure :: mass_properties => mesh_mass_properties
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
         procedure :: match_periodic_nodes => mesh_match_periodic_nodes
@@ -4222,6 +4252,60 @@ module meshioplusplus
             type(mio_hausdorff_report_t), intent(out) :: report
             integer(c_int) :: r
         end function
+
+        function c_mio_mass_properties(h, opts) bind(c, name="mio_mass_properties") result(r)
+            import :: c_ptr, mio_mass_properties_opts_t
+            type(c_ptr), value :: h
+            type(mio_mass_properties_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_mass_report_count(r) bind(c, name="mio_mass_report_count") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mass_report_entry(r, index, out) &
+                bind(c, name="mio_mass_report_entry") result(s)
+            import :: c_ptr, c_int, c_int64_t, mio_mass_entry
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            type(mio_mass_entry), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_mass_report_entry_name(r, index, buf, buflen) &
+                bind(c, name="mio_mass_report_entry_name") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mass_report_kind(r, buf, buflen) &
+                bind(c, name="mio_mass_report_kind") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mass_report_warnings(r, buf, buflen) &
+                bind(c, name="mio_mass_report_warnings") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        subroutine c_mio_mass_report_free(r) bind(c, name="mio_mass_report_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
 
         function c_mio_edit_regions(h, op, inputs, num_inputs, output, dim, tag, &
                                     keep_inputs) bind(c, name="mio_edit_regions") result(r)
@@ -11399,6 +11483,117 @@ contains
         if (present(mean_b_to_a)) mean_b_to_a = real(report%mean_b_to_a, real64)
         if (present(rms_a_to_b)) rms_a_to_b = real(report%rms_a_to_b, real64)
         if (present(rms_b_to_a)) rms_b_to_a = real(report%rms_b_to_a, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Mass, centre of mass and inertia of a body: the volume cells, the body a
+    !> closed triangle or polygon surface encloses, or (with `thickness > 0`) a
+    !> shell. Returns the total mass, or -1 on failure. `density_array` names a
+    !> scalar cell_data array of per-cell densities; `region` restricts the
+    !> total to a cell region; `about` is 'centroid' (default) or 'origin'.
+    !> `total` receives the whole selection, `regions`/`region_names` one entry
+    !> per named cell region, `body_kind` is 'solid' or 'shell' and `warnings`
+    !> the '\n'-joined warnings. See doc/mass_properties.md.
+    function mesh_mass_properties(self, density, density_array, region, thickness, about, &
+                                  body_kind, total, regions, region_names, warnings, &
+                                  stat, errmsg) result(mass)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: density, thickness
+        character(*), intent(in), optional :: density_array, region, about
+        character(:), allocatable, intent(out), optional :: body_kind, warnings
+        type(mio_mass_entry), intent(out), optional :: total
+        type(mio_mass_entry), allocatable, intent(out), optional :: regions(:)
+        character(len=STRBUF_LEN), allocatable, intent(out), optional :: region_names(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64) :: mass
+        type(mio_mass_properties_opts_t) :: opts
+        type(mio_mass_entry) :: entry
+        type(c_ptr) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_d, buf_r
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        integer(c_int64_t) :: n, k, got
+        integer(c_int) :: s
+
+        mass = -1.0_real64
+        if (present(regions)) allocate (regions(0))
+        if (present(region_names)) allocate (region_names(0))
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 56_c_size_t .or. c_sizeof(entry) /= 232_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: mass_properties layout mismatch'
+            error stop 1
+        end if
+        if (present(density)) opts%density = real(density, c_double)
+        if (present(thickness)) opts%thickness = real(thickness, c_double)
+        if (present(density_array)) then
+            buf_d = trim(density_array)//c_null_char
+            opts%density_array = c_loc(buf_d(1:1))
+        end if
+        if (present(region)) then
+            buf_r = trim(region)//c_null_char
+            opts%region = c_loc(buf_r(1:1))
+        end if
+        if (present(about)) then
+            select case (trim(about))
+            case ('centroid', 'centre', 'center')
+                opts%about = 0_c_int32_t
+            case ('origin')
+                opts%about = 1_c_int32_t
+            case default
+                call handle_failure('mass_properties', &
+                                    "about must be 'centroid' or 'origin'", stat, errmsg)
+                return
+            end select
+        end if
+        rep = c_mio_mass_properties(self%handle, opts)
+        if (.not. c_associated(rep)) then
+            call handle_failure('mass_properties', mio_error_message(), stat, errmsg)
+            return
+        end if
+        n = c_mio_mass_report_count(rep)
+        s = c_mio_mass_report_entry(rep, 0_c_int64_t, entry)
+        if (n < 1 .or. s /= 0_c_int) then
+            call c_mio_mass_report_free(rep)
+            call handle_failure('mass_properties', mio_error_message(), stat, errmsg)
+            return
+        end if
+        mass = real(entry%mass, real64)
+        if (present(total)) total = entry
+        if (present(body_kind)) then
+            got = c_mio_mass_report_kind(rep, buf, int(STRBUF_LEN, c_int64_t))
+            body_kind = from_c_buf(buf, max(0, min(int(got), STRBUF_LEN - 1)))
+        end if
+        if (present(warnings)) then
+            got = c_mio_mass_report_warnings(rep, buf, int(STRBUF_LEN, c_int64_t))
+            warnings = from_c_buf(buf, max(0, min(int(got), STRBUF_LEN - 1)))
+        end if
+        if (present(regions) .or. present(region_names)) then
+            if (present(regions)) then
+                deallocate (regions)
+                allocate (regions(n - 1))
+            end if
+            if (present(region_names)) then
+                deallocate (region_names)
+                allocate (region_names(n - 1))
+            end if
+            do k = 1, n - 1
+                if (present(regions)) then
+                    s = c_mio_mass_report_entry(rep, k, regions(k))
+                    if (s /= 0_c_int) then
+                        call c_mio_mass_report_free(rep)
+                        call handle_failure('mass_properties', mio_error_message(), stat, errmsg)
+                        mass = -1.0_real64
+                        return
+                    end if
+                end if
+                if (present(region_names)) then
+                    got = c_mio_mass_report_entry_name(rep, k, buf, int(STRBUF_LEN, c_int64_t))
+                    region_names(k) = ''
+                    if (got > 0) region_names(k) = from_c_buf(buf, min(int(got), STRBUF_LEN - 1))
+                end if
+            end do
+        end if
+        call c_mio_mass_report_free(rep)
         call clear_status(stat, errmsg)
     end function
 

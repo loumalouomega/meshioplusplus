@@ -1545,6 +1545,24 @@ end
     close(back); close(labels); close(m)
 end
 
+@testset "mass properties" begin
+    m = fixture()
+    add_region!(m, "second", :cell, [2])
+    r = mass_properties(m; density_array="material")
+    @test r.kind == "solid"
+    @test r.total.num_cells == 2
+    @test r.total.measure > 0
+    @test 7 * r.total.measure < r.total.mass < 9 * r.total.measure
+    @test length(r.regions) == 1 && r.regions[1].name == "second"
+    @test size(r.total.principal_axes) == (3, 3)
+    @test length(r.total.inertia) == 6
+    @test isempty(r.warnings)
+    @test_throws Exception mass_properties(m; region="nope")
+    @test_throws ArgumentError mass_properties(m; about=:moon)
+    o = mass_properties(m; about=:origin)
+    @test o.total.mass > 0
+end
+
 @testset "field integration (data_integrate)" begin
     m = fixture()
     add_region!(m, "solid", :cell, [1]; dim=3, tag=17)

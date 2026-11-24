@@ -22,6 +22,7 @@ function tests = test_ops_core()
         'refine_patches refines a segmentation', @t_refine_patches
         'fit_cad builds a solid or falls back to native', @t_fit_cad
         'Hausdorff distance and the quality gate', @t_hausdorff_quality
+        'mass_properties reports mass, centre and inertia', @t_mass_properties
         'geodesic distance, atlas, morph, untangle and metric', @t_geodesic_etc
         'eigenmodes, registration and point normals', @t_spectral_registration
         'reconstruct_surface closes a sampled sphere', @t_reconstruct
@@ -569,6 +570,22 @@ function t_hausdorff_quality()
     q2 = mio.check_quality(m, 'min_angle >= 50');
     assert(~q2.passed);
     expect_error(@() mio.check_quality(m, 'bogus >= 1'));
+end
+
+function t_mass_properties()
+    m = cube_surface();
+    r = mio.mass_properties(m, 'density', 2);
+    assert(strcmp(r.kind, 'solid'));
+    expect_equal(r.total.measure, 1, 1e-12);
+    expect_equal(r.total.mass, 2, 1e-12);
+    expect_equal(r.total.centre, [0.5 0.5 0.5], 1e-12);
+    expect_equal(r.total.inertia(1:3), [1 1 1] / 3, 1e-12);
+    expect_equal(size(r.total.principal_axes), [3 3]);
+    expect_equal(numel(r.regions), 0);
+    assert(isempty(r.warnings));
+    o = mio.mass_properties(m, 'about', 'origin');
+    assert(o.total.inertia(1) > r.total.inertia(1) / 2);
+    expect_error(@() mio.mass_properties(m, 'about', 'moon'));
 end
 
 function t_geodesic_etc()

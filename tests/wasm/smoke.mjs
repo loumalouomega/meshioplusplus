@@ -5818,6 +5818,14 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: 2 ** 53 + 2 }), /2\^53/);
     assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: -1 }), /2\^53/);
 
+    const mp = m.massProperties(cubeSurface, 2);
+    assert.equal(mp.kind, 'solid');
+    assert.ok(Math.abs(mp.total.mass - 2) < 1e-12);
+    assert.ok(Math.abs(mp.total.centre[0] - 0.5) < 1e-12);
+    assert.ok(Math.abs(mp.total.inertia[0] - 1 / 3) < 1e-12);
+    assert.equal(mp.regions.length, 0);
+    assert.throws(() => m.massProperties(cubeSurface, 1, '', 'nope'), /nope/);
+
     const h = m.hausdorffDistance(cubeSurface, cubeSurface, 2);
     assert.ok(Math.abs(h.distance) < 1e-12); // face samples: rounding, not exactly 0
     assert.equal(h.numSamplesA, 8 + 12 * 4);

@@ -130,6 +130,7 @@
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
@@ -7591,6 +7592,50 @@ val hausdorff_distance_js(const val& rA, const val& rB, double faceSamples,
     });
 }
 
+/**
+ * @brief Mass, centre of mass and inertia of a body. See
+ * operations/mass_properties.hpp.
+ */
+val mass_entry_to_js(const meshioplusplus::MassProperties& rP) {
+    val out = val::object();
+    out.set("name", rP.mName);
+    out.set("numCells", static_cast<double>(rP.mNumCells));
+    out.set("measure", rP.mMeasure);
+    out.set("mass", rP.mMass);
+    out.set("centre", float64_array_from(rP.mCentre.data(), 3));
+    out.set("inertia", float64_array_from(rP.mInertia.data(), 6));
+    out.set("principalMoments", float64_array_from(rP.mPrincipalMoments.data(), 3));
+    out.set("principalAxes", float64_array_from(rP.mPrincipalAxes.data(), 9));
+    out.set("gyrationRadii", float64_array_from(rP.mGyrationRadii.data(), 3));
+    return out;
+}
+
+val mass_properties_js(const val& rMesh, double density, const std::string& rDensityArray,
+                       const std::string& rRegion, double thickness, const std::string& rAbout) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MassPropertiesOptions options;
+        options.mDensity = density;
+        options.mDensityArray = rDensityArray;
+        options.mRegion = rRegion;
+        options.mThickness = thickness;
+        options.mAbout = meshioplusplus::mass_about_from_name(rAbout);
+        const meshioplusplus::MassPropertiesReport r =
+            meshioplusplus::mass_properties(val_to_mesh(rMesh), options);
+        val out = val::object();
+        out.set("kind", r.mKind);
+        out.set("total", mass_entry_to_js(r.mTotal));
+        val regions = val::array();
+        for (std::size_t i = 0; i < r.mRegions.size(); ++i)
+            regions.set(static_cast<unsigned>(i), mass_entry_to_js(r.mRegions[i]));
+        out.set("regions", regions);
+        val warnings = val::array();
+        for (std::size_t i = 0; i < r.mWarnings.size(); ++i)
+            warnings.set(static_cast<unsigned>(i), r.mWarnings[i]);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
 // A region selector from a JS string (a name) or {name, kind?, dim?, tag?}.
 meshioplusplus::RegionSelector js_region_selector(const val& rSel) {
     meshioplusplus::RegionSelector s;
@@ -11240,6 +11285,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("renderPng", &render_png_js);
     emscripten::function("checkQuality", &check_quality_js);
     emscripten::function("hausdorffDistance", &hausdorff_distance_js);
+    emscripten::function("massProperties", &mass_properties_js);
     emscripten::function("editRegions", &edit_regions_js);
     emscripten::function("regionAdjacency", &region_adjacency_js);
     emscripten::function("findInterface", &find_interface_js);

@@ -52,4 +52,4 @@ The mesh is never modified. Per-cell contributions are computed in parallel and 
 
 ## Surfaces
 
-C++ `mass_properties` (`operations/mass_properties.hpp`), Python, both CLIs (`meshioplusplus mass`) and the [MCP server](/mcp) tool `mass_properties`.
+C++ `mass_properties` (`operations/mass_properties.hpp`), Python, both CLIs (`meshioplusplus mass`), the [MCP server](/mcp) tool `mass_properties`, the [C API](/c_api) (`mio_mass_properties` and the `mio_mass_report_*` accessors), [Fortran](/fortran) (`mesh%mass_properties`), [Julia](/julia) (`mass_properties`), [R](/r) (`mio_mass_properties`), [Octave / MATLAB](/octave) (`mio.mass_properties`) and [WebAssembly](/wasm) (`massProperties`).
