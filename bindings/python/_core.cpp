@@ -180,6 +180,7 @@
 #include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
@@ -7359,6 +7360,53 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("angle_tolerance") = 10.0, py::arg("subdivisions") = 3,
         py::arg("region") = std::string(), py::arg("rotate_vector_data") = false);
+
+    // Mass, centre of mass and inertia of a body. A dict report. See
+    // operations/mass_properties.hpp.
+    m.def(
+        "mass_properties",
+        [](py::object pymesh, double density, const std::string& density_array,
+           const std::string& region, double thickness, const std::string& about) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::MassPropertiesOptions options;
+            options.mDensity = density;
+            options.mDensityArray = density_array;
+            options.mRegion = region;
+            options.mThickness = thickness;
+            options.mAbout = meshioplusplus::mass_about_from_name(about);
+            const meshioplusplus::MassPropertiesReport r =
+                core_nogil([&] { return meshioplusplus::mass_properties(cpp, options); });
+            const auto entry = [](const meshioplusplus::MassProperties& rP) {
+                py::dict d;
+                d["name"] = rP.mName;
+                d["num_cells"] = rP.mNumCells;
+                d["measure"] = rP.mMeasure;
+                d["mass"] = rP.mMass;
+                d["centre"] = std::vector<double>(rP.mCentre.begin(), rP.mCentre.end());
+                d["inertia"] = std::vector<double>(rP.mInertia.begin(), rP.mInertia.end());
+                d["principal_moments"] = std::vector<double>(rP.mPrincipalMoments.begin(),
+                                                             rP.mPrincipalMoments.end());
+                d["principal_axes"] =
+                    std::vector<double>(rP.mPrincipalAxes.begin(), rP.mPrincipalAxes.end());
+                d["gyration_radii"] =
+                    std::vector<double>(rP.mGyrationRadii.begin(), rP.mGyrationRadii.end());
+                return d;
+            };
+            py::dict out;
+            out["kind"] = r.mKind;
+            out["total"] = entry(r.mTotal);
+            py::list regions;
+            for (const auto& rp : r.mRegions)
+                regions.append(entry(rp));
+            out["regions"] = regions;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("density") = 1.0, py::arg("density_array") = std::string(),
+        py::arg("region") = std::string(), py::arg("thickness") = 0.0,
+        py::arg("about") = "centroid");
 
     // Point-cloud normals by local plane fits. {mesh, counters}. See
     // operations/point_normals.hpp.

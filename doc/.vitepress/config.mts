@@ -283,6 +283,7 @@ export default defineConfig({
           { text: "Curvature (mean / Gaussian)", link: "/curvature" },
           { text: "Normals", link: "/normals" },
           { text: "Point-cloud normals", link: "/point_normals" },
+          { text: "Mass properties", link: "/mass_properties" },
           { text: "Surface reconstruction", link: "/reconstruct_surface" },
           { text: "Surface repair", link: "/repair" },
           { text: "Removing islands", link: "/remove_islands" },

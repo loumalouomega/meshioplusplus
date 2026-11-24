@@ -146,6 +146,7 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
@@ -4579,6 +4580,96 @@ int cmd_symmetry_plane(const std::vector<std::string>& rArgs) {
 
 // point-normals: normals of a point cloud by local plane fits. See
 // operations/point_normals.hpp.
+std::string stats_g6(double v);  // defined with `cmd_stats` below
+
+int cmd_mass(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                         {{"density", {}, true},
+                                          {"density-array", {}, true},
+                                          {"region", {}, true},
+                                          {"thickness", {}, true},
+                                          {"about", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("mass requires exactly INFILE");
+    meshioplusplus::MassPropertiesOptions o;
+    cli_opt_double(p, "density", o.mDensity);
+    cli_opt_double(p, "thickness", o.mThickness);
+    if (has_opt(p, "density-array"))
+        o.mDensityArray = opt_value(p, "density-array");
+    if (has_opt(p, "region"))
+        o.mRegion = opt_value(p, "region");
+    if (has_opt(p, "about"))
+        o.mAbout = meshioplusplus::mass_about_from_name(opt_value(p, "about"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const meshioplusplus::MassPropertiesReport r = meshioplusplus::mass_properties(mesh, o);
+
+    const auto vec = [](const double* pV, std::size_t N) {
+        std::string t = "[";
+        for (std::size_t k = 0; k < N; ++k)
+            t += (k ? ", " : "") + stats_g6(pV[k]);
+        return t + "]";
+    };
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        const auto array = [&](const char* pKey, const double* pV, std::size_t N) {
+            json.Key(pKey);
+            json.BeginArray();
+            for (std::size_t k = 0; k < N; ++k)
+                json.Number(pV[k]);
+            json.EndArray();
+        };
+        const auto entry = [&](const meshioplusplus::MassProperties& rP) {
+            json.BeginObject();
+            json.Field("name", rP.mName);
+            json.Field("num_cells", rP.mNumCells);
+            json.Field("measure", rP.mMeasure);
+            json.Field("mass", rP.mMass);
+            array("centre", rP.mCentre.data(), 3);
+            array("inertia", rP.mInertia.data(), 6);
+            array("principal_moments", rP.mPrincipalMoments.data(), 3);
+            array("principal_axes", rP.mPrincipalAxes.data(), 9);
+            array("gyration_radii", rP.mGyrationRadii.data(), 3);
+            json.EndObject();
+        };
+        json.BeginObject();
+        json.Field("kind", r.mKind);
+        json.Key("total");
+        entry(r.mTotal);
+        json.Key("regions");
+        json.BeginArray();
+        for (const auto& rp : r.mRegions)
+            entry(rp);
+        json.EndArray();
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        return 0;
+    }
+    const auto print = [&](const meshioplusplus::MassProperties& rP, const char* pIndent) {
+        std::cout << pIndent << "cells:              " << rP.mNumCells << "\n";
+        std::cout << pIndent << (r.mKind == "shell" ? "area:               " : "volume:             ")
+                  << stats_g6(rP.mMeasure) << "\n";
+        std::cout << pIndent << "mass:               " << stats_g6(rP.mMass) << "\n";
+        std::cout << pIndent << "centre of mass:     " << vec(rP.mCentre.data(), 3) << "\n";
+        std::cout << pIndent << "inertia xx yy zz xy yz zx: " << vec(rP.mInertia.data(), 6) << "\n";
+        std::cout << pIndent << "principal moments:  " << vec(rP.mPrincipalMoments.data(), 3) << "\n";
+        std::cout << pIndent << "gyration radii:     " << vec(rP.mGyrationRadii.data(), 3) << "\n";
+    };
+    std::cout << "<meshio++ mass properties: " << r.mKind << ">\n";
+    print(r.mTotal, "  ");
+    for (const auto& rp : r.mRegions) {
+        std::cout << "  region '" << rp.mName << "':\n";
+        print(rp, "    ");
+    }
+    for (const std::string& w : r.mWarnings)
+        std::cout << "  warning: " << w << "\n";
+    return 0;
+}
+
 int cmd_point_normals(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"k", {}, true},
@@ -10570,6 +10661,7 @@ const CliVerb kCliVerbs[] = {
      &cmd_coordinates},
     {"hull", nullptr,
      "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n", &cmd_hull},
+    {"mass", nullptr, "  mass                    Mass, centre of mass and inertia of a body\n", &cmd_mass},
     {"point-normals", nullptr,
      "  point-normals           Normals of a point cloud by local plane fits\n",
      &cmd_point_normals},

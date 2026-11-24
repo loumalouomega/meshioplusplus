@@ -623,6 +623,20 @@ def test_stats(mesh_file):
     assert out["cell_type_counts"] == {"triangle": 2, "tetra": 1}
 
 
+def test_mass_properties(tmp_path):
+    path = str(tmp_path / "cube.vtu")
+    pts = [[x, y, z] for z in (0.0, 2.0) for y in (0.0, 2.0) for x in (0.0, 2.0)]
+    mesh = meshioplusplus.Mesh(
+        pts, [("hexahedron", [[0, 1, 3, 2, 4, 5, 7, 6]])]
+    )
+    meshioplusplus.write(path, mesh)
+    out = _dump(_tools.tool_mass_properties(path, density=2.0))
+    assert out["kind"] == "solid"
+    assert out["total"]["mass"] == pytest.approx(16.0)
+    assert out["total"]["centre"] == pytest.approx([1.0, 1.0, 1.0])
+    assert out["total"]["inertia"][0] == pytest.approx(16.0 * 8.0 / 12.0)
+
+
 def test_quality_summary_and_annotated_output(mesh_file, tmp_path):
     out = _dump(_tools.tool_quality(mesh_file))
     assert out["num_cells"] == 3

@@ -155,6 +155,23 @@ def _register_inspection(server: FastMCP) -> None:
         keep|drop for the halo of a .pvtu/.pvtp/.pvd."""
 
     @server.tool()
+    @_forward(_tools.tool_mass_properties)
+    def mass_properties(
+        input_path: str,
+        file_format: Optional[str] = None,
+        density: float = 1.0,
+        density_array: Optional[str] = None,
+        region: Optional[str] = None,
+        thickness: float = 0.0,
+        about: str = "centroid",
+    ) -> dict:
+        """Mass, centre of mass and inertia of a body: volume cells, a closed
+        surface, or a shell when thickness > 0. density is per cell (or the
+        name of a scalar cell_data array); about is centroid|origin. Returns
+        measure, mass, centre, inertia (xx yy zz xy yz zx), principal moments
+        and axes, gyration radii, for the whole mesh and each cell region."""
+
+    @server.tool()
     @_forward(_tools.tool_quality)
     def quality(
         input_path: str,

@@ -152,6 +152,7 @@ from .. import (
     lshape,
     match_periodic_nodes,
 )
+from .. import mass_properties as _mass_properties_op
 from .. import measure as _measure_op
 from .. import (
     merge,
@@ -780,6 +781,35 @@ def tool_stats(input_path, file_format=None, time_step=0, piece=None, ghosts="ke
         readonly=True,
     )
     return _json_safe(compute_stats(mesh))
+
+
+def tool_mass_properties(
+    input_path,
+    file_format=None,
+    density=1.0,
+    density_array=None,
+    region=None,
+    thickness=0.0,
+    about="centroid",
+):
+    """Mass, centre of mass and inertia of a body.
+
+    Integrates a density over volume cells, a closed surface or (with
+    ``thickness``) a shell; reports the measure, mass, centre, inertia tensor
+    (xx yy zz xy yz zx), principal moments and axes and radii of gyration, for
+    the whole mesh and every named cell region.
+    """
+    mesh = _load(input_path, file_format, readonly=True)
+    return _json_safe(
+        _mass_properties_op(
+            mesh,
+            density=density,
+            density_array=density_array,
+            region=region,
+            thickness=thickness,
+            about=about,
+        )
+    )
 
 
 def tool_quality(input_path, file_format=None, output_path=None, output_format=None):
@@ -8010,6 +8040,14 @@ TOOL_REGISTRY = OrderedDict(
         ("detect", {"fn": tool_detect, "wraps": ("detect",), "gated": None}),
         ("info", {"fn": tool_info, "wraps": ("read_metadata",), "gated": None}),
         ("stats", {"fn": tool_stats, "wraps": ("compute_stats",), "gated": None}),
+        (
+            "mass_properties",
+            {
+                "fn": tool_mass_properties,
+                "wraps": ("mass_properties",),
+                "gated": None,
+            },
+        ),
         (
             "quality",
             {

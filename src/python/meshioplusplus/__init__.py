@@ -237,6 +237,7 @@ if TYPE_CHECKING:
         move,
     )
     from ._morph import morph
+    from ._mass_properties import mass_properties
     from ._normals import compute_normals
     from ._octree import octree
     from ._octree_mesh import octree_mesh
@@ -410,6 +411,7 @@ _LAZY_ATTRS = {
     "convex_hull": "_hull",
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
+    "mass_properties": "_mass_properties",
     "reconstruct_surface": "_reconstruct_surface",
     "morph": "_morph",
     "prepare_metric": "_metric",
@@ -860,6 +862,7 @@ __all__ = [
     "convex_hull",
     "delaunay_2d",
     "estimate_normals",
+    "mass_properties",
     "reconstruct_surface",
     "morph",
     "prepare_metric",

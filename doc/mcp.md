@@ -104,7 +104,7 @@ Formats whose reader follows other files are never cached, because the entry fil
 
 MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint memberships as raw file ids, through the Python format side channel. Constraints remain opaque; the lists are not mesh-cell indices and operations do not remap them. Other output formats need not preserve MDPA-specific content. See [MDPA](formats/mdpa.md).
 
-212 tools; the six marked *gated* need a further extra and return a named error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report. A mesh carrying a B-rep side channel (read from [Kratos CAD JSON](/formats/cad_json), STEP or IGES, or made by `fit_cad`) adds a `brep` entry to the summary: its faces, trimmed and rational faces, loops, edges and vertices, by count.
+213 tools; the six marked *gated* need a further extra and return a named error without it. Transforming tools take `input_path`/`output_path` (+ optional `input_format`/`output_format`, otherwise inferred from the extension) and return the written path plus a mesh summary and the operation's report. A mesh carrying a B-rep side channel (read from [Kratos CAD JSON](/formats/cad_json), STEP or IGES, or made by `fit_cad`) adds a `brep` entry to the summary: its faces, trimmed and rational faces, loops, edges and vertices, by count.
 
 ### Inspection (read-only)
 
@@ -116,6 +116,7 @@ MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint membe
 | `detect` | every format a file could be, ranked `certain` (content signature), `likely` (extension plus a metadata read) or `guess` (extension only) |
 | `info` | fast file summary via `read_metadata` — counts, cell blocks, data names, regions, time steps |
 | `stats` | bbox, centroid, areas/volumes, per-type counts, inverted cells |
+| `mass_properties` | mass, centre of mass, inertia tensor, principal moments and axes of a volume mesh, closed surface or shell, per cell region |
 | `quality` | per-metric summaries + histograms; pass `output_path` to write the mesh with `quality:<metric>` cell data |
 | `check_quality` | the quality gate: `require` thresholds (`"scaled_jacobian >= 0.2; aspect_ratio <= 5 @ 1%"`) tested per cell plus `max_inverted`/`max_degenerate`; `passed` and one entry per check (violations, fraction, worst value and cell) — see [quality gate](/mesh_quality#quality-gate) |
 | `check_conformity` | whether a mesh is conforming: `num_hanging_nodes` (a point on a volume cell's face or edge the cell does not use), `num_t_junctions` (the same on a 2-D cell's edge), `num_partial_overlaps`, `num_unwelded_facets`, `num_boundary_facets`, `num_non_manifold_facets`, `conforming` and `interface_mode` (`conforming`, `weld` or `proximity`: the `find_interface` mode that suits the mesh); `tolerance` as the Python function, and `output_path` writes the mesh with `conformity:hanging` point data — see [conformity](/check_conformity) |

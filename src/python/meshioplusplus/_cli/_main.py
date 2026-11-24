@@ -263,6 +263,12 @@ _VERBS = (
         "add_symmetry_args",
     ),
     _Verb(
+        "mass",
+        "_mass",
+        "mass_cmd",
+        "Mass, centre of mass and inertia of a body",
+    ),
+    _Verb(
         "point-normals",
         "_point_normals",
         "point_normals_cmd",
