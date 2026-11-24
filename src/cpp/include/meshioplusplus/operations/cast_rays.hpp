@@ -68,9 +68,9 @@ struct CastRaysOptions {
 /// One entry per ray, in the order the rays were given.
 struct CastRaysResult {
     std::vector<std::uint8_t> mHit;
-    std::vector<double> mDistance;  ///< `NaN` on a miss.
-    std::vector<double> mPoint;     ///< Three per ray; `NaN` on a miss.
-    std::vector<double> mNormal;    ///< Three per ray, unit; `NaN` on a miss.
+    std::vector<double> mDistance;    ///< `NaN` on a miss.
+    std::vector<double> mPoint;       ///< Three per ray; `NaN` on a miss.
+    std::vector<double> mNormal;      ///< Three per ray, unit; `NaN` on a miss.
     std::vector<std::int64_t> mCell;  ///< Global input cell; -1 on a miss.
     std::int64_t mNumHits = 0;
 };

@@ -2681,8 +2681,9 @@ int main(int argc, char** argv) {
         // Rays from every point of the volume at its skin, and the jittered
         // points located back in the volume: the digests cover every result.
         row("cast_rays", [&](MeshDigest* pD) {
-            const std::vector<double> ray_xyz(volume.Points().As<double>(),
-                                              volume.Points().As<double>() + 3 * volume.NumPoints());
+            const std::vector<double> ray_xyz(
+                volume.Points().As<double>(),
+                volume.Points().As<double>() + 3 * volume.NumPoints());
             const mio::CastRaysResult r = mio::cast_rays(surface, ray_xyz, {0.3, 0.5, 0.8});
             i64(pD, r.mNumHits);
             doubles(pD, r.mDistance);
@@ -2728,8 +2729,7 @@ int main(int argc, char** argv) {
                 if (pD) {
                     pD->Bytes(r.mTotal.mCentre.data(), sizeof r.mTotal.mCentre);
                     pD->Bytes(r.mTotal.mInertia.data(), sizeof r.mTotal.mInertia);
-                    pD->Bytes(r.mTotal.mPrincipalMoments.data(),
-                              sizeof r.mTotal.mPrincipalMoments);
+                    pD->Bytes(r.mTotal.mPrincipalMoments.data(), sizeof r.mTotal.mPrincipalMoments);
                 }
             }
         });
@@ -2817,7 +2817,8 @@ int main(int argc, char** argv) {
                         const std::size_t c = i + 3 * (j + 3 * k);
                         x[3 * c] = 0.5 * static_cast<double>(i) + 0.1 * static_cast<double>(j * k);
                         x[3 * c + 1] = 0.5 * static_cast<double>(j) + 0.05 * static_cast<double>(i);
-                        x[3 * c + 2] = 0.5 * static_cast<double>(k) + 0.02 * static_cast<double>(i * j);
+                        x[3 * c + 2] =
+                            0.5 * static_cast<double>(k) + 0.02 * static_cast<double>(i * j);
                         w[c] = 1.0 + 0.1 * static_cast<double>((i + j + k) % 3);
                     }
             mio::NurbsInfo info;

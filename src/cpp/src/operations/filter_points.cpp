@@ -154,8 +154,7 @@ FpIds fp_voxel(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double Size) 
         return rAlive;
     const std::vector<Vec3> cloud = fp_cloud(rXyz, rAlive);
     double lo[3], hi[3];
-    detail::BoundingBoxUtils::FromCoords(
-        m, [&](std::size_t i) { return cloud[i]; }, lo, hi);
+    detail::BoundingBoxUtils::FromCoords(m, [&](std::size_t i) { return cloud[i]; }, lo, hi);
     for (int d = 0; d < 3; ++d)
         if (!((hi[d] - lo[d]) / Size < 1e15))
             throw std::invalid_argument(
@@ -180,8 +179,8 @@ FpIds fp_voxel(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double Size) 
         std::int64_t best = rows[a].mId;
         double best_d2 = std::numeric_limits<double>::infinity();
         for (std::size_t j = a; j < b; ++j) {
-            const double d2 =
-                detail::vec3_norm_sq(detail::vec3_sub(cloud[static_cast<std::size_t>(rows[j].mId)], mean));
+            const double d2 = detail::vec3_norm_sq(
+                detail::vec3_sub(cloud[static_cast<std::size_t>(rows[j].mId)], mean));
             if (d2 < best_d2) {  // ascending id: a tie keeps the lower id
                 best_d2 = d2;
                 best = rows[j].mId;
@@ -217,8 +216,8 @@ FpIds fp_poisson(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double MinD
             for (const std::int64_t j : rIds) {
                 if (!kept[static_cast<std::size_t>(j)])
                     continue;
-                if (detail::vec3_norm_sq(detail::vec3_sub(cloud[i], cloud[static_cast<std::size_t>(j)])) <
-                    d2_min) {
+                if (detail::vec3_norm_sq(
+                        detail::vec3_sub(cloud[i], cloud[static_cast<std::size_t>(j)])) < d2_min) {
                     blocked = true;
                     return;
                 }
@@ -321,12 +320,14 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
         const std::int64_t* entries = region.Entries();
         for (std::size_t e = 0; e < region.NumEntries(); ++e) {
             const std::int64_t p = entries[e];
-            if (p >= 0 && static_cast<std::size_t>(p) < n && inverse[static_cast<std::size_t>(p)] >= 0)
+            if (p >= 0 && static_cast<std::size_t>(p) < n &&
+                inverse[static_cast<std::size_t>(p)] >= 0)
                 mapped.push_back(inverse[static_cast<std::size_t>(p)]);
         }
         NDArray arr = NDArray::Uninit(DType::Int64, {mapped.size()});
         std::copy(mapped.begin(), mapped.end(), arr.As<std::int64_t>());
-        out.AddRegion(Region(region.mName, RegionKind::Point, region.mDim, region.mTag, std::move(arr)));
+        out.AddRegion(
+            Region(region.mName, RegionKind::Point, region.mDim, region.mTag, std::move(arr)));
     }
     std::size_t input_cells = 0;
     for (const auto cb : rMesh.CellRange())

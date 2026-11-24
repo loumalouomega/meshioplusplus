@@ -235,8 +235,9 @@ public:
         const std::size_t nv = mNodesPer;
         for (std::int64_t s : cand) {
             const std::int64_t* nodes = &mConn[static_cast<std::size_t>(s) * nv];
-            const bool inside = nv == 4 ? tet_contains(*mpPoints, mPointDim, nodes, rP, pW, mTolerance)
-                                        : tri_contains_xy(*mpPoints, mPointDim, nodes, rP, pW, mTolerance);
+            const bool inside =
+                nv == 4 ? tet_contains(*mpPoints, mPointDim, nodes, rP, pW, mTolerance)
+                        : tri_contains_xy(*mpPoints, mPointDim, nodes, rP, pW, mTolerance);
             if (inside)
                 return s;
         }

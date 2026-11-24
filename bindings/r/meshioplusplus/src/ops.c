@@ -1672,25 +1672,28 @@ SEXP R_mio_filter_points(SEXP mesh, SEXP statistical_k, SEXP std_ratio, SEXP rad
     opts.min_neighbors = (int64_t)mio_r_double(min_neighbors, "min_neighbors");
     opts.voxel_size = mio_r_double(voxel_size, "voxel_size");
     opts.min_distance = mio_r_double(min_distance, "min_distance");
-    const mio_mesh *in = mio_r_mesh(mesh);
+    const mio_mesh* in = mio_r_mesh(mesh);
     int64_t n_in = mio_mesh_num_points(in);
-    int64_t *map = (int64_t *)R_alloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
+    int64_t* map = (int64_t*)R_alloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
     int64_t removed[4] = {0, 0, 0, 0};
-    mio_mesh *res = mio_filter_points(in, &opts, map, removed);
-    if (res == NULL) mio_r_fail("filter_points");
+    mio_mesh* res = mio_filter_points(in, &opts, map, removed);
+    if (res == NULL)
+        mio_r_fail("filter_points");
     int64_t n_out = mio_mesh_num_points(res);
 
     SEXP out = PROTECT(Rf_allocVector(VECSXP, 4));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, 4));
-    const char *names[] = {"mesh", "point_map", "num_removed", "warnings"};
-    for (int k = 0; k < 4; ++k) SET_STRING_ELT(nm, k, Rf_mkChar(names[k]));
+    const char* names[] = {"mesh", "point_map", "num_removed", "warnings"};
+    for (int k = 0; k < 4; ++k)
+        SET_STRING_ELT(nm, k, Rf_mkChar(names[k]));
     SET_VECTOR_ELT(out, 0, mio_r_wrap_mesh(res));
     SEXP pm = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n_out));
-    for (int64_t i = 0; i < n_out; ++i) REAL(pm)[i] = (double)(map[i] + 1); /* 1-based */
+    for (int64_t i = 0; i < n_out; ++i)
+        REAL(pm)[i] = (double)(map[i] + 1); /* 1-based */
     SET_VECTOR_ELT(out, 1, pm);
     SEXP nr = PROTECT(Rf_allocVector(REALSXP, 4));
     SEXP nrn = PROTECT(Rf_allocVector(STRSXP, 4));
-    const char *rnames[] = {"statistical", "radius", "voxel", "poisson"};
+    const char* rnames[] = {"statistical", "radius", "voxel", "poisson"};
     for (int k = 0; k < 4; ++k) {
         REAL(nr)[k] = (double)removed[k];
         SET_STRING_ELT(nrn, k, Rf_mkChar(rnames[k]));
@@ -1707,7 +1710,7 @@ SEXP R_mio_filter_points(SEXP mesh, SEXP statistical_k, SEXP std_ratio, SEXP rad
 
 /* A (rows x n) numeric matrix argument as a protected REALSXP; `*pN` gets n.
  * `allow_vector` also takes a plain vector of `rows` numbers as one column. */
-static SEXP rays_matrix(SEXP m, int64_t rows, int allow_vector, const char *what, int64_t *pN) {
+static SEXP rays_matrix(SEXP m, int64_t rows, int allow_vector, const char* what, int64_t* pN) {
     SEXP p = PROTECT(Rf_coerceVector(m, REALSXP));
     if (Rf_isMatrix(m)) {
         SEXP dim = Rf_getAttrib(m, R_DimSymbol);
@@ -1735,8 +1738,8 @@ SEXP R_mio_cast_rays(SEXP mesh, SEXP origins, SEXP directions, SEXP max_distance
     opts.max_distance = mio_r_double(max_distance, "max_distance");
     opts.region = mio_r_opt_string(region);
 
-    int32_t *hit = (int32_t *)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
-    int64_t *cell = (int64_t *)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    int32_t* hit = (int32_t*)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
+    int64_t* cell = (int64_t*)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
     SEXP distance = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
     SEXP point = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)n));
     SEXP normal = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)n));
@@ -1753,7 +1756,7 @@ SEXP R_mio_cast_rays(SEXP mesh, SEXP origins, SEXP directions, SEXP max_distance
         LOGICAL(rhit)[i] = hit[i] != 0;
         REAL(rcell)[i] = (double)(cell[i] + 1); /* 1-based, 0 on a miss */
     }
-    const char *names[] = {"hit", "distance", "point", "normal", "cell"};
+    const char* names[] = {"hit", "distance", "point", "normal", "cell"};
     SEXP values[] = {rhit, distance, point, normal, rcell};
     SEXP list = PROTECT(mio_r_named_list(5, names, values));
     SEXP nh = PROTECT(Rf_ScalarReal((double)num_hits));
@@ -1777,12 +1780,12 @@ SEXP R_mio_locate_points(SEXP mesh, SEXP points, SEXP tolerance) {
     mio_locate_points_opts_init(&opts);
     opts.tolerance = mio_r_double(tolerance, "tolerance");
 
-    int64_t *cell = (int64_t *)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
-    int64_t *nodes = (int64_t *)R_alloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(int64_t));
+    int64_t* cell = (int64_t*)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    int64_t* nodes = (int64_t*)R_alloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(int64_t));
     SEXP bary = PROTECT(Rf_allocMatrix(REALSXP, 4, (int)n));
     int64_t located = 0;
-    mio_status st = mio_locate_points(mio_r_mesh(mesh), REAL(p), n, &opts, cell, nodes,
-                                      REAL(bary), &located);
+    mio_status st =
+        mio_locate_points(mio_r_mesh(mesh), REAL(p), n, &opts, cell, nodes, REAL(bary), &located);
     if (st != MIO_OK) {
         UNPROTECT(2);
         mio_r_fail("locate_points");
@@ -1793,7 +1796,7 @@ SEXP R_mio_locate_points(SEXP mesh, SEXP points, SEXP tolerance) {
         REAL(rcell)[i] = (double)(cell[i] + 1); /* 1-based, 0 outside */
     for (int64_t k = 0; k < 4 * n; ++k)
         REAL(rnodes)[k] = (double)(nodes[k] + 1); /* 1-based, 0 for none or padding */
-    const char *names[] = {"cell", "nodes", "barycentric", "num_located"};
+    const char* names[] = {"cell", "nodes", "barycentric", "num_located"};
     SEXP nl = PROTECT(Rf_ScalarReal((double)located));
     SEXP out = PROTECT(Rf_allocVector(VECSXP, 4));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, 4));
@@ -1811,24 +1814,24 @@ SEXP R_mio_locate_points(SEXP mesh, SEXP points, SEXP tolerance) {
 /* --- mass properties (roadmap 9.4) --------------------------------------- */
 
 typedef struct {
-    const mio_mass_report *report;
+    const mio_mass_report* report;
     int64_t index;
 } mass_name_ctx;
 
-static int64_t mass_kind_getter(void *c, char *buf, int64_t buflen) {
-    return mio_mass_report_kind((const mio_mass_report *)c, buf, buflen);
+static int64_t mass_kind_getter(void* c, char* buf, int64_t buflen) {
+    return mio_mass_report_kind((const mio_mass_report*)c, buf, buflen);
 }
 
-static int64_t mass_warnings_getter(void *c, char *buf, int64_t buflen) {
-    return mio_mass_report_warnings((const mio_mass_report *)c, buf, buflen);
+static int64_t mass_warnings_getter(void* c, char* buf, int64_t buflen) {
+    return mio_mass_report_warnings((const mio_mass_report*)c, buf, buflen);
 }
 
-static int64_t mass_name_getter(void *c, char *buf, int64_t buflen) {
-    mass_name_ctx *x = (mass_name_ctx *)c;
+static int64_t mass_name_getter(void* c, char* buf, int64_t buflen) {
+    mass_name_ctx* x = (mass_name_ctx*)c;
     return mio_mass_report_entry_name(x->report, x->index, buf, buflen);
 }
 
-static SEXP mass_real_vector(const double *v, R_xlen_t n) {
+static SEXP mass_real_vector(const double* v, R_xlen_t n) {
     SEXP s = PROTECT(Rf_allocVector(REALSXP, n));
     memcpy(REAL(s), v, (size_t)n * sizeof(double));
     UNPROTECT(1);
@@ -1838,16 +1841,16 @@ static SEXP mass_real_vector(const double *v, R_xlen_t n) {
 /* One entry (index 0 is the total) as a named list. Frees `report` and raises
  * on a C API failure. The list is returned unprotected: the caller stores it
  * at once. */
-static SEXP mass_entry_list(mio_mass_report *report, int64_t index) {
+static SEXP mass_entry_list(mio_mass_report* report, int64_t index) {
     mio_mass_entry e;
     memset(&e, 0, sizeof(e));
     if (mio_mass_report_entry(report, index, &e) != MIO_OK) {
         mio_mass_report_free(report);
         mio_r_fail("mass_properties entry");
     }
-    static const char *const names[] = {"name",   "num_cells",         "measure",
-                                        "mass",   "centre",            "inertia",
-                                        "principal_moments", "principal_axes", "gyration_radii"};
+    static const char* const names[] = {
+        "name",    "num_cells",         "measure",        "mass",          "centre",
+        "inertia", "principal_moments", "principal_axes", "gyration_radii"};
     SEXP out = PROTECT(Rf_allocVector(VECSXP, 9));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, 9));
     for (int k = 0; k < 9; ++k)
@@ -1874,8 +1877,8 @@ static SEXP mass_entry_list(mio_mass_report *report, int64_t index) {
     return out;
 }
 
-SEXP R_mio_mass_properties(SEXP mesh, SEXP density, SEXP density_array, SEXP region,
-                           SEXP thickness, SEXP about) {
+SEXP R_mio_mass_properties(SEXP mesh, SEXP density, SEXP density_array, SEXP region, SEXP thickness,
+                           SEXP about) {
     mio_mass_properties_opts opts;
     mio_mass_properties_opts_init(&opts);
     opts.density = mio_r_double(density, "density");
@@ -1883,7 +1886,7 @@ SEXP R_mio_mass_properties(SEXP mesh, SEXP density, SEXP density_array, SEXP reg
     opts.region = mio_r_opt_string(region);
     opts.thickness = mio_r_double(thickness, "thickness");
     opts.about = (int32_t)mio_r_int(about, "about");
-    mio_mass_report *report = (mio_mass_report *)mio_r_check_ptr(
+    mio_mass_report* report = (mio_mass_report*)mio_r_check_ptr(
         mio_mass_properties(mio_r_mesh(mesh), &opts), "mass_properties");
 
     int64_t n = mio_mass_report_count(report);
@@ -1891,7 +1894,7 @@ SEXP R_mio_mass_properties(SEXP mesh, SEXP density, SEXP density_array, SEXP reg
         mio_mass_report_free(report);
         mio_r_fail("mass_properties count");
     }
-    static const char *const names[] = {"kind", "total", "regions", "warnings"};
+    static const char* const names[] = {"kind", "total", "regions", "warnings"};
     SEXP out = PROTECT(Rf_allocVector(VECSXP, 4));
     SEXP nm = PROTECT(Rf_allocVector(STRSXP, 4));
     for (int k = 0; k < 4; ++k)

@@ -560,32 +560,33 @@ static mxArray *ofi_iga_array(const mio_iga_evaluation *ev, int32_t which, int64
 /* iga_evaluate(info, patch, params, derivatives, trim_samples) -- params is
  * (N x d), one row per point: exactly the row-major (N, d) the C API takes. */
 /* iga_closest_point(info, patch, points): points is N x space_dim */
-static mxArray *O_mio_iga_closest_point(const mxArray **a) {
-    const mio_format_info *info = ofi_info_of(a[0], 0);
+static mxArray* O_mio_iga_closest_point(const mxArray** a) {
+    const mio_format_info* info = ofi_info_of(a[0], 0);
     int64_t n = 0, sdim = 0;
-    double *q = mio_o_rows_to_c(a[2], &n, &sdim, 0.0, "points");
-    double *params = (double *)mxCalloc((size_t)(2 * n) + 1, sizeof(double));
-    double *closest = (double *)mxCalloc((size_t)(n * sdim) + 1, sizeof(double));
-    double *dist = (double *)mxCalloc((size_t)n + 1, sizeof(double));
+    double* q = mio_o_rows_to_c(a[2], &n, &sdim, 0.0, "points");
+    double* params = (double*)mxCalloc((size_t)(2 * n) + 1, sizeof(double));
+    double* closest = (double*)mxCalloc((size_t)(n * sdim) + 1, sizeof(double));
+    double* dist = (double*)mxCalloc((size_t)n + 1, sizeof(double));
     int32_t pdim = 0;
-    mio_status st = mio_iga_closest_point(info, (int64_t)mio_o_int(a[1], "patch") - 1, q, n,
-                                          params, closest, dist, &pdim);
+    mio_status st = mio_iga_closest_point(info, (int64_t)mio_o_int(a[1], "patch") - 1, q, n, params,
+                                          closest, dist, &pdim);
     mxFree(q);
-    if (st != MIO_OK) mio_o_check(st, "iga_closest_point");
-    mxArray *values[3];
+    if (st != MIO_OK)
+        mio_o_check(st, "iga_closest_point");
+    mxArray* values[3];
     values[0] = mio_o_rows_from_c(params, MIO_FLOAT64, n, pdim, 0.0);
     values[1] = mio_o_rows_from_c(closest, MIO_FLOAT64, n, sdim, 0.0);
     values[2] = mio_o_rows_from_c(dist, MIO_FLOAT64, n, 1, 0.0);
     mxFree(params);
     mxFree(closest);
     mxFree(dist);
-    const char *names[3] = {"params", "points", "distances"};
+    const char* names[3] = {"params", "points", "distances"};
     return mio_o_struct(3, names, values);
 }
 
 /* iga_remove_knots(info, patch, direction, knots, tolerance, sample_subdivisions) */
-static mxArray *O_mio_iga_remove_knots(const mxArray **a) {
-    const mio_format_info *info = ofi_info_of(a[0], 0);
+static mxArray* O_mio_iga_remove_knots(const mxArray** a) {
+    const mio_format_info* info = ofi_info_of(a[0], 0);
     mio_iga_remove_opts opts;
     mio_iga_remove_opts_init(&opts);
     opts.patch = (int64_t)mio_o_int(a[1], "patch") - 1;
@@ -595,20 +596,22 @@ static mxArray *O_mio_iga_remove_knots(const mxArray **a) {
     opts.tolerance = mio_o_double(a[4], "tolerance");
     opts.sample_subdivisions = (int32_t)mio_o_int(a[5], "sample_subdivisions");
     int64_t n = 0;
-    mio_format_info *reduced = NULL;
+    mio_format_info* reduced = NULL;
     /* the first call sizes the report, the second fills it */
-    mio_mesh *mesh = mio_iga_remove_knots(info, &opts, &reduced, 0, NULL, NULL, NULL, &n);
-    if (mesh == NULL) mio_o_fail("iga_remove_knots");
+    mio_mesh* mesh = mio_iga_remove_knots(info, &opts, &reduced, 0, NULL, NULL, NULL, &n);
+    if (mesh == NULL)
+        mio_o_fail("iga_remove_knots");
     mio_mesh_free(mesh);
     mio_format_info_free(reduced);
-    mxArray *rk = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
-    mxArray *rq = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
-    mxArray *rr = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
-    int32_t *requested = (int32_t *)mxCalloc((size_t)n + 1, sizeof(int32_t));
-    int32_t *removed = (int32_t *)mxCalloc((size_t)n + 1, sizeof(int32_t));
+    mxArray* rk = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
+    mxArray* rq = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
+    mxArray* rr = mxCreateDoubleMatrix((mwSize)n, 1, mxREAL);
+    int32_t* requested = (int32_t*)mxCalloc((size_t)n + 1, sizeof(int32_t));
+    int32_t* removed = (int32_t*)mxCalloc((size_t)n + 1, sizeof(int32_t));
     reduced = NULL;
     mesh = mio_iga_remove_knots(info, &opts, &reduced, n, mxGetPr(rk), requested, removed, &n);
-    if (mesh == NULL) mio_o_fail("iga_remove_knots");
+    if (mesh == NULL)
+        mio_o_fail("iga_remove_knots");
     double total = 0.0;
     for (int64_t i = 0; i < n; ++i) {
         mxGetPr(rq)[i] = (double)requested[i];
@@ -617,24 +620,25 @@ static mxArray *O_mio_iga_remove_knots(const mxArray **a) {
     }
     mxFree(requested);
     mxFree(removed);
-    mxArray *rep_values[4];
+    mxArray* rep_values[4];
     rep_values[0] = rk;
     rep_values[1] = rq;
     rep_values[2] = rr;
     rep_values[3] = mxCreateDoubleScalar(total);
-    const char *rep_names[4] = {"knots", "requested", "removed", "num_removed"};
-    mxArray *values[3];
+    const char* rep_names[4] = {"knots", "requested", "removed", "num_removed"};
+    mxArray* values[3];
     values[0] = mio_o_wrap_mesh(mesh);
     values[1] = ofi_wrap_info(reduced);
     values[2] = mio_o_struct(4, rep_names, rep_values);
-    const char *names[3] = {"mesh", "info", "report"};
+    const char* names[3] = {"mesh", "info", "report"};
     return mio_o_struct(3, names, values);
 }
 
-static mxArray *O_mio_iga_bezier_extract(const mxArray **a) {
-    const mio_format_info *info = ofi_info_of(a[0], 0);
-    mio_mesh *mesh = mio_iga_bezier_extract(info, (int64_t)mio_o_int(a[1], "patch") - 1);
-    if (mesh == NULL) mio_o_fail("iga_bezier_extract");
+static mxArray* O_mio_iga_bezier_extract(const mxArray** a) {
+    const mio_format_info* info = ofi_info_of(a[0], 0);
+    mio_mesh* mesh = mio_iga_bezier_extract(info, (int64_t)mio_o_int(a[1], "patch") - 1);
+    if (mesh == NULL)
+        mio_o_fail("iga_bezier_extract");
     return mio_o_wrap_mesh(mesh);
 }
 
@@ -665,7 +669,7 @@ static mxArray *O_mio_iga_evaluate(const mxArray **a) {
                                               (int32_t)mio_o_int(a[4], "trim_samples"));
     if (ev == NULL) mio_o_fail("iga_evaluate");
     const int64_t nf = mio_iga_evaluation_num_fields(ev);
-    mxArray *v[6];
+    mxArray* v[6];
     v[0] = ofi_iga_array(ev, MIO_IGA_POINTS, 0, 0);
     v[1] = mio_o_cell(nf > 0 ? nf : 0);
     for (int64_t k = 0; k < nf; ++k) {
@@ -676,8 +680,8 @@ static mxArray *O_mio_iga_evaluate(const mxArray **a) {
     v[4] = ofi_iga_array(ev, MIO_IGA_INSIDE, 0, 1);
     v[5] = ofi_iga_array(ev, MIO_IGA_SECOND_DERIVATIVES, 0, 0);
     mio_iga_evaluation_free(ev);
-    const char *names[6] = {"points", "fields", "derivatives", "normals", "inside",
-                            "second_derivatives"};
+    const char* names[6] = {"points",  "fields", "derivatives",
+                            "normals", "inside", "second_derivatives"};
     return mio_o_struct(6, names, v);
 }
 
@@ -1294,22 +1298,14 @@ static mxArray *O_mio_brep_info(const mxArray **a) {
 /* --- table --------------------------------------------------------------- */
 
 static const mio_o_entry kEntries[] = {
-    MIO_O_ENTRY(mio_read_with_info, 7),
-    MIO_O_ENTRY(mio_write_with_info, 4),
-    MIO_O_ENTRY(mio_format_info_release, 1),
-    MIO_O_ENTRY(mio_format_info_is_open, 1),
-    MIO_O_ENTRY(mio_format_info_format, 1),
-    MIO_O_ENTRY(mio_gmsh_info, 1),
-    MIO_O_ENTRY(mio_nurbs_info, 1),
-    MIO_O_ENTRY(mio_iga_refine, 7),
-    MIO_O_ENTRY(mio_iga_sample, 5),
-    MIO_O_ENTRY(mio_iga_bezier_extract, 2),
-    MIO_O_ENTRY(mio_iga_remove_knots, 6),
-    MIO_O_ENTRY(mio_iga_closest_point, 3),
-    MIO_O_ENTRY(mio_project_to_cad, 6),
-    MIO_O_ENTRY(mio_mesh_cad_surface, 36),
-    MIO_O_ENTRY(mio_iga_evaluate, 5),
-    MIO_O_ENTRY(mio_brep_info, 1),
+    MIO_O_ENTRY(mio_read_with_info, 7),      MIO_O_ENTRY(mio_write_with_info, 4),
+    MIO_O_ENTRY(mio_format_info_release, 1), MIO_O_ENTRY(mio_format_info_is_open, 1),
+    MIO_O_ENTRY(mio_format_info_format, 1),  MIO_O_ENTRY(mio_gmsh_info, 1),
+    MIO_O_ENTRY(mio_nurbs_info, 1),          MIO_O_ENTRY(mio_iga_refine, 7),
+    MIO_O_ENTRY(mio_iga_sample, 5),          MIO_O_ENTRY(mio_iga_bezier_extract, 2),
+    MIO_O_ENTRY(mio_iga_remove_knots, 6),    MIO_O_ENTRY(mio_iga_closest_point, 3),
+    MIO_O_ENTRY(mio_project_to_cad, 6),      MIO_O_ENTRY(mio_mesh_cad_surface, 36),
+    MIO_O_ENTRY(mio_iga_evaluate, 5),        MIO_O_ENTRY(mio_brep_info, 1),
     MIO_O_ENTRY(mio_mdpa_info, 1),
 };
 

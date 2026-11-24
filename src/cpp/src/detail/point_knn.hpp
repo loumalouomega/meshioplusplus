@@ -144,18 +144,17 @@ public:
         const Vec hi{rP[0] + Radius, rP[1] + Radius, rP[2] + Radius};
         const double r2 = Radius * Radius;
         std::size_t count = 0;
-        mGrid.ForEachInBox(mGrid.KeyOf(lo.data()), mGrid.KeyOf(hi.data()),
-                           [&](const BucketView& rIds) {
-                               for (const std::int64_t id : rIds) {
-                                   if (count >= Limit)
-                                       return;
-                                   const Vec& q = mPoints[static_cast<std::size_t>(id)];
-                                   const double dx = rP[0] - q[0], dy = rP[1] - q[1],
-                                                dz = rP[2] - q[2];
-                                   if (dx * dx + dy * dy + dz * dz <= r2)
-                                       ++count;
-                               }
-                           });
+        mGrid.ForEachInBox(
+            mGrid.KeyOf(lo.data()), mGrid.KeyOf(hi.data()), [&](const BucketView& rIds) {
+                for (const std::int64_t id : rIds) {
+                    if (count >= Limit)
+                        return;
+                    const Vec& q = mPoints[static_cast<std::size_t>(id)];
+                    const double dx = rP[0] - q[0], dy = rP[1] - q[1], dz = rP[2] - q[2];
+                    if (dx * dx + dy * dy + dz * dz <= r2)
+                        ++count;
+                }
+            });
         return count;
     }
 

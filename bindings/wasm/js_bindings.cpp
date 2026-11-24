@@ -8544,9 +8544,9 @@ val filter_points_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::PointFilterOptions options;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
-            check_settings_keys(rOptions, "filterPoints options",
-                                {"statisticalK", "stdRatio", "radius", "minNeighbors",
-                                 "voxelSize", "minDistance"});
+            check_settings_keys(
+                rOptions, "filterPoints options",
+                {"statisticalK", "stdRatio", "radius", "minNeighbors", "voxelSize", "minDistance"});
             if (rOptions.hasOwnProperty("statisticalK"))
                 options.mStatisticalK =
                     static_cast<std::int64_t>(rOptions["statisticalK"].as<double>());

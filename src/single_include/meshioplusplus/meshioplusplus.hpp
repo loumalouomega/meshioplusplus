@@ -27182,9 +27182,9 @@ struct CastRaysOptions {
 /// One entry per ray, in the order the rays were given.
 struct CastRaysResult {
     std::vector<std::uint8_t> mHit;
-    std::vector<double> mDistance;  ///< `NaN` on a miss.
-    std::vector<double> mPoint;     ///< Three per ray; `NaN` on a miss.
-    std::vector<double> mNormal;    ///< Three per ray, unit; `NaN` on a miss.
+    std::vector<double> mDistance;    ///< `NaN` on a miss.
+    std::vector<double> mPoint;       ///< Three per ray; `NaN` on a miss.
+    std::vector<double> mNormal;      ///< Three per ray, unit; `NaN` on a miss.
     std::vector<std::int64_t> mCell;  ///< Global input cell; -1 on a miss.
     std::int64_t mNumHits = 0;
 };
@@ -34009,9 +34009,9 @@ struct LocatePointsOptions {
 
 /// One entry per point, in the order the points were given.
 struct LocatePointsResult {
-    std::vector<std::int64_t> mCell;          ///< Global input cell; -1 outside.
-    std::vector<std::int64_t> mNodes;         ///< Four per point; -1 outside or padding.
-    std::vector<double> mBarycentric;         ///< Four per point; 0 outside or padding.
+    std::vector<std::int64_t> mCell;   ///< Global input cell; -1 outside.
+    std::vector<std::int64_t> mNodes;  ///< Four per point; -1 outside or padding.
+    std::vector<double> mBarycentric;  ///< Four per point; 0 outside or padding.
     std::int64_t mNumLocated = 0;
 };
 
@@ -51250,9 +51250,10 @@ inline void iga_eval_point_d2(const IgaEvalNet& rNet, const std::size_t* pSpan, 
     for (std::size_t m = 0; m < npair; ++m) {
         const std::size_t k = pair[m][0], l = pair[m][1], q = pair[m][2];
         for (std::size_t c = 0; c < NV; ++c) {
-            const double v = (((acc[q * NV + c] - wsum[q] * pOut[c]) - wsum[1 + k] * pD1[l * NV + c]) -
-                              wsum[1 + l] * pD1[k * NV + c]) /
-                             w0;
+            const double v =
+                (((acc[q * NV + c] - wsum[q] * pOut[c]) - wsum[1 + k] * pD1[l * NV + c]) -
+                 wsum[1 + l] * pD1[k * NV + c]) /
+                w0;
             pD2[(k * dim + l) * NV + c] = v;
             pD2[(l * dim + k) * NV + c] = v;
         }
@@ -57434,18 +57435,17 @@ public:
         const Vec hi{rP[0] + Radius, rP[1] + Radius, rP[2] + Radius};
         const double r2 = Radius * Radius;
         std::size_t count = 0;
-        mGrid.ForEachInBox(mGrid.KeyOf(lo.data()), mGrid.KeyOf(hi.data()),
-                           [&](const BucketView& rIds) {
-                               for (const std::int64_t id : rIds) {
-                                   if (count >= Limit)
-                                       return;
-                                   const Vec& q = mPoints[static_cast<std::size_t>(id)];
-                                   const double dx = rP[0] - q[0], dy = rP[1] - q[1],
-                                                dz = rP[2] - q[2];
-                                   if (dx * dx + dy * dy + dz * dz <= r2)
-                                       ++count;
-                               }
-                           });
+        mGrid.ForEachInBox(
+            mGrid.KeyOf(lo.data()), mGrid.KeyOf(hi.data()), [&](const BucketView& rIds) {
+                for (const std::int64_t id : rIds) {
+                    if (count >= Limit)
+                        return;
+                    const Vec& q = mPoints[static_cast<std::size_t>(id)];
+                    const double dx = rP[0] - q[0], dy = rP[1] - q[1], dz = rP[2] - q[2];
+                    if (dx * dx + dy * dy + dz * dz <= r2)
+                        ++count;
+                }
+            });
         return count;
     }
 
@@ -57670,8 +57670,9 @@ public:
         const std::size_t nv = mNodesPer;
         for (std::int64_t s : cand) {
             const std::int64_t* nodes = &mConn[static_cast<std::size_t>(s) * nv];
-            const bool inside = nv == 4 ? tet_contains(*mpPoints, mPointDim, nodes, rP, pW, mTolerance)
-                                        : tri_contains_xy(*mpPoints, mPointDim, nodes, rP, pW, mTolerance);
+            const bool inside =
+                nv == 4 ? tet_contains(*mpPoints, mPointDim, nodes, rP, pW, mTolerance)
+                        : tri_contains_xy(*mpPoints, mPointDim, nodes, rP, pW, mTolerance);
             if (inside)
                 return s;
         }
@@ -245200,8 +245201,8 @@ CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
     }
     for (std::size_t k = 0; k < rOrigins.size(); ++k)
         if (!std::isfinite(rOrigins[k]))
-            throw std::invalid_argument(std::string(kPrefix) + "origin " +
-                                        std::to_string(k / 3) + " is not finite");
+            throw std::invalid_argument(std::string(kPrefix) + "origin " + std::to_string(k / 3) +
+                                        " is not finite");
 
     const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, rOptions.mRegion);
     if (soup.NumTriangles() == 0)
@@ -257638,8 +257639,7 @@ FpIds fp_voxel(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double Size) 
         return rAlive;
     const std::vector<Vec3> cloud = fp_cloud(rXyz, rAlive);
     double lo[3], hi[3];
-    detail::BoundingBoxUtils::FromCoords(
-        m, [&](std::size_t i) { return cloud[i]; }, lo, hi);
+    detail::BoundingBoxUtils::FromCoords(m, [&](std::size_t i) { return cloud[i]; }, lo, hi);
     for (int d = 0; d < 3; ++d)
         if (!((hi[d] - lo[d]) / Size < 1e15))
             throw std::invalid_argument(
@@ -257664,8 +257664,8 @@ FpIds fp_voxel(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double Size) 
         std::int64_t best = rows[a].mId;
         double best_d2 = std::numeric_limits<double>::infinity();
         for (std::size_t j = a; j < b; ++j) {
-            const double d2 =
-                detail::vec3_norm_sq(detail::vec3_sub(cloud[static_cast<std::size_t>(rows[j].mId)], mean));
+            const double d2 = detail::vec3_norm_sq(
+                detail::vec3_sub(cloud[static_cast<std::size_t>(rows[j].mId)], mean));
             if (d2 < best_d2) {  // ascending id: a tie keeps the lower id
                 best_d2 = d2;
                 best = rows[j].mId;
@@ -257701,8 +257701,8 @@ FpIds fp_poisson(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double MinD
             for (const std::int64_t j : rIds) {
                 if (!kept[static_cast<std::size_t>(j)])
                     continue;
-                if (detail::vec3_norm_sq(detail::vec3_sub(cloud[i], cloud[static_cast<std::size_t>(j)])) <
-                    d2_min) {
+                if (detail::vec3_norm_sq(
+                        detail::vec3_sub(cloud[i], cloud[static_cast<std::size_t>(j)])) < d2_min) {
                     blocked = true;
                     return;
                 }
@@ -257805,12 +257805,14 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
         const std::int64_t* entries = region.Entries();
         for (std::size_t e = 0; e < region.NumEntries(); ++e) {
             const std::int64_t p = entries[e];
-            if (p >= 0 && static_cast<std::size_t>(p) < n && inverse[static_cast<std::size_t>(p)] >= 0)
+            if (p >= 0 && static_cast<std::size_t>(p) < n &&
+                inverse[static_cast<std::size_t>(p)] >= 0)
                 mapped.push_back(inverse[static_cast<std::size_t>(p)]);
         }
         NDArray arr = NDArray::Uninit(DType::Int64, {mapped.size()});
         std::copy(mapped.begin(), mapped.end(), arr.As<std::int64_t>());
-        out.AddRegion(Region(region.mName, RegionKind::Point, region.mDim, region.mTag, std::move(arr)));
+        out.AddRegion(
+            Region(region.mName, RegionKind::Point, region.mDim, region.mTag, std::move(arr)));
     }
     std::size_t input_cells = 0;
     for (const auto cb : rMesh.CellRange())
@@ -268347,7 +268349,7 @@ void mp_add_tet(MpContribution& rOut, double Rho, const Vec3& rA, const Vec3& rB
 void mp_add_triangle(MpContribution& rOut, double Sigma, const Vec3& rA, const Vec3& rB,
                      const Vec3& rC) {
     const double area = 0.5 * detail::vec3_norm(detail::vec3_cross(detail::vec3_sub(rB, rA),
-                                                                    detail::vec3_sub(rC, rA)));
+                                                                   detail::vec3_sub(rC, rA)));
     const double mass = Sigma * area;
     const std::array<Vec3, 4> p{rA, rB, rC, Vec3{0.0, 0.0, 0.0}};
     const Vec3 s = detail::vec3_add(detail::vec3_add(rA, rB), rC);
@@ -268631,7 +268633,8 @@ MassPropertiesReport mass_properties(const Mesh& rMesh, const MassPropertiesOpti
             const NDArray& a = rMesh.CellData(rOptions.mDensityArray, b);
             if (a.Size() != rMesh.Cells(b).NumCells())
                 throw std::invalid_argument(std::string(kPrefix) + "density array '" +
-                                            rOptions.mDensityArray + "' must hold one scalar per cell");
+                                            rOptions.mDensityArray +
+                                            "' must hold one scalar per cell");
             body.mDensityArrays.push_back(&a);
         }
     }
@@ -268691,7 +268694,8 @@ MassPropertiesReport mass_properties(const Mesh& rMesh, const MassPropertiesOpti
                 " is not a closed, consistently wound surface; close it with `repair` or give a "
                 "thickness to treat it as a shell");
     };
-    check_closed(selection, rOptions.mRegion.empty() ? "the surface" : "region '" + rOptions.mRegion + "'");
+    check_closed(selection,
+                 rOptions.mRegion.empty() ? "the surface" : "region '" + rOptions.mRegion + "'");
     report.mTotal = mp_reduce(body, selection, rOptions.mAbout, "");
 
     if (rOptions.mRegion.empty()) {

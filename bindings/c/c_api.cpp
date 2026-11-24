@@ -12941,7 +12941,6 @@ void mio_mass_report_free(mio_mass_report* report) {
     delete report;
 }
 
-
 // ---------------------------------------------------------------------------
 // Ray casting and point location (roadmap 9.3)
 // ---------------------------------------------------------------------------
@@ -12973,8 +12972,9 @@ mio_status mio_cast_rays(const mio_mesh* mesh, const double* origins, int64_t nu
                          double* point, double* normal, int64_t* cell, int64_t* num_hits) {
     return guarded([&]() -> mio_status {
         if (!mesh || num_rays < 0 || (num_rays > 0 && !origins) || !directions)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: cast_rays: mesh/origins/directions is NULL "
-                                             "or num_rays is negative");
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: cast_rays: mesh/origins/directions is NULL "
+                        "or num_rays is negative");
         if (num_directions != 1 && num_directions != num_rays)
             return fail(MIO_ERR_INVALID_ARG,
                         "meshio++: cast_rays: num_directions must be 1 or num_rays");
@@ -12987,7 +12987,8 @@ mio_status mio_cast_rays(const mio_mesh* mesh, const double* origins, int64_t nu
         const std::vector<double> o(origins, origins + 3 * static_cast<std::size_t>(num_rays));
         const std::vector<double> d(directions,
                                     directions + 3 * static_cast<std::size_t>(num_directions));
-        const meshioplusplus::CastRaysResult r = meshioplusplus::cast_rays(mesh->mMesh, o, d, options);
+        const meshioplusplus::CastRaysResult r =
+            meshioplusplus::cast_rays(mesh->mMesh, o, d, options);
         const std::size_t n = r.mHit.size();
         for (std::size_t i = 0; i < n; ++i) {
             if (hit)

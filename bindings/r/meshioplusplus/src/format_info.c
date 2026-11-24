@@ -513,8 +513,9 @@ SEXP R_mio_iga_sample(SEXP x, SEXP sample_subdivisions, SEXP trim_samples, SEXP 
 }
 
 SEXP R_mio_iga_closest_point(SEXP x, SEXP patch, SEXP points) {
-    const mio_format_info *info = info_of(x, 0);
-    if (!Rf_isMatrix(points)) Rf_error("'points' must be a (space_dim, N) matrix, one column per point");
+    const mio_format_info* info = info_of(x, 0);
+    if (!Rf_isMatrix(points))
+        Rf_error("'points' must be a (space_dim, N) matrix, one column per point");
     SEXP q = PROTECT(Rf_coerceVector(points, REALSXP));
     const int sdim = Rf_nrows(points);
     const int n = Rf_ncols(points);
@@ -522,21 +523,22 @@ SEXP R_mio_iga_closest_point(SEXP x, SEXP patch, SEXP points) {
     SEXP closest = PROTECT(Rf_allocMatrix(REALSXP, sdim, n));
     SEXP dist = PROTECT(Rf_allocVector(REALSXP, n));
     int32_t pdim = 0;
-    mio_status st = mio_iga_closest_point(info, (int64_t)mio_r_int(patch, "patch") - 1, REAL(q),
-                                          (int64_t)n, REAL(params), REAL(closest), REAL(dist),
-                                          &pdim);
+    mio_status st =
+        mio_iga_closest_point(info, (int64_t)mio_r_int(patch, "patch") - 1, REAL(q), (int64_t)n,
+                              REAL(params), REAL(closest), REAL(dist), &pdim);
     if (st != MIO_OK) {
         UNPROTECT(4);
         mio_r_check(st, "iga_closest_point");
     }
     /* the C library wrote rows of pdim (1 or 2) doubles: reshape to (pdim, N) */
     SEXP prm = PROTECT(Rf_allocMatrix(REALSXP, pdim, n));
-    for (R_xlen_t i = 0; i < (R_xlen_t)pdim * n; ++i) REAL(prm)[i] = REAL(params)[i];
+    for (R_xlen_t i = 0; i < (R_xlen_t)pdim * n; ++i)
+        REAL(prm)[i] = REAL(params)[i];
     SEXP values[3];
     values[0] = prm;
     values[1] = closest;
     values[2] = dist;
-    const char *names[3] = {"params", "points", "distances"};
+    const char* names[3] = {"params", "points", "distances"};
     SEXP out = mio_r_named_list(3, names, values);
     UNPROTECT(5);
     return out;
@@ -544,7 +546,7 @@ SEXP R_mio_iga_closest_point(SEXP x, SEXP patch, SEXP points) {
 
 SEXP R_mio_iga_remove_knots(SEXP x, SEXP patch, SEXP direction, SEXP knots, SEXP tolerance,
                             SEXP sample_subdivisions) {
-    const mio_format_info *info = info_of(x, 0);
+    const mio_format_info* info = info_of(x, 0);
     SEXP kn = PROTECT(Rf_coerceVector(knots, REALSXP));
     mio_iga_remove_opts opts;
     mio_iga_remove_opts_init(&opts);
@@ -555,9 +557,9 @@ SEXP R_mio_iga_remove_knots(SEXP x, SEXP patch, SEXP direction, SEXP knots, SEXP
     opts.knots = Rf_length(kn) > 0 ? REAL(kn) : NULL;
     opts.num_knots = (int64_t)Rf_length(kn);
     int64_t n = 0;
-    mio_format_info *reduced = NULL;
+    mio_format_info* reduced = NULL;
     /* the first call sizes the report, the second fills it */
-    mio_mesh *mesh = mio_iga_remove_knots(info, &opts, &reduced, 0, NULL, NULL, NULL, &n);
+    mio_mesh* mesh = mio_iga_remove_knots(info, &opts, &reduced, 0, NULL, NULL, NULL, &n);
     if (mesh == NULL) {
         UNPROTECT(1);
         mio_r_fail("iga_remove_knots");
@@ -567,8 +569,8 @@ SEXP R_mio_iga_remove_knots(SEXP x, SEXP patch, SEXP direction, SEXP knots, SEXP
     SEXP rk = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
     SEXP rq = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
     SEXP rr = PROTECT(Rf_allocVector(INTSXP, (R_xlen_t)n));
-    int32_t *requested = (int32_t *)R_alloc((size_t)n + 1, sizeof(int32_t));
-    int32_t *removed = (int32_t *)R_alloc((size_t)n + 1, sizeof(int32_t));
+    int32_t* requested = (int32_t*)R_alloc((size_t)n + 1, sizeof(int32_t));
+    int32_t* removed = (int32_t*)R_alloc((size_t)n + 1, sizeof(int32_t));
     reduced = NULL;
     mesh = mio_iga_remove_knots(info, &opts, &reduced, n, REAL(rk), requested, removed, &n);
     if (mesh == NULL) {
@@ -586,22 +588,23 @@ SEXP R_mio_iga_remove_knots(SEXP x, SEXP patch, SEXP direction, SEXP knots, SEXP
     rep_values[1] = rq;
     rep_values[2] = rr;
     rep_values[3] = PROTECT(Rf_ScalarInteger(total));
-    const char *rep_names[4] = {"knots", "requested", "removed", "num_removed"};
+    const char* rep_names[4] = {"knots", "requested", "removed", "num_removed"};
     SEXP report = PROTECT(mio_r_named_list(4, rep_names, rep_values));
     SEXP values[3];
     values[0] = PROTECT(mio_r_wrap_mesh(mesh));
     values[1] = PROTECT(reduced != NULL ? wrap_info(reduced) : R_NilValue);
     values[2] = report;
-    const char *names[3] = {"mesh", "info", "report"};
+    const char* names[3] = {"mesh", "info", "report"};
     SEXP out = mio_r_named_list(3, names, values);
     UNPROTECT(8);
     return out;
 }
 
 SEXP R_mio_iga_bezier_extract(SEXP x, SEXP patch) {
-    const mio_format_info *info = info_of(x, 0);
-    mio_mesh *mesh = mio_iga_bezier_extract(info, (int64_t)mio_r_int(patch, "patch") - 1);
-    if (mesh == NULL) mio_r_fail("iga_bezier_extract");
+    const mio_format_info* info = info_of(x, 0);
+    mio_mesh* mesh = mio_iga_bezier_extract(info, (int64_t)mio_r_int(patch, "patch") - 1);
+    if (mesh == NULL)
+        mio_r_fail("iga_bezier_extract");
     return mio_r_wrap_mesh(mesh);
 }
 
@@ -1079,8 +1082,8 @@ SEXP R_mio_iga_evaluate(SEXP x, SEXP patch, SEXP params, SEXP derivatives, SEXP 
     v[4] = PROTECT(iga_array(ev, MIO_IGA_INSIDE, 0, 1));
     v[5] = PROTECT(iga_array(ev, MIO_IGA_SECOND_DERIVATIVES, 0, 0));
     mio_iga_evaluation_free(ev);
-    const char *names[6] = {"points", "fields", "derivatives", "normals", "inside",
-                            "second_derivatives"};
+    const char* names[6] = {"points",  "fields", "derivatives",
+                            "normals", "inside", "second_derivatives"};
     SEXP out = mio_r_named_list(6, names, v);
     UNPROTECT(6);
     return out;

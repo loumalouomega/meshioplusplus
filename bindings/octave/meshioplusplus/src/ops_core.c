@@ -1616,7 +1616,7 @@ static mxArray *O_mio_hausdorff_distance(const mxArray **a) {
 
 /* filter_points(mesh, statistical_k, std_ratio, radius, min_neighbors,
  *               voxel_size, min_distance) */
-static mxArray *O_mio_filter_points(const mxArray **a) {
+static mxArray* O_mio_filter_points(const mxArray** a) {
     mio_filter_points_opts opts;
     mio_filter_points_opts_init(&opts);
     opts.statistical_k = (int64_t)mio_o_double(a[1], "statistical_k");
@@ -1625,20 +1625,21 @@ static mxArray *O_mio_filter_points(const mxArray **a) {
     opts.min_neighbors = (int64_t)mio_o_double(a[4], "min_neighbors");
     opts.voxel_size = mio_o_double(a[5], "voxel_size");
     opts.min_distance = mio_o_double(a[6], "min_distance");
-    const mio_mesh *in = mio_o_mesh(a[0]);
+    const mio_mesh* in = mio_o_mesh(a[0]);
     int64_t n_in = mio_mesh_num_points(in);
-    int64_t *map = (int64_t *)mxCalloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
+    int64_t* map = (int64_t*)mxCalloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
     int64_t removed[4] = {0, 0, 0, 0};
-    mio_mesh *res = mio_filter_points(in, &opts, map, removed);
+    mio_mesh* res = mio_filter_points(in, &opts, map, removed);
     if (res == NULL) {
         mxFree(map);
         mio_o_fail("filter_points");
     }
     int64_t n_out = mio_mesh_num_points(res);
-    const char *names[] = {"mesh", "point_map", "num_removed", "warnings"};
-    mxArray *nr = mio_o_matrix(1, 4);
-    for (int k = 0; k < 4; ++k) mxGetPr(nr)[k] = (double)removed[k];
-    mxArray *values[] = {mio_o_wrap_mesh(res), mio_o_shift_map(map, n_out), nr,
+    const char* names[] = {"mesh", "point_map", "num_removed", "warnings"};
+    mxArray* nr = mio_o_matrix(1, 4);
+    for (int k = 0; k < 4; ++k)
+        mxGetPr(nr)[k] = (double)removed[k];
+    mxArray* values[] = {mio_o_wrap_mesh(res), mio_o_shift_map(map, n_out), nr,
                          mio_o_getbuffer(mio_filter_points_warnings, "filter_points")};
     mxFree(map);
     return mio_o_struct(4, names, values);
@@ -1647,7 +1648,7 @@ static mxArray *O_mio_filter_points(const mxArray **a) {
 /* --- ray casting and point location (roadmap 9.3) ------------------------ */
 
 /* An (n x 3) matrix as a row-major (n, 3) buffer; raises when it is not one. */
-static double *oc_xyz_rows(const mxArray *a, int64_t *pN, const char *what) {
+static double* oc_xyz_rows(const mxArray* a, int64_t* pN, const char* what) {
     if (a == NULL || mxGetNumberOfDimensions(a) != 2 || mxGetN(a) != 3) {
         mio_o_error(what, "the matrix must be (n x 3), one row per entry");
     }
@@ -1657,34 +1658,34 @@ static double *oc_xyz_rows(const mxArray *a, int64_t *pN, const char *what) {
 
 /* cast_rays(mesh, origins, directions, max_distance, region) -- `origins` is
  * (n x 3), `directions` (1 x 3) or (n x 3). */
-static mxArray *O_mio_cast_rays(const mxArray **a) {
+static mxArray* O_mio_cast_rays(const mxArray** a) {
     int64_t n = 0, nd = 0;
-    double *o = oc_xyz_rows(a[1], &n, "cast_rays origins");
-    double *d = oc_xyz_rows(a[2], &nd, "cast_rays directions");
+    double* o = oc_xyz_rows(a[1], &n, "cast_rays origins");
+    double* d = oc_xyz_rows(a[2], &nd, "cast_rays directions");
     mio_cast_rays_opts opts;
     mio_cast_rays_opts_init(&opts);
     opts.max_distance = mio_o_double(a[3], "max_distance");
     opts.region = mio_o_opt_string(a[4]);
 
-    int32_t *hit = (int32_t *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
-    double *distance = (double *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(double));
-    double *point = (double *)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
-    double *normal = (double *)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
-    int64_t *cell = (int64_t *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    int32_t* hit = (int32_t*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
+    double* distance = (double*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(double));
+    double* point = (double*)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
+    double* normal = (double*)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
+    int64_t* cell = (int64_t*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
     int64_t num_hits = 0;
     mio_o_check(mio_cast_rays(mio_o_mesh(a[0]), o, n, d, nd, &opts, hit, distance, point, normal,
                               cell, &num_hits),
                 "cast_rays");
 
-    mxArray *rhit = mio_o_logical_column(n);
-    mxLogical *hl = mxGetLogicals(rhit);
-    mxArray *rdist = mio_o_column(n);
+    mxArray* rhit = mio_o_logical_column(n);
+    mxLogical* hl = mxGetLogicals(rhit);
+    mxArray* rdist = mio_o_column(n);
     for (int64_t i = 0; i < n; ++i) {
         hl[i] = hit[i] != 0;
         mxGetPr(rdist)[i] = distance[i];
     }
-    const char *names[] = {"hit", "distance", "point", "normal", "cell", "num_hits"};
-    mxArray *values[] = {rhit,
+    const char* names[] = {"hit", "distance", "point", "normal", "cell", "num_hits"};
+    mxArray* values[] = {rhit,
                          rdist,
                          mio_o_rows_from_c(point, MIO_FLOAT64, n, 3, 0.0),
                          mio_o_rows_from_c(normal, MIO_FLOAT64, n, 3, 0.0),
@@ -1701,22 +1702,21 @@ static mxArray *O_mio_cast_rays(const mxArray **a) {
 }
 
 /* locate_points(mesh, points, tolerance) -- `points` is (n x 3). */
-static mxArray *O_mio_locate_points(const mxArray **a) {
+static mxArray* O_mio_locate_points(const mxArray** a) {
     int64_t n = 0;
-    double *p = oc_xyz_rows(a[1], &n, "locate_points points");
+    double* p = oc_xyz_rows(a[1], &n, "locate_points points");
     mio_locate_points_opts opts;
     mio_locate_points_opts_init(&opts);
     opts.tolerance = mio_o_double(a[2], "tolerance");
 
-    int64_t *cell = (int64_t *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
-    int64_t *nodes = (int64_t *)mxCalloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(int64_t));
-    double *bary = (double *)mxCalloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(double));
+    int64_t* cell = (int64_t*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    int64_t* nodes = (int64_t*)mxCalloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(int64_t));
+    double* bary = (double*)mxCalloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(double));
     int64_t located = 0;
     mio_o_check(mio_locate_points(mio_o_mesh(a[0]), p, n, &opts, cell, nodes, bary, &located),
                 "locate_points");
-    const char *names[] = {"cell", "nodes", "barycentric", "num_located"};
-    mxArray *values[] = {mio_o_shift_map(cell, n),
-                         mio_o_rows_from_c(nodes, MIO_INT64, n, 4, 1.0),
+    const char* names[] = {"cell", "nodes", "barycentric", "num_located"};
+    mxArray* values[] = {mio_o_shift_map(cell, n), mio_o_rows_from_c(nodes, MIO_INT64, n, 4, 1.0),
                          mio_o_rows_from_c(bary, MIO_FLOAT64, n, 4, 0.0),
                          mio_o_scalar((double)located)};
     mxFree(p);
@@ -1729,36 +1729,36 @@ static mxArray *O_mio_locate_points(const mxArray **a) {
 /* --- mass properties (roadmap 9.4) --------------------------------------- */
 
 typedef struct {
-    const mio_mass_report *report;
+    const mio_mass_report* report;
     int64_t index;
 } oc_mass_ctx;
 
-static int64_t oc_mass_kind_getter(void *c, char *buf, int64_t buflen) {
-    return mio_mass_report_kind((const mio_mass_report *)c, buf, buflen);
+static int64_t oc_mass_kind_getter(void* c, char* buf, int64_t buflen) {
+    return mio_mass_report_kind((const mio_mass_report*)c, buf, buflen);
 }
 
-static int64_t oc_mass_warnings_getter(void *c, char *buf, int64_t buflen) {
-    return mio_mass_report_warnings((const mio_mass_report *)c, buf, buflen);
+static int64_t oc_mass_warnings_getter(void* c, char* buf, int64_t buflen) {
+    return mio_mass_report_warnings((const mio_mass_report*)c, buf, buflen);
 }
 
-static int64_t oc_mass_name_getter(void *c, char *buf, int64_t buflen) {
-    oc_mass_ctx *x = (oc_mass_ctx *)c;
+static int64_t oc_mass_name_getter(void* c, char* buf, int64_t buflen) {
+    oc_mass_ctx* x = (oc_mass_ctx*)c;
     return mio_mass_report_entry_name(x->report, x->index, buf, buflen);
 }
 
-static const char *kMassFields[] = {"name",    "num_cells",         "measure",
-                                    "mass",    "centre",            "inertia",
-                                    "principal_moments", "principal_axes", "gyration_radii"};
+static const char* kMassFields[] = {
+    "name",    "num_cells",         "measure",        "mass",          "centre",
+    "inertia", "principal_moments", "principal_axes", "gyration_radii"};
 
-static mxArray *oc_mass_row(const double *v, int64_t n) {
-    mxArray *m = mio_o_matrix(1, n);
+static mxArray* oc_mass_row(const double* v, int64_t n) {
+    mxArray* m = mio_o_matrix(1, n);
     memcpy(mxGetPr(m), v, (size_t)n * sizeof(double));
     return m;
 }
 
 /* Fill element k of a struct array with entry `index` of the report. Frees the
  * report and raises on a C API failure. */
-static void oc_mass_fill(mxArray *arr, mwIndex k, mio_mass_report *report, int64_t index) {
+static void oc_mass_fill(mxArray* arr, mwIndex k, mio_mass_report* report, int64_t index) {
     mio_mass_entry e;
     memset(&e, 0, sizeof(e));
     if (mio_mass_report_entry(report, index, &e) != MIO_OK) {
@@ -1775,8 +1775,8 @@ static void oc_mass_fill(mxArray *arr, mwIndex k, mio_mass_report *report, int64
     mxSetField(arr, k, "principal_moments", oc_mass_row(e.principal_moments, 3));
     /* The C array is a row-major 3x3 whose column k is the axis of moment k;
      * a MATLAB matrix is column-major, so element (i, j) is axes[3 * i + j]. */
-    mxArray *axes = mio_o_matrix(3, 3);
-    double *ad = mxGetPr(axes);
+    mxArray* axes = mio_o_matrix(3, 3);
+    double* ad = mxGetPr(axes);
     for (int i = 0; i < 3; ++i)
         for (int j = 0; j < 3; ++j)
             ad[i + 3 * j] = e.principal_axes[3 * i + j];
@@ -1785,7 +1785,7 @@ static void oc_mass_fill(mxArray *arr, mwIndex k, mio_mass_report *report, int64
 }
 
 /* mass_properties(mesh, density, density_array, region, thickness, about) */
-static mxArray *O_mio_mass_properties(const mxArray **a) {
+static mxArray* O_mio_mass_properties(const mxArray** a) {
     mio_mass_properties_opts opts;
     mio_mass_properties_opts_init(&opts);
     opts.density = mio_o_double(a[1], "density");
@@ -1793,7 +1793,7 @@ static mxArray *O_mio_mass_properties(const mxArray **a) {
     opts.region = mio_o_opt_string(a[3]);
     opts.thickness = mio_o_double(a[4], "thickness");
     opts.about = (int32_t)mio_o_int(a[5], "about");
-    mio_mass_report *report = (mio_mass_report *)mio_o_check_ptr(
+    mio_mass_report* report = (mio_mass_report*)mio_o_check_ptr(
         mio_mass_properties(mio_o_mesh(a[0]), &opts), "mass_properties");
 
     int64_t n = mio_mass_report_count(report);
@@ -1801,16 +1801,15 @@ static mxArray *O_mio_mass_properties(const mxArray **a) {
         mio_mass_report_free(report);
         mio_o_fail("mass_properties count");
     }
-    mxArray *total = mio_o_struct_array(1, 9, kMassFields);
+    mxArray* total = mio_o_struct_array(1, 9, kMassFields);
     oc_mass_fill(total, 0, report, 0);
-    mxArray *regions = mio_o_struct_array(n - 1, 9, kMassFields);
+    mxArray* regions = mio_o_struct_array(n - 1, 9, kMassFields);
     for (int64_t i = 1; i < n; ++i)
         oc_mass_fill(regions, (mwIndex)(i - 1), report, i);
-    const char *names[] = {"kind", "total", "regions", "warnings"};
-    mxArray *values[] = {mio_o_getstring(oc_mass_kind_getter, report, "mass_properties kind"),
-                         total, regions,
-                         mio_o_getstring(oc_mass_warnings_getter, report,
-                                         "mass_properties warnings")};
+    const char* names[] = {"kind", "total", "regions", "warnings"};
+    mxArray* values[] = {
+        mio_o_getstring(oc_mass_kind_getter, report, "mass_properties kind"), total, regions,
+        mio_o_getstring(oc_mass_warnings_getter, report, "mass_properties warnings")};
     mio_mass_report_free(report);
     return mio_o_struct(4, names, values);
 }

@@ -865,9 +865,10 @@ inline void iga_eval_point_d2(const IgaEvalNet& rNet, const std::size_t* pSpan, 
     for (std::size_t m = 0; m < npair; ++m) {
         const std::size_t k = pair[m][0], l = pair[m][1], q = pair[m][2];
         for (std::size_t c = 0; c < NV; ++c) {
-            const double v = (((acc[q * NV + c] - wsum[q] * pOut[c]) - wsum[1 + k] * pD1[l * NV + c]) -
-                              wsum[1 + l] * pD1[k * NV + c]) /
-                             w0;
+            const double v =
+                (((acc[q * NV + c] - wsum[q] * pOut[c]) - wsum[1 + k] * pD1[l * NV + c]) -
+                 wsum[1 + l] * pD1[k * NV + c]) /
+                w0;
             pD2[(k * dim + l) * NV + c] = v;
             pD2[(l * dim + k) * NV + c] = v;
         }

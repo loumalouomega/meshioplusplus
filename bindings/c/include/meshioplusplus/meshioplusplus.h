@@ -7522,7 +7522,8 @@ typedef struct mio_iga_remove_opts {
     int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_iga_remove_opts;
 
-/** Initialize knot-removal options: patch 0, direction 0, tolerance 0, every knot, automatic sampling. */
+/** Initialize knot-removal options: patch 0, direction 0, tolerance 0, every knot, automatic
+ * sampling. */
 MIO_API void mio_iga_remove_opts_init(mio_iga_remove_opts* opts);
 
 /**
@@ -7543,11 +7544,10 @@ MIO_API void mio_iga_remove_opts_init(mio_iga_remove_opts* opts);
  *         direction or tolerance, a knot that is not an interior knot, a B-rep, a model
  *         whose topology joins several patches): see mio_last_error().
  */
-MIO_API mio_mesh* mio_iga_remove_knots(const mio_format_info* info,
-                                       const mio_iga_remove_opts* opts, mio_format_info** reduced,
-                                       int64_t capacity, double* report_knots,
-                                       int32_t* report_requested, int32_t* report_removed,
-                                       int64_t* num_report);
+MIO_API mio_mesh* mio_iga_remove_knots(const mio_format_info* info, const mio_iga_remove_opts* opts,
+                                       mio_format_info** reduced, int64_t capacity,
+                                       double* report_knots, int32_t* report_requested,
+                                       int32_t* report_removed, int64_t* num_report);
 
 /**
  * Bezier extraction of one patch of a NURBS model: every interior knot raised
@@ -9500,29 +9500,31 @@ MIO_API mio_mesh* mio_metric_from_hessian(const mio_mesh* mesh, const char* hess
  */
 typedef struct mio_mass_properties_opts {
     double density;            /**< density of every cell (default 1) */
-    const char* density_array; /**< scalar cell_data array of per-cell densities; NULL or "" for `density` */
-    const char* region;        /**< restrict the total to this cell region; NULL or "" for all cells */
-    double thickness;          /**< above 0, surface cells are a shell of this thickness */
-    int32_t about;             /**< 0: inertia about the centre of mass; 1: about the origin */
-    int32_t reserved0;         /**< must be zero */
-    int64_t reserved[2];       /**< must be zero; room for additive growth */
+    const char* density_array; /**< scalar cell_data array of per-cell densities; NULL or "" for
+                                  `density` */
+    const char* region;  /**< restrict the total to this cell region; NULL or "" for all cells */
+    double thickness;    /**< above 0, surface cells are a shell of this thickness */
+    int32_t about;       /**< 0: inertia about the centre of mass; 1: about the origin */
+    int32_t reserved0;   /**< must be zero */
+    int64_t reserved[2]; /**< must be zero; room for additive growth */
 } mio_mass_properties_opts;
 
-/** Initialize mass-properties options: density 1, no array or region, no shell, about the centre. */
+/** Initialize mass-properties options: density 1, no array or region, no shell, about the centre.
+ */
 MIO_API void mio_mass_properties_opts_init(mio_mass_properties_opts* opts);
 
 /** One set of cells' mass properties (the whole selection, or one cell region).
  *  Size: 232 bytes. */
 typedef struct mio_mass_entry {
-    int64_t num_cells;           /**< cells that took part */
-    double measure;              /**< volume, or area for a shell */
+    int64_t num_cells; /**< cells that took part */
+    double measure;    /**< volume, or area for a shell */
     double mass;
     double centre[3];            /**< centre of mass */
     double inertia[6];           /**< xx yy zz xy yz zx, about the chosen point */
     double principal_moments[3]; /**< ascending */
     double principal_axes[9];    /**< row-major 3x3; column k belongs to moment k */
     double gyration_radii[3];
-    int64_t reserved[2];         /**< zero; room for additive growth */
+    int64_t reserved[2]; /**< zero; room for additive growth */
 } mio_mass_entry;
 
 /** Opaque mass-properties report; see mio_mass_properties. */
@@ -9557,7 +9559,6 @@ MIO_API int64_t mio_mass_report_warnings(const mio_mass_report* report, char* bu
 
 /** Free a report; NULL is a no-op. */
 MIO_API void mio_mass_report_free(mio_mass_report* report);
-
 
 /**
  * Options for mio_cast_rays (roadmap 9.3). Same ABI rules as above:
@@ -9624,13 +9625,13 @@ MIO_API mio_status mio_locate_points(const mio_mesh* mesh, const double* points,
  * off at 0; at least one must be on.
  */
 typedef struct mio_filter_points_opts {
-    int64_t statistical_k;   /**< statistical outlier removal: neighbours per mean distance */
-    double std_ratio;        /**< ... standard deviations above the mean (default 1) */
-    double radius;           /**< radius outlier removal: the search radius */
-    int64_t min_neighbors;   /**< ... other points needed within `radius` (default 4) */
-    double voxel_size;       /**< voxel thinning: the cube side */
-    double min_distance;     /**< Poisson-disk thinning: minimum distance between kept points */
-    int64_t reserved[4];     /**< must be zero; room for additive growth */
+    int64_t statistical_k; /**< statistical outlier removal: neighbours per mean distance */
+    double std_ratio;      /**< ... standard deviations above the mean (default 1) */
+    double radius;         /**< radius outlier removal: the search radius */
+    int64_t min_neighbors; /**< ... other points needed within `radius` (default 4) */
+    double voxel_size;     /**< voxel thinning: the cube side */
+    double min_distance;   /**< Poisson-disk thinning: minimum distance between kept points */
+    int64_t reserved[4];   /**< must be zero; room for additive growth */
 } mio_filter_points_opts;
 
 /** Initialize point-filter options: every step off, std_ratio 1, min_neighbors 4. */

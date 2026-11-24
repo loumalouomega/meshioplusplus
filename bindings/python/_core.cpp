@@ -7439,12 +7439,11 @@ PYBIND11_MODULE(_core, m) {
             out["num_hits"] = r.mNumHits;
             return out;
         },
-        py::arg("mesh"), py::arg("origins"), py::arg("directions"),
-        py::arg("max_distance") = 0.0, py::arg("region") = std::string());
+        py::arg("mesh"), py::arg("origins"), py::arg("directions"), py::arg("max_distance") = 0.0,
+        py::arg("region") = std::string());
     m.def(
         "locate_points",
-        [](py::object pymesh,
-           py::array_t<double, py::array::c_style | py::array::forcecast> points,
+        [](py::object pymesh, py::array_t<double, py::array::c_style | py::array::forcecast> points,
            double tolerance) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
@@ -7491,8 +7490,8 @@ PYBIND11_MODULE(_core, m) {
                 d["mass"] = rP.mMass;
                 d["centre"] = std::vector<double>(rP.mCentre.begin(), rP.mCentre.end());
                 d["inertia"] = std::vector<double>(rP.mInertia.begin(), rP.mInertia.end());
-                d["principal_moments"] = std::vector<double>(rP.mPrincipalMoments.begin(),
-                                                             rP.mPrincipalMoments.end());
+                d["principal_moments"] =
+                    std::vector<double>(rP.mPrincipalMoments.begin(), rP.mPrincipalMoments.end());
                 d["principal_axes"] =
                     std::vector<double>(rP.mPrincipalAxes.begin(), rP.mPrincipalAxes.end());
                 d["gyration_radii"] =

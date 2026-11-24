@@ -75,9 +75,9 @@ struct LocatePointsOptions {
 
 /// One entry per point, in the order the points were given.
 struct LocatePointsResult {
-    std::vector<std::int64_t> mCell;          ///< Global input cell; -1 outside.
-    std::vector<std::int64_t> mNodes;         ///< Four per point; -1 outside or padding.
-    std::vector<double> mBarycentric;         ///< Four per point; 0 outside or padding.
+    std::vector<std::int64_t> mCell;   ///< Global input cell; -1 outside.
+    std::vector<std::int64_t> mNodes;  ///< Four per point; -1 outside or padding.
+    std::vector<double> mBarycentric;  ///< Four per point; 0 outside or padding.
     std::int64_t mNumLocated = 0;
 };
 

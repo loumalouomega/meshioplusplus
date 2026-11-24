@@ -104,7 +104,7 @@ void mp_add_tet(MpContribution& rOut, double Rho, const Vec3& rA, const Vec3& rB
 void mp_add_triangle(MpContribution& rOut, double Sigma, const Vec3& rA, const Vec3& rB,
                      const Vec3& rC) {
     const double area = 0.5 * detail::vec3_norm(detail::vec3_cross(detail::vec3_sub(rB, rA),
-                                                                    detail::vec3_sub(rC, rA)));
+                                                                   detail::vec3_sub(rC, rA)));
     const double mass = Sigma * area;
     const std::array<Vec3, 4> p{rA, rB, rC, Vec3{0.0, 0.0, 0.0}};
     const Vec3 s = detail::vec3_add(detail::vec3_add(rA, rB), rC);
@@ -388,7 +388,8 @@ MassPropertiesReport mass_properties(const Mesh& rMesh, const MassPropertiesOpti
             const NDArray& a = rMesh.CellData(rOptions.mDensityArray, b);
             if (a.Size() != rMesh.Cells(b).NumCells())
                 throw std::invalid_argument(std::string(kPrefix) + "density array '" +
-                                            rOptions.mDensityArray + "' must hold one scalar per cell");
+                                            rOptions.mDensityArray +
+                                            "' must hold one scalar per cell");
             body.mDensityArrays.push_back(&a);
         }
     }
@@ -448,7 +449,8 @@ MassPropertiesReport mass_properties(const Mesh& rMesh, const MassPropertiesOpti
                 " is not a closed, consistently wound surface; close it with `repair` or give a "
                 "thickness to treat it as a shell");
     };
-    check_closed(selection, rOptions.mRegion.empty() ? "the surface" : "region '" + rOptions.mRegion + "'");
+    check_closed(selection,
+                 rOptions.mRegion.empty() ? "the surface" : "region '" + rOptions.mRegion + "'");
     report.mTotal = mp_reduce(body, selection, rOptions.mAbout, "");
 
     if (rOptions.mRegion.empty()) {

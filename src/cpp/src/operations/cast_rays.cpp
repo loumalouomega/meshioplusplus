@@ -67,8 +67,8 @@ CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
     }
     for (std::size_t k = 0; k < rOrigins.size(); ++k)
         if (!std::isfinite(rOrigins[k]))
-            throw std::invalid_argument(std::string(kPrefix) + "origin " +
-                                        std::to_string(k / 3) + " is not finite");
+            throw std::invalid_argument(std::string(kPrefix) + "origin " + std::to_string(k / 3) +
+                                        " is not finite");
 
     const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, rOptions.mRegion);
     if (soup.NumTriangles() == 0)

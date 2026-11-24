@@ -4732,10 +4732,12 @@ Mesh cli_vertex_mesh(const std::vector<double>& rXyz,
                      const std::vector<std::pair<std::string, NDArray>>& rArrays) {
     const std::size_t n = rXyz.size() / 3;
     Mesh out;
-    NDArray pts = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, {n, std::size_t{3}});
+    NDArray pts =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, {n, std::size_t{3}});
     std::copy(rXyz.begin(), rXyz.end(), pts.As<double>());
     out.AssignPoints(std::move(pts));
-    NDArray conn = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {n, std::size_t{1}});
+    NDArray conn =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {n, std::size_t{1}});
     for (std::size_t i = 0; i < n; ++i)
         conn.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
     out.AddCellBlock("vertex", std::move(conn));
@@ -4858,11 +4860,10 @@ int cmd_cast_rays(const std::vector<std::string>& rArgs) {
         index.push_back(static_cast<std::int64_t>(i));
         cell.push_back(r.mCell[i]);
     }
-    const Mesh out = cli_vertex_mesh(xyz,
-                                     {{"ray:index", cli_i64_array(index)},
-                                      {"ray:distance", cli_f64_array(distance, 1)},
-                                      {"ray:cell", cli_i64_array(cell)},
-                                      {"ray:normal", cli_f64_array(normal, 3)}});
+    const Mesh out = cli_vertex_mesh(xyz, {{"ray:index", cli_i64_array(index)},
+                                           {"ray:distance", cli_f64_array(distance, 1)},
+                                           {"ray:cell", cli_i64_array(cell)},
+                                           {"ray:normal", cli_f64_array(normal, 3)}});
     write_mesh_cli(p.positionals[2], out, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
         meshioplusplus::cli::JsonOut json(std::cout);
@@ -4878,8 +4879,8 @@ int cmd_cast_rays(const std::vector<std::string>& rArgs) {
 }
 
 int cmd_locate(const std::vector<std::string>& rArgs) {
-    auto p = cli_parse(rArgs,
-                       cli_specs({io_flag_specs(), {{"tolerance", {}, true}, {"json", {}, false}}}));
+    auto p = cli_parse(
+        rArgs, cli_specs({io_flag_specs(), {{"tolerance", {}, true}, {"json", {}, false}}}));
     if (p.positionals.size() != 3)
         throw std::runtime_error("locate requires MESH POINTS and OUTFILE");
     const Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -4887,7 +4888,8 @@ int cmd_locate(const std::vector<std::string>& rArgs) {
     meshioplusplus::LocatePointsOptions options;
     cli_opt_double(p, "tolerance", options.mTolerance);
     const std::vector<double> xyz_in = cli_flat_points(points);
-    const meshioplusplus::LocatePointsResult r = meshioplusplus::locate_points(mesh, xyz_in, options);
+    const meshioplusplus::LocatePointsResult r =
+        meshioplusplus::locate_points(mesh, xyz_in, options);
 
     std::vector<double> xyz, bary;
     std::vector<std::int64_t> cell, nodes, index;
@@ -4900,13 +4902,12 @@ int cmd_locate(const std::vector<std::string>& rArgs) {
         cell.push_back(r.mCell[i]);
         index.push_back(static_cast<std::int64_t>(i));
     }
-    NDArray node_array = meshioplusplus::NDArray::Uninit(
-        meshioplusplus::DType::Int64, {cell.size(), std::size_t{4}});
+    NDArray node_array = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64,
+                                                         {cell.size(), std::size_t{4}});
     std::copy(nodes.begin(), nodes.end(), node_array.As<std::int64_t>());
-    const Mesh out = cli_vertex_mesh(xyz,
-                                     {{"locate:cell", cli_i64_array(cell)},
-                                      {"locate:nodes", node_array},
-                                      {"locate:barycentric", cli_f64_array(bary, 4)}});
+    const Mesh out = cli_vertex_mesh(xyz, {{"locate:cell", cli_i64_array(cell)},
+                                           {"locate:nodes", node_array},
+                                           {"locate:barycentric", cli_f64_array(bary, 4)}});
     write_mesh_cli(p.positionals[2], out, opt_value(p, "output-format"));
     if (has_flag(p, "json")) {
         meshioplusplus::cli::JsonOut json(std::cout);
@@ -4992,12 +4993,14 @@ int cmd_mass(const std::vector<std::string>& rArgs) {
     }
     const auto print = [&](const meshioplusplus::MassProperties& rP, const char* pIndent) {
         std::cout << pIndent << "cells:              " << rP.mNumCells << "\n";
-        std::cout << pIndent << (r.mKind == "shell" ? "area:               " : "volume:             ")
+        std::cout << pIndent
+                  << (r.mKind == "shell" ? "area:               " : "volume:             ")
                   << stats_g6(rP.mMeasure) << "\n";
         std::cout << pIndent << "mass:               " << stats_g6(rP.mMass) << "\n";
         std::cout << pIndent << "centre of mass:     " << vec(rP.mCentre.data(), 3) << "\n";
         std::cout << pIndent << "inertia xx yy zz xy yz zx: " << vec(rP.mInertia.data(), 6) << "\n";
-        std::cout << pIndent << "principal moments:  " << vec(rP.mPrincipalMoments.data(), 3) << "\n";
+        std::cout << pIndent << "principal moments:  " << vec(rP.mPrincipalMoments.data(), 3)
+                  << "\n";
         std::cout << pIndent << "gyration radii:     " << vec(rP.mGyrationRadii.data(), 3) << "\n";
     };
     std::cout << "<meshio++ mass properties: " << r.mKind << ">\n";
