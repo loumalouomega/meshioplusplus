@@ -285,6 +285,7 @@ export default defineConfig({
           { text: "Point-cloud normals", link: "/point_normals" },
           { text: "Mass properties", link: "/mass_properties" },
           { text: "Ray casting and point location", link: "/ray_queries" },
+          { text: "Point-cloud conditioning", link: "/filter_points" },
           { text: "Surface reconstruction", link: "/reconstruct_surface" },
           { text: "Surface repair", link: "/repair" },
           { text: "Removing islands", link: "/remove_islands" },

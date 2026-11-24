@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `mass`, `cast-rays`, `locate`, `reconstruct`, `fit-curves`, `silhouette`, `step-elements`, `measure`, `align-datums`, `remove-islands`, `flip-normals`, `clip`, `offset-surface`, `thicken`, `hollow`, `face-support`, `fit-cad-iterate`, `constrain-primitives`, `profile-solid`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `filter-points`, `mass`, `cast-rays`, `locate`, `reconstruct`, `fit-curves`, `silhouette`, `step-elements`, `measure`, `align-datums`, `remove-islands`, `flip-normals`, `clip`, `offset-surface`, `thicken`, `hollow`, `face-support`, `fit-cad-iterate`, `constrain-primitives`, `profile-solid`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -156,6 +156,7 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
+| `filter-points` | `output`, `num_kept`, `num_input`, `num_removed_statistical`, `num_removed_radius`, `num_removed_voxel`, `num_removed_poisson`, `warnings` |
 | `mass` | `kind`, `total`, `regions`, `warnings`; each entry `name`, `num_cells`, `measure`, `mass`, `centre`, `inertia`, `principal_moments`, `principal_axes`, `gyration_radii` |
 | `cast-rays` | `output`, `num_rays`, `num_hits` |
 | `locate` | `output`, `num_points`, `num_located` |
@@ -2121,6 +2122,33 @@ Both CLIs print the same JSON.
 ```sh
 meshioplusplus point-normals scan.ply scan.pcd
 meshioplusplus point-normals scan.xyz out.xyz --k 24 --orientation viewpoint --viewpoint 0,0,2.5 --json
+```
+
+---
+
+## meshioplusplus filter-points
+
+Outlier removal and thinning of a point cloud (see [point-cloud conditioning](/filter_points)): up to four steps in a fixed order, each off at its default. The output is the surviving points as a point cloud.
+
+```
+meshioplusplus filter-points [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--outliers statistical` | Statistical outlier removal (uses `--k` and `--std-ratio`) |
+| `--k N` | Neighbours per mean distance for `--outliers` (default `16`) |
+| `--std-ratio R` | Standard deviations above the mean for `--outliers` (default `1`) |
+| `--radius R` | Radius outlier removal: a point needs `--min-neighbors` others within this radius |
+| `--min-neighbors N` | Others needed within `--radius` (default `4`) |
+| `--voxel S` | Voxel thinning: one real point per cube of this side |
+| `--poisson D` | Poisson-disk thinning: kept points are at least this far apart |
+| `--json` | Emit the report (`output`, `num_kept`, `num_input`, `num_removed_*`, `warnings`) |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+```sh
+meshioplusplus filter-points scan.ply clean.ply --outliers statistical --voxel 0.5
+meshioplusplus filter-points scan.xyz thin.xyz --poisson 0.02 --json
 ```
 
 ---

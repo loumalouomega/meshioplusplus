@@ -1409,6 +1409,17 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_filter_points_opts` (80 bytes).
+    type, bind(c) :: mio_filter_points_opts_t
+        integer(c_int64_t) :: statistical_k = 0
+        real(c_double) :: std_ratio = 1.0_c_double
+        real(c_double) :: radius = 0.0_c_double
+        integer(c_int64_t) :: min_neighbors = 4
+        real(c_double) :: voxel_size = 0.0_c_double
+        real(c_double) :: min_distance = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
     !> Interop mirror of C `mio_cast_rays_opts` (64 bytes).
     type, bind(c) :: mio_cast_rays_opts_t
         real(c_double) :: max_distance = 0.0_c_double
@@ -2944,6 +2955,7 @@ module meshioplusplus
         procedure :: hausdorff_distance => mesh_hausdorff_distance
         procedure :: mass_properties => mesh_mass_properties
         procedure :: cast_rays => mesh_cast_rays
+        procedure :: filter_points => mesh_filter_points
         procedure :: locate_points => mesh_locate_points
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
@@ -4928,6 +4940,15 @@ module meshioplusplus
             type(mio_registration_opts_t), intent(in) :: opts
             type(mio_registration_report_t), intent(out) :: report
             integer(c_int) :: r
+        end function
+
+        function c_mio_filter_points(h, opts, point_map, num_removed) &
+                bind(c, name="mio_filter_points") result(r)
+            import :: c_ptr, c_int64_t, mio_filter_points_opts_t
+            type(c_ptr), value :: h
+            type(mio_filter_points_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: point_map(*), num_removed(4)
+            type(c_ptr) :: r
         end function
 
         function c_mio_estimate_normals(h, opts, num_degenerate, num_components) &
@@ -12928,6 +12949,56 @@ contains
         end if
         if (present(num_degenerate)) num_degenerate = int(nd, int64)
         if (present(num_components)) num_components = int(nc, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remove outliers from, and thin, a point cloud: statistical outlier removal
+    !> (`statistical_k` neighbours, `std_ratio`), radius outlier removal (`radius`,
+    !> `min_neighbors`), voxel thinning (`voxel_size`) and Poisson-disk thinning
+    !> (`min_distance`), in that order; a step is off at 0 and at least one must
+    !> be on. Returns the point cloud (every per-point array gathered, Point
+    !> regions following, cells dropped). `point_map(n_out)` is each output
+    !> point's 1-based input point and `num_removed(4)` the points each step
+    !> removed. See doc/filter_points.md.
+    function mesh_filter_points(self, statistical_k, std_ratio, radius, min_neighbors, &
+                                voxel_size, min_distance, point_map, num_removed, stat, errmsg) &
+        result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: statistical_k, min_neighbors
+        real(real64), intent(in), optional :: std_ratio, radius, voxel_size, min_distance
+        integer(int64), allocatable, intent(out), optional :: point_map(:)
+        integer(int64), intent(out), optional :: num_removed(4)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_filter_points_opts_t) :: opts
+        integer(c_int64_t), allocatable :: cmap(:)
+        integer(c_int64_t) :: removed(4)
+        integer(int64) :: n_in, n_out
+
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 80_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: filter_points layout mismatch'
+            error stop 1
+        end if
+        if (present(statistical_k)) opts%statistical_k = int(statistical_k, c_int64_t)
+        if (present(std_ratio)) opts%std_ratio = real(std_ratio, c_double)
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(min_neighbors)) opts%min_neighbors = int(min_neighbors, c_int64_t)
+        if (present(voxel_size)) opts%voxel_size = real(voxel_size, c_double)
+        if (present(min_distance)) opts%min_distance = real(min_distance, c_double)
+        n_in = int(c_mio_mesh_num_points(self%handle), int64)
+        allocate (cmap(max(n_in, 1_int64)))
+        out%handle = c_mio_filter_points(self%handle, opts, cmap, removed)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('filter_points', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_removed)) num_removed = int(removed, int64)
+        if (present(point_map)) then
+            n_out = int(c_mio_mesh_num_points(out%handle), int64)
+            allocate (point_map(n_out))
+            point_map = int(cmap(1:n_out), int64) + 1_int64
+        end if
         call clear_status(stat, errmsg)
     end function
 

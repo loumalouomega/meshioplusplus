@@ -1545,6 +1545,21 @@ end
     close(back); close(labels); close(m)
 end
 
+@testset "point-cloud conditioning (filter_points)" begin
+    cloud = Mesh()
+    xyz = hcat([[0.1 * i, 0.0, 0.0] for i in 0:19]..., [50.0, 50.0, 50.0])
+    set_points!(cloud, xyz)
+    r = filter_points(cloud; radius=0.5, min_neighbors=2)
+    @test num_points(r.mesh) == 20
+    @test r.point_map == collect(1:20)
+    @test r.num_removed == (statistical=0, radius=1, voxel=0, poisson=0)
+    @test isempty(r.warnings)
+    v = filter_points(cloud; voxel_size=0.5)
+    @test num_points(v.mesh) < 21
+    @test_throws Exception filter_points(cloud)
+    @test_throws Exception filter_points(cloud; radius=-1.0)
+end
+
 @testset "ray casting and point location" begin
     cube = Mesh()
     set_points!(cube, Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1])

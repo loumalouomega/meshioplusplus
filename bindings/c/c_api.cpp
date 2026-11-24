@@ -118,6 +118,7 @@
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/formats/med.hpp"
@@ -12907,6 +12908,70 @@ mio_status mio_locate_points(const mio_mesh* mesh, const double* points, int64_t
         if (num_located)
             *num_located = r.mNumLocated;
         return MIO_OK;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Point-cloud conditioning (roadmap 9.9)
+// ---------------------------------------------------------------------------
+
+static_assert(sizeof(mio_filter_points_opts) == 80,
+              "mio_filter_points_opts layout changed: update the size in meshioplusplus.h");
+static_assert(offsetof(mio_filter_points_opts, reserved) == 48,
+              "mio_filter_points_opts: the reserved tail moved");
+
+namespace {
+std::string& capi_filter_points_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+}  // namespace
+
+void mio_filter_points_opts_init(mio_filter_points_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_filter_points_opts{};
+    opts->std_ratio = 1.0;
+    opts->min_neighbors = 4;
+}
+
+mio_mesh* mio_filter_points(const mio_mesh* mesh, const mio_filter_points_opts* opts,
+                            int64_t* point_map, int64_t* num_removed) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        mio_filter_points_opts o;
+        mio_filter_points_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::PointFilterOptions options;
+        options.mStatisticalK = o.statistical_k;
+        options.mStdRatio = o.std_ratio;
+        options.mRadius = o.radius;
+        options.mMinNeighbors = o.min_neighbors;
+        options.mVoxelSize = o.voxel_size;
+        options.mMinDistance = o.min_distance;
+        meshioplusplus::PointFilterResult r = meshioplusplus::filter_points(mesh->mMesh, options);
+        if (point_map)
+            std::copy(r.mPointMap.begin(), r.mPointMap.end(), point_map);
+        if (num_removed) {
+            num_removed[0] = r.mNumRemovedStatistical;
+            num_removed[1] = r.mNumRemovedRadius;
+            num_removed[2] = r.mNumRemovedVoxel;
+            num_removed[3] = r.mNumRemovedPoisson;
+        }
+        std::string& w = capi_filter_points_warnings();
+        w.clear();
+        for (const std::string& s : r.mWarnings)
+            w += (w.empty() ? "" : "\n") + s;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_filter_points_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_filter_points_warnings(), buf, buflen);
     });
 }
 

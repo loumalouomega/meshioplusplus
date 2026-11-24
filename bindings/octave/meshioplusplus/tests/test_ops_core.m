@@ -24,6 +24,7 @@ function tests = test_ops_core()
         'Hausdorff distance and the quality gate', @t_hausdorff_quality
         'mass_properties reports mass, centre and inertia', @t_mass_properties
         'cast_rays and locate_points query a surface and a volume', @t_rays_locate
+        'filter_points removes an outlier and maps the points', @t_filter_points
         'geodesic distance, atlas, morph, untangle and metric', @t_geodesic_etc
         'eigenmodes, registration and point normals', @t_spectral_registration
         'reconstruct_surface closes a sampled sphere', @t_reconstruct
@@ -612,6 +613,21 @@ function t_rays_locate()
     expect_equal(l.cell(2), 0);
     expect_equal(l.nodes(2, :), [0 0 0 0]);
     expect_error(@() mio.locate_points(v, [0 0 0], 'tolerance', -1));
+end
+
+function t_filter_points()
+    m = mio.mesh();
+    pts = [(0:0.1:1.9)' zeros(20, 2); 50 50 50];
+    mio.set_points(m, pts);
+    r = mio.filter_points(m, 'radius', 0.5, 'min_neighbors', 2);
+    expect_equal(mio.num_points(r.mesh), 20);
+    expect_equal(r.point_map, (1:20)');
+    expect_equal(r.num_removed, [0 1 0 0]);
+    assert(isempty(r.warnings));
+    v = mio.filter_points(m, 'voxel_size', 0.5);
+    assert(mio.num_points(v.mesh) < 21);
+    expect_error(@() mio.filter_points(m));
+    expect_error(@() mio.filter_points(m, 'radius', -1));
 end
 
 function t_geodesic_etc()

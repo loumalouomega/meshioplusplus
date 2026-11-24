@@ -151,6 +151,7 @@
 #include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/stats.hpp"
@@ -2688,6 +2689,22 @@ int main(int argc, char** argv) {
             doubles(pD, r.mPoint);
             if (pD)
                 pD->Bytes(r.mCell.data(), r.mCell.size() * sizeof r.mCell[0]);
+        });
+        row("filter_points", [&](MeshDigest* pD) {
+            mio::PointFilterOptions o;
+            o.mStatisticalK = 8;
+            o.mStdRatio = 2.0;
+            o.mRadius = 0.15;
+            o.mMinNeighbors = 3;
+            o.mVoxelSize = 0.04;
+            o.mMinDistance = 0.05;
+            const mio::PointFilterResult r = mio::filter_points(cloud, o);
+            i64(pD, r.mNumRemovedStatistical);
+            i64(pD, r.mNumRemovedRadius);
+            i64(pD, r.mNumRemovedVoxel);
+            i64(pD, r.mNumRemovedPoisson);
+            if (pD)
+                pD->Bytes(r.mPointMap.data(), r.mPointMap.size() * sizeof r.mPointMap[0]);
         });
         row("locate_points", [&](MeshDigest* pD) {
             const Mesh& jit = jittered;

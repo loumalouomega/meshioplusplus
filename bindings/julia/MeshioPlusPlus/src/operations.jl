@@ -4879,6 +4879,46 @@ function hausdorff_distance(a::Mesh, b::Mesh; face_samples::Integer=0,
 end
 
 """
+    filter_points(m; statistical_k=0, std_ratio=1.0, radius=0.0, min_neighbors=4,
+                  voxel_size=0.0, min_distance=0.0) -> (; mesh, point_map, num_removed, warnings)
+
+Remove outliers from, and thin, the points of `m`: up to four steps in this
+order, each seeing the points the one before kept -- statistical outlier removal
+(`statistical_k` neighbours; a point whose mean neighbour distance exceeds the
+mean by `std_ratio` standard deviations goes), radius outlier removal (fewer than
+`min_neighbors` other points within `radius`), voxel thinning (one real point,
+the one nearest the mean, per cube of side `voxel_size`) and Poisson-disk
+thinning (kept points at least `min_distance` apart, greedy in index order). A
+step is off at 0 and at least one must be on. Returns the point cloud `mesh`
+(per-point arrays gathered, Point regions following, cells dropped), `point_map`
+(each output point's 1-based input point), `num_removed` (a named tuple
+`(statistical, radius, voxel, poisson)`) and `warnings`. See
+`doc/filter_points.md`.
+"""
+function filter_points(m::Mesh; statistical_k::Integer=0, std_ratio::Real=1.0,
+                       radius::Real=0.0, min_neighbors::Integer=4, voxel_size::Real=0.0,
+                       min_distance::Real=0.0)
+    opts = _CFilterPointsOpts(Int64(statistical_k), Float64(std_ratio), Float64(radius),
+                              Int64(min_neighbors), Float64(voxel_size), Float64(min_distance),
+                              ntuple(_ -> Int64(0), 4))
+    h = _handle(m)
+    n_in = Int(num_points(m))
+    map = Vector{Int64}(undef, max(n_in, 1))
+    removed = Vector{Int64}(undef, 4)
+    ptr = GC.@preserve map removed ccall(_sym(:mio_filter_points), Ptr{Cvoid},
+                                         (Ptr{Cvoid}, Ref{_CFilterPointsOpts}, Ptr{Int64},
+                                          Ptr{Int64}), h, Ref(opts), pointer(map), pointer(removed))
+    out = Mesh(_check_ptr(ptr))
+    n_out = Int(num_points(out))
+    text = _getstring((buf, k) -> ccall(_sym(:mio_filter_points_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, point_map=Int[map[i] + 1 for i in 1:n_out],
+     num_removed=(statistical=Int(removed[1]), radius=Int(removed[2]), voxel=Int(removed[3]),
+                  poisson=Int(removed[4])),
+     warnings=isempty(text) ? String[] : String.(split(text, '\n')))
+end
+
+"""
     cast_rays(m, origins, directions; max_distance=0.0, region="")
         -> (; hit, distance, point, normal, cell, num_hits)
 

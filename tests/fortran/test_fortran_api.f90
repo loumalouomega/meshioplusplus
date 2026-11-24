@@ -3391,6 +3391,31 @@ contains
             call check(ierr /= 0, 'locate_points rejects a negative tolerance')
             call tet%free()
         end block
+        ! Point-cloud conditioning: a line of points and one far outlier.
+        block
+            type(mio_mesh) :: cloud_in, cloud_out
+            real(real64) :: cpts(3, 21)
+            integer(int64), allocatable :: cmap(:)
+            integer(int64) :: removed(4)
+            integer :: ci
+            do ci = 1, 20
+                cpts(:, ci) = [0.1_real64*real(ci - 1, real64), 0.0_real64, 0.0_real64]
+            end do
+            cpts(:, 21) = [50.0_real64, 50.0_real64, 50.0_real64]
+            call cloud_in%create()
+            call cloud_in%set_points(cpts)
+            cloud_out = cloud_in%filter_points(radius=0.5_real64, min_neighbors=2, point_map=cmap, &
+                                               num_removed=removed, stat=ierr)
+            call check(ierr == 0, 'filter_points succeeded')
+            call check(cloud_out%num_points() == 20_int64, 'the outlier is removed')
+            call check(removed(2) == 1_int64 .and. removed(1) == 0_int64, 'the radius step removed one')
+            call check(size(cmap) == 20 .and. cmap(1) == 1_int64 .and. cmap(20) == 20_int64, &
+                       'the point map is 1-based')
+            call cloud_out%free()
+            cloud_out = cloud_in%filter_points(stat=ierr)
+            call check(ierr /= 0, 'filter_points needs a step')
+            call cloud_in%free()
+        end block
         mass = other%mass_properties(about='moon', stat=ierr)
         call check(ierr /= 0, 'mass_properties rejects an unknown reference point')
         call other%free()

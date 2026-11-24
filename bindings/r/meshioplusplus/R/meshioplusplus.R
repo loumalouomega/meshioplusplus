@@ -2911,6 +2911,39 @@ mio_hausdorff_distance <- function(a, b, face_samples = 0, region_a = "", region
   )
 }
 
+#' Remove outliers from, and thin, a point cloud
+#'
+#' Applies up to four steps in this order, each seeing the points the one before
+#' kept, to the points of `mesh`: statistical outlier removal (`statistical_k`
+#' neighbours; a point whose mean neighbour distance exceeds the mean by
+#' `std_ratio` standard deviations goes; Rusu et al. 2008), radius outlier removal
+#' (fewer than `min_neighbors` other points within `radius`), voxel thinning (one
+#' real point, the one nearest the mean, per cube of side `voxel_size`) and
+#' Poisson-disk thinning (kept points at least `min_distance` apart, greedy in
+#' index order). A step is off at 0 and at least one must be on. See
+#' `doc/filter_points.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param statistical_k,std_ratio Statistical outlier removal.
+#' @param radius,min_neighbors Radius outlier removal.
+#' @param voxel_size Voxel thinning: the cube side.
+#' @param min_distance Poisson-disk thinning: the minimum distance.
+#' @return A list of `mesh` (the point cloud: per-point arrays gathered, Point
+#'   regions following, cells dropped), `point_map` (each output point's 1-based
+#'   input point), `num_removed` (named `statistical`, `radius`, `voxel`,
+#'   `poisson`) and `warnings` (a character vector).
+#' @export
+mio_filter_points <- function(mesh, statistical_k = 0, std_ratio = 1, radius = 0,
+                              min_neighbors = 4, voxel_size = 0, min_distance = 0) {
+  res <- .Call(
+    R_mio_filter_points, mesh, as.numeric(statistical_k), as.numeric(std_ratio),
+    as.numeric(radius), as.numeric(min_neighbors), as.numeric(voxel_size),
+    as.numeric(min_distance)
+  )
+  res$warnings <- if (nzchar(res$warnings)) strsplit(res$warnings, "\n", fixed = TRUE)[[1]] else character()
+  res
+}
+
 #' The nearest surface hit of a batch of rays
 #'
 #' Shoots every ray `origin + t * direction` (the direction is normalised, so

@@ -147,6 +147,7 @@
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
@@ -4625,6 +4626,60 @@ NDArray cli_f64_array(const std::vector<double>& rV, std::size_t Cols) {
     NDArray a = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, shape);
     std::copy(rV.begin(), rV.end(), a.As<double>());
     return a;
+}
+
+int cmd_filter_points(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"outliers", {}, true},
+                                          {"k", {}, true},
+                                          {"std-ratio", {}, true},
+                                          {"radius", {}, true},
+                                          {"min-neighbors", {}, true},
+                                          {"voxel", {}, true},
+                                          {"poisson", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("filter-points requires INFILE OUTFILE");
+    meshioplusplus::PointFilterOptions o;
+    if (has_opt(p, "outliers")) {
+        if (opt_value(p, "outliers") != "statistical")
+            throw std::runtime_error("filter-points: --outliers must be 'statistical'");
+        o.mStatisticalK = 16;
+        cli_opt_int64(p, "k", o.mStatisticalK);
+    }
+    cli_opt_double(p, "std-ratio", o.mStdRatio);
+    cli_opt_double(p, "radius", o.mRadius);
+    cli_opt_int64(p, "min-neighbors", o.mMinNeighbors);
+    cli_opt_double(p, "voxel", o.mVoxelSize);
+    cli_opt_double(p, "poisson", o.mMinDistance);
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::PointFilterResult r = meshioplusplus::filter_points(mesh, o);
+    const std::int64_t kept = static_cast<std::int64_t>(r.mMesh.NumPoints());
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_kept", kept);
+        json.Field("num_input", r.mNumInput);
+        json.Field("num_removed_statistical", r.mNumRemovedStatistical);
+        json.Field("num_removed_radius", r.mNumRemovedRadius);
+        json.Field("num_removed_voxel", r.mNumRemovedVoxel);
+        json.Field("num_removed_poisson", r.mNumRemovedPoisson);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "kept " << kept << " of " << r.mNumInput << " points (statistical "
+              << r.mNumRemovedStatistical << ", radius " << r.mNumRemovedRadius << ", voxel "
+              << r.mNumRemovedVoxel << ", poisson " << r.mNumRemovedPoisson << " removed)\n";
+    for (const std::string& w : r.mWarnings)
+        std::cout << "  warning: " << w << "\n";
+    return 0;
 }
 
 int cmd_cast_rays(const std::vector<std::string>& rArgs) {
@@ -10816,6 +10871,7 @@ const CliVerb kCliVerbs[] = {
      &cmd_coordinates},
     {"hull", nullptr,
      "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n", &cmd_hull},
+    {"filter-points", nullptr, "  filter-points           Outlier removal and thinning of a point cloud\n", &cmd_filter_points},
     {"cast-rays", nullptr, "  cast-rays               The nearest surface hit of a batch of rays\n", &cmd_cast_rays},
     {"locate", nullptr, "  locate                  The cell containing each point of a file\n", &cmd_locate},
     {"mass", nullptr, "  mass                    Mass, centre of mass and inertia of a body\n", &cmd_mass},

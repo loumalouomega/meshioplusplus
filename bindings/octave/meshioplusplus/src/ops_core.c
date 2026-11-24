@@ -1612,6 +1612,38 @@ static mxArray *O_mio_hausdorff_distance(const mxArray **a) {
     return mio_o_struct(11, names, values);
 }
 
+/* --- point-cloud conditioning (roadmap 9.9) ------------------------------ */
+
+/* filter_points(mesh, statistical_k, std_ratio, radius, min_neighbors,
+ *               voxel_size, min_distance) */
+static mxArray *O_mio_filter_points(const mxArray **a) {
+    mio_filter_points_opts opts;
+    mio_filter_points_opts_init(&opts);
+    opts.statistical_k = (int64_t)mio_o_double(a[1], "statistical_k");
+    opts.std_ratio = mio_o_double(a[2], "std_ratio");
+    opts.radius = mio_o_double(a[3], "radius");
+    opts.min_neighbors = (int64_t)mio_o_double(a[4], "min_neighbors");
+    opts.voxel_size = mio_o_double(a[5], "voxel_size");
+    opts.min_distance = mio_o_double(a[6], "min_distance");
+    const mio_mesh *in = mio_o_mesh(a[0]);
+    int64_t n_in = mio_mesh_num_points(in);
+    int64_t *map = (int64_t *)mxCalloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
+    int64_t removed[4] = {0, 0, 0, 0};
+    mio_mesh *res = mio_filter_points(in, &opts, map, removed);
+    if (res == NULL) {
+        mxFree(map);
+        mio_o_fail("filter_points");
+    }
+    int64_t n_out = mio_mesh_num_points(res);
+    const char *names[] = {"mesh", "point_map", "num_removed", "warnings"};
+    mxArray *nr = mio_o_matrix(1, 4);
+    for (int k = 0; k < 4; ++k) mxGetPr(nr)[k] = (double)removed[k];
+    mxArray *values[] = {mio_o_wrap_mesh(res), mio_o_shift_map(map, n_out), nr,
+                         mio_o_getbuffer(mio_filter_points_warnings, "filter_points")};
+    mxFree(map);
+    return mio_o_struct(4, names, values);
+}
+
 /* --- ray casting and point location (roadmap 9.3) ------------------------ */
 
 /* An (n x 3) matrix as a row-major (n, 3) buffer; raises when it is not one. */
@@ -2355,6 +2387,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_hausdorff_distance, 5),
     MIO_O_ENTRY(mio_mass_properties, 6),
     MIO_O_ENTRY(mio_cast_rays, 5),
+    MIO_O_ENTRY(mio_filter_points, 7),
     MIO_O_ENTRY(mio_locate_points, 3),
     MIO_O_ENTRY(mio_repair, 9),
     MIO_O_ENTRY(mio_shrinkwrap, 9),

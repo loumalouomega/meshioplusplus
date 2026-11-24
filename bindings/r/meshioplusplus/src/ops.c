@@ -1660,6 +1660,49 @@ SEXP R_mio_hausdorff_distance(SEXP a, SEXP b, SEXP face_samples, SEXP region_a,
     return res;
 }
 
+/* --- point-cloud conditioning (roadmap 9.9) ------------------------------ */
+
+SEXP R_mio_filter_points(SEXP mesh, SEXP statistical_k, SEXP std_ratio, SEXP radius,
+                         SEXP min_neighbors, SEXP voxel_size, SEXP min_distance) {
+    mio_filter_points_opts opts;
+    mio_filter_points_opts_init(&opts);
+    opts.statistical_k = (int64_t)mio_r_double(statistical_k, "statistical_k");
+    opts.std_ratio = mio_r_double(std_ratio, "std_ratio");
+    opts.radius = mio_r_double(radius, "radius");
+    opts.min_neighbors = (int64_t)mio_r_double(min_neighbors, "min_neighbors");
+    opts.voxel_size = mio_r_double(voxel_size, "voxel_size");
+    opts.min_distance = mio_r_double(min_distance, "min_distance");
+    const mio_mesh *in = mio_r_mesh(mesh);
+    int64_t n_in = mio_mesh_num_points(in);
+    int64_t *map = (int64_t *)R_alloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
+    int64_t removed[4] = {0, 0, 0, 0};
+    mio_mesh *res = mio_filter_points(in, &opts, map, removed);
+    if (res == NULL) mio_r_fail("filter_points");
+    int64_t n_out = mio_mesh_num_points(res);
+
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, 4));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, 4));
+    const char *names[] = {"mesh", "point_map", "num_removed", "warnings"};
+    for (int k = 0; k < 4; ++k) SET_STRING_ELT(nm, k, Rf_mkChar(names[k]));
+    SET_VECTOR_ELT(out, 0, mio_r_wrap_mesh(res));
+    SEXP pm = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n_out));
+    for (int64_t i = 0; i < n_out; ++i) REAL(pm)[i] = (double)(map[i] + 1); /* 1-based */
+    SET_VECTOR_ELT(out, 1, pm);
+    SEXP nr = PROTECT(Rf_allocVector(REALSXP, 4));
+    SEXP nrn = PROTECT(Rf_allocVector(STRSXP, 4));
+    const char *rnames[] = {"statistical", "radius", "voxel", "poisson"};
+    for (int k = 0; k < 4; ++k) {
+        REAL(nr)[k] = (double)removed[k];
+        SET_STRING_ELT(nrn, k, Rf_mkChar(rnames[k]));
+    }
+    Rf_setAttrib(nr, R_NamesSymbol, nrn);
+    SET_VECTOR_ELT(out, 2, nr);
+    SET_VECTOR_ELT(out, 3, mio_r_getbuffer(mio_filter_points_warnings, "filter_points"));
+    Rf_setAttrib(out, R_NamesSymbol, nm);
+    UNPROTECT(5);
+    return out;
+}
+
 /* --- ray casting and point location (roadmap 9.3) ------------------------ */
 
 /* A (rows x n) numeric matrix argument as a protected REALSXP; `*pN` gets n.

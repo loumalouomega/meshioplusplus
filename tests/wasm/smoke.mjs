@@ -5818,6 +5818,21 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: 2 ** 53 + 2 }), /2\^53/);
     assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: -1 }), /2\^53/);
 
+    const noisyCloud = {
+        points: new Float64Array([...Array(20).keys()].flatMap((i) => [0.1 * i, 0, 0]).concat([50, 50, 50])),
+        dim: 3,
+        cells: [],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const fpr = m.filterPoints(noisyCloud, { radius: 0.5, minNeighbors: 2 });
+    assert.equal(fpr.mesh.points.length, 20 * 3);
+    assert.deepEqual(Array.from(fpr.pointMap), Array.from({ length: 20 }, (_, i) => i));
+    assert.equal(fpr.numRemoved.radius, 1);
+    assert.throws(() => m.filterPoints(noisyCloud), /no step/);
+    assert.throws(() => m.filterPoints(noisyCloud, { bogus: 1 }), /bogus/);
+
     const cr = m.castRays(cubeSurface, [-1, 0.5, 0.5, -1, 9, 9], [1, 0, 0]);
     assert.deepEqual(Array.from(cr.hit), [1, 0]);
     assert.ok(Math.abs(cr.distance[0] - 1) < 1e-12);

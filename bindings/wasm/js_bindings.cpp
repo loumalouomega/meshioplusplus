@@ -131,6 +131,7 @@
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/normals.hpp"
@@ -8443,6 +8444,55 @@ val estimate_normals_js(const val& rMeshObj, const val& rOptions) {
 }
 
 /**
+ * @brief Outlier removal and thinning of a point cloud. @p rOptions is
+ * `{statisticalK, stdRatio, radius, minNeighbors, voxelSize, minDistance}`,
+ * every key optional (a step is off at 0). Returns `{mesh, pointMap,
+ * numRemoved, warnings}`: `pointMap` is an `Int32Array` of each output point's
+ * 0-based input point. See operations/filter_points.hpp.
+ */
+val filter_points_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PointFilterOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "filterPoints options",
+                                {"statisticalK", "stdRatio", "radius", "minNeighbors",
+                                 "voxelSize", "minDistance"});
+            if (rOptions.hasOwnProperty("statisticalK"))
+                options.mStatisticalK =
+                    static_cast<std::int64_t>(rOptions["statisticalK"].as<double>());
+            if (rOptions.hasOwnProperty("stdRatio"))
+                options.mStdRatio = rOptions["stdRatio"].as<double>();
+            if (rOptions.hasOwnProperty("radius"))
+                options.mRadius = rOptions["radius"].as<double>();
+            if (rOptions.hasOwnProperty("minNeighbors"))
+                options.mMinNeighbors =
+                    static_cast<std::int64_t>(rOptions["minNeighbors"].as<double>());
+            if (rOptions.hasOwnProperty("voxelSize"))
+                options.mVoxelSize = rOptions["voxelSize"].as<double>();
+            if (rOptions.hasOwnProperty("minDistance"))
+                options.mMinDistance = rOptions["minDistance"].as<double>();
+        }
+        meshioplusplus::PointFilterResult r =
+            meshioplusplus::filter_points(val_to_mesh(rMeshObj), options);
+        std::vector<std::int32_t> map(r.mPointMap.begin(), r.mPointMap.end());
+        val removed = val::object();
+        removed.set("statistical", static_cast<double>(r.mNumRemovedStatistical));
+        removed.set("radius", static_cast<double>(r.mNumRemovedRadius));
+        removed.set("voxel", static_cast<double>(r.mNumRemovedVoxel));
+        removed.set("poisson", static_cast<double>(r.mNumRemovedPoisson));
+        val warnings = val::array();
+        for (std::size_t i = 0; i < r.mWarnings.size(); ++i)
+            warnings.set(static_cast<unsigned>(i), r.mWarnings[i]);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", int32_array_from(map.data(), map.size()));
+        out.set("numRemoved", removed);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+/**
  * @brief A triangle surface through an oriented point cloud. @p rOptions is
  * `{normals, k, cellSize, resolution, maxDistance, estimateNormals, normalsK,
  * maxCells}`, every key optional. See operations/reconstruct_surface.hpp.
@@ -11350,6 +11400,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("hausdorffDistance", &hausdorff_distance_js);
     emscripten::function("massProperties", &mass_properties_js);
     emscripten::function("castRays", &cast_rays_js);
+    emscripten::function("filterPoints", &filter_points_js);
     emscripten::function("locatePoints", &locate_points_js);
     emscripten::function("editRegions", &edit_regions_js);
     emscripten::function("regionAdjacency", &region_adjacency_js);

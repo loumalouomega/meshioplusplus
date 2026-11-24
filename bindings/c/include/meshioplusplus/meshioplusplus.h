@@ -9537,6 +9537,46 @@ MIO_API mio_status mio_locate_points(const mio_mesh* mesh, const double* points,
                                      const mio_locate_points_opts* opts, int64_t* cell,
                                      int64_t* nodes, double* barycentric, int64_t* num_located);
 
+/**
+ * Options for mio_filter_points (roadmap 9.9). Same ABI rules as above:
+ * initialize through mio_filter_points_opts_init(). Size: 80 bytes. A step is
+ * off at 0; at least one must be on.
+ */
+typedef struct mio_filter_points_opts {
+    int64_t statistical_k;   /**< statistical outlier removal: neighbours per mean distance */
+    double std_ratio;        /**< ... standard deviations above the mean (default 1) */
+    double radius;           /**< radius outlier removal: the search radius */
+    int64_t min_neighbors;   /**< ... other points needed within `radius` (default 4) */
+    double voxel_size;       /**< voxel thinning: the cube side */
+    double min_distance;     /**< Poisson-disk thinning: minimum distance between kept points */
+    int64_t reserved[4];     /**< must be zero; room for additive growth */
+} mio_filter_points_opts;
+
+/** Initialize point-filter options: every step off, std_ratio 1, min_neighbors 4. */
+MIO_API void mio_filter_points_opts_init(mio_filter_points_opts* opts);
+
+/**
+ * Remove outliers from, and thin, a point cloud (operations/filter_points.hpp):
+ * statistical outlier removal, radius outlier removal, voxel thinning and
+ * Poisson-disk thinning, in that order. The result is a point cloud: the
+ * surviving points with every per-point array gathered, one `vertex` block,
+ * Point regions following, cells and cell/side regions dropped.
+ * @param point_map optional; room for the input mesh's point count int64 values;
+ *        the first `mio_mesh_num_points(result)` receive each output point's input
+ *        point (0-based).
+ * @param num_removed optional; four int64 values: removed by the statistical,
+ *        radius, voxel and Poisson-disk steps.
+ * @return a new mesh the caller frees, or NULL with the error set (a negative or
+ *         non-finite parameter, no step enabled, a non-finite coordinate, a
+ *         voxel size too small for the extent).
+ */
+MIO_API mio_mesh* mio_filter_points(const mio_mesh* mesh, const mio_filter_points_opts* opts,
+                                    int64_t* point_map, int64_t* num_removed);
+
+/** The warnings of the calling thread's last mio_filter_points, joined by '\n'
+ *  (string-getter rule 5); -1 on error. */
+MIO_API int64_t mio_filter_points_warnings(char* buf, int64_t buflen);
+
 #ifdef __cplusplus
 }
 #endif

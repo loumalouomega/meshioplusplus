@@ -9538,3 +9538,52 @@ TEST(CApi, LocatePointsInTwoHexahedra) {
     EXPECT_NE(mio_locate_points(nullptr, pts, 3, nullptr, cell, nodes, bary, &located), MIO_OK);
     mio_mesh_free(m);
 }
+
+// ---- point-cloud conditioning (roadmap 9.9) --------------------------------
+
+TEST(CApi, FilterPointsRemovesAnOutlierAndMapsPoints) {
+    std::vector<double> pts;
+    for (int i = 0; i < 20; ++i) {
+        pts.push_back(0.1 * i);
+        pts.push_back(0.0);
+        pts.push_back(0.0);
+    }
+    pts.insert(pts.end(), {50.0, 50.0, 50.0});  // the outlier, point 20
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 21, 3, pts.data()), MIO_OK);
+
+    mio_filter_points_opts opts;
+    mio_filter_points_opts_init(&opts);
+    EXPECT_EQ(opts.std_ratio, 1.0);
+    EXPECT_EQ(opts.min_neighbors, 4);
+    opts.radius = 0.5;
+    opts.min_neighbors = 2;
+    int64_t map[21] = {};
+    int64_t removed[4] = {-1, -1, -1, -1};
+    mio_mesh* out = mio_filter_points(m, &opts, map, removed);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(out), 20);
+    EXPECT_EQ(removed[1], 1);
+    EXPECT_EQ(removed[0] + removed[2] + removed[3], 0);
+    EXPECT_EQ(map[0], 0);
+    EXPECT_EQ(map[19], 19);
+    EXPECT_EQ(mio_filter_points_warnings(nullptr, 0), 0);
+    mio_mesh_free(out);
+
+    // Voxel thinning to a handful of points; both outputs optional.
+    mio_filter_points_opts_init(&opts);
+    opts.voxel_size = 0.5;
+    out = mio_filter_points(m, &opts, nullptr, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_LT(mio_mesh_num_points(out), 21);
+    mio_mesh_free(out);
+
+    // Refusals: no step, a negative parameter, a NULL mesh.
+    mio_filter_points_opts_init(&opts);
+    EXPECT_EQ(mio_filter_points(m, &opts, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("no step"), std::string::npos);
+    opts.radius = -1.0;
+    EXPECT_EQ(mio_filter_points(m, &opts, nullptr, nullptr), nullptr);
+    EXPECT_EQ(mio_filter_points(nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}

@@ -4591,6 +4591,35 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * Remove outliers from, and thin, a point cloud: up to four steps in this
+   * order, each seeing the points the one before kept -- statistical outlier
+   * removal (`statisticalK` neighbours, `stdRatio` standard deviations above
+   * the mean), radius outlier removal (`radius`, `minNeighbors`), voxel thinning
+   * (`voxelSize`: one real point per cube, the one nearest its mean) and
+   * Poisson-disk thinning (`minDistance`, greedy in index order). A step is off
+   * at 0 and at least one must be on. `pointMap` holds each output point's
+   * 0-based input point. See doc/filter_points.md.
+   * @throws {Error} on a negative or non-finite parameter, no step enabled, or a
+   *   voxel size too small for the cloud's extent.
+   */
+  filterPoints(
+    mesh: Mesh,
+    options?: {
+      statisticalK?: number;
+      stdRatio?: number;
+      radius?: number;
+      minNeighbors?: number;
+      voxelSize?: number;
+      minDistance?: number;
+    },
+  ): {
+    mesh: Mesh;
+    pointMap: Int32Array;
+    numRemoved: { statistical: number; radius: number; voxel: number; poisson: number };
+    warnings: string[];
+  };
+
+  /**
    * The nearest surface hit of a batch of rays. `origins` is a flat
    * `[x, y, z, ...]` array; `directions` is one `[x, y, z]` for every ray or
    * one per ray (not necessarily unit vectors). Hits need `0 < t <= maxDistance`

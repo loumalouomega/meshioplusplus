@@ -1868,6 +1868,17 @@ struct _CHausdorffReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_filter_points_opts` (roadmap 9.9), 80 bytes."""
+struct _CFilterPointsOpts
+    statistical_k::Int64
+    std_ratio::Cdouble
+    radius::Cdouble
+    min_neighbors::Int64
+    voxel_size::Cdouble
+    min_distance::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_cast_rays_opts` (roadmap 9.3), 64 bytes."""
 struct _CCastRaysOpts
     max_distance::Cdouble
@@ -2916,6 +2927,9 @@ function _check_abi_layout()
         error("meshio++: mio_snapshot_opts layout mismatch ($(sizeof(_CSnapshotOpts)) bytes)")
     sizeof(_CHausdorffOpts) == 80 ||
         error("meshio++: mio_hausdorff_opts layout mismatch ($(sizeof(_CHausdorffOpts)) bytes)")
+    sizeof(_CFilterPointsOpts) == 80 ||
+        error("meshio++: mio_filter_points_opts layout mismatch " *
+              "($(sizeof(_CFilterPointsOpts)) bytes)")
     sizeof(_CCastRaysOpts) == 64 ||
         error("meshio++: mio_cast_rays_opts layout mismatch ($(sizeof(_CCastRaysOpts)) bytes)")
     sizeof(_CLocatePointsOpts) == 64 ||
