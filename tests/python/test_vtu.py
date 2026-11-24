@@ -674,3 +674,24 @@ def test_gid_cells_only_file_reads_from_a_path_and_a_buffer(tmp_path):
     _expect_cells_only(
         meshioplusplus.read(io.BytesIO(text.encode()), file_format="vtu")
     )
+
+
+def test_points_only_vtu_reads_back_without_cells(tmp_path):
+    """A piece with points and no cells (``NumberOfCells="0"``) is valid VTK.
+
+    The Python reader used to reject it: it kept one cell-data entry per piece
+    but built cells only for pieces with a ``<Cells>`` element. The native
+    reader always read it; this pins the Python reader to the same answer.
+    """
+    import numpy as np
+
+    import meshioplusplus as mp
+    from meshioplusplus.vtu import _vtu
+
+    path = tmp_path / "points.vtu"
+    pts = np.array([[3.0, 0.0, 0.0], [9.0, 9.0, 9.0]])
+    mp.write(str(path), mp.Mesh(pts, []))
+    back = _vtu.read(str(path))
+    np.testing.assert_array_equal(back.points, pts)
+    assert back.cells == []
+    assert back.cell_data == {}
