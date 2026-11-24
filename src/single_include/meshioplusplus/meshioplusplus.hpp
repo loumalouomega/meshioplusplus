@@ -30759,6 +30759,99 @@ MESHIOPLUSPLUS_API FeatureEdgeResult feature_edges(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/feature_edges.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/filter_points.hpp =====
+/**
+ * @file operations/filter_points.hpp
+ * @brief Conditioning of a point cloud: outlier removal and thinning (roadmap 9.9).
+ *
+ * Scans read from PLY, PCD, XYZ or LAS carry noise and far more points than a
+ * reconstruction or a registration needs. `filter_points(mesh, options)`
+ * applies up to four steps, in this order, to the mesh's points, each step
+ * seeing the points the one before kept; a step is off at its default of 0:
+ *
+ * 1. **Statistical outlier removal** (`mStatisticalK` > 0; R. B. Rusu et al.,
+ *    "Towards 3D point cloud based object maps for household environments",
+ *    Robotics and Autonomous Systems 56(11), 2008): each point's mean distance
+ *    to its `mStatisticalK` nearest other points is compared with the mean
+ *    `mu` and the (population) standard deviation `sigma` of those means over
+ *    all points; a point whose mean exceeds `mu + mStdRatio * sigma` goes.
+ * 2. **Radius outlier removal** (`mRadius` > 0): a point with fewer than
+ *    `mMinNeighbors` other points within `mRadius` goes.
+ * 3. **Voxel-grid thinning** (`mVoxelSize` > 0): the points are binned into
+ *    cubes of that side anchored at the bounding box's minimum corner, and one
+ *    **real point** per occupied cube survives: the one nearest the mean of its
+ *    cube's points (ties to the lower id), so the output is a subset of the
+ *    input with every array intact. Cubes are visited in ascending (x, y, z)
+ *    key order, which is the output order of this step.
+ * 4. **Poisson-disk thinning** (`mMinDistance` > 0; R. Bridson, "Fast Poisson
+ *    disk sampling in arbitrary dimensions", SIGGRAPH Sketches 2007, here as
+ *    greedy dart throwing in index order, with no random numbers): a point is
+ *    kept when no already-kept point lies closer than `mMinDistance`. The kept
+ *    points are at least that far apart, and every dropped point is within it
+ *    of a kept one.
+ *
+ * The result is a point cloud: the surviving points (a step keeps the order of
+ * the one before it; only the voxel step reorders), every per-point array
+ * gathered with them, one `vertex` block, and `mPointMap` giving each output
+ * row's input point. Point regions follow the surviving points (a group that
+ * loses every point is kept, empty); cells and Cell and Side regions are
+ * dropped, with a warning. Nothing else is changed: the input is never modified.
+ *
+ * Every search is exact and deterministic (`detail/point_knn.hpp`: ties to the
+ * lower id), the per-point work runs in parallel and every reduction is serial
+ * in input order, so the result is the same on every backend and thread count.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Which steps `filter_points` runs and how strictly.
+struct PointFilterOptions {
+    /// Statistical outlier removal: neighbours per mean distance; 0 is off.
+    std::int64_t mStatisticalK = 0;
+    /// Statistical outlier removal: standard deviations above the mean.
+    double mStdRatio = 1.0;
+    /// Radius outlier removal: the search radius; 0 is off.
+    double mRadius = 0.0;
+    /// Radius outlier removal: other points needed within `mRadius`.
+    std::int64_t mMinNeighbors = 4;
+    /// Voxel thinning: the cube side; 0 is off.
+    double mVoxelSize = 0.0;
+    /// Poisson-disk thinning: the minimum distance between kept points; 0 is off.
+    double mMinDistance = 0.0;
+};
+
+/// What `filter_points` kept.
+struct PointFilterResult {
+    /// The point cloud.
+    Mesh mMesh;
+    /// Per output point, the input point it is.
+    std::vector<std::int64_t> mPointMap;
+    std::int64_t mNumInput = 0;
+    std::int64_t mNumRemovedStatistical = 0;
+    std::int64_t mNumRemovedRadius = 0;
+    std::int64_t mNumRemovedVoxel = 0;
+    std::int64_t mNumRemovedPoisson = 0;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Remove outliers and thin a point cloud (see the file comment).
+ * @throws std::invalid_argument on a negative or non-finite parameter, a
+ *         `mMinNeighbors` below 0, a non-finite coordinate, no step enabled, or
+ *         a voxel size too small for the cloud's extent.
+ */
+MESHIOPLUSPLUS_API PointFilterResult filter_points(const Mesh& rMesh,
+                                                   const PointFilterOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/filter_points.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/find_intersections.hpp =====
 /**
  * @file operations/find_intersections.hpp
@@ -56978,6 +57071,38 @@ public:
         return found;
     }
 
+    /**
+     * @brief How many indexed points lie within @p Radius of @p rP
+     * (`dx*dx + dy*dy + dz*dz <= Radius * Radius`, the query point itself
+     * included when it is indexed), counting no further than @p Limit.
+     *
+     * The grid cells of the box `rP +- Radius` are visited, so the cost grows
+     * with `(Radius / CellSize)^3`: build the index with a cell size of about
+     * the radius being asked about.
+     */
+    std::size_t CountWithin(const Vec& rP, double Radius,
+                            std::size_t Limit = std::numeric_limits<std::size_t>::max()) const {
+        if (mPoints.empty() || Limit == 0 || !(Radius >= 0.0))
+            return 0;
+        const Vec lo{rP[0] - Radius, rP[1] - Radius, rP[2] - Radius};
+        const Vec hi{rP[0] + Radius, rP[1] + Radius, rP[2] + Radius};
+        const double r2 = Radius * Radius;
+        std::size_t count = 0;
+        mGrid.ForEachInBox(mGrid.KeyOf(lo.data()), mGrid.KeyOf(hi.data()),
+                           [&](const BucketView& rIds) {
+                               for (const std::int64_t id : rIds) {
+                                   if (count >= Limit)
+                                       return;
+                                   const Vec& q = mPoints[static_cast<std::size_t>(id)];
+                                   const double dx = rP[0] - q[0], dy = rP[1] - q[1],
+                                                dz = rP[2] - q[2];
+                                   if (dx * dx + dy * dy + dz * dz <= r2)
+                                       ++count;
+                               }
+                           });
+        return count;
+    }
+
 private:
     std::vector<Vec> mPoints;
     BucketTable mGrid{1.0};
@@ -66002,6 +66127,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"ConvexHull", {"Dimension"}},
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
+        {"FilterPoints",
+         {"StatisticalK", "StdRatio", "Radius", "MinNeighbors", "VoxelSize", "MinDistance"}},
         {"ReconstructSurface",
          {"Normals", "K", "CellSize", "Resolution", "MaxDistance", "EstimateNormals", "NormalsK",
           "MaxCells"}},
@@ -257037,6 +257164,324 @@ FeatureEdgeResult feature_edges(const Mesh& rMesh, const FeatureEdgeOptions& rOp
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/feature_edges.cpp =====
+// ===== begin src/cpp/src/operations/filter_points.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <numeric>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+using FpIds = std::vector<std::int64_t>;
+
+// The coordinates of the points `rAlive` names, in that order.
+std::vector<Vec3> fp_cloud(const std::vector<Vec3>& rXyz, const FpIds& rAlive) {
+    std::vector<Vec3> out(rAlive.size());
+    for (std::size_t i = 0; i < rAlive.size(); ++i)
+        out[i] = rXyz[static_cast<std::size_t>(rAlive[i])];
+    return out;
+}
+
+// The grid cell size of `rCloud` by the shared rule.
+double fp_cell_size(const std::vector<Vec3>& rCloud) {
+    double lo[3], hi[3];
+    detail::BoundingBoxUtils::FromCoords(
+        rCloud.size(), [&](std::size_t i) { return rCloud[i]; }, lo, hi);
+    return detail::point_grid_cell_size(lo, hi, rCloud.size());
+}
+
+// Step 1: statistical outlier removal.
+FpIds fp_statistical(const std::vector<Vec3>& rXyz, const FpIds& rAlive, std::int64_t K,
+                     double StdRatio, std::vector<std::string>& rWarnings) {
+    const std::size_t m = rAlive.size();
+    if (m < 2) {
+        rWarnings.push_back("statistical outlier removal skipped: fewer than two points");
+        return rAlive;
+    }
+    const std::size_t k = std::min<std::size_t>(static_cast<std::size_t>(K), m - 1);
+    const std::vector<Vec3> cloud = fp_cloud(rXyz, rAlive);
+    const detail::PointKnn knn(cloud, fp_cell_size(cloud));
+    std::vector<double> mean_dist(m, 0.0);
+    parallel_for(m, [&](std::size_t i) {
+        std::vector<std::pair<double, std::int64_t>> buf(k + 1);
+        const std::size_t found = knn.KNearest(cloud[i], k + 1, buf.data());
+        double sum = 0.0;
+        std::size_t used = 0;
+        for (std::size_t j = 0; j < found && used < k; ++j) {
+            if (buf[j].second == static_cast<std::int64_t>(i))
+                continue;  // the point itself
+            sum += std::sqrt(buf[j].first);
+            ++used;
+        }
+        mean_dist[i] = used > 0 ? sum / static_cast<double>(used) : 0.0;
+    });
+    double mu = 0.0;
+    for (double d : mean_dist)
+        mu += d;
+    mu /= static_cast<double>(m);
+    double var = 0.0;
+    for (double d : mean_dist)
+        var += (d - mu) * (d - mu);
+    const double sigma = std::sqrt(var / static_cast<double>(m));
+    const double threshold = mu + StdRatio * sigma;
+    // A relative guard so equal means (sigma 0) are not split by rounding.
+    const double limit = threshold + 1e-12 * std::abs(threshold);
+    FpIds out;
+    out.reserve(m);
+    for (std::size_t i = 0; i < m; ++i)
+        if (mean_dist[i] <= limit)
+            out.push_back(rAlive[i]);
+    return out;
+}
+
+// Step 2: radius outlier removal.
+FpIds fp_radius(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double Radius,
+                std::int64_t MinNeighbors) {
+    const std::size_t m = rAlive.size();
+    if (m == 0)
+        return rAlive;
+    const std::vector<Vec3> cloud = fp_cloud(rXyz, rAlive);
+    const detail::PointKnn knn(cloud, Radius);
+    std::vector<std::uint8_t> keep(m, 0);
+    const std::size_t need = static_cast<std::size_t>(MinNeighbors);
+    parallel_for(m, [&](std::size_t i) {
+        // The point counts itself (distance 0), so it needs one more.
+        keep[i] = knn.CountWithin(cloud[i], Radius, need + 1) >= need + 1 ? 1 : 0;
+    });
+    FpIds out;
+    out.reserve(m);
+    for (std::size_t i = 0; i < m; ++i)
+        if (keep[i])
+            out.push_back(rAlive[i]);
+    return out;
+}
+
+struct FpVoxelRow {
+    std::int64_t mKx, mKy, mKz, mId;  // mId indexes the alive list
+    bool operator<(const FpVoxelRow& r) const {
+        if (mKx != r.mKx)
+            return mKx < r.mKx;
+        if (mKy != r.mKy)
+            return mKy < r.mKy;
+        if (mKz != r.mKz)
+            return mKz < r.mKz;
+        return mId < r.mId;
+    }
+    bool SameVoxel(const FpVoxelRow& r) const {
+        return mKx == r.mKx && mKy == r.mKy && mKz == r.mKz;
+    }
+};
+
+// Step 3: one real point per occupied voxel, the one nearest the voxel's mean.
+FpIds fp_voxel(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double Size) {
+    const std::size_t m = rAlive.size();
+    if (m == 0)
+        return rAlive;
+    const std::vector<Vec3> cloud = fp_cloud(rXyz, rAlive);
+    double lo[3], hi[3];
+    detail::BoundingBoxUtils::FromCoords(
+        m, [&](std::size_t i) { return cloud[i]; }, lo, hi);
+    for (int d = 0; d < 3; ++d)
+        if (!((hi[d] - lo[d]) / Size < 1e15))
+            throw std::invalid_argument(
+                "meshio++: filter_points: the voxel size is too small for the extent of the cloud");
+    std::vector<FpVoxelRow> rows(m);
+    parallel_for(m, [&](std::size_t i) {
+        rows[i] = FpVoxelRow{static_cast<std::int64_t>(std::floor((cloud[i][0] - lo[0]) / Size)),
+                             static_cast<std::int64_t>(std::floor((cloud[i][1] - lo[1]) / Size)),
+                             static_cast<std::int64_t>(std::floor((cloud[i][2] - lo[2]) / Size)),
+                             static_cast<std::int64_t>(i)};
+    });
+    std::sort(rows.begin(), rows.end());
+    FpIds out;
+    for (std::size_t a = 0; a < m;) {
+        std::size_t b = a;
+        Vec3 mean{0.0, 0.0, 0.0};
+        while (b < m && rows[b].SameVoxel(rows[a])) {
+            mean = detail::vec3_add(mean, cloud[static_cast<std::size_t>(rows[b].mId)]);
+            ++b;
+        }
+        mean = detail::vec3_scale(mean, 1.0 / static_cast<double>(b - a));
+        std::int64_t best = rows[a].mId;
+        double best_d2 = std::numeric_limits<double>::infinity();
+        for (std::size_t j = a; j < b; ++j) {
+            const double d2 =
+                detail::vec3_norm_sq(detail::vec3_sub(cloud[static_cast<std::size_t>(rows[j].mId)], mean));
+            if (d2 < best_d2) {  // ascending id: a tie keeps the lower id
+                best_d2 = d2;
+                best = rows[j].mId;
+            }
+        }
+        out.push_back(rAlive[static_cast<std::size_t>(best)]);
+        a = b;
+    }
+    return out;
+}
+
+// Step 4: greedy Poisson-disk thinning in index order.
+FpIds fp_poisson(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double MinDistance) {
+    const std::size_t m = rAlive.size();
+    if (m == 0)
+        return rAlive;
+    const std::vector<Vec3> cloud = fp_cloud(rXyz, rAlive);
+    std::vector<detail::GridKey> keys(m);
+    for (std::size_t i = 0; i < m; ++i)
+        keys[i] = detail::bucket_key(cloud[i].data(), MinDistance);
+    const detail::BucketTable grid = detail::build_bucket_table(MinDistance, keys, keys);
+    const double d2_min = MinDistance * MinDistance;
+    std::vector<std::uint8_t> kept(m, 0);
+    FpIds out;
+    for (std::size_t i = 0; i < m; ++i) {
+        const detail::GridKey k = keys[i];
+        const detail::GridKey lo{k.x - 1, k.y - 1, k.z - 1};
+        const detail::GridKey hi{k.x + 1, k.y + 1, k.z + 1};
+        bool blocked = false;
+        grid.ForEachInBox(lo, hi, [&](const detail::BucketView& rIds) {
+            if (blocked)
+                return;
+            for (const std::int64_t j : rIds) {
+                if (!kept[static_cast<std::size_t>(j)])
+                    continue;
+                if (detail::vec3_norm_sq(detail::vec3_sub(cloud[i], cloud[static_cast<std::size_t>(j)])) <
+                    d2_min) {
+                    blocked = true;
+                    return;
+                }
+            }
+        });
+        if (!blocked) {
+            kept[i] = 1;
+            out.push_back(rAlive[i]);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
+PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOptions) {
+    static const char* const kPrefix = "meshio++: filter_points: ";
+    const auto bad = [&](const char* pWhat) {
+        throw std::invalid_argument(std::string(kPrefix) + pWhat);
+    };
+    if (rOptions.mStatisticalK < 0)
+        bad("statistical_k must be zero or above");
+    if (!std::isfinite(rOptions.mStdRatio) || rOptions.mStdRatio < 0.0)
+        bad("std_ratio must be a finite number, zero or above");
+    if (!std::isfinite(rOptions.mRadius) || rOptions.mRadius < 0.0)
+        bad("radius must be a finite number, zero or above");
+    if (rOptions.mMinNeighbors < 0)
+        bad("min_neighbors must be zero or above");
+    if (!std::isfinite(rOptions.mVoxelSize) || rOptions.mVoxelSize < 0.0)
+        bad("voxel_size must be a finite number, zero or above");
+    if (!std::isfinite(rOptions.mMinDistance) || rOptions.mMinDistance < 0.0)
+        bad("min_distance must be a finite number, zero or above");
+    const bool do_stat = rOptions.mStatisticalK > 0;
+    const bool do_radius = rOptions.mRadius > 0.0;
+    const bool do_voxel = rOptions.mVoxelSize > 0.0;
+    const bool do_poisson = rOptions.mMinDistance > 0.0;
+    if (!do_stat && !do_radius && !do_voxel && !do_poisson)
+        bad("no step is enabled (give statistical_k, radius, voxel_size or min_distance)");
+
+    const std::size_t n = rMesh.NumPoints();
+    std::vector<Vec3> xyz(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        xyz[i] = detail::read_point(rMesh.Points(), rMesh.PointDim(), static_cast<std::int64_t>(i));
+        if (!std::isfinite(xyz[i][0] + xyz[i][1] + xyz[i][2]))
+            throw std::invalid_argument(std::string(kPrefix) + "point " + std::to_string(i) +
+                                        " is not finite");
+    }
+
+    PointFilterResult result;
+    result.mNumInput = static_cast<std::int64_t>(n);
+    FpIds alive(n);
+    std::iota(alive.begin(), alive.end(), std::int64_t{0});
+    if (do_stat) {
+        const std::size_t before = alive.size();
+        alive = fp_statistical(xyz, alive, rOptions.mStatisticalK, rOptions.mStdRatio,
+                               result.mWarnings);
+        result.mNumRemovedStatistical = static_cast<std::int64_t>(before - alive.size());
+    }
+    if (do_radius) {
+        const std::size_t before = alive.size();
+        alive = fp_radius(xyz, alive, rOptions.mRadius, rOptions.mMinNeighbors);
+        result.mNumRemovedRadius = static_cast<std::int64_t>(before - alive.size());
+    }
+    if (do_voxel) {
+        const std::size_t before = alive.size();
+        alive = fp_voxel(xyz, alive, rOptions.mVoxelSize);
+        result.mNumRemovedVoxel = static_cast<std::int64_t>(before - alive.size());
+    }
+    if (do_poisson) {
+        const std::size_t before = alive.size();
+        alive = fp_poisson(xyz, alive, rOptions.mMinDistance);
+        result.mNumRemovedPoisson = static_cast<std::int64_t>(before - alive.size());
+    }
+
+    // The point cloud: points and per-point arrays gathered, one vertex block.
+    Mesh out;
+    detail::subset_gather_points(rMesh, alive, out);
+    const std::size_t kept = alive.size();
+    if (kept > 0) {
+        NDArray conn = NDArray::Uninit(DType::Int64, {kept, std::size_t{1}});
+        for (std::size_t i = 0; i < kept; ++i)
+            conn.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
+        out.AddCellBlock("vertex", std::move(conn));
+    }
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    // Point regions follow the surviving points; the rest cannot.
+    std::vector<std::int64_t> inverse(n, -1);
+    for (std::size_t j = 0; j < kept; ++j)
+        inverse[static_cast<std::size_t>(alive[j])] = static_cast<std::int64_t>(j);
+    std::size_t dropped_regions = 0;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& region = rMesh.Region(r);
+        if (region.mKind != RegionKind::Point) {
+            ++dropped_regions;
+            continue;
+        }
+        std::vector<std::int64_t> mapped;
+        const std::int64_t* entries = region.Entries();
+        for (std::size_t e = 0; e < region.NumEntries(); ++e) {
+            const std::int64_t p = entries[e];
+            if (p >= 0 && static_cast<std::size_t>(p) < n && inverse[static_cast<std::size_t>(p)] >= 0)
+                mapped.push_back(inverse[static_cast<std::size_t>(p)]);
+        }
+        NDArray arr = NDArray::Uninit(DType::Int64, {mapped.size()});
+        std::copy(mapped.begin(), mapped.end(), arr.As<std::int64_t>());
+        out.AddRegion(Region(region.mName, RegionKind::Point, region.mDim, region.mTag, std::move(arr)));
+    }
+    std::size_t input_cells = 0;
+    for (const auto cb : rMesh.CellRange())
+        input_cells += cb.NumCells();
+    if (input_cells > 0)
+        result.mWarnings.push_back(std::to_string(input_cells) +
+                                   " cell(s) dropped: the result is a point cloud");
+    if (dropped_regions > 0)
+        result.mWarnings.push_back(std::to_string(dropped_regions) +
+                                   " cell or side region(s) dropped: the result is a point cloud");
+    result.mMesh = std::move(out);
+    result.mPointMap = std::move(alive);
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/filter_points.cpp =====
 // ===== begin src/cpp/src/operations/find_intersections.cpp =====
 #include <algorithm>
 #include <array>
@@ -287487,6 +287932,32 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                        {{"NumDegenerate", static_cast<double>(nr.mNumDegenerate)},
                         {"NumComponents", static_cast<double>(nr.mNumComponents)}});
         return std::move(nr.mMesh);
+    }
+    if (op == "FilterPoints") {
+        PointFilterOptions opts;
+        const auto integer = [&](const char* pKey, std::int64_t Fallback) {
+            const double v = pipe_number(rStep, pKey, static_cast<double>(Fallback));
+            const auto i = static_cast<std::int64_t>(v);
+            if (static_cast<double>(i) != v)
+                throw std::invalid_argument(std::string("pipeline: FilterPoints: ") + pKey +
+                                            " must be an integer");
+            return i;
+        };
+        opts.mStatisticalK = integer("StatisticalK", 0);
+        opts.mStdRatio = pipe_number(rStep, "StdRatio", 1.0);
+        opts.mRadius = pipe_number(rStep, "Radius", 0.0);
+        opts.mMinNeighbors = integer("MinNeighbors", 4);
+        opts.mVoxelSize = pipe_number(rStep, "VoxelSize", 0.0);
+        opts.mMinDistance = pipe_number(rStep, "MinDistance", 0.0);
+        PointFilterResult fr = filter_points(mesh, opts);
+        for (const std::string& w : fr.mWarnings)
+            rReport.mWarnings.push_back("filter_points: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumRemovedStatistical", static_cast<double>(fr.mNumRemovedStatistical)},
+                        {"NumRemovedRadius", static_cast<double>(fr.mNumRemovedRadius)},
+                        {"NumRemovedVoxel", static_cast<double>(fr.mNumRemovedVoxel)},
+                        {"NumRemovedPoisson", static_cast<double>(fr.mNumRemovedPoisson)}});
+        return std::move(fr.mMesh);
     }
     if (op == "ReconstructSurface") {
         ReconstructSurfaceOptions opts;

@@ -127,6 +127,38 @@ public:
         return found;
     }
 
+    /**
+     * @brief How many indexed points lie within @p Radius of @p rP
+     * (`dx*dx + dy*dy + dz*dz <= Radius * Radius`, the query point itself
+     * included when it is indexed), counting no further than @p Limit.
+     *
+     * The grid cells of the box `rP +- Radius` are visited, so the cost grows
+     * with `(Radius / CellSize)^3`: build the index with a cell size of about
+     * the radius being asked about.
+     */
+    std::size_t CountWithin(const Vec& rP, double Radius,
+                            std::size_t Limit = std::numeric_limits<std::size_t>::max()) const {
+        if (mPoints.empty() || Limit == 0 || !(Radius >= 0.0))
+            return 0;
+        const Vec lo{rP[0] - Radius, rP[1] - Radius, rP[2] - Radius};
+        const Vec hi{rP[0] + Radius, rP[1] + Radius, rP[2] + Radius};
+        const double r2 = Radius * Radius;
+        std::size_t count = 0;
+        mGrid.ForEachInBox(mGrid.KeyOf(lo.data()), mGrid.KeyOf(hi.data()),
+                           [&](const BucketView& rIds) {
+                               for (const std::int64_t id : rIds) {
+                                   if (count >= Limit)
+                                       return;
+                                   const Vec& q = mPoints[static_cast<std::size_t>(id)];
+                                   const double dx = rP[0] - q[0], dy = rP[1] - q[1],
+                                                dz = rP[2] - q[2];
+                                   if (dx * dx + dy * dy + dz * dz <= r2)
+                                       ++count;
+                               }
+                           });
+        return count;
+    }
+
 private:
     std::vector<Vec> mPoints;
     BucketTable mGrid{1.0};

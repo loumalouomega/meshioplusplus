@@ -5309,6 +5309,52 @@
     ]
    }
   },
+  "filter_points": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "points"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "statistical_k"
+     },
+     {
+      "default": "1.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "std_ratio"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "radius"
+     },
+     {
+      "default": "4",
+      "kind": "KEYWORD_ONLY",
+      "name": "min_neighbors"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "voxel_size"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "min_distance"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "find_interface": {
    "kind": "function",
    "signature": {

@@ -157,6 +157,7 @@ if TYPE_CHECKING:
     from ._error_size import error_size
     from ._extrude import extrude, revolve
     from ._feature_edges import feature_edges
+    from ._filter_points import filter_points
     from ._find_intersections import find_intersections
     from ._fit_cad import fit_cad
     from ._fit_cad_loop import constrain_primitives, face_support, fit_cad_iterate
@@ -414,6 +415,7 @@ _LAZY_ATTRS = {
     "estimate_normals": "_point_normals",
     "mass_properties": "_mass_properties",
     "cast_rays": "_cast_rays",
+    "filter_points": "_filter_points",
     "locate_points": "_cast_rays",
     "reconstruct_surface": "_reconstruct_surface",
     "morph": "_morph",
@@ -867,6 +869,7 @@ __all__ = [
     "estimate_normals",
     "mass_properties",
     "cast_rays",
+    "filter_points",
     "locate_points",
     "reconstruct_surface",
     "morph",

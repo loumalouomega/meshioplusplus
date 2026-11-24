@@ -505,6 +505,14 @@
       {"name": "Viewpoint"},
       {"name": "RecordVariation", "kind": "flag", "default": false}
     ]},
+    {"op": "FilterPoints", "keys": [
+      {"name": "StatisticalK"},
+      {"name": "StdRatio", "kind": "number", "default": 1.0},
+      {"name": "Radius", "kind": "number", "default": 0.0},
+      {"name": "MinNeighbors"},
+      {"name": "VoxelSize", "kind": "number", "default": 0.0},
+      {"name": "MinDistance", "kind": "number", "default": 0.0}
+    ]},
     {"op": "ReconstructSurface", "keys": [
       {"name": "Normals", "kind": "text", "default": "normals"},
       {"name": "K"},

@@ -4677,6 +4677,27 @@ def _register_operations(server: FastMCP) -> None:
         the sampled arrays attached."""
 
     @server.tool()
+    @_forward(_tools.tool_filter_points)
+    def filter_points(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        statistical_k: int = 0,
+        std_ratio: float = 1.0,
+        radius: float = 0.0,
+        min_neighbors: int = 4,
+        voxel_size: float = 0.0,
+        min_distance: float = 0.0,
+    ) -> dict:
+        """Remove outliers from and thin a point cloud; steps run in order and
+        are off at 0: statistical outlier removal (statistical_k neighbours,
+        std_ratio), radius outlier removal (radius, min_neighbors), voxel
+        thinning (voxel_size: one real point per cube) and Poisson-disk thinning
+        (min_distance). Writes the surviving points; the report counts what
+        each step removed."""
+
+    @server.tool()
     @_forward(_tools.tool_cast_rays)
     def cast_rays(
         surface_path: str,

@@ -155,6 +155,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"ConvexHull", {"Dimension"}},
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
+        {"FilterPoints",
+         {"StatisticalK", "StdRatio", "Radius", "MinNeighbors", "VoxelSize", "MinDistance"}},
         {"ReconstructSurface",
          {"Normals", "K", "CellSize", "Resolution", "MaxDistance", "EstimateNormals", "NormalsK",
           "MaxCells"}},

@@ -123,14 +123,9 @@ from .. import (
     extrude,
 )
 from .. import face_support as _face_support_op
-from .. import (
-    feature_edges,
-    fichera,
-    find_interface,
-    find_intersections,
-    find_symmetry_plane,
-    fit_cad,
-)
+from .. import feature_edges, fichera
+from .. import filter_points as _filter_points_op
+from .. import find_interface, find_intersections, find_symmetry_plane, fit_cad
 from .. import fit_cad_iterate as _fit_cad_iterate_op
 from .. import fit_curves as _fit_curves_op
 from .. import fit_primitives
@@ -6237,6 +6232,41 @@ def tool_interpolate(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_filter_points(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    statistical_k=0,
+    std_ratio=1.0,
+    radius=0.0,
+    min_neighbors=4,
+    voxel_size=0.0,
+    min_distance=0.0,
+):
+    """Remove outliers from, and thin, a point cloud.
+
+    Steps run in order and are off at 0: statistical outlier removal
+    (statistical_k, std_ratio), radius outlier removal (radius, min_neighbors),
+    voxel thinning (voxel_size) and Poisson-disk thinning (min_distance). The
+    output is the surviving points as a point cloud; the report counts what each
+    step removed.
+    """
+    mesh = _load(input_path, input_format, readonly=True)
+    out, report = _filter_points_op(
+        mesh,
+        statistical_k=statistical_k,
+        std_ratio=std_ratio,
+        radius=radius,
+        min_neighbors=min_neighbors,
+        voxel_size=voxel_size,
+        min_distance=min_distance,
+        return_report=True,
+    )
+    report.pop("point_map", None)
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_cast_rays(
     surface_path,
     rays_path,
@@ -8863,6 +8893,10 @@ TOOL_REGISTRY = OrderedDict(
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),
         ("split", {"fn": tool_split, "wraps": ("split",), "gated": None}),
         ("partition", {"fn": tool_partition, "wraps": ("partition",), "gated": None}),
+        (
+            "filter_points",
+            {"fn": tool_filter_points, "wraps": ("filter_points",), "gated": None},
+        ),
         (
             "cast_rays",
             {"fn": tool_cast_rays, "wraps": ("cast_rays",), "gated": None},

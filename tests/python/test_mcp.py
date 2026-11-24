@@ -635,6 +635,27 @@ def test_mass_properties(tmp_path):
     assert out["total"]["inertia"][0] == pytest.approx(16.0 * 8.0 / 12.0)
 
 
+def test_filter_points(tmp_path):
+    import numpy as np
+
+    rng = np.random.default_rng(2)
+    pts = np.vstack(
+        [
+            rng.uniform(0, 1, (400, 3)) * [1, 1, 0.01],
+            rng.uniform(0, 1, (4, 3)) + [3, 3, 2],
+        ]
+    )
+    src = str(tmp_path / "scan.vtu")
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("vertex", np.arange(len(pts)).reshape(-1, 1))])
+    )
+    out = str(tmp_path / "clean.vtu")
+    rep = _dump(_tools.tool_filter_points(src, out, statistical_k=10, std_ratio=2.0))
+    assert rep["num_input"] == 404
+    assert rep["num_removed_statistical"] >= 4
+    assert len(meshioplusplus.read(out).points) == rep["num_points"]
+
+
 def test_cast_rays_and_locate_points(tmp_path):
     sphere = meshioplusplus.uv_sphere(1.0, 32, 16)
     spath = str(tmp_path / "sphere.vtu")

@@ -263,6 +263,12 @@ _VERBS = (
         "add_symmetry_args",
     ),
     _Verb(
+        "filter-points",
+        "_filter_points",
+        "filter_points_cmd",
+        "Outlier removal and thinning of a point cloud",
+    ),
+    _Verb(
         "cast-rays",
         "_cast_rays",
         "cast_rays_cmd",

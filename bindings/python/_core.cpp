@@ -181,6 +181,7 @@
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
@@ -7362,6 +7363,40 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("angle_tolerance") = 10.0, py::arg("subdivisions") = 3,
         py::arg("region") = std::string(), py::arg("rotate_vector_data") = false);
+
+    // Outlier removal and thinning of a point cloud. {mesh, point_map, counts}.
+    // See operations/filter_points.hpp.
+    m.def(
+        "filter_points",
+        [](py::object pymesh, std::int64_t statistical_k, double std_ratio, double radius,
+           std::int64_t min_neighbors, double voxel_size, double min_distance) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::PointFilterOptions options;
+            options.mStatisticalK = statistical_k;
+            options.mStdRatio = std_ratio;
+            options.mRadius = radius;
+            options.mMinNeighbors = min_neighbors;
+            options.mVoxelSize = voxel_size;
+            options.mMinDistance = min_distance;
+            meshioplusplus::PointFilterResult r =
+                core_nogil([&] { return meshioplusplus::filter_points(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["point_map"] = py::array_t<std::int64_t>(
+                static_cast<py::ssize_t>(r.mPointMap.size()), r.mPointMap.data());
+            out["num_input"] = r.mNumInput;
+            out["num_removed_statistical"] = r.mNumRemovedStatistical;
+            out["num_removed_radius"] = r.mNumRemovedRadius;
+            out["num_removed_voxel"] = r.mNumRemovedVoxel;
+            out["num_removed_poisson"] = r.mNumRemovedPoisson;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("statistical_k") = 0, py::arg("std_ratio") = 1.0,
+        py::arg("radius") = 0.0, py::arg("min_neighbors") = 4, py::arg("voxel_size") = 0.0,
+        py::arg("min_distance") = 0.0);
 
     // Rays against a surface and point location in a mesh: arrays in, arrays
     // out. See operations/cast_rays.hpp and operations/locate_points.hpp.
