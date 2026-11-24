@@ -146,6 +146,24 @@ function t_mfem_nurbs()
     assert(isempty(b.derivatives));
     expect_error(@() mio.iga_evaluate(r.info, 1, [2, 0.5]), 'knot range');
     expect_error(@() mio.iga_evaluate(r.info, 1, [0.5, 0.5, 0.5]), 'params');
+    % Bezier extraction: the annulus has unequal degrees; a bi-quadratic square is
+    % one Bezier cell of nine points
+    expect_error(@() mio.iga_bezier_extract(r.info, 1), 'unequal degrees');
+    square = [tempname() '.mesh'];
+    write_lines(square, {'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', ...
+        '5 3 0 1 2 3', 'boundary', '0', 'edges', '4', '0 0 1', '0 3 2', '1 0 3', '1 1 2', ...
+        'vertices', '4', 'knotvectors', '2', '2 3 0 0 0 1 1 1', '2 3 0 0 0 1 1 1', ...
+        'weights', '1', '1', '1', '1', '1', '1', '1', '1', '1', ...
+        'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', 'Ordering: 1', ...
+        '0 0', '1 0', '1 1', '0 1', '0.5 0', '0.5 1', '0 0.5', '1 0.5', '0.5 0.5'});
+    sq = mio.read_with_info(square, 'format', 'mfem');
+    bez = mio.iga_bezier_extract(sq.info);
+    expect_equal(mio.num_points(bez), 9);
+    expect_error(@() mio.iga_bezier_extract(sq.info, 2), 'out of range');
+    mio.release(bez);
+    mio.release(sq.mesh);
+    mio.format_info_release(sq.info);
+    delete(square);
     sampled = mio.iga_sample(r.info);
     expect_equal(mio.format_info_format(sampled.info), 'mfem');
     assert(mio.num_points(sampled.mesh) > 0);

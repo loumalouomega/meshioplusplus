@@ -160,6 +160,13 @@ _VERBS = (
         add_args="add_sample_args",
     ),
     _Verb(
+        "iga-bezier",
+        "_iga",
+        "bezier_cmd",
+        "Bezier extraction of a NURBS patch into VTK Bezier cells",
+        add_args="add_bezier_args",
+    ),
+    _Verb(
         "iga-evaluate",
         "_iga",
         "evaluate_cmd",

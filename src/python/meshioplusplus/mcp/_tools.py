@@ -147,6 +147,7 @@ from .. import hollow as _hollow_op
 from .. import (
     honeycomb,
     icosa_sphere,
+    iga_bezier_extract,
     iga_evaluate,
     iga_refine,
     iga_sample,
@@ -4048,6 +4049,21 @@ def tool_iga_sample(
     Lagrange cells, subdivisions cells per knot span and direction (0 is
     automatic), the exact rational geometry at each cell's lattice."""
     return _run_op(iga_sample, locals(), report=False)
+
+
+def tool_iga_bezier_extract(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    patch=0,
+    model="auto",
+):
+    """Bezier extraction of one patch of a NURBS model: every interior knot is
+    inserted up to multiplicity p, and the refined net is cut at its knot
+    spans into VTK Bezier curve/quadrilateral/hexahedron cells (HigherOrderDegrees,
+    RationalWeights for a rational patch), written in output_path."""
+    return _run_op(iga_bezier_extract, locals(), report=False)
 
 
 _IGA_MAX_POINTS = 10000
@@ -8346,6 +8362,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "iga_sample",
             {"fn": tool_iga_sample, "wraps": ("iga_sample",), "gated": None},
+        ),
+        (
+            "iga_bezier_extract",
+            {
+                "fn": tool_iga_bezier_extract,
+                "wraps": ("iga_bezier_extract",),
+                "gated": None,
+            },
         ),
         (
             "iga_evaluate",

@@ -9251,6 +9251,14 @@ PYBIND11_MODULE(_core, m) {
             py::arg("brep"), py::arg("subdivisions") = 0, py::arg("trim_samples") = 16,
             py::arg("edges") = true, py::arg("trim") = true);
         m.def(
+            "iga_bezier_extract_nurbs",
+            [=](py::object nurbs, std::size_t patch) {
+                const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);
+                return meshioplusplus_py::mesh_to_py(
+                    core_nogil([&] { return meshioplusplus::iga_bezier_extract(in, patch); }));
+            },
+            py::arg("nurbs"), py::arg("patch") = 0);
+        m.def(
             "iga_evaluate_nurbs",
             [=](py::object nurbs, std::size_t patch, py::object params, int derivatives) {
                 const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);

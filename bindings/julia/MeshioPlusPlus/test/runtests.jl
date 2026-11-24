@@ -284,6 +284,21 @@ end
         @test size(a.derivatives) == (2, 2, 2)
         @test a.normals === nothing && a.inside === nothing && isempty(a.fields)
         @test_throws MeshioError iga_evaluate(info, 1, reshape([2.0, 0.5], 2, 1))
+        # Bezier extraction: the annulus has unequal degrees; a bi-quadratic square
+        # is one Bezier cell of nine points
+        @test_throws MeshioError iga_bezier_extract(info, 1)
+        square = joinpath(dir, "square.mesh")
+        write(square, join(["MFEM NURBS mesh v1.0", "dimension", "2", "elements", "1",
+            "5 3 0 1 2 3", "boundary", "0", "edges", "4", "0 0 1", "0 3 2", "1 0 3", "1 1 2",
+            "vertices", "4", "knotvectors", "2", "2 3 0 0 0 1 1 1", "2 3 0 0 0 1 1 1",
+            "weights", fill("1", 9)...,
+            "FiniteElementSpace", "FiniteElementCollection: NURBS2", "VDim: 2", "Ordering: 1",
+            "0 0", "1 0", "1 1", "0 1", "0.5 0", "0.5 1", "0 0.5", "1 0.5", "0.5 0.5"], "\n") * "\n")
+        sq_mesh, sq_info = read_with_info(square; format="mfem")
+        bez = iga_bezier_extract(sq_info)
+        @test num_points(bez) == 9
+        @test_throws MeshioError iga_bezier_extract(sq_info, 2)
+        close(bez); close(sq_mesh); close(sq_info)
         sampled, mapped = iga_sample(info)
         @test format_name(mapped) == "mfem"
         close(sampled); close(mapped); close(fine); close(refined)

@@ -74,7 +74,7 @@ end
 export Mesh, MeshBorrow, MeshioError, BorrowError, Region
 export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info, nurbs_info,
        brep_info
-export iga_refine, iga_sample, iga_evaluate
+export iga_refine, iga_sample, iga_evaluate, iga_bezier_extract
 export mesh_cad_surface, project_to_cad
 export write_gltf
 export render, render_text, render_png, write_snapshot, detect_color_depth, Frame, rgba

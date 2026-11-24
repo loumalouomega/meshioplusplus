@@ -1,6 +1,7 @@
 \name{mio_iga_refine}
 \alias{mio_iga_refine}
 \alias{mio_iga_sample}
+\alias{mio_iga_bezier_extract}
 \alias{mio_iga_evaluate}
 \title{Refine, sample and evaluate a NURBS model}
 \usage{
@@ -9,6 +10,8 @@ mio_iga_refine(info, subdivisions = 1L, elevate = 0L, sample_subdivisions = 0L,
 
 mio_iga_sample(info, sample_subdivisions = 0L, trim_samples = 16L, edges = TRUE,
   trim = TRUE)
+
+mio_iga_bezier_extract(info, patch = 1L)
 
 mio_iga_evaluate(info, patch, params, derivatives = 0L, trim_samples = 16L)
 }
@@ -34,7 +37,11 @@ nonzero knot span in \code{subdivisions} parts (an MFEM model refines every
 direction alike). The geometry, the fields and a trimmed face's trimming loops
 do not change. \code{mio_iga_sample()} samples the model into Lagrange cells.
 \code{mio_iga_evaluate()} evaluates patch \code{patch} at the columns of
-\code{params}.}
+\code{params}. \code{mio_iga_bezier_extract()} extracts patch \code{patch} (1-based) of
+an MFEM NURBS model as VTK Bezier curve, quadrilateral or hexahedron cells, one per
+knot-span product, with the cell data \code{HigherOrderDegrees}, \code{iga:patch}
+and \code{iga:span} and, for a rational patch, the point data \code{RationalWeights};
+a patch with unequal degrees is refused.}
 \value{\code{mio_iga_refine()} and \code{mio_iga_sample()}: \code{list(mesh = , info = )}, the
 sampled mesh and the model (refined, or with the sampling's cell maps), for
 \code{mio_write_with_info()}. \code{mio_iga_evaluate()}: a list with \code{points}
@@ -42,4 +49,4 @@ sampled mesh and the model (refined, or with the sampling's cell maps), for
 NURBS field), \code{derivatives} (\code{(space_dimension, d, N)}) and \code{normals}
 (\code{(3, N)}), both \code{NULL} unless \code{derivatives = 1}, \code{second_derivatives}
 (\code{(space_dimension, d, d, N)}, \code{NULL} unless \code{derivatives = 2}), and \code{inside}
-(a logical vector for a B-rep face, else \code{NULL}).}
+(a logical vector for a B-rep face, else \code{NULL}). \code{mio_iga_bezier_extract()}: the mesh.}

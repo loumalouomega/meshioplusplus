@@ -1577,6 +1577,19 @@ def test_iga_tools_refine_sample_and_evaluate(tmp_path):
         _tools.tool_iga_evaluate(plate, [[0.5, 0.5]] * 10001)
 
 
+def test_iga_bezier_extract_tool(tmp_path):
+    nurbs = str(
+        pathlib.Path(__file__).parent / "meshes" / "mfem" / "nurbs" / "pipe-nurbs.mesh"
+    )
+    out = _dump(_tools.tool_iga_bezier_extract(nurbs, str(tmp_path / "b.vtu"), patch=1))
+    assert out["num_cells"] == 2
+    back = meshioplusplus.read(tmp_path / "b.vtu")
+    assert back.cells[0].type == "VTK_BEZIER_HEXAHEDRON"
+    assert "HigherOrderDegrees" in back.cell_data
+    with pytest.raises(ValueError, match="patch 99"):
+        _tools.tool_iga_bezier_extract(nurbs, str(tmp_path / "x.vtu"), patch=99)
+
+
 def _two_tetra10():
     tets = meshioplusplus.Mesh(
         np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]], dtype=float),

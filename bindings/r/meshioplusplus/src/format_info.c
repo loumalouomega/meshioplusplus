@@ -512,6 +512,13 @@ SEXP R_mio_iga_sample(SEXP x, SEXP sample_subdivisions, SEXP trim_samples, SEXP 
     return iga_mesh_and_info(mesh, mapped, "iga_sample");
 }
 
+SEXP R_mio_iga_bezier_extract(SEXP x, SEXP patch) {
+    const mio_format_info *info = info_of(x, 0);
+    mio_mesh *mesh = mio_iga_bezier_extract(info, (int64_t)mio_r_int(patch, "patch") - 1);
+    if (mesh == NULL) mio_r_fail("iga_bezier_extract");
+    return mio_r_wrap_mesh(mesh);
+}
+
 /* --- mesh generation from CAD (v17.13.0; doc/mesh_cad.md) ----------------- */
 
 static int64_t r_mesh_cad_reason(void *ctx, char *buf, int64_t buflen) {

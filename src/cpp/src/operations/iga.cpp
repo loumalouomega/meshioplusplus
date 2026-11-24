@@ -678,4 +678,141 @@ Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions, NurbsI
     return mesh;
 }
 
+Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch) {
+    if (Patch >= rInfo.mPatches.size())
+        iga_fail("patch " + std::to_string(Patch) + " is out of range (the model has " +
+                 std::to_string(rInfo.mPatches.size()) + ")");
+    const NurbsPatch& patch = rInfo.mPatches[Patch];
+    const std::string what = "patch " + std::to_string(Patch);
+    const IgaShape sh = iga_check_patch(patch, what);
+    if (patch.mFields.size() != rInfo.mFieldNames.size())
+        iga_fail(what + " has " + std::to_string(patch.mFields.size()) + " fields for " +
+                 std::to_string(rInfo.mFieldNames.size()) + " names");
+    const int p = patch.mDegrees[0];
+    for (std::size_t d = 1; d < sh.mDim; ++d)
+        if (patch.mDegrees[d] != p)
+            iga_fail(what +
+                     " has unequal degrees; Bezier cells take one order, elevate with "
+                     "iga_elevate_degree first");
+    const bool rational = iga_is_rational(patch);
+    if (rational)
+        iga_check_weights(patch, what);
+    detail::IgaNet net = iga_make_net(patch, sh, rational);
+
+    // Raise every interior knot to multiplicity p.
+    for (std::size_t d = 0; d < sh.mDim; ++d) {
+        const std::vector<double>& k = net.mKnots[d];
+        std::vector<double> ins;
+        std::size_t i = static_cast<std::size_t>(p) + 1;
+        while (i < sh.mCounts[d]) {
+            std::size_t j = i;
+            while (j < k.size() && k[j] == k[i])
+                ++j;
+            const int mult = static_cast<int>(j - i);
+            for (int m = mult; m < p; ++m)
+                ins.push_back(k[i]);
+            i = j;
+        }
+        if (!ins.empty())
+            detail::iga_net_insert(net, d, ins);
+    }
+
+    // Elements of the refined net: spans of nonzero length.
+    std::array<std::vector<std::size_t>, 3> elem;
+    std::array<std::vector<std::int64_t>, 3> elem_no;
+    for (std::size_t d = 0; d < 3; ++d) {
+        if (d >= sh.mDim) {
+            elem[d].push_back(static_cast<std::size_t>(p));
+            elem_no[d].push_back(0);
+            continue;
+        }
+        const std::vector<double>& k = net.mKnots[d];
+        std::int64_t no = 0;
+        for (std::size_t s = static_cast<std::size_t>(p); s < net.mCounts[d]; ++s)
+            if (k[s] < k[s + 1]) {
+                elem[d].push_back(s);
+                elem_no[d].push_back(no++);
+            }
+    }
+    const std::size_t dim = sh.mDim, sdim = sh.mSdim;
+    const lagrange::Shape shape = dim == 1   ? lagrange::Shape::Line
+                                  : dim == 2 ? lagrange::Shape::Quad
+                                             : lagrange::Shape::Hexahedron;
+    const auto lattice = lagrange::vtk_lattice(shape, p);
+    const std::size_t nn = lattice.size();
+    const std::size_t ncell = elem[0].size() * elem[1].size() * elem[2].size();
+    const std::size_t npts = ncell * nn;
+    const std::size_t C = net.mColumns;
+    const std::size_t cols = sdim == 2 ? 2 : 3;
+
+    NDArray points(DType::Float64, {npts, cols});
+    NDArray weights(DType::Float64, {npts});
+    std::vector<NDArray> fields;
+    for (const std::size_t c : sh.mFieldComps)
+        fields.emplace_back(DType::Float64, c == 1 ? std::vector<std::size_t>{npts}
+                                                   : std::vector<std::size_t>{npts, c});
+    NDArray conn(DType::Int64, {ncell, nn});
+    NDArray degrees(DType::Float64, {ncell, std::size_t{3}});
+    NDArray cpatch(DType::Int64, {ncell});
+    NDArray cspan(DType::Int64, {ncell, std::size_t{3}});
+    std::int64_t* pc = conn.As<std::int64_t>();
+    double* pdeg = degrees.As<double>();
+    double* px = points.As<double>();
+    double* pw = weights.As<double>();
+    std::size_t cell = 0;
+    for (std::size_t iw = 0; iw < elem[2].size(); ++iw)
+        for (std::size_t jv = 0; jv < elem[1].size(); ++jv)
+            for (std::size_t iu = 0; iu < elem[0].size(); ++iu, ++cell) {
+                for (std::size_t n = 0; n < nn; ++n) {
+                    const std::size_t g0 = elem[0][iu] - static_cast<std::size_t>(p) +
+                                           static_cast<std::size_t>(lattice[n][0]);
+                    const std::size_t g1 = dim > 1 ? elem[1][jv] - static_cast<std::size_t>(p) +
+                                                         static_cast<std::size_t>(lattice[n][1])
+                                                   : 0;
+                    const std::size_t g2 = dim > 2 ? elem[2][iw] - static_cast<std::size_t>(p) +
+                                                         static_cast<std::size_t>(lattice[n][2])
+                                                   : 0;
+                    const double* row =
+                        net.mValues.data() + (g0 + net.mCounts[0] * (g1 + net.mCounts[1] * g2)) * C;
+                    const std::size_t at = cell * nn + n;
+                    pc[at] = static_cast<std::int64_t>(at);
+                    const double w = rational ? row[C - 1] : 1.0;
+                    pw[at] = w;
+                    for (std::size_t d = 0; d < cols; ++d)
+                        px[at * cols + d] = d < sdim ? (rational ? row[d] / w : row[d]) : 0.0;
+                    std::size_t c = sdim;
+                    for (std::size_t f = 0; f < fields.size(); ++f) {
+                        double* pf = fields[f].As<double>() + at * sh.mFieldComps[f];
+                        for (std::size_t d = 0; d < sh.mFieldComps[f]; ++d, ++c)
+                            pf[d] = rational ? row[c] / w : row[c];
+                    }
+                }
+                for (std::size_t d = 0; d < 3; ++d)
+                    pdeg[cell * 3 + d] = d < dim ? static_cast<double>(p) : 0.0;
+                cpatch.As<std::int64_t>()[cell] = static_cast<std::int64_t>(Patch);
+                cspan.As<std::int64_t>()[cell * 3 + 0] = elem_no[0][iu];
+                cspan.As<std::int64_t>()[cell * 3 + 1] = dim > 1 ? elem_no[1][jv] : 0;
+                cspan.As<std::int64_t>()[cell * 3 + 2] = dim > 2 ? elem_no[2][iw] : 0;
+            }
+
+    Mesh mesh;
+    mesh.AssignPoints(std::move(points));
+    const char* type = dim == 1   ? "VTK_BEZIER_CURVE"
+                       : dim == 2 ? "VTK_BEZIER_QUADRILATERAL"
+                                  : "VTK_BEZIER_HEXAHEDRON";
+    mesh.AddCellBlock(type, std::move(conn));
+    std::vector<NDArray> a, b, c;
+    a.push_back(std::move(degrees));
+    b.push_back(std::move(cpatch));
+    c.push_back(std::move(cspan));
+    mesh.AddCellData("HigherOrderDegrees", std::move(a));
+    mesh.AddCellData(kIgaPatchName, std::move(b));
+    mesh.AddCellData(kIgaSpanName, std::move(c));
+    if (rational)
+        mesh.AddPointData("RationalWeights", std::move(weights));
+    for (std::size_t f = 0; f < fields.size(); ++f)
+        mesh.AddPointData(rInfo.mFieldNames[f], std::move(fields[f]));
+    return mesh;
+}
+
 }  // namespace meshioplusplus

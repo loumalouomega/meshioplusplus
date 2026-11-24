@@ -559,6 +559,13 @@ static mxArray *ofi_iga_array(const mio_iga_evaluation *ev, int32_t which, int64
 
 /* iga_evaluate(info, patch, params, derivatives, trim_samples) -- params is
  * (N x d), one row per point: exactly the row-major (N, d) the C API takes. */
+static mxArray *O_mio_iga_bezier_extract(const mxArray **a) {
+    const mio_format_info *info = ofi_info_of(a[0], 0);
+    mio_mesh *mesh = mio_iga_bezier_extract(info, (int64_t)mio_o_int(a[1], "patch") - 1);
+    if (mesh == NULL) mio_o_fail("iga_bezier_extract");
+    return mio_o_wrap_mesh(mesh);
+}
+
 static mxArray *O_mio_iga_evaluate(const mxArray **a) {
     const mio_format_info *info = ofi_info_of(a[0], 0);
     const int64_t patch = (int64_t)mio_o_int(a[1], "patch") - 1;
@@ -1224,6 +1231,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_nurbs_info, 1),
     MIO_O_ENTRY(mio_iga_refine, 7),
     MIO_O_ENTRY(mio_iga_sample, 5),
+    MIO_O_ENTRY(mio_iga_bezier_extract, 2),
     MIO_O_ENTRY(mio_project_to_cad, 6),
     MIO_O_ENTRY(mio_mesh_cad_surface, 36),
     MIO_O_ENTRY(mio_iga_evaluate, 5),

@@ -849,6 +849,17 @@ WRITING = [
         ],
     ),
     (
+        "iga_bezier_nurbs",
+        lambda f, out: [
+            "iga-bezier",
+            f["nurbs"],
+            out + ".vtu",
+            "--patch",
+            "1",
+            "--json",
+        ],
+    ),
+    (
         "iga_sample_face",
         lambda f, out: [
             "iga-sample",

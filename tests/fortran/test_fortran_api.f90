@@ -251,6 +251,40 @@ program test_fortran_api
                 ev_a = info%iga_evaluate(1, reshape([2.0_real64, 0.5_real64], [2, 1]), stat=ierr)
                 call check(ierr /= 0, 'an out-of-range parameter fails')
                 call ev_a%free()
+                ! ---- Bezier extraction: the annulus has unequal degrees; a bi-quadratic
+                ! square is one Bezier cell of nine points
+                fine = info%iga_bezier_extract(1, stat=ierr)
+                call check(ierr /= 0, 'unequal degrees are refused by iga_bezier_extract')
+                call fine%free()
+                block
+                    type(mio_format_info) :: sq_info
+                    type(mio_mesh) :: sq_mesh
+                    character(:), allocatable :: sq_path
+                    sq_path = prefix//'_square.mesh'
+                    open (newunit=unit, file=sq_path, status='replace')
+                    write (unit, '(a)') 'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', &
+                        '5 3 0 1 2 3', 'boundary', '0', 'edges', '4', '0 0 1', '0 3 2', '1 0 3', &
+                        '1 1 2', 'vertices', '4', 'knotvectors', '2', '2 3 0 0 0 1 1 1', &
+                        '2 3 0 0 0 1 1 1', 'weights', '1', '1', '1', '1', '1', '1', '1', '1', '1', &
+                        'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', &
+                        'Ordering: 1', '0 0', '1 0', '1 1', '0 1', '0.5 0', '0.5 1', '0 0.5', &
+                        '1 0.5', '0.5 0.5'
+                    close (unit)
+                    call back%read_with_info(sq_path, sq_info, 'mfem', stat=ierr)
+                    call check(ierr == 0, 'square read_with_info succeeds')
+                    fine = sq_info%iga_bezier_extract(1, stat=ierr)
+                    call check(ierr == 0, 'iga_bezier_extract succeeds')
+                    call check(fine%num_points() == 9, 'one Bezier cell of nine points')
+                    call fine%free()
+                    fine = sq_info%iga_bezier_extract(2, stat=ierr)
+                    call check(ierr /= 0, 'a patch out of range fails')
+                    call fine%free()
+                    call sq_mesh%free()
+                    call sq_info%free()
+                    call back%free()
+                    open (newunit=unit, file=sq_path, status='old')
+                    close (unit, status='delete')
+                end block
             end block
             open (newunit=unit, file=output_path, status='old')
             close (unit, status='delete')

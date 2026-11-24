@@ -187,6 +187,24 @@ MESHIOPLUSPLUS_API IgaEvaluation iga_evaluate(const BrepInfo& rInfo, std::size_t
 MESHIOPLUSPLUS_API Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions = {},
                                    NurbsInfo* pMapped = nullptr);
 
+/**
+ * @brief Bezier extraction of one patch (roadmap 9.8.2): the patch as VTK Bezier cells.
+ *
+ * Every interior knot is inserted up to multiplicity `p` in each direction
+ * (exactly, on the homogeneous net, so a rational patch stays exact), and the
+ * refined net is cut at its nonzero knot spans: one `VTK_BEZIER_CURVE`,
+ * `VTK_BEZIER_QUADRILATERAL` or `VTK_BEZIER_HEXAHEDRON` cell per span product,
+ * with `(p+1)^dim` points in VTK's Lagrange node order, in Cartesian
+ * coordinates (the homogeneous values divided by the weight). Points are not
+ * shared between cells. Cell data `HigherOrderDegrees` (Float64, `(cells, 3)`,
+ * unused directions 0), `iga:patch` and `iga:span` (as `iga_sample` writes
+ * them); point data `RationalWeights` when the patch is rational (any weight
+ * other than 1) and one array per NURBS field.
+ * @throws std::invalid_argument for a bad patch index or patch, or unequal
+ *         degrees in the patch's directions (elevate with `iga_elevate_degree`).
+ */
+MESHIOPLUSPLUS_API Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch);
+
 /// Sample a B-rep as `sample_brep` does (`mSubdivisions`, `mTrimSamples`, `mTrim`, `mEdges`).
 MESHIOPLUSPLUS_API Mesh iga_sample(const BrepInfo& rInfo, const IgaSampleOptions& rOptions = {});
 

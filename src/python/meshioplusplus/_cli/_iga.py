@@ -140,10 +140,33 @@ def sample_cmd(args):
     return 0
 
 
+def add_bezier_args(parser):
+    _add_io(parser, "Bezier cells to be written to (VTU keeps them as Bezier cells)")
+    parser.add_argument(
+        "--patch", type=int, default=0, help="the patch to extract (default: 0)"
+    )
+    parser.add_argument("--json", action="store_true", help="emit a summary as JSON")
+    parser.add_argument(
+        "--quiet", "-q", action="store_true", help="suppress the summary"
+    )
+
+
+def bezier_cmd(args):
+    from .._iga import iga_bezier_extract
+
+    mesh = read(args.infile, file_format=args.input_format)
+    out = iga_bezier_extract(mesh, patch=args.patch, model=args.model)
+    write(args.outfile, out, file_format=args.output_format)
+    _summary(out, args, "iga_bezier_extract")
+    return 0
+
+
 def _summary(mesh, args, name):
     cells = sum(len(c.data) for c in mesh.cells)
-    kind = "nurbs" if "nurbs" in (mesh.info or {}) else "brep"
-    patches = len((mesh.info or {}).get(kind, {}).get("patches", []))
+    info = mesh.info or {}
+    kind = "brep" if "brep" in info and "nurbs" not in info else "nurbs"
+    # An extraction carries no model: it is one patch's cells
+    patches = len(info[kind]["patches"]) if kind in info else 1
     if args.json:
         emit_json(
             {

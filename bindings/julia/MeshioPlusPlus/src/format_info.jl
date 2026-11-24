@@ -464,6 +464,22 @@ function iga_sample(info::FormatInfo; kwargs...)
     mesh, FormatInfo(mapped[])
 end
 
+"""
+    iga_bezier_extract(info, patch=1) -> Mesh
+
+Bezier extraction of patch `patch` (1-based) of a NURBS model: every interior
+knot raised to multiplicity `p` and the net cut at its knot spans into one VTK
+Bezier curve, quadrilateral or hexahedron cell per span product, `(p+1)^d`
+unshared points each, with the cell data `HigherOrderDegrees`, `iga:patch` and
+`iga:span` and, for a rational patch, the point data `RationalWeights`. A patch
+with unequal degrees is refused (raise them with [`iga_refine`](@ref) first).
+"""
+function iga_bezier_extract(info::FormatInfo, patch::Integer=1)
+    ptr = ccall(_sym(:mio_iga_bezier_extract), Ptr{Cvoid},
+                (Ptr{Cvoid}, Int64), _handle(info), Int64(patch - 1))
+    Mesh(_check_ptr(ptr))
+end
+
 # --- mesh generation from CAD (v17.13.0; doc/mesh_cad.md) ----------------------
 
 const _MESH_CAD_FACE_STATUS_NAMES = ("ok", "empty", "open_loop", "self_intersecting",

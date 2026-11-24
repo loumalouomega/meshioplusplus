@@ -2729,6 +2729,23 @@ int cmd_iga_sample(const std::vector<std::string>& rArgs) {
     return 0;
 }
 
+int cmd_iga_bezier(const std::vector<std::string>& rArgs) {
+    auto p =
+        cli_parse(rArgs, cli_specs({io_flag_specs(), {{"patch", {}, true}}, report_flag_specs()}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("iga-bezier requires exactly INFILE and OUTFILE");
+    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    if (!model.mNurbs)
+        throw std::runtime_error(
+            "iga-bezier takes a NURBS model (an MFEM NURBS mesh), not a B-rep");
+    const auto patch =
+        static_cast<std::size_t>(has_opt(p, "patch") ? std::stoll(opt_value(p, "patch")) : 0);
+    const Mesh mesh = meshioplusplus::iga_bezier_extract(*model.mNurbs, patch);
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    cli_iga_summary(p, "iga_bezier_extract", "nurbs", mesh, 1);
+    return 0;
+}
+
 // --- mesh generation from CAD: mesh-cad-surface ----------------------------------------
 
 int cmd_mesh_cad_surface(const std::vector<std::string>& rArgs) {
@@ -10842,6 +10859,9 @@ const CliVerb kCliVerbs[] = {
      &cmd_iga_refine},
     {"iga-sample", nullptr, "  iga-sample              Sample a NURBS model into Lagrange cells\n",
      &cmd_iga_sample},
+    {"iga-bezier", nullptr,
+     "  iga-bezier              Bezier extraction of a NURBS patch into VTK Bezier cells\n",
+     &cmd_iga_bezier},
     {"iga-evaluate", nullptr,
      "  iga-evaluate            Evaluate a NURBS patch at parametric coordinates (JSON)\n",
      &cmd_iga_evaluate},
@@ -10873,10 +10893,15 @@ const CliVerb kCliVerbs[] = {
      &cmd_coordinates},
     {"hull", nullptr,
      "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n", &cmd_hull},
-    {"filter-points", nullptr, "  filter-points           Outlier removal and thinning of a point cloud\n", &cmd_filter_points},
-    {"cast-rays", nullptr, "  cast-rays               The nearest surface hit of a batch of rays\n", &cmd_cast_rays},
-    {"locate", nullptr, "  locate                  The cell containing each point of a file\n", &cmd_locate},
-    {"mass", nullptr, "  mass                    Mass, centre of mass and inertia of a body\n", &cmd_mass},
+    {"filter-points", nullptr,
+     "  filter-points           Outlier removal and thinning of a point cloud\n",
+     &cmd_filter_points},
+    {"cast-rays", nullptr, "  cast-rays               The nearest surface hit of a batch of rays\n",
+     &cmd_cast_rays},
+    {"locate", nullptr, "  locate                  The cell containing each point of a file\n",
+     &cmd_locate},
+    {"mass", nullptr, "  mass                    Mass, centre of mass and inertia of a body\n",
+     &cmd_mass},
     {"point-normals", nullptr,
      "  point-normals           Normals of a point cloud by local plane fits\n",
      &cmd_point_normals},

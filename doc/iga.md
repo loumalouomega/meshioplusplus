@@ -27,6 +27,7 @@ mp.iga_sample(face, subdivisions=8)                         # the face as Lagran
 | `iga_evaluate(mesh, params, patch=0, derivatives=0)` | Points, NURBS fields and, with `derivatives=1`, first derivatives `(N, d, space dim)` and unit normals of a surface in 3-D, and with `derivatives=2` also the symmetric second derivatives `(N, d, d, space dim)`, at the parametric coordinates `params` `(N, d)`. For a B-rep face, `inside`: whether each point lies in the face's trimming loops (even-odd over all of them). Rational, in 1, 2 or 3 parametric dimensions. |
 | `iga_refine(mesh, subdivisions=1, elevate=0, sample_subdivisions=0)` | Degree elevation by `elevate`, then knot insertion splitting every nonzero knot span in `subdivisions` parts: the refined model, sampled again, with the refined model in `info`. |
 | `iga_sample(mesh, subdivisions=0)` | The model as Lagrange cells. |
+| `iga_bezier_extract(mesh, patch=0)` | One patch of a NURBS model as VTK Bezier cells ([below](#bezier-extraction)). |
 
 `mesh` is a mesh whose `info` holds a model; `model="nurbs"` or `"brep"` picks one when it holds both, and a bare model dict is accepted too.
 
@@ -41,6 +42,12 @@ Both refinements are exact rearrangements of the same NURBS: the geometry, the p
 - A face's Kratos control-point ids (`control_point_ids`) have no meaning on a refined net and are cleared; edge curves and vertices are untouched.
 
 The refined model writes back through the format it came from: `mp.write("fine.mesh", fine, file_format="mfem")` writes an `MFEM NURBS mesh` from `fine.info["nurbs"]`, `mp.write("fine.cad.json", fine)` the refined B-rep. Any other format gets the sampled cells.
+
+## Bezier extraction
+
+`iga_bezier_extract(mesh, patch=0)` (C++ `iga_bezier_extract(info, patch)`, `meshioplusplus iga-bezier`, the MCP tool of the same name and the flat bindings) takes one patch of a NURBS model to the piecewise-Bezier form finite element codes assemble on. Every interior knot is raised to multiplicity `p` in each direction by exact knot insertion on the homogeneous net (a rational patch stays exact), and the refined net is cut at its nonzero knot spans: one `VTK_BEZIER_CURVE`, `VTK_BEZIER_QUADRILATERAL` or `VTK_BEZIER_HEXAHEDRON` cell per span product, with `(p+1)^d` points in the node order of the same-shape Lagrange cell, in Cartesian coordinates (the homogeneous values divided by the weight). Points are not shared between cells, as VTK's Bezier cells expect.
+
+The cells carry the cell data `HigherOrderDegrees` (Float64 `(cells, 3)`, an unused direction 0), `iga:patch` and `iga:span` (as `iga_sample` writes them), the point data `RationalWeights` when the patch is rational (any weight other than 1) and one point array per NURBS field. A VTU file keeps them as Bezier cells and a reader or ParaView evaluates them exactly. A patch whose directions have different degrees is refused by name, as VTK's Bezier cells take one order: raise them with `iga_refine(..., elevate=...)` first. A B-rep model is not a NURBS model and is refused too. The extraction *operators* per element, the other form the literature uses, are not produced.
 
 ## Sampling
 
@@ -70,7 +77,7 @@ The [pipeline](/pipeline#the-rules) carries the model a CAD JSON, STEP, IGES or 
 
 - **Not a second entity kind in `Mesh`.** Operations on a mesh (`refine`, `smooth`, `partition`, …) still see only the sampling; the model changes only through these three operations. Putting patches and trims inside `Mesh` itself (every backend, binding and the ABI) is a recorded [non-goal](/roadmap#non-goals-and-decisions-taken) that a consumer needing it can reopen.
 - **Not a mesher.** `iga_sample` keeps the cells of a trimmed face whose centre its loops contain, so its trimmed edges are staircases; the loops themselves stay exact. A conforming triangulation that follows the trims is [`mesh_cad_surface`](/mesh_cad), on the same side channel.
-- **Not yet:** Bézier extraction, knot removal as an operation, closest-point projection as a public query on a patch (a mesh's points are projected onto a B-rep's faces and edges by [`project_to_cad`](./project_to_cad.md), v17.23.0), and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
+- **Not yet:** knot removal as an operation, closest-point projection as a public query on a patch (a mesh's points are projected onto a B-rep's faces and edges by [`project_to_cad`](./project_to_cad.md), v17.23.0), and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
 
 ## Verification
 

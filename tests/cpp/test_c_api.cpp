@@ -1902,6 +1902,33 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     EXPECT_EQ(mio_nurbs_info_count(mapped, MIO_NURBS_PATCHES), 1);
     mio_mesh_free(cells);
     mio_format_info_free(mapped);
+
+    // Bezier extraction: the annulus has unequal degrees (refused by name); a
+    // bi-quadratic square gives one Bezier cell of nine points.
+    EXPECT_EQ(mio_iga_bezier_extract(info, 0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("unequal degrees"), std::string::npos);
+    EXPECT_EQ(mio_iga_bezier_extract(info, -1), nullptr);
+    EXPECT_EQ(mio_iga_bezier_extract(nullptr, 0), nullptr);
+    {
+        const auto sq = mt::temp_path(".mesh");
+        std::ofstream(sq, std::ios::binary)
+            << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
+               "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
+               "2 3 0 0 0 1 1 1\n2 3 0 0 0 1 1 1\nweights\n1\n1\n1\n1\n1\n1\n1\n1\n1\n"
+               "FiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+               "0 0\n1 0\n1 1\n0 1\n0.5 0\n0.5 1\n0 0.5\n1 0.5\n0.5 0.5\n";
+        mio_format_info* sq_info = nullptr;
+        mio_mesh* sq_mesh = mio_read_with_info(sq.c_str(), "mfem", nullptr, &sq_info);
+        ASSERT_NE(sq_mesh, nullptr) << mio_last_error();
+        mio_mesh_free(sq_mesh);
+        mio_mesh* bez = mio_iga_bezier_extract(sq_info, 0);
+        ASSERT_NE(bez, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(bez), 9);
+        EXPECT_EQ(mio_iga_bezier_extract(sq_info, 3), nullptr);
+        mio_mesh_free(bez);
+        mio_format_info_free(sq_info);
+        std::remove(sq.c_str());
+    }
     mio_format_info_free(refined);
     mio_format_info_free(info);
     std::remove(path.c_str());

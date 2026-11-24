@@ -44,6 +44,7 @@
 #include "meshioplusplus/formats/cad_json.hpp"
 #include "meshioplusplus/formats/mfem.hpp"
 #include "../../src/cpp/src/detail/edge_sampler.hpp"
+#include "../../src/cpp/src/formats/lagrange_common.hpp"
 #include "meshioplusplus/operations/iga.hpp"
 
 namespace {
@@ -403,6 +404,123 @@ TEST(Iga, SamplesAHandBuiltModelAtItsLattice) {
     }
     so.mSubdivisions = 65;
     EXPECT_THROW(meshioplusplus::iga_sample(in, so), std::invalid_argument);
+}
+
+// --- Bezier extraction (roadmap 9.8.2) ---------------------------------------
+
+namespace {
+
+double bernstein(int N, int I, double T) {
+    double c = 1.0;
+    for (int k = 1; k <= I; ++k)
+        c = c * (N - I + k) / k;
+    return c * std::pow(T, I) * std::pow(1.0 - T, N - I);
+}
+
+// The point of Bezier cell `Cell` of `rMesh` at local coordinates `pT`
+// (rational: the weighted Bernstein quotient).
+std::array<double, 3> bezier_point(const Mesh& rMesh, std::size_t Cell, std::size_t Dim, int P,
+                                   const double* pT) {
+    using meshioplusplus::lagrange::Shape;
+    const auto lat = meshioplusplus::lagrange::vtk_lattice(Dim == 1   ? Shape::Line
+                                                           : Dim == 2 ? Shape::Quad
+                                                                      : Shape::Hexahedron,
+                                                           P);
+    const NDArray& pts = rMesh.Points();
+    const std::size_t cols = pts.Shape()[1];
+    const auto cb = *rMesh.CellRange().begin();
+    const std::int64_t* conn = cb.Conn().As<std::int64_t>() + Cell * lat.size();
+    const bool rational = rMesh.HasPointData("RationalWeights");
+    std::array<double, 3> num{0, 0, 0};
+    double den = 0.0;
+    for (std::size_t n = 0; n < lat.size(); ++n) {
+        double b = 1.0;
+        for (std::size_t d = 0; d < Dim; ++d)
+            b *= bernstein(P, lat[n][d], pT[d]);
+        const double w = rational ? rMesh.PointData("RationalWeights").As<double>()[conn[n]] : 1.0;
+        for (std::size_t d = 0; d < cols; ++d)
+            num[d] += b * w * pts.As<double>()[static_cast<std::size_t>(conn[n]) * cols + d];
+        den += b * w;
+    }
+    for (std::size_t d = 0; d < 3; ++d)
+        num[d] /= den;
+    return num;
+}
+
+// Every cell of the extraction reproduces `iga_evaluate` over its own span box.
+void expect_extraction_matches(const NurbsInfo& rInfo, std::size_t ExpectedCells) {
+    const NurbsPatch& patch = rInfo.mPatches[0];
+    const std::size_t dim = patch.mDegrees.size();
+    const int p = patch.mDegrees[0];
+    const Mesh mesh = meshioplusplus::iga_bezier_extract(rInfo, 0);
+    const auto cb = *mesh.CellRange().begin();
+    ASSERT_EQ(cb.NumCells(), ExpectedCells);
+    const NDArray& span = mesh.CellData("iga:span", 0);
+    const NDArray& deg = mesh.CellData("HigherOrderDegrees", 0);
+    std::array<std::vector<double>, 3> br;
+    for (std::size_t d = 0; d < dim; ++d)
+        for (std::size_t i = 0; i < patch.mKnots[d].size(); ++i)
+            if (i == 0 || patch.mKnots[d][i] != patch.mKnots[d][i - 1])
+                br[d].push_back(patch.mKnots[d][i]);
+    for (std::size_t c = 0; c < ExpectedCells; ++c) {
+        EXPECT_EQ(deg.As<double>()[c * 3], p);
+        EXPECT_EQ(deg.As<double>()[c * 3 + 2], dim > 2 ? p : 0.0);
+        double lo[3] = {0, 0, 0}, hi[3] = {1, 1, 1};
+        for (std::size_t d = 0; d < dim; ++d) {
+            const std::size_t k = static_cast<std::size_t>(span.As<std::int64_t>()[c * 3 + d]);
+            lo[d] = br[d][k];
+            hi[d] = br[d][k + 1];
+        }
+        for (const double t : {0.0, 0.25, 0.6, 1.0}) {
+            double tt[3] = {t, 1.0 - t, 0.5 * t};
+            double u[3];
+            for (std::size_t d = 0; d < dim; ++d)
+                u[d] = lo[d] + (hi[d] - lo[d]) * tt[d];
+            const auto bz = bezier_point(mesh, c, dim, p, tt);
+            NDArray up(meshioplusplus::DType::Float64, {1, dim});
+            std::copy(u, u + dim, up.As<double>());
+            const auto ev = meshioplusplus::iga_evaluate(rInfo, 0, up, 0);
+            for (std::size_t d = 0; d < patch.mControlPoints.Shape()[1]; ++d)
+                EXPECT_NEAR(bz[d], ev.mPoints.As<double>()[d], 1e-13);
+        }
+    }
+}
+
+}  // namespace
+
+TEST(Iga, BezierExtractionOfAnArcIsExactAndRational) {
+    expect_extraction_matches(one_patch(arc()), 1);
+    IgaRefineOptions o;
+    o.mSubdivisions = {3, 1, 1};
+    expect_extraction_matches(meshioplusplus::iga_refine(one_patch(arc()), o), 3);
+    const Mesh m = meshioplusplus::iga_bezier_extract(one_patch(arc()), 0);
+    EXPECT_EQ((*m.CellRange().begin()).Type(), "VTK_BEZIER_CURVE");
+    EXPECT_EQ(m.NumPoints(), 3u);
+    ASSERT_TRUE(m.HasPointData("RationalWeights"));
+    EXPECT_NEAR(m.PointData("RationalWeights").As<double>()[2], std::sqrt(0.5), 1e-15);
+    EXPECT_EQ(m.CellData("iga:patch", 0).As<std::int64_t>()[0], 0);
+}
+
+TEST(Iga, BezierExtractionOfASurfaceAndAVolume) {
+    NurbsPatch a = meshioplusplus::iga_elevate_degree(annulus(), 1, 1, true);
+    NurbsInfo ai = one_patch(a);
+    IgaRefineOptions o;
+    o.mSubdivisions = {2, 3, 1};
+    expect_extraction_matches(meshioplusplus::iga_refine(ai, o), 6);
+    expect_extraction_matches(ai, 1);
+    IgaRefineOptions oh;
+    oh.mSubdivisions = {2, 2, 2};
+    const NurbsInfo hi = meshioplusplus::iga_refine(one_patch(hexahedron()), oh);
+    expect_extraction_matches(hi, 8);
+    const Mesh mh = meshioplusplus::iga_bezier_extract(hi, 0);
+    EXPECT_EQ((*mh.CellRange().begin()).Type(), "VTK_BEZIER_HEXAHEDRON");
+    EXPECT_FALSE(mh.HasPointData("RationalWeights"));
+}
+
+TEST(Iga, BezierExtractionRefusesUnequalDegreesAndBadPatches) {
+    EXPECT_THROW(meshioplusplus::iga_bezier_extract(one_patch(annulus()), 0),
+                 std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_bezier_extract(one_patch(arc()), 1), std::invalid_argument);
 }
 
 TEST(Iga, ErrorsAreInvalidArguments) {

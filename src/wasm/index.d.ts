@@ -4378,6 +4378,18 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; info: MfemInfo | CadJsonInfo };
 
   /**
+   * Bezier extraction of patch `patch` (0-based) of an MFEM NURBS model: every
+   * interior knot raised to multiplicity p and the net cut at its knot spans
+   * into one `VTK_BEZIER_CURVE`, `VTK_BEZIER_QUADRILATERAL` or
+   * `VTK_BEZIER_HEXAHEDRON` cell per span product, (p+1)^d unshared points
+   * each, with the cell data `HigherOrderDegrees`, `iga:patch` and `iga:span`
+   * and, for a rational patch, the point data `RationalWeights`. A patch with
+   * unequal degrees is refused (raise them with `igaRefine` first), as is a
+   * B-rep.
+   */
+  igaBezierExtract(info: MfemInfo, patch?: number): Mesh;
+
+  /**
    * Triangulate the faces of a B-rep (`readMeshSelective(path, {info:
    * true}).info` of a CAD JSON file, or STEP/IGES in the full artifact) into
    * one conforming surface mesh with edges of about `targetSize`, with no CAD

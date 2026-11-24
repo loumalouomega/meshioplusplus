@@ -2802,6 +2802,33 @@ int main(int argc, char** argv) {
             o.mElevate = {1, 1, 0};
             of(pD, mio::iga_sample(mio::iga_refine(cad_box(), o)));
         });
+        // A degree-2 NURBS block, refined and cut into Bezier hexahedra.
+        const auto nurbs_block = [&]() {
+            mio::NurbsPatch p;
+            p.mDegrees = {2, 2, 2};
+            p.mKnots = {{0, 0, 0, 1, 1, 1}, {0, 0, 0, 1, 1, 1}, {0, 0, 0, 1, 1, 1}};
+            p.mControlPoints = mio::NDArray(mio::DType::Float64, {27, 3});
+            p.mWeights = mio::NDArray(mio::DType::Float64, {27});
+            double* x = p.mControlPoints.As<double>();
+            double* w = p.mWeights.As<double>();
+            for (std::size_t k = 0; k < 3; ++k)
+                for (std::size_t j = 0; j < 3; ++j)
+                    for (std::size_t i = 0; i < 3; ++i) {
+                        const std::size_t c = i + 3 * (j + 3 * k);
+                        x[3 * c] = 0.5 * static_cast<double>(i) + 0.1 * static_cast<double>(j * k);
+                        x[3 * c + 1] = 0.5 * static_cast<double>(j) + 0.05 * static_cast<double>(i);
+                        x[3 * c + 2] = 0.5 * static_cast<double>(k) + 0.02 * static_cast<double>(i * j);
+                        w[c] = 1.0 + 0.1 * static_cast<double>((i + j + k) % 3);
+                    }
+            mio::NurbsInfo info;
+            info.mPatches.push_back(std::move(p));
+            return info;
+        };
+        row("iga_bezier_extract", [&](MeshDigest* pD) {
+            mio::IgaRefineOptions o;
+            o.mSubdivisions = {static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), 2};
+            of(pD, mio::iga_bezier_extract(mio::iga_refine(nurbs_block(), o), 0));
+        });
         // The data operations: data only, so points and cells pass through.
         row("data_calc", [&](MeshDigest* pD) {
             mio::DataCalcOptions o;

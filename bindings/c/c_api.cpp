@@ -9783,6 +9783,20 @@ mio_mesh* mio_iga_sample(const mio_format_info* info, const mio_iga_opts* opts,
     });
 }
 
+mio_mesh* mio_iga_bezier_extract(const mio_format_info* info, int64_t patch) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo);
+        if (!p_nurbs)
+            throw std::invalid_argument(kCapiIgaNotNurbs);
+        if (patch < 0)
+            throw std::invalid_argument("meshio++: iga: the patch index is negative");
+        return new mio_mesh{
+            meshioplusplus::iga_bezier_extract(*p_nurbs, static_cast<std::size_t>(patch))};
+    });
+}
+
 mio_iga_evaluation* mio_iga_evaluate(const mio_format_info* info, int64_t patch,
                                      const double* params, int64_t num_points, int32_t derivatives,
                                      int32_t trim_samples) {

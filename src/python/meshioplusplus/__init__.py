@@ -194,7 +194,7 @@ if TYPE_CHECKING:
     from ._hausdorff import hausdorff_distance
     from ._hessian import hessian
     from ._hull import convex_hull, delaunay_2d
-    from ._iga import iga_evaluate, iga_refine, iga_sample
+    from ._iga import iga_bezier_extract, iga_evaluate, iga_refine, iga_sample
     from ._interfaces import (
         contact_pairs,
         find_interface,
@@ -461,6 +461,7 @@ _LAZY_ATTRS = {
     "feature_edges": "_feature_edges",
     "fit_cad": "_fit_cad",
     "fit_primitives": "_fit_primitives",
+    "iga_bezier_extract": "_iga",
     "iga_evaluate": "_iga",
     "iga_refine": "_iga",
     "iga_sample": "_iga",
@@ -784,6 +785,7 @@ __all__ = [
     "feature_edges",
     "fit_cad",
     "fit_primitives",
+    "iga_bezier_extract",
     "iga_evaluate",
     "iga_refine",
     "iga_sample",

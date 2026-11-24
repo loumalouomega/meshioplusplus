@@ -3737,6 +3737,21 @@ step('igaRefine, igaSample, igaEvaluate: a NURBS model refined exactly and writt
     const s = m.igaSample(mesh.info);
     assert.equal(s.info.format, 'mfem');
     assert.equal(s.mesh.cells[0].type, 'quad9');
+    // Bezier extraction: the annulus has unequal degrees (refused); a
+    // bi-quadratic square is one Bezier cell of nine points.
+    assert.throws(() => m.igaBezierExtract(mesh.info, 0), /unequal degrees/);
+    m.FS.writeFile('/square.mesh', [
+        'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', '5 3 0 1 2 3', 'boundary', '0',
+        'edges', '4', '0 0 1', '0 3 2', '1 0 3', '1 1 2', 'vertices', '4', 'knotvectors', '2',
+        '2 3 0 0 0 1 1 1', '2 3 0 0 0 1 1 1', 'weights', ...new Array(9).fill('1'),
+        'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', 'Ordering: 1',
+        '0 0', '1 0', '1 1', '0 1', '0.5 0', '0.5 1', '0 0.5', '1 0.5', '0.5 0.5',
+    ].join('\n') + '\n');
+    const square = m.readMeshSelective('/square.mesh', { format: 'mfem', info: true });
+    const bez = m.igaBezierExtract(square.info);
+    assert.equal(bez.cells[0].type, 'VTK_BEZIER_QUADRILATERAL');
+    assert.ok(bez.points.length > 0);
+    assert.throws(() => m.igaBezierExtract(square.info, 1), /out of range/);
 });
 
 step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => {

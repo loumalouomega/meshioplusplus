@@ -7487,6 +7487,21 @@ MIO_API mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation
 /** Destroy an evaluation. NULL is a no-op. */
 MIO_API void mio_iga_evaluation_free(mio_iga_evaluation* evaluation);
 
+/**
+ * Bezier extraction of one patch of a NURBS model: every interior knot raised
+ * to multiplicity p, the net cut into one VTK_BEZIER_CURVE, _QUADRILATERAL or
+ * _HEXAHEDRON cell per knot-span product ((p+1)^d unshared points each, in
+ * Cartesian coordinates), with Float64 cell data "HigherOrderDegrees" (cells x
+ * 3), Int64 "iga:patch" and "iga:span", point data "RationalWeights" when the
+ * patch is rational and the NURBS fields. See doc/iga.md.
+ *
+ * @param info  a model handle of a NURBS mesh (not a B-rep).
+ * @param patch the patch, 0-based.
+ * @return the cells (free with mio_mesh_free), or NULL on failure (a bad patch,
+ *         unequal degrees, a B-rep): see mio_last_error().
+ */
+MIO_API mio_mesh* mio_iga_bezier_extract(const mio_format_info* info, int64_t patch);
+
 /* ---------------------------------------------------------------------
  * Mesh generation from CAD (v17.13.0): a conforming triangle mesh of the
  * faces of the B-rep a "cad_json", "step" or "iges" reader kept in a

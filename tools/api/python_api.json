@@ -6590,6 +6590,27 @@
     ]
    }
   },
+  "iga_bezier_extract": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "patch"
+     },
+     {
+      "default": "'auto'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "model"
+     }
+    ]
+   }
+  },
   "iga_evaluate": {
    "kind": "function",
    "signature": {

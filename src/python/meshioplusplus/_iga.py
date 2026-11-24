@@ -1198,4 +1198,31 @@ def _evaluate_brep_py(brep, face_index, params, derivatives, trim_samples):
     return res
 
 
-__all__ = ["iga_evaluate", "iga_refine", "iga_sample"]
+def iga_bezier_extract(mesh, patch=0, model="auto"):
+    """Bezier extraction of one patch of a NURBS model (roadmap 9.8.2).
+
+    Every interior knot is inserted up to multiplicity ``p`` in each
+    direction (exactly, on the homogeneous net) and the refined net is cut at
+    its nonzero knot spans: one ``VTK_BEZIER_CURVE``,
+    ``VTK_BEZIER_QUADRILATERAL`` or ``VTK_BEZIER_HEXAHEDRON`` cell per span
+    product, ``(p+1)**d`` points each in VTK's Lagrange node order, in
+    Cartesian coordinates. Points are not shared between cells.
+
+    :param patch: the patch of the ``nurbs`` model to extract.
+    :returns: a mesh with cell data ``HigherOrderDegrees`` ``(cells, 3)``,
+        ``iga:patch`` and ``iga:span`` (as :func:`iga_sample`), point data
+        ``RationalWeights`` when the patch is rational (any weight other than
+        1) and one array per NURBS field; it writes to VTU as it is.
+    :raises ValueError: on a bad patch, a ``brep`` model or unequal degrees
+        (elevate with :func:`iga_refine` first).
+    :raises NotImplementedError: when the compiled C++ core is unavailable.
+    """
+    from ._hull import _core_op
+
+    kind, data = _model(mesh, model)
+    if kind != "nurbs":
+        _fail("Bezier extraction takes a 'nurbs' model, not a 'brep'")
+    return _core_op("iga_bezier_extract_nurbs")(data, int(patch))
+
+
+__all__ = ["iga_bezier_extract", "iga_evaluate", "iga_refine", "iga_sample"]

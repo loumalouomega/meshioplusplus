@@ -11,6 +11,7 @@ circles, and against central differences for the derivatives. The two engines
 pinned in ``tests/cpp/test_iga.cpp``.
 """
 
+import math
 import pathlib
 
 import numpy as np
@@ -722,3 +723,132 @@ def test_mixed_degree_faces_do_not_share_a_block():
         c.data.shape[1] for c in out.cells if c.type == "VTK_LAGRANGE_QUADRILATERAL"
     )
     assert nodes == [16, 25]
+
+
+# --- Bezier extraction (roadmap 9.8.2) -----------------------------------------
+
+
+def _bernstein(n, i, t):
+    return math.comb(n, i) * t**i * (1.0 - t) ** (n - i)
+
+
+def _bezier_point(mesh, cell, t, p, dim):
+    from meshioplusplus._lagrange import vtk_lattice
+
+    lat = vtk_lattice({1: "line", 2: "quad", 3: "hexahedron"}[dim], p)
+    conn = mesh.cells[0].data[cell]
+    w = mesh.point_data.get("RationalWeights", np.ones(len(mesh.points)))
+    num, den = 0.0, 0.0
+    for node, ijk in zip(conn, lat):
+        b = np.prod([_bernstein(p, ijk[d], t[d]) for d in range(dim)])
+        num = num + b * w[node] * mesh.points[node]
+        den += b * w[node]
+    return num / den
+
+
+def _arc_model():
+    s = math.sqrt(0.5)
+    return {
+        "patches": [
+            {
+                "degrees": [2],
+                "knots": [[0, 0, 0, 1, 1, 1]],
+                "control_points": np.array([[1, 0], [1, 1], [0, 1.0]]),
+                "weights": np.array([1, s, 1.0]),
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize("subdivisions", [1, 3])
+def test_bezier_extraction_of_a_rational_arc_is_exact(subdivisions):
+    model = mp.iga_refine(_arc_model(), subdivisions=subdivisions).info["nurbs"]
+    out = mp.iga_bezier_extract(model)
+    assert out.cells[0].type == "VTK_BEZIER_CURVE"
+    assert len(out.cells[0].data) == subdivisions
+    assert out.points.shape == (3 * subdivisions, 2)
+    assert "RationalWeights" in out.point_data
+    deg = out.cell_data["HigherOrderDegrees"][0]
+    assert deg.shape == (subdivisions, 3) and (deg[:, 0] == 2).all()
+    assert out.cell_data["iga:span"][0][:, 0].tolist() == list(range(subdivisions))
+    edges = np.linspace(0.0, 1.0, subdivisions + 1)
+    for c in range(subdivisions):
+        for t in (0.0, 0.3, 0.8, 1.0):
+            u = edges[c] + t * (edges[c + 1] - edges[c])
+            ref = mp.iga_evaluate(model, [[u]])["points"][0]
+            np.testing.assert_allclose(
+                _bezier_point(out, c, [t], 2, 1), ref, atol=1e-13
+            )
+
+
+def test_bezier_extraction_of_a_surface_and_a_volume():
+    s = math.sqrt(0.5)
+    pts, w = [], []
+    for r in (1.0, 2.0):
+        pts += [[r, 0, 0], [r, r, 0], [0, r, 0]]
+        w += [1.0, s, 1.0]
+    annulus = {
+        "patches": [
+            {
+                "degrees": [2, 1],
+                "knots": [[0, 0, 0, 1, 1, 1], [0, 0, 1, 1]],
+                "control_points": np.array(pts, dtype=float),
+                "weights": np.array(w),
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="unequal degrees"):
+        mp.iga_bezier_extract(annulus)
+    up = mp.iga_refine(annulus, elevate=(0, 1), subdivisions=(2, 2, 1)).info["nurbs"]
+    out = mp.iga_bezier_extract(up)
+    assert out.cells[0].type == "VTK_BEZIER_QUADRILATERAL"
+    assert len(out.cells[0].data) == 4
+    span = out.cell_data["iga:span"][0]
+    for c in range(4):
+        t = [0.3, 0.7]
+        u = [(span[c, 0] + t[0]) / 2, (span[c, 1] + t[1]) / 2]
+        ref = mp.iga_evaluate(up, [u])["points"][0]
+        np.testing.assert_allclose(_bezier_point(out, c, t, 2, 2), ref, atol=1e-13)
+
+    box = {
+        "patches": [
+            {
+                "degrees": [1, 1, 1],
+                "knots": [[0, 0, 1, 1]] * 3,
+                "control_points": np.array(
+                    [[i, j, k] for k in (0, 1) for j in (0, 1) for i in (0, 1)],
+                    dtype=float,
+                )
+                * [1.0, 2.0, 3.0],
+                "weights": np.ones(8),
+            }
+        ]
+    }
+    hexes = mp.iga_bezier_extract(mp.iga_refine(box, subdivisions=2).info["nurbs"])
+    assert hexes.cells[0].type == "VTK_BEZIER_HEXAHEDRON"
+    assert len(hexes.cells[0].data) == 8
+    assert "RationalWeights" not in hexes.point_data
+
+
+def test_bezier_extraction_round_trips_through_vtu(tmp_path):
+    out = mp.iga_bezier_extract(
+        mp.iga_refine(_arc_model(), subdivisions=2).info["nurbs"]
+    )
+    path = tmp_path / "arc.vtu"
+    mp.write(path, out)
+    back = mp.read(path)
+    assert back.cells[0].type == "VTK_BEZIER_CURVE"
+    np.testing.assert_array_equal(back.points[:, :2], out.points)
+    np.testing.assert_array_equal(
+        back.point_data["RationalWeights"], out.point_data["RationalWeights"]
+    )
+    np.testing.assert_array_equal(
+        back.cell_data["HigherOrderDegrees"][0], out.cell_data["HigherOrderDegrees"][0]
+    )
+
+
+def test_bezier_extraction_refuses_bad_input():
+    with pytest.raises(ValueError, match="patch 1"):
+        mp.iga_bezier_extract(_arc_model(), patch=1)
+    with pytest.raises(ValueError, match="'nurbs' model"):
+        mp.iga_bezier_extract({"faces": [], "patches": []})

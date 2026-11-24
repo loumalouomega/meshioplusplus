@@ -3347,6 +3347,7 @@ module meshioplusplus
         procedure :: mdpa_data_values => format_info_mdpa_data_values
         procedure :: iga_refine => format_info_iga_refine
         procedure :: iga_sample => format_info_iga_sample
+        procedure :: iga_bezier_extract => format_info_iga_bezier_extract
         procedure :: iga_evaluate => format_info_iga_evaluate
         procedure :: mesh_cad_surface => format_info_mesh_cad_surface
     end type mio_format_info
@@ -7257,6 +7258,14 @@ module meshioplusplus
             type(c_ptr), value :: info
             type(mio_iga_opts_t), intent(in) :: opts
             type(c_ptr), intent(out) :: mapped
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_iga_bezier_extract(info, patch) bind(c, name="mio_iga_bezier_extract") &
+                result(h)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int64_t), value :: patch
             type(c_ptr) :: h
         end function
 
@@ -18464,6 +18473,31 @@ contains
         else
             call c_mio_format_info_free(ih)
         end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Bezier extraction of patch `patch` (1-based) of this NURBS model: every
+    !> interior knot raised to multiplicity p and the net cut into one VTK Bezier
+    !> curve, quadrilateral or hexahedron cell per knot-span product, with the
+    !> cell data HigherOrderDegrees, iga:patch and iga:span and, for a rational
+    !> patch, the point data RationalWeights. A patch with unequal degrees is
+    !> refused (raise them with `iga_refine` first).
+    function format_info_iga_bezier_extract(self, patch, stat, errmsg) result(out)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in), optional :: patch
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        integer(c_int64_t) :: pi
+        pi = 0
+        if (present(patch)) pi = int(patch - 1, c_int64_t)
+        res = c_mio_iga_bezier_extract(self%handle, pi)
+        if (.not. c_associated(res)) then
+            call handle_failure('iga_bezier_extract', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
         call clear_status(stat, errmsg)
     end function
 

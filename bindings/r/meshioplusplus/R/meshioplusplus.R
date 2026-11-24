@@ -3841,6 +3841,12 @@ mio_iga_sample <- function(info, sample_subdivisions = 0L, trim_samples = 16L, e
 
 #' @rdname mio_iga_refine
 #' @export
+mio_iga_bezier_extract <- function(info, patch = 1L) {
+  .Call(R_mio_iga_bezier_extract, info, as.integer(patch))
+}
+
+#' @rdname mio_iga_refine
+#' @export
 mio_iga_evaluate <- function(info, patch, params, derivatives = 0L, trim_samples = 16L) {
   .Call(R_mio_iga_evaluate, info, as.integer(patch), params, as.integer(derivatives),
         as.integer(trim_samples))

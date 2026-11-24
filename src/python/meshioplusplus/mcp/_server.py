@@ -2754,6 +2754,27 @@ def _register_operations(server: FastMCP) -> None:
         keep every cell)."""
 
     @server.tool()
+    @_forward(_tools.tool_iga_bezier_extract)
+    def iga_bezier_extract(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        patch: int = 0,
+        model: str = "auto",
+    ) -> dict:
+        """Bezier extraction of one patch of a NURBS model (an MFEM NURBS
+        mesh): every interior knot is inserted up to multiplicity p per
+        direction (exactly, rational patches included) and the refined net is
+        cut at its nonzero knot spans into VTK_BEZIER_CURVE / _QUADRILATERAL /
+        _HEXAHEDRON cells, (p+1)^d points each in Cartesian coordinates, not
+        shared between cells. The cells carry HigherOrderDegrees, iga:patch
+        and iga:span; a rational patch's points carry RationalWeights, and the
+        NURBS fields ride as point data. Use a VTU output to keep them as
+        Bezier cells. A patch with unequal degrees is refused (iga_refine with
+        elevate first); a B-rep model is not a NURBS model."""
+
+    @server.tool()
     @_forward(_tools.tool_iga_evaluate)
     def iga_evaluate(
         input_path: str,

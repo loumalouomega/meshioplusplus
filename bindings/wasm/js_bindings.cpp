@@ -6782,6 +6782,20 @@ val iga_sample_js(const val& rInfo, const val& rOptions) {
     });
 }
 
+// `igaBezierExtract(info, patch)`: one patch (0-based) of an MFEM NURBS model as
+// VTK Bezier cells (operations/iga.hpp `iga_bezier_extract`).
+val iga_bezier_extract_js(const val& rInfo, int Patch) {
+    return with_js_errors([&]() -> val {
+        if (iga_js_format(rInfo) != "mfem")
+            throw std::invalid_argument(
+                "meshio++: iga: Bezier extraction takes a NURBS model, not a B-rep");
+        if (Patch < 0)
+            throw std::invalid_argument("meshio++: iga: the patch index is negative");
+        return mesh_to_val(meshioplusplus::iga_bezier_extract(val_to_nurbs_info(rInfo),
+                                                              static_cast<std::size_t>(Patch)));
+    });
+}
+
 // Mesh generation from CAD (v17.13.0): `meshCadSurface` triangulates the faces
 // of the B-rep side-channel object `readMeshSelective(path, {info: true}).info`
 // of a Kratos CAD JSON file (or STEP/IGES in the full build). See
@@ -11395,6 +11409,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("move", &move_js);
     emscripten::function("metricFromHessian", &metric_from_hessian_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
+    emscripten::function("igaBezierExtract", &iga_bezier_extract_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);
     emscripten::function("renderPng", &render_png_js);
