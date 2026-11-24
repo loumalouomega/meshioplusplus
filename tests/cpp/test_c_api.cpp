@@ -9450,3 +9450,91 @@ TEST(CApi, MassPropertiesOptionsAndErrors) {
     EXPECT_EQ(mio_mass_properties(nullptr, nullptr), nullptr);
     mio_mesh_free(m);
 }
+
+// ---- ray casting and point location (roadmap 9.3) -------------------------
+
+namespace {
+
+// Two unit hexahedra stacked along z, reused from the mass tests' builder.
+mio_mesh* build_locate_mesh() { return build_mass_mesh(); }
+
+}  // namespace
+
+TEST(CApi, CastRaysHitsACube) {
+    mio_mesh* cube = capi_cube_surface();
+    const double origins[6] = {-1, 0.5, 0.5, 5, 5, 5};
+    const double direction[3] = {1, 0, 0};
+    int32_t hit[2] = {-1, -1};
+    double distance[2] = {0, 0}, point[6] = {}, normal[6] = {};
+    int64_t cell[2] = {0, 0}, num_hits = -1;
+    mio_cast_rays_opts opts;
+    mio_cast_rays_opts_init(&opts);
+    ASSERT_EQ(mio_cast_rays(cube, origins, 2, direction, 1, &opts, hit, distance, point, normal,
+                            cell, &num_hits),
+              MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(hit[0], 1);
+    EXPECT_EQ(hit[1], 0);
+    EXPECT_EQ(num_hits, 1);
+    EXPECT_NEAR(distance[0], 1.0, 1e-12);
+    EXPECT_TRUE(std::isnan(distance[1]));
+    EXPECT_NEAR(point[0], 0.0, 1e-12);
+    EXPECT_NEAR(normal[0], -1.0, 1e-12);
+    EXPECT_GE(cell[0], 0);
+    EXPECT_EQ(cell[1], -1);
+    // Every output is optional; a distance limit applies.
+    opts.max_distance = 0.5;
+    ASSERT_EQ(mio_cast_rays(cube, origins, 2, direction, 1, &opts, nullptr, nullptr, nullptr,
+                            nullptr, nullptr, &num_hits),
+              MIO_OK);
+    EXPECT_EQ(num_hits, 0);
+    // Refusals: a zero direction, a bad direction count, a NULL mesh, an unknown region.
+    const double zero[3] = {0, 0, 0};
+    EXPECT_NE(mio_cast_rays(cube, origins, 2, zero, 1, nullptr, hit, nullptr, nullptr, nullptr,
+                            nullptr, nullptr),
+              MIO_OK);
+    EXPECT_NE(mio_cast_rays(cube, origins, 2, direction, 3, nullptr, hit, nullptr, nullptr, nullptr,
+                            nullptr, nullptr),
+              MIO_OK);
+    EXPECT_NE(mio_cast_rays(nullptr, origins, 2, direction, 1, nullptr, hit, nullptr, nullptr,
+                            nullptr, nullptr, nullptr),
+              MIO_OK);
+    mio_cast_rays_opts_init(&opts);
+    opts.region = "nope";
+    EXPECT_NE(mio_cast_rays(cube, origins, 2, direction, 1, &opts, hit, nullptr, nullptr, nullptr,
+                            nullptr, nullptr),
+              MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("nope"), std::string::npos);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, LocatePointsInTwoHexahedra) {
+    mio_mesh* m = build_locate_mesh();
+    const double pts[9] = {0.5, 0.5, 0.5, 0.25, 0.75, 1.5, 9, 9, 9};
+    int64_t cell[3], nodes[12], located = -1;
+    double bary[12];
+    mio_locate_points_opts opts;
+    mio_locate_points_opts_init(&opts);
+    EXPECT_EQ(opts.tolerance, 1e-12);
+    ASSERT_EQ(mio_locate_points(m, pts, 3, &opts, cell, nodes, bary, &located), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(cell[0], 0);
+    EXPECT_EQ(cell[1], 1);
+    EXPECT_EQ(cell[2], -1);
+    EXPECT_EQ(located, 2);
+    double sum = 0.0;
+    for (int k = 0; k < 4; ++k)
+        sum += bary[k];
+    EXPECT_NEAR(sum, 1.0, 1e-12);
+    for (int k = 8; k < 12; ++k) {
+        EXPECT_EQ(nodes[k], -1);
+        EXPECT_EQ(bary[k], 0.0);
+    }
+    // Every output is optional; a NULL opts is the default.
+    EXPECT_EQ(mio_locate_points(m, pts, 3, nullptr, nullptr, nullptr, nullptr, &located), MIO_OK);
+    EXPECT_EQ(located, 2);
+    opts.tolerance = -1.0;
+    EXPECT_NE(mio_locate_points(m, pts, 3, &opts, cell, nodes, bary, &located), MIO_OK);
+    EXPECT_NE(mio_locate_points(nullptr, pts, 3, nullptr, cell, nodes, bary, &located), MIO_OK);
+    mio_mesh_free(m);
+}

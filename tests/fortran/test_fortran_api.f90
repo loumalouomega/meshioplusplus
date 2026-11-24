@@ -3349,6 +3349,48 @@ contains
         call check(abs(mass - 2.0_real64*mtotal%measure) < 1.0e-12_real64, 'mass is density times volume')
         call check(mtotal%principal_moments(1) <= mtotal%principal_moments(3), &
                    'principal moments are ascending')
+        ! Rays at the same closed cube, and point location in a tetrahedron.
+        block
+            real(real64) :: org(3, 2), dir(3, 1), tpts(3, 4), q(3, 2), w(4, 2)
+            type(mio_mesh) :: tet
+            integer(int64), allocatable :: lcell(:), lnodes(:, :)
+            real(real64), allocatable :: lbary(:, :)
+            logical, allocatable :: rhit(:)
+            integer(int64), allocatable :: rcell(:)
+            integer(int64) :: nh
+            org(:, 1) = [-1.0_real64, 0.5_real64, 0.5_real64]
+            org(:, 2) = [-1.0_real64, 99.0_real64, 99.0_real64]
+            dir(:, 1) = [1.0_real64, 0.0_real64, 0.0_real64]
+            nh = other%cast_rays(org, dir, hit=rhit, cell=rcell, stat=ierr)
+            call check(ierr == 0, 'cast_rays succeeded')
+            call check(nh == 1_int64, 'one of the two rays hits the cube')
+            call check(rhit(1) .and. .not. rhit(2), 'the first ray hits and the second misses')
+            call check(rcell(1) >= 1_int64 .and. rcell(2) == 0_int64, 'hit cells are 1-based, 0 on a miss')
+            nh = other%cast_rays(org, dir, max_distance=0.5_real64, stat=ierr)
+            call check(ierr == 0 .and. nh == 0_int64, 'a distance limit drops the hit')
+            dir(:, 1) = 0.0_real64
+            nh = other%cast_rays(org, dir, stat=ierr)
+            call check(ierr /= 0, 'cast_rays rejects a zero direction')
+            tpts(:, 1) = [0.0_real64, 0.0_real64, 0.0_real64]
+            tpts(:, 2) = [1.0_real64, 0.0_real64, 0.0_real64]
+            tpts(:, 3) = [0.0_real64, 1.0_real64, 0.0_real64]
+            tpts(:, 4) = [0.0_real64, 0.0_real64, 1.0_real64]
+            call tet%create()
+            call tet%set_points(tpts)
+            call tet%add_cell_block('tetra', reshape([1_int64, 2_int64, 3_int64, 4_int64], [4, 1]))
+            q(:, 1) = [0.1_real64, 0.1_real64, 0.1_real64]
+            q(:, 2) = [5.0_real64, 5.0_real64, 5.0_real64]
+            nh = tet%locate_points(q, cell=lcell, nodes=lnodes, barycentric=lbary, stat=ierr)
+            call check(ierr == 0, 'locate_points succeeded')
+            call check(nh == 1_int64, 'one of the two points is inside the tetrahedron')
+            call check(lcell(1) == 1_int64 .and. lcell(2) == 0_int64, 'cells are 1-based, 0 outside')
+            call check(all(lnodes(:, 1) == [1_int64, 2_int64, 3_int64, 4_int64]), 'nodes are 1-based')
+            w = lbary
+            call check(abs(sum(w(:, 1)) - 1.0_real64) < 1.0e-12_real64, 'the weights sum to one')
+            nh = tet%locate_points(q, tolerance=-1.0_real64, stat=ierr)
+            call check(ierr /= 0, 'locate_points rejects a negative tolerance')
+            call tet%free()
+        end block
         mass = other%mass_properties(about='moon', stat=ierr)
         call check(ierr /= 0, 'mass_properties rejects an unknown reference point')
         call other%free()

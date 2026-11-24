@@ -9478,6 +9478,65 @@ MIO_API int64_t mio_mass_report_warnings(const mio_mass_report* report, char* bu
 MIO_API void mio_mass_report_free(mio_mass_report* report);
 
 
+/**
+ * Options for mio_cast_rays (roadmap 9.3). Same ABI rules as above:
+ * initialize through mio_cast_rays_opts_init(). Size: 64 bytes. The string is
+ * borrowed for the call only.
+ */
+typedef struct mio_cast_rays_opts {
+    double max_distance; /**< ignore hits farther than this; 0 for no limit */
+    const char* region;  /**< restrict the surface to this cell region; NULL or "" for all */
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_cast_rays_opts;
+
+/** Initialize ray-casting options: no distance limit, every surface cell. */
+MIO_API void mio_cast_rays_opts_init(mio_cast_rays_opts* opts);
+
+/**
+ * The nearest surface hit of `num_rays` rays (operations/cast_rays.hpp).
+ * `origins` holds three doubles per ray; `directions` holds `num_directions`
+ * triples, which must be 1 (one direction for every ray) or `num_rays`; a
+ * direction need not be a unit vector. Every output pointer is optional (NULL
+ * skips it) and, when given, holds: `hit` num_rays values (1 or 0), `distance`
+ * num_rays (NaN on a miss), `point` and `normal` 3 * num_rays (NaN on a miss;
+ * the normal is the unit triangle normal on its winding side), `cell`
+ * num_rays (the global input cell hit, -1 on a miss) and `num_hits` one value.
+ * The surface is the mesh's triangle, quad and polygon cells; a hit needs t > 0.
+ * @return MIO_OK, or MIO_ERR_INVALID_ARG with the error set (a zero or
+ *         non-finite direction, a volume mesh, an unknown region, no surface).
+ */
+MIO_API mio_status mio_cast_rays(const mio_mesh* mesh, const double* origins, int64_t num_rays,
+                                 const double* directions, int64_t num_directions,
+                                 const mio_cast_rays_opts* opts, int32_t* hit, double* distance,
+                                 double* point, double* normal, int64_t* cell, int64_t* num_hits);
+
+/**
+ * Options for mio_locate_points (roadmap 9.3). Size: 64 bytes.
+ */
+typedef struct mio_locate_points_opts {
+    double tolerance;    /**< a barycentric weight at least -tolerance counts as inside */
+    int64_t reserved[7]; /**< must be zero; room for additive growth */
+} mio_locate_points_opts;
+
+/** Initialize location options: tolerance 1e-12. */
+MIO_API void mio_locate_points_opts_init(mio_locate_points_opts* opts);
+
+/**
+ * The cell of `mesh` containing each of `num_points` points
+ * (operations/locate_points.hpp), searched as mio_interpolate searches it. The
+ * mesh is reduced to simplices; the first containing one, in ascending order,
+ * wins. `points` holds three doubles per point. Every output pointer is
+ * optional and, when given, holds: `cell` num_points values (the global input
+ * cell, -1 outside), `nodes` 4 * num_points (the containing simplex's point ids,
+ * -1 outside or as padding), `barycentric` 4 * num_points (its weights, 0
+ * outside or as padding) and `num_located` one value.
+ * @return MIO_OK, or MIO_ERR_INVALID_ARG with the error set (a negative
+ *         tolerance, a non-finite coordinate, no tetrahedron or triangle).
+ */
+MIO_API mio_status mio_locate_points(const mio_mesh* mesh, const double* points, int64_t num_points,
+                                     const mio_locate_points_opts* opts, int64_t* cell,
+                                     int64_t* nodes, double* barycentric, int64_t* num_located);
+
 #ifdef __cplusplus
 }
 #endif

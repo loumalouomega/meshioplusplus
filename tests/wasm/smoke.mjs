@@ -5818,6 +5818,19 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: 2 ** 53 + 2 }), /2\^53/);
     assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: -1 }), /2\^53/);
 
+    const cr = m.castRays(cubeSurface, [-1, 0.5, 0.5, -1, 9, 9], [1, 0, 0]);
+    assert.deepEqual(Array.from(cr.hit), [1, 0]);
+    assert.ok(Math.abs(cr.distance[0] - 1) < 1e-12);
+    assert.ok(Number.isNaN(cr.distance[1]));
+    assert.equal(cr.cell[1], -1);
+    assert.equal(cr.numHits, 1);
+    assert.throws(() => m.castRays(cubeSurface, [0, 0, 0], [0, 0, 0]), /direction/);
+    const lp = m.locatePoints(tetv, [0.1, 0.1, 0.1, 99, 99, 99]);
+    assert.equal(lp.cell.length, 2);
+    assert.equal(lp.nodes.length, 8);
+    assert.equal(lp.barycentric.length, 8);
+    assert.equal(lp.cell[1], -1);
+
     const mp = m.massProperties(cubeSurface, 2);
     assert.equal(mp.kind, 'solid');
     assert.ok(Math.abs(mp.total.mass - 2) < 1e-12);

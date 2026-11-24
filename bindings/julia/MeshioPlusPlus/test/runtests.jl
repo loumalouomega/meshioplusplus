@@ -1545,6 +1545,36 @@ end
     close(back); close(labels); close(m)
 end
 
+@testset "ray casting and point location" begin
+    cube = Mesh()
+    set_points!(cube, Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1])
+    add_cell_block!(cube, "triangle",
+                   Int64[1 1 5 5 1 1 2 2 3 3 4 4;
+                         3 4 6 7 2 6 3 7 4 8 1 5;
+                         2 3 7 8 6 5 7 6 8 7 5 8])
+    r = cast_rays(cube, [-1.0 -1.0; 0.5 9.0; 0.5 9.0], [1.0, 0.0, 0.0])
+    @test r.hit == [true, false]
+    @test r.distance[1] ≈ 1.0
+    @test isnan(r.distance[2])
+    @test r.normal[:, 1] ≈ [-1.0, 0.0, 0.0]
+    @test r.point[:, 1] ≈ [0.0, 0.5, 0.5]
+    @test r.cell[1] > 0 && r.cell[2] == 0
+    @test r.num_hits == 1
+    @test cast_rays(cube, reshape([-1.0, 0.5, 0.5], 3, 1), [1.0, 0.0, 0.0];
+                    max_distance=0.5).num_hits == 0
+    @test_throws Exception cast_rays(cube, reshape([0.0, 0.0, 0.0], 3, 1), [0.0, 0.0, 0.0])
+    @test_throws Exception cast_rays(cube, reshape([0.0, 0.0, 0.0], 3, 1), [1.0, 0.0, 0.0];
+                                     region="nope")
+
+    m = fixture()
+    l = locate_points(m, [0.1 99.0; 0.1 99.0; 0.1 99.0])
+    @test size(l.nodes) == (4, 2)
+    @test size(l.barycentric) == (4, 2)
+    @test l.cell[2] == 0
+    @test l.nodes[:, 2] == [0, 0, 0, 0]
+    @test_throws Exception locate_points(m, reshape([0.0, 0.0, 0.0], 3, 1); tolerance=-1.0)
+end
+
 @testset "mass properties" begin
     m = fixture()
     add_region!(m, "second", :cell, [2])

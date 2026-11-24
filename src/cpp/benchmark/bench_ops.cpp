@@ -150,6 +150,8 @@
 #include "meshioplusplus/operations/remove_islands.hpp"
 #include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/streamlines.hpp"
@@ -2674,6 +2676,30 @@ int main(int argc, char** argv) {
             f64(pD, r.mSignedVolume);
             if (pD)
                 pD->Bytes(r.mCentroid, sizeof r.mCentroid);
+        });
+        // Rays from every point of the volume at its skin, and the jittered
+        // points located back in the volume: the digests cover every result.
+        row("cast_rays", [&](MeshDigest* pD) {
+            const std::vector<double> ray_xyz(volume.Points().As<double>(),
+                                              volume.Points().As<double>() + 3 * volume.NumPoints());
+            const mio::CastRaysResult r = mio::cast_rays(surface, ray_xyz, {0.3, 0.5, 0.8});
+            i64(pD, r.mNumHits);
+            doubles(pD, r.mDistance);
+            doubles(pD, r.mPoint);
+            if (pD)
+                pD->Bytes(r.mCell.data(), r.mCell.size() * sizeof r.mCell[0]);
+        });
+        row("locate_points", [&](MeshDigest* pD) {
+            const Mesh& jit = jittered;
+            const std::vector<double> jit_xyz(jit.Points().As<double>(),
+                                              jit.Points().As<double>() + 3 * jit.NumPoints());
+            const mio::LocatePointsResult r = mio::locate_points(volume, jit_xyz);
+            i64(pD, r.mNumLocated);
+            doubles(pD, r.mBarycentric);
+            if (pD) {
+                pD->Bytes(r.mCell.data(), r.mCell.size() * sizeof r.mCell[0]);
+                pD->Bytes(r.mNodes.data(), r.mNodes.size() * sizeof r.mNodes[0]);
+            }
         });
         row("mass_properties", [&](MeshDigest* pD) {
             // The tetrahedral cube (volume cells) and its closed skin (a body

@@ -23,6 +23,7 @@ function tests = test_ops_core()
         'fit_cad builds a solid or falls back to native', @t_fit_cad
         'Hausdorff distance and the quality gate', @t_hausdorff_quality
         'mass_properties reports mass, centre and inertia', @t_mass_properties
+        'cast_rays and locate_points query a surface and a volume', @t_rays_locate
         'geodesic distance, atlas, morph, untangle and metric', @t_geodesic_etc
         'eigenmodes, registration and point normals', @t_spectral_registration
         'reconstruct_surface closes a sampled sphere', @t_reconstruct
@@ -586,6 +587,31 @@ function t_mass_properties()
     o = mio.mass_properties(m, 'about', 'origin');
     assert(o.total.inertia(1) > r.total.inertia(1) / 2);
     expect_error(@() mio.mass_properties(m, 'about', 'moon'));
+end
+
+function t_rays_locate()
+    m = cube_surface();
+    r = mio.cast_rays(m, [-1 0.5 0.5; -1 9 9], [1 0 0]);
+    expect_equal(r.hit, [true; false]);
+    expect_equal(r.distance(1), 1, 1e-12);
+    assert(isnan(r.distance(2)));
+    expect_equal(r.normal(1, :), [-1 0 0], 1e-12);
+    expect_equal(r.point(1, :), [0 0.5 0.5], 1e-12);
+    assert(r.cell(1) > 0 && r.cell(2) == 0);
+    expect_equal(r.num_hits, 1);
+    lim = mio.cast_rays(m, [-1 0.5 0.5], [1 0 0], 'max_distance', 0.5);
+    expect_equal(lim.num_hits, 0);
+    expect_error(@() mio.cast_rays(m, [0 0 0], [0 0 0]));
+    expect_error(@() mio.cast_rays(m, [0 0 0], [1 0 0], 'region', 'nope'));
+    expect_error(@() mio.cast_rays(m, [0 0], [1 0 0]));
+
+    v = fixture();
+    l = mio.locate_points(v, [0.1 0.1 0.1; 99 99 99]);
+    expect_equal(size(l.nodes), [2 4]);
+    expect_equal(size(l.barycentric), [2 4]);
+    expect_equal(l.cell(2), 0);
+    expect_equal(l.nodes(2, :), [0 0 0 0]);
+    expect_error(@() mio.locate_points(v, [0 0 0], 'tolerance', -1));
 end
 
 function t_geodesic_etc()

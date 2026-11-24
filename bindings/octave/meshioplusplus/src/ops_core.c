@@ -1612,6 +1612,88 @@ static mxArray *O_mio_hausdorff_distance(const mxArray **a) {
     return mio_o_struct(11, names, values);
 }
 
+/* --- ray casting and point location (roadmap 9.3) ------------------------ */
+
+/* An (n x 3) matrix as a row-major (n, 3) buffer; raises when it is not one. */
+static double *oc_xyz_rows(const mxArray *a, int64_t *pN, const char *what) {
+    if (a == NULL || mxGetNumberOfDimensions(a) != 2 || mxGetN(a) != 3) {
+        mio_o_error(what, "the matrix must be (n x 3), one row per entry");
+    }
+    int64_t k = 0;
+    return mio_o_rows_to_c(a, pN, &k, 0.0, what);
+}
+
+/* cast_rays(mesh, origins, directions, max_distance, region) -- `origins` is
+ * (n x 3), `directions` (1 x 3) or (n x 3). */
+static mxArray *O_mio_cast_rays(const mxArray **a) {
+    int64_t n = 0, nd = 0;
+    double *o = oc_xyz_rows(a[1], &n, "cast_rays origins");
+    double *d = oc_xyz_rows(a[2], &nd, "cast_rays directions");
+    mio_cast_rays_opts opts;
+    mio_cast_rays_opts_init(&opts);
+    opts.max_distance = mio_o_double(a[3], "max_distance");
+    opts.region = mio_o_opt_string(a[4]);
+
+    int32_t *hit = (int32_t *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
+    double *distance = (double *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(double));
+    double *point = (double *)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
+    double *normal = (double *)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
+    int64_t *cell = (int64_t *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    int64_t num_hits = 0;
+    mio_o_check(mio_cast_rays(mio_o_mesh(a[0]), o, n, d, nd, &opts, hit, distance, point, normal,
+                              cell, &num_hits),
+                "cast_rays");
+
+    mxArray *rhit = mio_o_logical_column(n);
+    mxLogical *hl = mxGetLogicals(rhit);
+    mxArray *rdist = mio_o_column(n);
+    for (int64_t i = 0; i < n; ++i) {
+        hl[i] = hit[i] != 0;
+        mxGetPr(rdist)[i] = distance[i];
+    }
+    const char *names[] = {"hit", "distance", "point", "normal", "cell", "num_hits"};
+    mxArray *values[] = {rhit,
+                         rdist,
+                         mio_o_rows_from_c(point, MIO_FLOAT64, n, 3, 0.0),
+                         mio_o_rows_from_c(normal, MIO_FLOAT64, n, 3, 0.0),
+                         mio_o_shift_map(cell, n),
+                         mio_o_scalar((double)num_hits)};
+    mxFree(o);
+    mxFree(d);
+    mxFree(hit);
+    mxFree(distance);
+    mxFree(point);
+    mxFree(normal);
+    mxFree(cell);
+    return mio_o_struct(6, names, values);
+}
+
+/* locate_points(mesh, points, tolerance) -- `points` is (n x 3). */
+static mxArray *O_mio_locate_points(const mxArray **a) {
+    int64_t n = 0;
+    double *p = oc_xyz_rows(a[1], &n, "locate_points points");
+    mio_locate_points_opts opts;
+    mio_locate_points_opts_init(&opts);
+    opts.tolerance = mio_o_double(a[2], "tolerance");
+
+    int64_t *cell = (int64_t *)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    int64_t *nodes = (int64_t *)mxCalloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(int64_t));
+    double *bary = (double *)mxCalloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(double));
+    int64_t located = 0;
+    mio_o_check(mio_locate_points(mio_o_mesh(a[0]), p, n, &opts, cell, nodes, bary, &located),
+                "locate_points");
+    const char *names[] = {"cell", "nodes", "barycentric", "num_located"};
+    mxArray *values[] = {mio_o_shift_map(cell, n),
+                         mio_o_rows_from_c(nodes, MIO_INT64, n, 4, 1.0),
+                         mio_o_rows_from_c(bary, MIO_FLOAT64, n, 4, 0.0),
+                         mio_o_scalar((double)located)};
+    mxFree(p);
+    mxFree(cell);
+    mxFree(nodes);
+    mxFree(bary);
+    return mio_o_struct(4, names, values);
+}
+
 /* --- mass properties (roadmap 9.4) --------------------------------------- */
 
 typedef struct {
@@ -2272,6 +2354,8 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_check_quality, 4),
     MIO_O_ENTRY(mio_hausdorff_distance, 5),
     MIO_O_ENTRY(mio_mass_properties, 6),
+    MIO_O_ENTRY(mio_cast_rays, 5),
+    MIO_O_ENTRY(mio_locate_points, 3),
     MIO_O_ENTRY(mio_repair, 9),
     MIO_O_ENTRY(mio_shrinkwrap, 9),
     MIO_O_ENTRY(mio_sobolev_deform, 8),

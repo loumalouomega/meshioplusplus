@@ -2911,6 +2911,51 @@ mio_hausdorff_distance <- function(a, b, face_samples = 0, region_a = "", region
   )
 }
 
+#' The nearest surface hit of a batch of rays
+#'
+#' Shoots every ray `origin + t * direction` (the direction is normalised, so
+#' `t` is a length) at the surface cells of `mesh` -- triangles, quadrilaterals
+#' and polygons, optionally one cell region -- and reports the nearest hit with
+#' `0 < t <= max_distance`. A ray through a shared edge or vertex hits once.
+#' See `doc/ray_queries.md`.
+#'
+#' @param mesh A `mio_mesh` with surface cells (a volume mesh is refused:
+#'   extract its surface first).
+#' @param origins A 3 x n matrix, one ray origin per column.
+#' @param directions A 3 x n matrix, or a vector of three numbers for every ray.
+#' @param max_distance Ignore hits farther than this; `0` for no limit.
+#' @param region Restrict the surface to this named cell region; `""` for all.
+#' @return A list of `hit` (logical, n), `distance` (n, `NaN` on a miss),
+#'   `point` and `normal` (3 x n, unit normal on the triangle's winding side,
+#'   `NaN` on a miss), `cell` (n, the 1-based input cell hit, 0 on a miss) and
+#'   `num_hits`.
+#' @export
+mio_cast_rays <- function(mesh, origins, directions, max_distance = 0, region = "") {
+  .Call(
+    R_mio_cast_rays, mesh, as.matrix(origins), if (is.matrix(directions)) directions else as.numeric(directions),
+    as.numeric(max_distance), as.character(region)
+  )
+}
+
+#' The cell containing each point
+#'
+#' Reduces `mesh` to simplices (as `mio_interpolate()` does) and finds, for each
+#' point, the first containing simplex in ascending order; a point on a shared
+#' face belongs to the lowest-numbered cell. A weight at least `-tolerance`
+#' counts as inside. Volume meshes and planar triangle meshes are located. See
+#' `doc/ray_queries.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param points A 3 x n matrix, one point per column.
+#' @param tolerance Barycentric containment tolerance.
+#' @return A list of `cell` (n, the 1-based input cell, 0 outside), `nodes`
+#'   (4 x n, the 1-based point ids of the containing simplex, 0 for none or
+#'   padding), `barycentric` (4 x n) and `num_located`.
+#' @export
+mio_locate_points <- function(mesh, points, tolerance = 1e-12) {
+  .Call(R_mio_locate_points, mesh, as.matrix(points), as.numeric(tolerance))
+}
+
 #' Mass, centre of mass and inertia of a body
 #'
 #' Integrates a density over the volume cells of a mesh, over the body a closed

@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `fit-curves`, `silhouette`, `step-elements`, `measure`, `align-datums`, `remove-islands`, `flip-normals`, `clip`, `offset-surface`, `thicken`, `hollow`, `face-support`, `fit-cad-iterate`, `constrain-primitives`, `profile-solid`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `mass`, `cast-rays`, `locate`, `reconstruct`, `fit-curves`, `silhouette`, `step-elements`, `measure`, `align-datums`, `remove-islands`, `flip-normals`, `clip`, `offset-surface`, `thicken`, `hollow`, `face-support`, `fit-cad-iterate`, `constrain-primitives`, `profile-solid`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -156,6 +156,9 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
+| `mass` | `kind`, `total`, `regions`, `warnings`; each entry `name`, `num_cells`, `measure`, `mass`, `centre`, `inertia`, `principal_moments`, `principal_axes`, `gyration_radii` |
+| `cast-rays` | `output`, `num_rays`, `num_hits` |
+| `locate` | `output`, `num_points`, `num_located` |
 | `reconstruct` | `output`, `num_samples`, `spacing`, `cell_size`, `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`, `num_components`, `estimated_normals` |
 | `register` | `output` (with `--output`), `matrix` (4 rows of 4), `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged`, `num_rejected`, `candidate_rms`, `chosen_candidate`, `warnings` |
 | `fit-curves` | `pieces` (`type`, `start`, `end`, `centre`, `radius`, `sweep`, `residual`, `num_points`, `chain`, `frame`), `frames` (4 rows of 4 each), `num_lines`, `num_arcs`, `num_circles`, `max_residual`, `tolerance`, `warnings` |
@@ -2119,6 +2122,64 @@ Both CLIs print the same JSON.
 meshioplusplus point-normals scan.ply scan.pcd
 meshioplusplus point-normals scan.xyz out.xyz --k 24 --orientation viewpoint --viewpoint 0,0,2.5 --json
 ```
+
+---
+
+## meshioplusplus mass
+
+Mass, centre of mass and inertia of a body: volume cells, a closed surface, or a shell (see [mass properties](/mass_properties)).
+
+```
+meshioplusplus mass [options] INFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--density D` | Density of every cell (default `1`) |
+| `--density-array NAME` | A scalar `cell_data` array of per-cell densities, replacing `--density` |
+| `--region NAME` | Restrict the total to this cell region |
+| `--thickness T` | Treat surface cells as a shell of this thickness (open surfaces allowed) |
+| `--about centroid\|origin` | The point the inertia tensor is taken about (default `centroid`) |
+| `--json` | Emit the report (`kind`, `total`, `regions`, `warnings`) |
+| `--input-format` (`-i`) | Force the input format |
+
+```sh
+meshioplusplus mass part.stl --density 7850 --json
+```
+
+---
+
+## meshioplusplus cast-rays
+
+The nearest surface hit of a batch of rays (see [ray casting and point location](/ray_queries)). `RAYS` is a point file whose points are the ray origins; the output is a vertex mesh of the rays that hit, with `ray:index`, `ray:distance`, `ray:cell` and `ray:normal`.
+
+```
+meshioplusplus cast-rays [options] SURFACE RAYS OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--direction X,Y,Z` | One direction for every ray (default: the point array `directions` of `RAYS`) |
+| `--max-distance D` | Ignore hits farther than this (default: no limit) |
+| `--region NAME` | Restrict the surface to this cell region |
+| `--json` | Emit the report: `output`, `num_rays`, `num_hits` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+---
+
+## meshioplusplus locate
+
+The cell of a volume mesh (or planar triangle mesh) containing each point of a file (see [ray casting and point location](/ray_queries)). The output is a vertex mesh of the points that fell inside, with `locate:cell`, `locate:nodes` and `locate:barycentric`.
+
+```
+meshioplusplus locate [options] MESH POINTS OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--tolerance T` | A barycentric weight at least `-T` counts as inside (default `1e-12`) |
+| `--json` | Emit the report: `output`, `num_points`, `num_located` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
 ---
 

@@ -1438,7 +1438,7 @@ SEXP R_mio_fit_cad(SEXP mesh, SEXP step_path, SEXP tolerance, SEXP exact_edges, 
                               report_ex4.max_g1_angle_at_ev_deg,
                               (double)report_ex4.num_coupled_regions};
     SEXP res = mio_r_report_list(81, names, values, numbers);
-    UNPROTECT(12);
+    UNPROTECT(11);
     return res;
 }
 
@@ -1658,6 +1658,111 @@ SEXP R_mio_hausdorff_distance(SEXP a, SEXP b, SEXP face_samples, SEXP region_a,
     SEXP res = mio_r_report_list(11, names, values, numbers);
     UNPROTECT(2);
     return res;
+}
+
+/* --- ray casting and point location (roadmap 9.3) ------------------------ */
+
+/* A (rows x n) numeric matrix argument as a protected REALSXP; `*pN` gets n.
+ * `allow_vector` also takes a plain vector of `rows` numbers as one column. */
+static SEXP rays_matrix(SEXP m, int64_t rows, int allow_vector, const char *what, int64_t *pN) {
+    SEXP p = PROTECT(Rf_coerceVector(m, REALSXP));
+    if (Rf_isMatrix(m)) {
+        SEXP dim = Rf_getAttrib(m, R_DimSymbol);
+        if (INTEGER(dim)[0] != rows) {
+            UNPROTECT(1);
+            Rf_error("`%s` must have %d rows", what, (int)rows);
+        }
+        *pN = INTEGER(dim)[1];
+    } else if (allow_vector && XLENGTH(p) == rows) {
+        *pN = 1;
+    } else {
+        UNPROTECT(1);
+        Rf_error("`%s` must be a (%d x n) matrix", what, (int)rows);
+    }
+    UNPROTECT(1);
+    return p;
+}
+
+SEXP R_mio_cast_rays(SEXP mesh, SEXP origins, SEXP directions, SEXP max_distance, SEXP region) {
+    int64_t n = 0, nd = 0;
+    SEXP o = PROTECT(rays_matrix(origins, 3, 0, "origins", &n));
+    SEXP d = PROTECT(rays_matrix(directions, 3, 1, "directions", &nd));
+    mio_cast_rays_opts opts;
+    mio_cast_rays_opts_init(&opts);
+    opts.max_distance = mio_r_double(max_distance, "max_distance");
+    opts.region = mio_r_opt_string(region);
+
+    int32_t *hit = (int32_t *)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
+    int64_t *cell = (int64_t *)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    SEXP distance = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+    SEXP point = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)n));
+    SEXP normal = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)n));
+    int64_t num_hits = 0;
+    mio_status st = mio_cast_rays(mio_r_mesh(mesh), REAL(o), n, REAL(d), nd, &opts, hit,
+                                  REAL(distance), REAL(point), REAL(normal), cell, &num_hits);
+    if (st != MIO_OK) {
+        UNPROTECT(5);
+        mio_r_fail("cast_rays");
+    }
+    SEXP rhit = PROTECT(Rf_allocVector(LGLSXP, (R_xlen_t)n));
+    SEXP rcell = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        LOGICAL(rhit)[i] = hit[i] != 0;
+        REAL(rcell)[i] = (double)(cell[i] + 1); /* 1-based, 0 on a miss */
+    }
+    const char *names[] = {"hit", "distance", "point", "normal", "cell"};
+    SEXP values[] = {rhit, distance, point, normal, rcell};
+    SEXP list = PROTECT(mio_r_named_list(5, names, values));
+    SEXP nh = PROTECT(Rf_ScalarReal((double)num_hits));
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, 6));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, 6));
+    for (int k = 0; k < 5; ++k) {
+        SET_VECTOR_ELT(out, k, VECTOR_ELT(list, k));
+        SET_STRING_ELT(nm, k, Rf_mkChar(names[k]));
+    }
+    SET_VECTOR_ELT(out, 5, nh);
+    SET_STRING_ELT(nm, 5, Rf_mkChar("num_hits"));
+    Rf_setAttrib(out, R_NamesSymbol, nm);
+    UNPROTECT(11);
+    return out;
+}
+
+SEXP R_mio_locate_points(SEXP mesh, SEXP points, SEXP tolerance) {
+    int64_t n = 0;
+    SEXP p = PROTECT(rays_matrix(points, 3, 0, "points", &n));
+    mio_locate_points_opts opts;
+    mio_locate_points_opts_init(&opts);
+    opts.tolerance = mio_r_double(tolerance, "tolerance");
+
+    int64_t *cell = (int64_t *)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    int64_t *nodes = (int64_t *)R_alloc((size_t)(4 * (n > 0 ? n : 1)), sizeof(int64_t));
+    SEXP bary = PROTECT(Rf_allocMatrix(REALSXP, 4, (int)n));
+    int64_t located = 0;
+    mio_status st = mio_locate_points(mio_r_mesh(mesh), REAL(p), n, &opts, cell, nodes,
+                                      REAL(bary), &located);
+    if (st != MIO_OK) {
+        UNPROTECT(2);
+        mio_r_fail("locate_points");
+    }
+    SEXP rcell = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+    SEXP rnodes = PROTECT(Rf_allocMatrix(REALSXP, 4, (int)n));
+    for (int64_t i = 0; i < n; ++i)
+        REAL(rcell)[i] = (double)(cell[i] + 1); /* 1-based, 0 outside */
+    for (int64_t k = 0; k < 4 * n; ++k)
+        REAL(rnodes)[k] = (double)(nodes[k] + 1); /* 1-based, 0 for none or padding */
+    const char *names[] = {"cell", "nodes", "barycentric", "num_located"};
+    SEXP nl = PROTECT(Rf_ScalarReal((double)located));
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, 4));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, 4));
+    SET_VECTOR_ELT(out, 0, rcell);
+    SET_VECTOR_ELT(out, 1, rnodes);
+    SET_VECTOR_ELT(out, 2, bary);
+    SET_VECTOR_ELT(out, 3, nl);
+    for (int k = 0; k < 4; ++k)
+        SET_STRING_ELT(nm, k, Rf_mkChar(names[k]));
+    Rf_setAttrib(out, R_NamesSymbol, nm);
+    UNPROTECT(7);
+    return out;
 }
 
 /* --- mass properties (roadmap 9.4) --------------------------------------- */

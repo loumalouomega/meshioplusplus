@@ -4591,6 +4591,51 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * The nearest surface hit of a batch of rays. `origins` is a flat
+   * `[x, y, z, ...]` array; `directions` is one `[x, y, z]` for every ray or
+   * one per ray (not necessarily unit vectors). Hits need `0 < t <= maxDistance`
+   * (`0` for no limit); `region` restricts the surface to a cell region.
+   * `cell` is the 0-based input cell hit, -1 on a miss; `distance`, `point`
+   * and `normal` are `NaN` on a miss. See doc/ray_queries.md.
+   * @throws {Error} on a zero direction, a volume mesh, an unknown region or a
+   *   mesh with no surface cell.
+   */
+  castRays(
+    mesh: Mesh,
+    origins: Float64Array | number[],
+    directions: Float64Array | number[],
+    maxDistance?: number,
+    region?: string,
+  ): {
+    hit: Int32Array;
+    distance: Float64Array;
+    point: Float64Array;
+    normal: Float64Array;
+    cell: Int32Array;
+    numHits: number;
+  };
+
+  /**
+   * The cell of `mesh` containing each point of the flat `[x, y, z, ...]`
+   * array `points` (volume meshes and planar triangle meshes). `cell` is the
+   * 0-based input cell (-1 outside), `nodes` four 0-based point ids per point
+   * (-1 for none or padding) and `barycentric` four weights per point. See
+   * doc/ray_queries.md.
+   * @throws {Error} on a negative tolerance or a mesh with no tetrahedron or
+   *   triangle after simplexification.
+   */
+  locatePoints(
+    mesh: Mesh,
+    points: Float64Array | number[],
+    tolerance?: number,
+  ): {
+    cell: Int32Array;
+    nodes: Int32Array;
+    barycentric: Float64Array;
+    numLocated: number;
+  };
+
+  /**
    * Mass, centre of mass and inertia of a body: the volume cells of `mesh`, the
    * body a closed triangle or polygon surface encloses, or (with
    * `thickness > 0`) a shell. `densityArray` names a scalar cell array of

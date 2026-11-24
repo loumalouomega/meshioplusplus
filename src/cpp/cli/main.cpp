@@ -146,6 +146,8 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
@@ -4580,6 +4582,159 @@ int cmd_symmetry_plane(const std::vector<std::string>& rArgs) {
 
 // point-normals: normals of a point cloud by local plane fits. See
 // operations/point_normals.hpp.
+/// A mesh's points as flat `[x, y, z, ...]` (a planar mesh's `z` is 0).
+std::vector<double> cli_flat_points(const Mesh& rMesh) {
+    std::vector<double> out;
+    const std::size_t n = rMesh.NumPoints();
+    out.reserve(3 * n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const meshioplusplus::detail::Vec3 p = meshioplusplus::detail::read_point(
+            rMesh.Points(), rMesh.PointDim(), static_cast<std::int64_t>(i));
+        out.insert(out.end(), {p[0], p[1], p[2]});
+    }
+    return out;
+}
+
+/// A vertex mesh of `rXyz` (flat triples) carrying the given point arrays.
+Mesh cli_vertex_mesh(const std::vector<double>& rXyz,
+                     const std::vector<std::pair<std::string, NDArray>>& rArrays) {
+    const std::size_t n = rXyz.size() / 3;
+    Mesh out;
+    NDArray pts = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, {n, std::size_t{3}});
+    std::copy(rXyz.begin(), rXyz.end(), pts.As<double>());
+    out.AssignPoints(std::move(pts));
+    NDArray conn = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {n, std::size_t{1}});
+    for (std::size_t i = 0; i < n; ++i)
+        conn.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
+    out.AddCellBlock("vertex", std::move(conn));
+    for (const auto& kv : rArrays)
+        out.AddPointData(kv.first, kv.second);
+    return out;
+}
+
+NDArray cli_i64_array(const std::vector<std::int64_t>& rV) {
+    NDArray a = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {rV.size()});
+    std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+    return a;
+}
+
+NDArray cli_f64_array(const std::vector<double>& rV, std::size_t Cols) {
+    std::vector<std::size_t> shape = {rV.size() / Cols};
+    if (Cols > 1)
+        shape.push_back(Cols);
+    NDArray a = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, shape);
+    std::copy(rV.begin(), rV.end(), a.As<double>());
+    return a;
+}
+
+int cmd_cast_rays(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"direction", {}, true},
+                                          {"max-distance", {}, true},
+                                          {"region", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("cast-rays requires SURFACE RAYS and OUTFILE");
+    const Mesh surface = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const Mesh rays = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+    std::vector<double> directions;
+    if (has_opt(p, "direction")) {
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "direction"));
+        std::string item;
+        while (std::getline(in, item, ','))
+            directions.push_back(meshioplusplus::detail::stod_c(item));
+        if (directions.size() != 3)
+            throw std::runtime_error("cast-rays: --direction expects three numbers");
+    } else if (rays.HasPointData("directions")) {
+        const NDArray& d = rays.PointData("directions");
+        for (std::size_t i = 0; i < d.Size(); ++i)
+            directions.push_back(meshioplusplus::detail::read_double(d, i));
+    } else {
+        throw std::runtime_error(
+            "cast-rays: give --direction X,Y,Z or a point array 'directions' in the rays file");
+    }
+    meshioplusplus::CastRaysOptions options;
+    cli_opt_double(p, "max-distance", options.mMaxDistance);
+    if (has_opt(p, "region"))
+        options.mRegion = opt_value(p, "region");
+    const std::vector<double> origins = cli_flat_points(rays);
+    const meshioplusplus::CastRaysResult r =
+        meshioplusplus::cast_rays(surface, origins, directions, options);
+
+    std::vector<double> xyz, distance, normal;
+    std::vector<std::int64_t> index, cell;
+    for (std::size_t i = 0; i < r.mHit.size(); ++i) {
+        if (!r.mHit[i])
+            continue;
+        xyz.insert(xyz.end(), r.mPoint.begin() + 3 * i, r.mPoint.begin() + 3 * i + 3);
+        normal.insert(normal.end(), r.mNormal.begin() + 3 * i, r.mNormal.begin() + 3 * i + 3);
+        distance.push_back(r.mDistance[i]);
+        index.push_back(static_cast<std::int64_t>(i));
+        cell.push_back(r.mCell[i]);
+    }
+    const Mesh out = cli_vertex_mesh(xyz,
+                                     {{"ray:index", cli_i64_array(index)},
+                                      {"ray:distance", cli_f64_array(distance, 1)},
+                                      {"ray:cell", cli_i64_array(cell)},
+                                      {"ray:normal", cli_f64_array(normal, 3)}});
+    write_mesh_cli(p.positionals[2], out, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[2]);
+        json.Field("num_rays", static_cast<std::int64_t>(r.mHit.size()));
+        json.Field("num_hits", r.mNumHits);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumHits << " of " << r.mHit.size() << " rays hit the surface\n";
+    return 0;
+}
+
+int cmd_locate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs,
+                       cli_specs({io_flag_specs(), {{"tolerance", {}, true}, {"json", {}, false}}}));
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("locate requires MESH POINTS and OUTFILE");
+    const Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const Mesh points = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+    meshioplusplus::LocatePointsOptions options;
+    cli_opt_double(p, "tolerance", options.mTolerance);
+    const std::vector<double> xyz_in = cli_flat_points(points);
+    const meshioplusplus::LocatePointsResult r = meshioplusplus::locate_points(mesh, xyz_in, options);
+
+    std::vector<double> xyz, bary;
+    std::vector<std::int64_t> cell, nodes, index;
+    for (std::size_t i = 0; i < r.mCell.size(); ++i) {
+        if (r.mCell[i] < 0)
+            continue;
+        xyz.insert(xyz.end(), xyz_in.begin() + 3 * i, xyz_in.begin() + 3 * i + 3);
+        bary.insert(bary.end(), r.mBarycentric.begin() + 4 * i, r.mBarycentric.begin() + 4 * i + 4);
+        nodes.insert(nodes.end(), r.mNodes.begin() + 4 * i, r.mNodes.begin() + 4 * i + 4);
+        cell.push_back(r.mCell[i]);
+        index.push_back(static_cast<std::int64_t>(i));
+    }
+    NDArray node_array = meshioplusplus::NDArray::Uninit(
+        meshioplusplus::DType::Int64, {cell.size(), std::size_t{4}});
+    std::copy(nodes.begin(), nodes.end(), node_array.As<std::int64_t>());
+    const Mesh out = cli_vertex_mesh(xyz,
+                                     {{"locate:cell", cli_i64_array(cell)},
+                                      {"locate:nodes", node_array},
+                                      {"locate:barycentric", cli_f64_array(bary, 4)}});
+    write_mesh_cli(p.positionals[2], out, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[2]);
+        json.Field("num_points", static_cast<std::int64_t>(r.mCell.size()));
+        json.Field("num_located", r.mNumLocated);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumLocated << " of " << r.mCell.size() << " points lie inside the mesh\n";
+    return 0;
+}
+
 std::string stats_g6(double v);  // defined with `cmd_stats` below
 
 int cmd_mass(const std::vector<std::string>& rArgs) {
@@ -10661,6 +10816,8 @@ const CliVerb kCliVerbs[] = {
      &cmd_coordinates},
     {"hull", nullptr,
      "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n", &cmd_hull},
+    {"cast-rays", nullptr, "  cast-rays               The nearest surface hit of a batch of rays\n", &cmd_cast_rays},
+    {"locate", nullptr, "  locate                  The cell containing each point of a file\n", &cmd_locate},
     {"mass", nullptr, "  mass                    Mass, centre of mass and inertia of a body\n", &cmd_mass},
     {"point-normals", nullptr,
      "  point-normals           Normals of a point cloud by local plane fits\n",

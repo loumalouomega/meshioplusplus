@@ -4879,6 +4879,83 @@ function hausdorff_distance(a::Mesh, b::Mesh; face_samples::Integer=0,
 end
 
 """
+    cast_rays(m, origins, directions; max_distance=0.0, region="")
+        -> (; hit, distance, point, normal, cell, num_hits)
+
+The nearest surface hit of every ray `origin + t * direction` (the direction is
+normalised, so `t` is a length) at the triangle, quad and polygon cells of `m`,
+optionally one cell region, with `0 < t <= max_distance` (`0` for no limit).
+`origins` is a `3 x n` matrix, one ray per column; `directions` is a `3 x n`
+matrix or three numbers for every ray. Returns `hit` (a `Vector{Bool}`),
+`distance` (`NaN` on a miss), `point` and `normal` (`3 x n`, the unit triangle
+normal on its winding side, `NaN` on a miss), `cell` (the 1-based input cell hit,
+`0` on a miss) and `num_hits`. See `doc/ray_queries.md`.
+"""
+function cast_rays(m::Mesh, origins::AbstractMatrix{<:Real}, directions::AbstractVecOrMat{<:Real};
+                   max_distance::Real=0.0, region::AbstractString="")
+    size(origins, 1) == 3 || throw(ArgumentError("origins must be a 3 x n matrix"))
+    dirs = directions isa AbstractVector ? reshape(Vector{Cdouble}(directions), 3, 1) :
+           Matrix{Cdouble}(directions)
+    size(dirs, 1) == 3 || throw(ArgumentError("directions must have three rows"))
+    n = size(origins, 2)
+    nd = size(dirs, 2)
+    o = Matrix{Cdouble}(origins)
+    hit = Vector{Int32}(undef, max(n, 1))
+    distance = Vector{Cdouble}(undef, max(n, 1))
+    point = Matrix{Cdouble}(undef, 3, max(n, 1))
+    normal = Matrix{Cdouble}(undef, 3, max(n, 1))
+    cell = Vector{Int64}(undef, max(n, 1))
+    nh = Ref{Int64}(0)
+    rg = Vector{UInt8}(codeunits(String(region) * "\0"))
+    h = _handle(m)
+    GC.@preserve o dirs hit distance point normal cell rg begin
+        opts = _CCastRaysOpts(Float64(max_distance), Cstring(pointer(rg)),
+                              ntuple(_ -> Int64(0), 6))
+        _check(ccall(_sym(:mio_cast_rays), Cint,
+                     (Ptr{Cvoid}, Ptr{Cdouble}, Int64, Ptr{Cdouble}, Int64, Ref{_CCastRaysOpts},
+                      Ptr{Int32}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Int64},
+                      Ptr{Int64}),
+                     h, pointer(o), Int64(n), pointer(dirs), Int64(nd), Ref(opts), pointer(hit),
+                     pointer(distance), pointer(point), pointer(normal), pointer(cell), nh))
+    end
+    (hit=Bool[hit[i] != 0 for i in 1:n], distance=distance[1:n], point=point[:, 1:n],
+     normal=normal[:, 1:n], cell=Int[cell[i] + 1 for i in 1:n], num_hits=Int(nh[]))
+end
+
+"""
+    locate_points(m, points; tolerance=1e-12) -> (; cell, nodes, barycentric, num_located)
+
+The cell of `m` containing each column of the `3 x n` matrix `points`. `m` is
+reduced to simplices (as `interpolate` does) and the first containing simplex in
+ascending order wins, so a point on a shared face belongs to the lowest-numbered
+cell; a weight at least `-tolerance` counts as inside. Volume meshes and planar
+triangle meshes are located. Returns `cell` (the 1-based input cell, `0`
+outside), `nodes` (`4 x n`, the 1-based point ids of the containing simplex, `0`
+for none or padding), `barycentric` (`4 x n`) and `num_located`. See
+`doc/ray_queries.md`.
+"""
+function locate_points(m::Mesh, points::AbstractMatrix{<:Real}; tolerance::Real=1e-12)
+    size(points, 1) == 3 || throw(ArgumentError("points must be a 3 x n matrix"))
+    n = size(points, 2)
+    p = Matrix{Cdouble}(points)
+    cell = Vector{Int64}(undef, max(n, 1))
+    nodes = Matrix{Int64}(undef, 4, max(n, 1))
+    bary = Matrix{Cdouble}(undef, 4, max(n, 1))
+    nl = Ref{Int64}(0)
+    h = _handle(m)
+    GC.@preserve p cell nodes bary begin
+        opts = _CLocatePointsOpts(Float64(tolerance), ntuple(_ -> Int64(0), 7))
+        _check(ccall(_sym(:mio_locate_points), Cint,
+                     (Ptr{Cvoid}, Ptr{Cdouble}, Int64, Ref{_CLocatePointsOpts}, Ptr{Int64},
+                      Ptr{Int64}, Ptr{Cdouble}, Ptr{Int64}),
+                     h, pointer(p), Int64(n), Ref(opts), pointer(cell), pointer(nodes),
+                     pointer(bary), nl))
+    end
+    (cell=Int[cell[i] + 1 for i in 1:n], nodes=Int.(nodes[:, 1:n]) .+ 1,
+     barycentric=bary[:, 1:n], num_located=Int(nl[]))
+end
+
+"""
     mass_properties(m; density=1.0, density_array="", region="", thickness=0.0,
                     about=:centroid)
         -> (; kind, total, regions, warnings)

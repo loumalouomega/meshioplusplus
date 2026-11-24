@@ -626,9 +626,7 @@ def test_stats(mesh_file):
 def test_mass_properties(tmp_path):
     path = str(tmp_path / "cube.vtu")
     pts = [[x, y, z] for z in (0.0, 2.0) for y in (0.0, 2.0) for x in (0.0, 2.0)]
-    mesh = meshioplusplus.Mesh(
-        pts, [("hexahedron", [[0, 1, 3, 2, 4, 5, 7, 6]])]
-    )
+    mesh = meshioplusplus.Mesh(pts, [("hexahedron", [[0, 1, 3, 2, 4, 5, 7, 6]])])
     meshioplusplus.write(path, mesh)
     out = _dump(_tools.tool_mass_properties(path, density=2.0))
     assert out["kind"] == "solid"

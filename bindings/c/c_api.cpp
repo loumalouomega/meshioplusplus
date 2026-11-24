@@ -117,6 +117,8 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
@@ -12817,5 +12819,95 @@ void mio_mass_report_free(mio_mass_report* report) {
     delete report;
 }
 
+
+// ---------------------------------------------------------------------------
+// Ray casting and point location (roadmap 9.3)
+// ---------------------------------------------------------------------------
+
+static_assert(sizeof(mio_cast_rays_opts) == 64,
+              "mio_cast_rays_opts layout changed: update the size in meshioplusplus.h");
+static_assert(offsetof(mio_cast_rays_opts, reserved) == 16,
+              "mio_cast_rays_opts: the reserved tail moved");
+static_assert(sizeof(mio_locate_points_opts) == 64,
+              "mio_locate_points_opts layout changed: update the size in meshioplusplus.h");
+static_assert(offsetof(mio_locate_points_opts, reserved) == 8,
+              "mio_locate_points_opts: the reserved tail moved");
+
+void mio_cast_rays_opts_init(mio_cast_rays_opts* opts) {
+    if (opts)
+        *opts = mio_cast_rays_opts{};
+}
+
+void mio_locate_points_opts_init(mio_locate_points_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_locate_points_opts{};
+    opts->tolerance = 1e-12;
+}
+
+mio_status mio_cast_rays(const mio_mesh* mesh, const double* origins, int64_t num_rays,
+                         const double* directions, int64_t num_directions,
+                         const mio_cast_rays_opts* opts, int32_t* hit, double* distance,
+                         double* point, double* normal, int64_t* cell, int64_t* num_hits) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || num_rays < 0 || (num_rays > 0 && !origins) || !directions)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: cast_rays: mesh/origins/directions is NULL "
+                                             "or num_rays is negative");
+        if (num_directions != 1 && num_directions != num_rays)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: cast_rays: num_directions must be 1 or num_rays");
+        meshioplusplus::CastRaysOptions options;
+        if (opts) {
+            options.mMaxDistance = opts->max_distance;
+            if (opts->region)
+                options.mRegion = opts->region;
+        }
+        const std::vector<double> o(origins, origins + 3 * static_cast<std::size_t>(num_rays));
+        const std::vector<double> d(directions,
+                                    directions + 3 * static_cast<std::size_t>(num_directions));
+        const meshioplusplus::CastRaysResult r = meshioplusplus::cast_rays(mesh->mMesh, o, d, options);
+        const std::size_t n = r.mHit.size();
+        for (std::size_t i = 0; i < n; ++i) {
+            if (hit)
+                hit[i] = r.mHit[i];
+            if (distance)
+                distance[i] = r.mDistance[i];
+            if (cell)
+                cell[i] = r.mCell[i];
+        }
+        if (point)
+            std::copy(r.mPoint.begin(), r.mPoint.end(), point);
+        if (normal)
+            std::copy(r.mNormal.begin(), r.mNormal.end(), normal);
+        if (num_hits)
+            *num_hits = r.mNumHits;
+        return MIO_OK;
+    });
+}
+
+mio_status mio_locate_points(const mio_mesh* mesh, const double* points, int64_t num_points,
+                             const mio_locate_points_opts* opts, int64_t* cell, int64_t* nodes,
+                             double* barycentric, int64_t* num_located) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || num_points < 0 || (num_points > 0 && !points))
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: locate_points: mesh/points is NULL or num_points is negative");
+        meshioplusplus::LocatePointsOptions options;
+        if (opts)
+            options.mTolerance = opts->tolerance;
+        const std::vector<double> p(points, points + 3 * static_cast<std::size_t>(num_points));
+        const meshioplusplus::LocatePointsResult r =
+            meshioplusplus::locate_points(mesh->mMesh, p, options);
+        if (cell)
+            std::copy(r.mCell.begin(), r.mCell.end(), cell);
+        if (nodes)
+            std::copy(r.mNodes.begin(), r.mNodes.end(), nodes);
+        if (barycentric)
+            std::copy(r.mBarycentric.begin(), r.mBarycentric.end(), barycentric);
+        if (num_located)
+            *num_located = r.mNumLocated;
+        return MIO_OK;
+    });
+}
 
 }  // extern "C"

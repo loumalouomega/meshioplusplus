@@ -382,6 +382,8 @@ export class MeshioPlusPlusLoadError extends Error {
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
  *   renderPng: (mesh: Mesh, options?: RenderOptions, compress?: number) => Uint8Array,
  *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
+ *   castRays: (mesh: Mesh, origins: Float64Array | number[], directions: Float64Array | number[], maxDistance?: number, region?: string) => {hit: Int32Array, distance: Float64Array, point: Float64Array, normal: Float64Array, cell: Int32Array, numHits: number},
+ *   locatePoints: (mesh: Mesh, points: Float64Array | number[], tolerance?: number) => {cell: Int32Array, nodes: Int32Array, barycentric: Float64Array, numLocated: number},
  *   massProperties: (mesh: Mesh, density?: number, densityArray?: string, region?: string, thickness?: number, about?: string) => {kind: string, total: object, regions: object[], warnings: string[]},
  *   editRegions: (mesh: Mesh, edits: Array<{op: string, inputs: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>, output?: string, dim?: number, tag?: number, keepInputs?: boolean}>) => Mesh,
  *   regionAdjacency: (mesh: Mesh, regions?: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>) => Mesh,
@@ -1322,6 +1324,10 @@ export async function loadMeshioPlusPlus(
         renderPng: (mesh, options = {}, compress = 0) => Module.renderPng(mesh, options, compress),
         hausdorffDistance: (a, b, faceSamples = 0, regionA = '', regionB = '') =>
             Module.hausdorffDistance(a, b, faceSamples, regionA, regionB),
+        castRays: (mesh, origins, directions, maxDistance = 0, region = '') =>
+            Module.castRays(mesh, origins, directions, maxDistance, region),
+        locatePoints: (mesh, points, tolerance = 1e-12) =>
+            Module.locatePoints(mesh, points, tolerance),
         massProperties: (mesh, density = 1, densityArray = '', region = '', thickness = 0, about = 'centroid') =>
             Module.massProperties(mesh, density, densityArray, region, thickness, about),
         editRegions: (mesh, edits) =>

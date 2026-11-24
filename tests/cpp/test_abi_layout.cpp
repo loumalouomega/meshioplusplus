@@ -154,6 +154,8 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/metric.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
@@ -855,6 +857,8 @@ MIO_ABI_LAYOUT(meshioplusplus::CoordinateOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ConvexHullOptions, 4, 4);
 MIO_ABI_LAYOUT(meshioplusplus::PointNormalsOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MassPropertiesOptions, 88, 8);
+MIO_ABI_LAYOUT(meshioplusplus::CastRaysOptions, 40, 8);
+MIO_ABI_LAYOUT(meshioplusplus::LocatePointsOptions, 8, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ReconstructSurfaceOptions, 88, 8);
 // ABI 38 (roadmap 7.7.3): remesh_quads's options (a string, the target, four
 // flags and the seed, the cap).

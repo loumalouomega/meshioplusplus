@@ -1868,6 +1868,19 @@ struct _CHausdorffReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_cast_rays_opts` (roadmap 9.3), 64 bytes."""
+struct _CCastRaysOpts
+    max_distance::Cdouble
+    region::Cstring
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_locate_points_opts`, 64 bytes."""
+struct _CLocatePointsOpts
+    tolerance::Cdouble
+    reserved::NTuple{7,Int64}
+end
+
 """Mirror of C `mio_mass_properties_opts` (roadmap 9.4)."""
 struct _CMassPropertiesOpts
     density::Cdouble
@@ -2903,6 +2916,11 @@ function _check_abi_layout()
         error("meshio++: mio_snapshot_opts layout mismatch ($(sizeof(_CSnapshotOpts)) bytes)")
     sizeof(_CHausdorffOpts) == 80 ||
         error("meshio++: mio_hausdorff_opts layout mismatch ($(sizeof(_CHausdorffOpts)) bytes)")
+    sizeof(_CCastRaysOpts) == 64 ||
+        error("meshio++: mio_cast_rays_opts layout mismatch ($(sizeof(_CCastRaysOpts)) bytes)")
+    sizeof(_CLocatePointsOpts) == 64 ||
+        error("meshio++: mio_locate_points_opts layout mismatch " *
+              "($(sizeof(_CLocatePointsOpts)) bytes)")
     sizeof(_CMassPropertiesOpts) == 56 ||
         error("meshio++: mio_mass_properties_opts layout mismatch " *
               "($(sizeof(_CMassPropertiesOpts)) bytes)")

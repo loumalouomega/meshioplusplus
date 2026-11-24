@@ -1409,6 +1409,19 @@ module meshioplusplus
         integer(c_int64_t) :: reserved(4) = 0
     end type
 
+    !> Interop mirror of C `mio_cast_rays_opts` (64 bytes).
+    type, bind(c) :: mio_cast_rays_opts_t
+        real(c_double) :: max_distance = 0.0_c_double
+        type(c_ptr) :: region = c_null_ptr
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_locate_points_opts` (64 bytes).
+    type, bind(c) :: mio_locate_points_opts_t
+        real(c_double) :: tolerance = 1.0e-12_c_double
+        integer(c_int64_t) :: reserved(7) = 0
+    end type
+
     !> Interop mirror of C `mio_mass_properties_opts` (56 bytes).
     type, bind(c) :: mio_mass_properties_opts_t
         real(c_double) :: density = 1.0_c_double
@@ -2930,6 +2943,8 @@ module meshioplusplus
         procedure :: write_snapshot => mesh_write_snapshot
         procedure :: hausdorff_distance => mesh_hausdorff_distance
         procedure :: mass_properties => mesh_mass_properties
+        procedure :: cast_rays => mesh_cast_rays
+        procedure :: locate_points => mesh_locate_points
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
         procedure :: match_periodic_nodes => mesh_match_periodic_nodes
@@ -4250,6 +4265,31 @@ module meshioplusplus
             type(c_ptr), value :: a, b
             type(mio_hausdorff_opts_t), intent(in) :: opts
             type(mio_hausdorff_report_t), intent(out) :: report
+            integer(c_int) :: r
+        end function
+
+        function c_mio_cast_rays(h, origins, num_rays, directions, num_directions, opts, hit, &
+                distance, point, normal, cell, num_hits) bind(c, name="mio_cast_rays") result(r)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t, c_double, mio_cast_rays_opts_t
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: origins(*), directions(*)
+            integer(c_int64_t), value :: num_rays, num_directions
+            type(mio_cast_rays_opts_t), intent(in) :: opts
+            integer(c_int32_t), intent(out) :: hit(*)
+            real(c_double), intent(out) :: distance(*), point(*), normal(*)
+            integer(c_int64_t), intent(out) :: cell(*), num_hits
+            integer(c_int) :: r
+        end function
+
+        function c_mio_locate_points(h, points, num_points, opts, cell, nodes, barycentric, &
+                num_located) bind(c, name="mio_locate_points") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double, mio_locate_points_opts_t
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: points(*)
+            integer(c_int64_t), value :: num_points
+            type(mio_locate_points_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: cell(*), nodes(*), num_located
+            real(c_double), intent(out) :: barycentric(*)
             integer(c_int) :: r
         end function
 
@@ -11483,6 +11523,137 @@ contains
         if (present(mean_b_to_a)) mean_b_to_a = real(report%mean_b_to_a, real64)
         if (present(rms_a_to_b)) rms_a_to_b = real(report%rms_a_to_b, real64)
         if (present(rms_b_to_a)) rms_b_to_a = real(report%rms_b_to_a, real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The nearest surface hit of every ray (`origins(3, n)`, with one
+    !> `directions(3)` for all of them or `directions(3, n)`). Returns the number
+    !> of rays that hit, or -1 on failure. `hit(n)`, `distance(n)` (NaN on a
+    !> miss), `point(3, n)`, `normal(3, n)` (unit, NaN on a miss) and `cell(n)`
+    !> (the 1-based input cell hit, 0 on a miss) are optional outputs;
+    !> `max_distance` of 0 means no limit and `region` restricts the surface. See
+    !> doc/ray_queries.md.
+    function mesh_cast_rays(self, origins, directions, max_distance, region, hit, distance, &
+                            point, normal, cell, stat, errmsg) result(num_hits)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: origins(:, :), directions(:, :)
+        real(real64), intent(in), optional :: max_distance
+        character(*), intent(in), optional :: region
+        logical, allocatable, intent(out), optional :: hit(:)
+        real(real64), allocatable, intent(out), optional :: distance(:), point(:, :), normal(:, :)
+        integer(int64), allocatable, intent(out), optional :: cell(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: num_hits
+        type(mio_cast_rays_opts_t) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_r
+        integer(c_int32_t), allocatable :: chit(:)
+        real(c_double), allocatable :: cdist(:), cpoint(:, :), cnormal(:, :)
+        integer(c_int64_t), allocatable :: ccell(:)
+        integer(c_int64_t) :: n, nd, nh
+        integer(c_int) :: s
+
+        num_hits = -1
+        n = int(size(origins, 2), c_int64_t)
+        nd = int(size(directions, 2), c_int64_t)
+        if (size(origins, 1) /= 3 .or. size(directions, 1) /= 3) then
+            call handle_failure('cast_rays', 'origins and directions must have three rows', &
+                                stat, errmsg)
+            return
+        end if
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: cast_rays layout mismatch'
+            error stop 1
+        end if
+        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
+        if (present(region)) then
+            buf_r = trim(region)//c_null_char
+            opts%region = c_loc(buf_r(1:1))
+        end if
+        allocate (chit(max(n, 1_c_int64_t)), cdist(max(n, 1_c_int64_t)), cpoint(3, max(n, 1_c_int64_t)), &
+                  cnormal(3, max(n, 1_c_int64_t)), ccell(max(n, 1_c_int64_t)))
+        s = c_mio_cast_rays(self%handle, origins, n, directions, nd, opts, chit, cdist, cpoint, &
+                            cnormal, ccell, nh)
+        if (s /= 0_c_int) then
+            call handle_failure('cast_rays', mio_error_message(), stat, errmsg)
+            return
+        end if
+        num_hits = int(nh, int64)
+        if (present(hit)) then
+            allocate (hit(n))
+            hit = chit(1:n) /= 0
+        end if
+        if (present(distance)) then
+            allocate (distance(n))
+            distance = real(cdist(1:n), real64)
+        end if
+        if (present(point)) then
+            allocate (point(3, n))
+            point = real(cpoint(:, 1:n), real64)
+        end if
+        if (present(normal)) then
+            allocate (normal(3, n))
+            normal = real(cnormal(:, 1:n), real64)
+        end if
+        if (present(cell)) then
+            allocate (cell(n))
+            cell = int(ccell(1:n), int64) + 1_int64
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The cell of the mesh containing each point (`points(3, n)`); returns the
+    !> number of points located, or -1 on failure. `cell(n)` is the 1-based input
+    !> cell (0 outside), `nodes(4, n)` the 1-based point ids of the containing
+    !> simplex (0 outside or as padding) and `barycentric(4, n)` its weights; the
+    !> mesh is a volume mesh or a planar triangle mesh. See doc/ray_queries.md.
+    function mesh_locate_points(self, points, tolerance, cell, nodes, barycentric, stat, &
+                                errmsg) result(num_located)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: points(:, :)
+        real(real64), intent(in), optional :: tolerance
+        integer(int64), allocatable, intent(out), optional :: cell(:), nodes(:, :)
+        real(real64), allocatable, intent(out), optional :: barycentric(:, :)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: num_located
+        type(mio_locate_points_opts_t) :: opts
+        integer(c_int64_t), allocatable :: ccell(:), cnodes(:, :)
+        real(c_double), allocatable :: cbary(:, :)
+        integer(c_int64_t) :: n, nl
+        integer(c_int) :: s
+
+        num_located = -1
+        n = int(size(points, 2), c_int64_t)
+        if (size(points, 1) /= 3) then
+            call handle_failure('locate_points', 'points must have three rows', stat, errmsg)
+            return
+        end if
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: locate_points layout mismatch'
+            error stop 1
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        allocate (ccell(max(n, 1_c_int64_t)), cnodes(4, max(n, 1_c_int64_t)), &
+                  cbary(4, max(n, 1_c_int64_t)))
+        s = c_mio_locate_points(self%handle, points, n, opts, ccell, cnodes, cbary, nl)
+        if (s /= 0_c_int) then
+            call handle_failure('locate_points', mio_error_message(), stat, errmsg)
+            return
+        end if
+        num_located = int(nl, int64)
+        if (present(cell)) then
+            allocate (cell(n))
+            cell = int(ccell(1:n), int64) + 1_int64
+        end if
+        if (present(nodes)) then
+            allocate (nodes(4, n))
+            nodes = int(cnodes(:, 1:n), int64) + 1_int64
+        end if
+        if (present(barycentric)) then
+            allocate (barycentric(4, n))
+            barycentric = real(cbary(:, 1:n), real64)
+        end if
         call clear_status(stat, errmsg)
     end function
 

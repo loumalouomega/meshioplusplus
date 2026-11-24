@@ -130,6 +130,8 @@
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
@@ -7592,6 +7594,67 @@ val hausdorff_distance_js(const val& rA, const val& rB, double faceSamples,
     });
 }
 
+/// A flat JS number array (`Float64Array` or plain array) as doubles.
+std::vector<double> js_flat_doubles(const val& rArr) {
+    const unsigned n = rArr["length"].as<unsigned>();
+    std::vector<double> out(n);
+    for (unsigned i = 0; i < n; ++i)
+        out[i] = rArr[i].as<double>();
+    return out;
+}
+
+/**
+ * @brief The nearest surface hit of a batch of rays. See operations/cast_rays.hpp.
+ * `origins` and `directions` are flat `[x, y, z, ...]` arrays (`directions` of
+ * length 3 serves every ray). Returns `{hit, distance, point, normal, cell,
+ * numHits}`: `hit` and `cell` are `Int32Array`s (`cell` the 0-based input cell,
+ * -1 on a miss), the rest `Float64Array`s.
+ */
+val cast_rays_js(const val& rMesh, const val& rOrigins, const val& rDirections, double maxDistance,
+                 const std::string& rRegion) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::CastRaysOptions options;
+        options.mMaxDistance = maxDistance;
+        options.mRegion = rRegion;
+        const meshioplusplus::CastRaysResult r = meshioplusplus::cast_rays(
+            val_to_mesh(rMesh), js_flat_doubles(rOrigins), js_flat_doubles(rDirections), options);
+        std::vector<std::int32_t> hit(r.mHit.begin(), r.mHit.end());
+        std::vector<std::int32_t> cell(r.mCell.begin(), r.mCell.end());
+        val out = val::object();
+        out.set("hit", int32_array_from(hit.data(), hit.size()));
+        out.set("distance", float64_array_from(r.mDistance.data(), r.mDistance.size()));
+        out.set("point", float64_array_from(r.mPoint.data(), r.mPoint.size()));
+        out.set("normal", float64_array_from(r.mNormal.data(), r.mNormal.size()));
+        out.set("cell", int32_array_from(cell.data(), cell.size()));
+        out.set("numHits", static_cast<double>(r.mNumHits));
+        return out;
+    });
+}
+
+/**
+ * @brief The cell containing each point. See operations/locate_points.hpp.
+ * `points` is a flat `[x, y, z, ...]` array. Returns `{cell, nodes,
+ * barycentric, numLocated}`: `cell` (0-based input cell, -1 outside) and
+ * `nodes` (four 0-based point ids per point, -1 for none or padding) are
+ * `Int32Array`s, `barycentric` (four weights per point) a `Float64Array`.
+ */
+val locate_points_js(const val& rMesh, const val& rPoints, double tolerance) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::LocatePointsOptions options;
+        options.mTolerance = tolerance;
+        const meshioplusplus::LocatePointsResult r =
+            meshioplusplus::locate_points(val_to_mesh(rMesh), js_flat_doubles(rPoints), options);
+        std::vector<std::int32_t> cell(r.mCell.begin(), r.mCell.end());
+        std::vector<std::int32_t> nodes(r.mNodes.begin(), r.mNodes.end());
+        val out = val::object();
+        out.set("cell", int32_array_from(cell.data(), cell.size()));
+        out.set("nodes", int32_array_from(nodes.data(), nodes.size()));
+        out.set("barycentric", float64_array_from(r.mBarycentric.data(), r.mBarycentric.size()));
+        out.set("numLocated", static_cast<double>(r.mNumLocated));
+        return out;
+    });
+}
+
 /**
  * @brief Mass, centre of mass and inertia of a body. See
  * operations/mass_properties.hpp.
@@ -11286,6 +11349,8 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("checkQuality", &check_quality_js);
     emscripten::function("hausdorffDistance", &hausdorff_distance_js);
     emscripten::function("massProperties", &mass_properties_js);
+    emscripten::function("castRays", &cast_rays_js);
+    emscripten::function("locatePoints", &locate_points_js);
     emscripten::function("editRegions", &edit_regions_js);
     emscripten::function("regionAdjacency", &region_adjacency_js);
     emscripten::function("findInterface", &find_interface_js);
