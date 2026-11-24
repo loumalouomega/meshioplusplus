@@ -2000,8 +2000,9 @@ jobs:
           max-size: 500M
 
       - name: Build and run the C++ tests (instrumented)
-        # The full run took 84 minutes on a fast runner and passed 150 on a slow one.
-        timeout-minutes: ${{ github.event_name == 'pull_request' && 150 || 240 }}
+        # The full instrumented run took 84 minutes on a fast runner and passed 240 on a slow one,
+        # so every event runs the reduced selection below.
+        timeout-minutes: 150
         if: steps.lfs.outputs.available != 'false'
         run: |
           cmake -S . -B build-cpp-cov -G Ninja \
@@ -2024,25 +2025,17 @@ jobs:
           # file lock) the cases fit the step's budget; serially they did not.
           # The FitCad, OctreeMesh, MeshCad, PatchNetwork and a few more numeric suites take
           # 5 to 25 minutes each at -O0 with gcov (some pass ctest's 1500 s default); the
-          # other C++ jobs run them optimized. A pull request skips them here, master and
-          # release tags keep the full run. The pull request still measures what they cover
-          # in two ways: the `Quick*` suites (tests/cpp/test_quick_*.cpp), small versions of
+          # other C++ jobs run them optimized. Every event (pull request, master, release
+          # tag) skips them here; the optimized C++ jobs run them in full. Coverage still
+          # measures what they cover in two ways: the `Quick*` suites (tests/cpp/test_quick_*.cpp), small versions of
           # the slow tests on skins of a few hundred triangles that take about 5 minutes
           # together, which the exclusion below does not match (their names start with
           # Quick); and the small suites the prefixes also caught, which take about a
           # minute together.
-          exclude=()
-          timeout=()
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            exclude=(-E '^(FitCad|OctreeMesh|MeshCad|PatchNetwork|HexDualSchemes)|^CApi\.OffsetThicken|^Decimate\.MaxDeviation')
-          else
-            timeout=(--timeout 3600)
-          fi
-          ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)" "${exclude[@]}" "${timeout[@]}"
-          if [ "${{ github.event_name }}" = pull_request ]; then
-            ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)" \
-              -R '^(OctreeMeshFixVolumes|OctreeMeshFeatureSnap|FitCadIterate|FitCadGoldens|MeshCadFolds|MeshCadGivenSizes|MeshCadTolerances|MeshCadVirtualEdges|MeshCadVirtualFaces|MeshCadVaryingMetric|MeshCadCurved)\.'
-          fi
+          ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)" \
+            -E '^(FitCad|OctreeMesh|MeshCad|PatchNetwork|HexDualSchemes)|^CApi\.OffsetThicken|^Decimate\.MaxDeviation'
+          ctest --test-dir build-cpp-cov --output-on-failure -j "$(nproc)" \
+            -R '^(OctreeMeshFixVolumes|OctreeMeshFeatureSnap|FitCadIterate|FitCadGoldens|MeshCadFolds|MeshCadGivenSizes|MeshCadTolerances|MeshCadVirtualEdges|MeshCadVirtualFaces|MeshCadVaryingMetric|MeshCadCurved)\.'
 
       # SKBUILD_CMAKE_BUILD_TYPE overrides pyproject's `cmake.build-type =
       # "Release"`; -O0 keeps the gcov line mapping honest.
