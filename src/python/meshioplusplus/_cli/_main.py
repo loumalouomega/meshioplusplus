@@ -263,6 +263,18 @@ _VERBS = (
         "add_symmetry_args",
     ),
     _Verb(
+        "cast-rays",
+        "_cast_rays",
+        "cast_rays_cmd",
+        "The nearest surface hit of a batch of rays",
+    ),
+    _Verb(
+        "locate",
+        "_locate",
+        "locate_cmd",
+        "The cell containing each point of a file",
+    ),
+    _Verb(
         "mass",
         "_mass",
         "mass_cmd",

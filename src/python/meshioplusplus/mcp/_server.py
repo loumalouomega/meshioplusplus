@@ -4677,6 +4677,40 @@ def _register_operations(server: FastMCP) -> None:
         the sampled arrays attached."""
 
     @server.tool()
+    @_forward(_tools.tool_cast_rays)
+    def cast_rays(
+        surface_path: str,
+        rays_path: str,
+        output_path: str,
+        surface_format: Optional[str] = None,
+        rays_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        direction: Optional[List[float]] = None,
+        max_distance: float = 0.0,
+        region: Optional[str] = None,
+    ) -> dict:
+        """Shoot rays at a surface (triangle, quad or polygon cells) and write
+        a vertex mesh of the hit points with ray:index, ray:distance, ray:cell
+        and ray:normal. rays_path holds the origins as points; direction is
+        [x, y, z] for every ray, else its point array 'directions'.
+        max_distance 0 means no limit."""
+
+    @server.tool()
+    @_forward(_tools.tool_locate_points)
+    def locate_points(
+        mesh_path: str,
+        points_path: str,
+        output_path: str,
+        mesh_format: Optional[str] = None,
+        points_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        tolerance: float = 1e-12,
+    ) -> dict:
+        """Find the cell of a volume mesh (or planar triangle mesh) containing
+        each point of a file; writes a vertex mesh of the points inside with
+        locate:cell, locate:nodes and locate:barycentric."""
+
+    @server.tool()
     @_forward(_tools.tool_conservative_interpolate)
     def conservative_interpolate(
         source_path: str,

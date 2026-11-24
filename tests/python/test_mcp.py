@@ -637,6 +637,31 @@ def test_mass_properties(tmp_path):
     assert out["total"]["inertia"][0] == pytest.approx(16.0 * 8.0 / 12.0)
 
 
+def test_cast_rays_and_locate_points(tmp_path):
+    sphere = meshioplusplus.uv_sphere(1.0, 32, 16)
+    spath = str(tmp_path / "sphere.vtu")
+    meshioplusplus.write(spath, sphere)
+    rays = meshioplusplus.Mesh([[3.0, 0.0, 0.0], [9.0, 9.0, 9.0]], [])
+    rpath = str(tmp_path / "rays.vtu")
+    meshioplusplus.write(rpath, rays)
+    out = str(tmp_path / "hits.vtu")
+    rep = _dump(_tools.tool_cast_rays(spath, rpath, out, direction=[-1, 0, 0]))
+    assert rep["num_rays"] == 2 and rep["num_hits"] == 1
+    hits = meshioplusplus.read(out)
+    assert hits.point_data["ray:distance"][0] == pytest.approx(2.0, abs=0.02)
+
+    box = meshioplusplus.box(dims=(2, 2, 2), size=(2.0, 2.0, 2.0))
+    bpath = str(tmp_path / "box.vtu")
+    meshioplusplus.write(bpath, box)
+    pts = meshioplusplus.Mesh([[0.5, 0.5, 0.5], [5.0, 5.0, 5.0]], [])
+    ppath = str(tmp_path / "pts.vtu")
+    meshioplusplus.write(ppath, pts)
+    lout = str(tmp_path / "located.vtu")
+    rep = _dump(_tools.tool_locate_points(bpath, ppath, lout))
+    assert rep["num_points"] == 2 and rep["num_located"] == 1
+    assert meshioplusplus.read(lout).point_data["locate:cell"][0] == 0
+
+
 def test_quality_summary_and_annotated_output(mesh_file, tmp_path):
     out = _dump(_tools.tool_quality(mesh_file))
     assert out["num_cells"] == 3

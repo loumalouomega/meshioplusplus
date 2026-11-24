@@ -49,6 +49,7 @@
 #include "../detail/bounding_box_utils.hpp"
 #include "../detail/bucket_build.hpp"
 #include "../detail/cell_centroids.hpp"
+#include "../detail/point_locator.hpp"
 #include "../detail/transfer_names.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -70,16 +71,7 @@ std::size_t interp_total_cells(const Mesh& rMesh) {
 // and the single division is IEEE-identical, which is what keeps the numpy
 // fallback's grid byte-compatible.
 double interp_cell_size(const double* pLo, const double* pHi, std::size_t n) {
-    double max_extent = 0.0;
-    for (int d = 0; d < 3; ++d) {
-        const double e = pHi[d] - pLo[d];
-        if (e > max_extent)
-            max_extent = e;
-    }
-    std::int64_t r = 1;
-    while (r * r * r < static_cast<std::int64_t>(n))
-        ++r;
-    return max_extent > 0.0 ? max_extent / static_cast<double>(r) : 1.0;
+    return detail::point_grid_cell_size(pLo, pHi, n);
 }
 
 // The point grid of `n` coordinates, id `i` for coordinate `i`: keys filled
@@ -157,73 +149,6 @@ std::int64_t interp_nearest(const detail::BucketTable& rGrid, TCoord&& coord,
         });
     }
     return best;
-}
-
-// Barycentric containment tolerance: dimensionless (the weights are volume
-// *ratios*), hence scale-invariant. The same literal appears in the numpy
-// twin.
-constexpr double INTERP_BARY_EPS = 1e-12;
-
-// Barycentric weights of `rP` in the tetra `pNodes[0..3]`; true iff contained
-// (all weights >= -INTERP_BARY_EPS). A degenerate tetra (exactly zero volume)
-// contains nothing.
-bool interp_tet_contains(const NDArray& rPts, std::size_t pdim, const std::int64_t* pNodes,
-                         const detail::Vec3& rP, double* pW) {
-    const detail::Vec3 a = detail::read_point(rPts, pdim, pNodes[0]);
-    const detail::Vec3 b = detail::read_point(rPts, pdim, pNodes[1]);
-    const detail::Vec3 c = detail::read_point(rPts, pdim, pNodes[2]);
-    const detail::Vec3 d = detail::read_point(rPts, pdim, pNodes[3]);
-    const double v = detail::triple_product(detail::vec3_sub(b, a), detail::vec3_sub(c, a),
-                                            detail::vec3_sub(d, a));
-    if (v == 0.0)
-        return false;
-    const double wa = detail::triple_product(detail::vec3_sub(b, rP), detail::vec3_sub(c, rP),
-                                             detail::vec3_sub(d, rP)) /
-                      v;
-    const double wb = detail::triple_product(detail::vec3_sub(rP, a), detail::vec3_sub(c, a),
-                                             detail::vec3_sub(d, a)) /
-                      v;
-    const double wc = detail::triple_product(detail::vec3_sub(b, a), detail::vec3_sub(rP, a),
-                                             detail::vec3_sub(d, a)) /
-                      v;
-    const double wd = detail::triple_product(detail::vec3_sub(b, a), detail::vec3_sub(c, a),
-                                             detail::vec3_sub(rP, a)) /
-                      v;
-    if (wa < -INTERP_BARY_EPS || wb < -INTERP_BARY_EPS || wc < -INTERP_BARY_EPS ||
-        wd < -INTERP_BARY_EPS)
-        return false;
-    pW[0] = wa;
-    pW[1] = wb;
-    pW[2] = wc;
-    pW[3] = wd;
-    return true;
-}
-
-// Twice the signed area of the triangle p0-p1-p2 **in the xy-plane** (the
-// documented planar assumption of the triangle path; z is ignored).
-double interp_area2(const detail::Vec3& rP0, const detail::Vec3& rP1, const detail::Vec3& rP2) {
-    return (rP1[0] - rP0[0]) * (rP2[1] - rP0[1]) - (rP1[1] - rP0[1]) * (rP2[0] - rP0[0]);
-}
-
-// Barycentric weights of `rP` in the (xy-plane) triangle `pNodes[0..2]`; true
-// iff contained.
-bool interp_tri_contains(const NDArray& rPts, std::size_t pdim, const std::int64_t* pNodes,
-                         const detail::Vec3& rP, double* pW) {
-    const detail::Vec3 a = detail::read_point(rPts, pdim, pNodes[0]);
-    const detail::Vec3 b = detail::read_point(rPts, pdim, pNodes[1]);
-    const detail::Vec3 c = detail::read_point(rPts, pdim, pNodes[2]);
-    const double v = interp_area2(a, b, c);
-    if (v == 0.0)
-        return false;
-    const double wa = interp_area2(rP, b, c) / v;
-    const double wb = interp_area2(a, rP, c) / v;
-    const double wc = interp_area2(a, b, rP) / v;
-    if (wa < -INTERP_BARY_EPS || wb < -INTERP_BARY_EPS || wc < -INTERP_BARY_EPS)
-        return false;
-    pW[0] = wa;
-    pW[1] = wb;
-    pW[2] = wc;
-    return true;
 }
 
 // The output shape for `nrows` sampled rows mirroring `rSrc`'s trailing
@@ -354,89 +279,33 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             const ConvertCellsResult simp = convert_cells(rSource, cco);
             const Mesh& smesh = simp.mMesh;
 
-            bool has_tet = false;
-            bool has_tri = false;
-            for (const auto cb : smesh.CellRange()) {
-                if (cb.NumCells() == 0)
-                    continue;
-                if (cb.Type() == "tetra")
-                    has_tet = true;
-                else if (cb.Type() == "triangle")
-                    has_tri = true;
-            }
-            if (!has_tet && !has_tri)
-                throw std::invalid_argument(
-                    "meshio++: interpolate: barycentric needs a source with triangle or "
-                    "tetrahedron cells after simplexification");
-            const std::size_t nv = has_tet ? 4 : 3;
-            const std::string want = has_tet ? "tetra" : "triangle";
-
-            // Flat simplex connectivity, ascending block-then-cell order (the
-            // simplex index every tie-break below refers to).
-            std::vector<std::int64_t> sconn;
-            for (const auto cb : smesh.CellRange()) {
-                if (cb.Type() != want || cb.NumCells() == 0)
-                    continue;
-                const NDArray& conn = cb.Conn();
-                const detail::Int64View conn_v(conn);
-                const std::size_t n = cb.NumCells() * nv;
-                const std::size_t base = sconn.size();
-                sconn.resize(base + n);
-                for (std::size_t j = 0; j < n; ++j)
-                    sconn[base + j] = conn_v[j];
-            }
-            const std::size_t nsimp = sconn.size() / nv;
+            // The search structure (flat simplex connectivity in ascending
+            // block-then-cell order, the quantised-box grid, the first
+            // containing simplex in ascending index): detail/point_locator.hpp,
+            // shared with locate_points.
+            const detail::PointLocator locator(smesh, detail::kPointLocatorTolerance,
+                                               "interpolate");
+            const std::size_t nv = locator.NodesPerSimplex();
+            const std::vector<std::int64_t>& sconn = locator.Connectivity();
 
             const NDArray& spts = smesh.Points();
             const std::size_t sdim = smesh.PointDim();
             const std::size_t ns = smesh.NumPoints();
             auto scoord = [&](std::int64_t i) { return detail::read_point(spts, sdim, i); };
+            const double* lo = locator.Lo();
+            const double* hi = locator.Hi();
 
-            double lo[3], hi[3];
-            detail::BoundingBoxUtils::FromCoords(
-                ns, [&](std::size_t i) { return scoord(static_cast<std::int64_t>(i)); }, lo, hi);
-            const double cell = interp_cell_size(lo, hi, nsimp);
-
-            // Per-simplex quantized bbox keys, filled in parallel and grouped
-            // into the frozen grid: each bucket ascending, as serial inserts
-            // in simplex order left it.
-            std::vector<detail::GridKey> box_lo(nsimp);
-            std::vector<detail::GridKey> box_hi(nsimp);
-            const auto key_of = [cell](const double* pC) {
-                return detail::GridKey{detail::grid_quantize(pC[0], cell),
-                                       detail::grid_quantize(pC[1], cell),
-                                       detail::grid_quantize(pC[2], cell)};
-            };
-            parallel_for(nsimp, [&](std::size_t s) {
-                double blo[3], bhi[3];
-                detail::BoundingBoxUtils::FromCoords(
-                    nv, [&](std::size_t k) { return scoord(sconn[s * nv + k]); }, blo, bhi);
-                box_lo[s] = key_of(blo);
-                box_hi[s] = key_of(bhi);
-            });
-            const detail::BucketTable grid = detail::build_bucket_table(cell, box_lo, box_hi);
-
-            // Containment: first containing simplex in ascending index (the
-            // bucket vectors are ascending by construction).
             std::vector<std::int64_t> simplex_of(nt, -1);
             std::vector<std::array<double, 4>> wts(nt);
             parallel_for(nt, [&](std::size_t t) {
                 const detail::Vec3 p = detail::read_point(tpts, tdim, static_cast<std::int64_t>(t));
-                detail::BucketView cand(nullptr, 0);
-                if (!grid.Find(grid.KeyOf(p.data()), cand))
-                    return;
                 double w[4] = {0.0, 0.0, 0.0, 0.0};
-                for (std::int64_t s : cand) {
-                    const std::int64_t* nodes = &sconn[static_cast<std::size_t>(s) * nv];
-                    const bool inside = nv == 4 ? interp_tet_contains(spts, sdim, nodes, p, w)
-                                                : interp_tri_contains(spts, sdim, nodes, p, w);
-                    if (inside) {
-                        simplex_of[t] = s;
-                        for (std::size_t k = 0; k < nv; ++k)
-                            wts[t][k] = w[k];
-                        break;
-                    }
-                }
+                const std::int64_t s = locator.Locate(p, w);
+                if (s < 0)
+                    return;
+                simplex_of[t] = s;
+                for (std::size_t k = 0; k < nv; ++k)
+                    wts[t][k] = w[k];
             });
 
             std::size_t n_outside = 0;

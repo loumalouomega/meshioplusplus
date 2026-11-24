@@ -3009,6 +3009,35 @@
     ]
    }
   },
+  "cast_rays": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "origins"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "directions"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_distance"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "region"
+     }
+    ]
+   }
+  },
   "cell_data_to_point_data": {
    "kind": "function",
    "signature": {
@@ -6796,6 +6825,26 @@
       "default": "False",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "complete"
+     }
+    ]
+   }
+  },
+  "locate_points": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "points"
+     },
+     {
+      "default": "1e-12",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
      }
     ]
    }

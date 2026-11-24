@@ -127,6 +127,7 @@ if TYPE_CHECKING:
     from ._bake_texture import bake_texture
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
+    from ._cast_rays import cast_rays, locate_points
     from ._check_conformity import check_conformity
     from ._check_tetrahedra import check_tetrahedra
     from ._clean import clean
@@ -412,6 +413,8 @@ _LAZY_ATTRS = {
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
     "mass_properties": "_mass_properties",
+    "cast_rays": "_cast_rays",
+    "locate_points": "_cast_rays",
     "reconstruct_surface": "_reconstruct_surface",
     "morph": "_morph",
     "prepare_metric": "_metric",
@@ -863,6 +866,8 @@ __all__ = [
     "delaunay_2d",
     "estimate_normals",
     "mass_properties",
+    "cast_rays",
+    "locate_points",
     "reconstruct_surface",
     "morph",
     "prepare_metric",

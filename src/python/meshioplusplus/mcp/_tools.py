@@ -64,6 +64,9 @@ from .. import (
     box_points,
     box_surface,
     capsule,
+)
+from .. import cast_rays as _cast_rays_op
+from .. import (
     cell_data_to_point_data,
     check_conformity,
     check_quality,
@@ -156,8 +159,9 @@ from .. import (
     isosurface,
     laplacian_eigenmodes,
     line,
-    lshape,
 )
+from .. import locate_points as _locate_points_op
+from .. import lshape
 from .. import mass_properties as _mass_properties_op
 from .. import match_periodic_nodes
 from .. import measure as _measure_op
@@ -6233,6 +6237,68 @@ def tool_interpolate(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_cast_rays(
+    surface_path,
+    rays_path,
+    output_path,
+    surface_format=None,
+    rays_format=None,
+    output_format=None,
+    direction=None,
+    max_distance=0.0,
+    region=None,
+):
+    """Shoot rays at a surface and write the hit points.
+
+    ``rays_path`` is a point-cloud file whose points are the ray origins;
+    ``direction`` ([x, y, z]) is one direction for every ray, otherwise the
+    file's point array ``directions`` is used. The output is a vertex mesh of
+    the rays that hit, with ``ray:index``, ``ray:distance``, ``ray:cell`` (the
+    surface cell hit) and ``ray:normal``.
+    """
+    from .._cast_rays import _directions_of, _hits_mesh, _xyz
+
+    surface = _load(surface_path, surface_format)
+    rays = _load(rays_path, rays_format)
+    res = _cast_rays_op(
+        surface,
+        _xyz(rays.points),
+        _directions_of(rays, direction),
+        max_distance=max_distance,
+        region=region,
+    )
+    out = _hits_mesh(res)
+    report = {"num_rays": int(len(res["hit"])), "num_hits": int(res["num_hits"])}
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_locate_points(
+    mesh_path,
+    points_path,
+    output_path,
+    mesh_format=None,
+    points_format=None,
+    output_format=None,
+    tolerance=1e-12,
+):
+    """Find the cell of a mesh that contains each point of a file.
+
+    The mesh is a volume mesh or a planar triangle mesh. The output is a vertex
+    mesh of the points that fell inside, with ``locate:cell`` (the global cell),
+    ``locate:nodes`` (the containing simplex's four point ids, -1 padded) and
+    ``locate:barycentric`` (its four weights).
+    """
+    from .._cast_rays import _located_mesh, _xyz
+
+    mesh = _load(mesh_path, mesh_format)
+    points = _load(points_path, points_format)
+    xyz = _xyz(points.points)
+    res = _locate_points_op(mesh, xyz, tolerance=tolerance)
+    out = _located_mesh(xyz, res)
+    report = {"num_points": int(len(xyz)), "num_located": int(res["num_located"])}
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_conservative_interpolate(
     source_path,
     target_path,
@@ -8797,6 +8863,14 @@ TOOL_REGISTRY = OrderedDict(
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),
         ("split", {"fn": tool_split, "wraps": ("split",), "gated": None}),
         ("partition", {"fn": tool_partition, "wraps": ("partition",), "gated": None}),
+        (
+            "cast_rays",
+            {"fn": tool_cast_rays, "wraps": ("cast_rays",), "gated": None},
+        ),
+        (
+            "locate_points",
+            {"fn": tool_locate_points, "wraps": ("locate_points",), "gated": None},
+        ),
         (
             "interpolate",
             {"fn": tool_interpolate, "wraps": ("interpolate",), "gated": None},

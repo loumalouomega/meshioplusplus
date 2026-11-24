@@ -180,6 +180,8 @@
 #include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/parameterize.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
@@ -7360,6 +7362,74 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("angle_tolerance") = 10.0, py::arg("subdivisions") = 3,
         py::arg("region") = std::string(), py::arg("rotate_vector_data") = false);
+
+    // Rays against a surface and point location in a mesh: arrays in, arrays
+    // out. See operations/cast_rays.hpp and operations/locate_points.hpp.
+    m.def(
+        "cast_rays",
+        [](py::object pymesh,
+           py::array_t<double, py::array::c_style | py::array::forcecast> origins,
+           py::array_t<double, py::array::c_style | py::array::forcecast> directions,
+           double max_distance, const std::string& region) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            if (origins.ndim() != 2 || origins.shape(1) != 3)
+                throw std::invalid_argument("meshio++: cast_rays: origins must be (N, 3)");
+            if (directions.ndim() == 1 && directions.shape(0) == 3) {
+                // one direction for every ray
+            } else if (directions.ndim() != 2 || directions.shape(1) != 3) {
+                throw std::invalid_argument(
+                    "meshio++: cast_rays: directions must be (3,) or (N, 3)");
+            }
+            const std::vector<double> o(origins.data(), origins.data() + origins.size());
+            const std::vector<double> d(directions.data(), directions.data() + directions.size());
+            meshioplusplus::CastRaysOptions options;
+            options.mMaxDistance = max_distance;
+            options.mRegion = region;
+            const meshioplusplus::CastRaysResult r =
+                core_nogil([&] { return meshioplusplus::cast_rays(cpp, o, d, options); });
+            const auto n = static_cast<py::ssize_t>(r.mHit.size());
+            py::array_t<bool> hit(n);
+            for (py::ssize_t i = 0; i < n; ++i)
+                hit.mutable_data()[i] = r.mHit[static_cast<std::size_t>(i)] != 0;
+            py::array_t<double> point({n, py::ssize_t{3}}, r.mPoint.data());
+            py::array_t<double> normal({n, py::ssize_t{3}}, r.mNormal.data());
+            py::dict out;
+            out["hit"] = hit;
+            out["distance"] = py::array_t<double>(n, r.mDistance.data());
+            out["point"] = point;
+            out["normal"] = normal;
+            out["cell"] = py::array_t<std::int64_t>(n, r.mCell.data());
+            out["num_hits"] = r.mNumHits;
+            return out;
+        },
+        py::arg("mesh"), py::arg("origins"), py::arg("directions"),
+        py::arg("max_distance") = 0.0, py::arg("region") = std::string());
+    m.def(
+        "locate_points",
+        [](py::object pymesh,
+           py::array_t<double, py::array::c_style | py::array::forcecast> points,
+           double tolerance) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            if (points.ndim() != 2 || points.shape(1) != 3)
+                throw std::invalid_argument("meshio++: locate_points: points must be (N, 3)");
+            const std::vector<double> p(points.data(), points.data() + points.size());
+            meshioplusplus::LocatePointsOptions options;
+            options.mTolerance = tolerance;
+            const meshioplusplus::LocatePointsResult r =
+                core_nogil([&] { return meshioplusplus::locate_points(cpp, p, options); });
+            const auto n = static_cast<py::ssize_t>(r.mCell.size());
+            py::dict out;
+            out["cell"] = py::array_t<std::int64_t>(n, r.mCell.data());
+            out["nodes"] = py::array_t<std::int64_t>({n, py::ssize_t{4}}, r.mNodes.data());
+            out["barycentric"] = py::array_t<double>({n, py::ssize_t{4}}, r.mBarycentric.data());
+            out["num_located"] = r.mNumLocated;
+            return out;
+        },
+        py::arg("mesh"), py::arg("points"), py::arg("tolerance") = 1e-12);
 
     // Mass, centre of mass and inertia of a body. A dict report. See
     // operations/mass_properties.hpp.
