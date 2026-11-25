@@ -2452,6 +2452,30 @@ def _apply_step(mesh, step, steps, warnings):
         )
         entry["NumDegenerate"] = float(report["num_degenerate"])
         entry["NumComponents"] = float(report["num_components"])
+    elif op == "FilterPoints":
+        from ._filter_points import filter_points
+
+        def _fp_integer(key, fallback):
+            v = _number(step, key, float(fallback))
+            if float(int(v)) != v:
+                raise ValueError(f"pipeline: FilterPoints: {key} must be an integer")
+            return int(v)
+
+        mesh, report = filter_points(
+            mesh,
+            statistical_k=_fp_integer("StatisticalK", 0),
+            std_ratio=_number(step, "StdRatio", 1.0),
+            radius=_number(step, "Radius", 0.0),
+            min_neighbors=_fp_integer("MinNeighbors", 4),
+            voxel_size=_number(step, "VoxelSize", 0.0),
+            min_distance=_number(step, "MinDistance", 0.0),
+            return_report=True,
+        )
+        entry["NumRemovedStatistical"] = float(report["num_removed_statistical"])
+        entry["NumRemovedRadius"] = float(report["num_removed_radius"])
+        entry["NumRemovedVoxel"] = float(report["num_removed_voxel"])
+        entry["NumRemovedPoisson"] = float(report["num_removed_poisson"])
+        warnings.extend(f"filter_points: {w}" for w in report["warnings"])
     elif op == "ReconstructSurface":
         from ._reconstruct_surface import reconstruct_surface
 

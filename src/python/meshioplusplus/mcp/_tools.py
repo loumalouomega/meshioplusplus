@@ -57,6 +57,9 @@ from .. import (
     box_points,
     box_surface,
     capsule,
+)
+from .. import cast_rays as _cast_rays_op
+from .. import (
     cell_data_to_point_data,
     check_conformity,
     check_quality,
@@ -113,14 +116,9 @@ from .. import (
     extrude,
 )
 from .. import face_support as _face_support_op
-from .. import (
-    feature_edges,
-    fichera,
-    find_interface,
-    find_intersections,
-    find_symmetry_plane,
-    fit_cad,
-)
+from .. import feature_edges, fichera
+from .. import filter_points as _filter_points_op
+from .. import find_interface, find_intersections, find_symmetry_plane, fit_cad
 from .. import fit_cad_iterate as _fit_cad_iterate_op
 from .. import fit_curves as _fit_curves_op
 from .. import fit_primitives
@@ -142,16 +140,21 @@ from .. import hollow as _hollow_op
 from .. import (
     honeycomb,
     icosa_sphere,
+    iga_bezier_extract,
+    iga_closest_point,
     iga_evaluate,
     iga_refine,
+    iga_remove_knots,
     iga_sample,
     interpolate,
     isosurface,
     laplacian_eigenmodes,
     line,
-    lshape,
-    match_periodic_nodes,
 )
+from .. import locate_points as _locate_points_op
+from .. import lshape
+from .. import mass_properties as _mass_properties_op
+from .. import match_periodic_nodes
 from .. import measure as _measure_op
 from .. import (
     merge,
@@ -780,6 +783,35 @@ def tool_stats(input_path, file_format=None, time_step=0, piece=None, ghosts="ke
         readonly=True,
     )
     return _json_safe(compute_stats(mesh))
+
+
+def tool_mass_properties(
+    input_path,
+    file_format=None,
+    density=1.0,
+    density_array=None,
+    region=None,
+    thickness=0.0,
+    about="centroid",
+):
+    """Mass, centre of mass and inertia of a body.
+
+    Integrates a density over volume cells, a closed surface or (with
+    ``thickness``) a shell; reports the measure, mass, centre, inertia tensor
+    (xx yy zz xy yz zx), principal moments and axes and radii of gyration, for
+    the whole mesh and every named cell region.
+    """
+    mesh = _load(input_path, file_format, readonly=True)
+    return _json_safe(
+        _mass_properties_op(
+            mesh,
+            density=density,
+            density_array=density_array,
+            region=region,
+            thickness=thickness,
+            about=about,
+        )
+    )
 
 
 def tool_quality(input_path, file_format=None, output_path=None, output_format=None):
@@ -4014,6 +4046,66 @@ def tool_iga_sample(
     return _run_op(iga_sample, locals(), report=False)
 
 
+def tool_iga_closest_point(
+    input_path, points, input_format=None, patch=0, model="auto"
+):
+    """The point of a NURBS patch (a curve or a surface) closest to each of
+    points (a list of [x], [x, y] or [x, y, z], at most 10000): the parameters
+    of the closest point, the point and its distance, found by a seeded,
+    clamped Newton iteration on the exact second derivatives. A point beyond
+    the patch's edge lands on the edge."""
+    pts = np.asarray(points, dtype=np.float64)
+    if pts.ndim == 1:
+        pts = pts[:, None]
+    if len(pts) > _IGA_MAX_POINTS:
+        raise ValueError(
+            f"iga_closest_point: {len(pts)} points; at most {_IGA_MAX_POINTS} per call"
+        )
+    mesh = _load(input_path, input_format)
+    res = iga_closest_point(mesh, pts, patch=patch, model=model)
+    return _json_safe({"num_points": int(len(pts)), **res})
+
+
+def tool_iga_remove_knots(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    direction=0,
+    knots=None,
+    tolerance=0.0,
+    patch=0,
+    model="auto",
+    sample_subdivisions=0,
+):
+    """Remove knots from one patch of a NURBS model (The NURBS Book A5.8):
+    interior knots of direction go while the geometry moves by at most
+    tolerance (0 removes only what is exact up to rounding, undoing a knot
+    insertion); knots lists values to remove one copy of each (default every
+    copy of every interior knot). Reports, per distinct knot, the copies asked
+    for and removed; the reduced model is written."""
+    return _run_op(
+        iga_remove_knots,
+        locals(),
+        call={"knots": list(knots) if knots else ()},
+    )
+
+
+def tool_iga_bezier_extract(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    patch=0,
+    model="auto",
+):
+    """Bezier extraction of one patch of a NURBS model: every interior knot is
+    inserted up to multiplicity p, and the refined net is cut at its knot
+    spans into VTK Bezier curve/quadrilateral/hexahedron cells (HigherOrderDegrees,
+    RationalWeights for a rational patch), written in output_path."""
+    return _run_op(iga_bezier_extract, locals(), report=False)
+
+
 _IGA_MAX_POINTS = 10000
 
 
@@ -4028,7 +4120,8 @@ def tool_iga_evaluate(
 ):
     """Evaluate a patch of a NURBS model (a face of a B-rep) at parametric
     coordinates params (a list of [u], [u, v] or [u, v, w]): points, with
-    derivatives=1 the first derivatives and surface normals, the NURBS fields,
+    derivatives=1 the first derivatives and surface normals, derivatives=2 also
+    the second derivatives, the NURBS fields,
     and for a B-rep face whether each point lies inside its trimming loops."""
     points = np.asarray(params, dtype=np.float64)
     if points.ndim == 1:
@@ -6196,6 +6289,103 @@ def tool_interpolate(
     return _result(_store(out, output_path, output_format), out)
 
 
+def tool_filter_points(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    statistical_k=0,
+    std_ratio=1.0,
+    radius=0.0,
+    min_neighbors=4,
+    voxel_size=0.0,
+    min_distance=0.0,
+):
+    """Remove outliers from, and thin, a point cloud.
+
+    Steps run in order and are off at 0: statistical outlier removal
+    (statistical_k, std_ratio), radius outlier removal (radius, min_neighbors),
+    voxel thinning (voxel_size) and Poisson-disk thinning (min_distance). The
+    output is the surviving points as a point cloud; the report counts what each
+    step removed.
+    """
+    mesh = _load(input_path, input_format, readonly=True)
+    out, report = _filter_points_op(
+        mesh,
+        statistical_k=statistical_k,
+        std_ratio=std_ratio,
+        radius=radius,
+        min_neighbors=min_neighbors,
+        voxel_size=voxel_size,
+        min_distance=min_distance,
+        return_report=True,
+    )
+    report.pop("point_map", None)
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_cast_rays(
+    surface_path,
+    rays_path,
+    output_path,
+    surface_format=None,
+    rays_format=None,
+    output_format=None,
+    direction=None,
+    max_distance=0.0,
+    region=None,
+):
+    """Shoot rays at a surface and write the hit points.
+
+    ``rays_path`` is a point-cloud file whose points are the ray origins;
+    ``direction`` ([x, y, z]) is one direction for every ray, otherwise the
+    file's point array ``directions`` is used. The output is a vertex mesh of
+    the rays that hit, with ``ray:index``, ``ray:distance``, ``ray:cell`` (the
+    surface cell hit) and ``ray:normal``.
+    """
+    from .._cast_rays import _directions_of, _hits_mesh, _xyz
+
+    surface = _load(surface_path, surface_format)
+    rays = _load(rays_path, rays_format)
+    res = _cast_rays_op(
+        surface,
+        _xyz(rays.points),
+        _directions_of(rays, direction),
+        max_distance=max_distance,
+        region=region,
+    )
+    out = _hits_mesh(res)
+    report = {"num_rays": int(len(res["hit"])), "num_hits": int(res["num_hits"])}
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
+def tool_locate_points(
+    mesh_path,
+    points_path,
+    output_path,
+    mesh_format=None,
+    points_format=None,
+    output_format=None,
+    tolerance=1e-12,
+):
+    """Find the cell of a mesh that contains each point of a file.
+
+    The mesh is a volume mesh or a planar triangle mesh. The output is a vertex
+    mesh of the points that fell inside, with ``locate:cell`` (the global cell),
+    ``locate:nodes`` (the containing simplex's four point ids, -1 padded) and
+    ``locate:barycentric`` (its four weights).
+    """
+    from .._cast_rays import _located_mesh, _xyz
+
+    mesh = _load(mesh_path, mesh_format)
+    points = _load(points_path, points_format)
+    xyz = _xyz(points.points)
+    res = _locate_points_op(mesh, xyz, tolerance=tolerance)
+    out = _located_mesh(xyz, res)
+    report = {"num_points": int(len(xyz)), "num_located": int(res["num_located"])}
+    return _result(_store(out, output_path, output_format), out, **report)
+
+
 def tool_conservative_interpolate(
     source_path,
     target_path,
@@ -8011,6 +8201,14 @@ TOOL_REGISTRY = OrderedDict(
         ("info", {"fn": tool_info, "wraps": ("read_metadata",), "gated": None}),
         ("stats", {"fn": tool_stats, "wraps": ("compute_stats",), "gated": None}),
         (
+            "mass_properties",
+            {
+                "fn": tool_mass_properties,
+                "wraps": ("mass_properties",),
+                "gated": None,
+            },
+        ),
+        (
             "quality",
             {
                 "fn": tool_quality,
@@ -8204,6 +8402,30 @@ TOOL_REGISTRY = OrderedDict(
         (
             "iga_sample",
             {"fn": tool_iga_sample, "wraps": ("iga_sample",), "gated": None},
+        ),
+        (
+            "iga_closest_point",
+            {
+                "fn": tool_iga_closest_point,
+                "wraps": ("iga_closest_point",),
+                "gated": None,
+            },
+        ),
+        (
+            "iga_remove_knots",
+            {
+                "fn": tool_iga_remove_knots,
+                "wraps": ("iga_remove_knots",),
+                "gated": None,
+            },
+        ),
+        (
+            "iga_bezier_extract",
+            {
+                "fn": tool_iga_bezier_extract,
+                "wraps": ("iga_bezier_extract",),
+                "gated": None,
+            },
         ),
         (
             "iga_evaluate",
@@ -8752,6 +8974,18 @@ TOOL_REGISTRY = OrderedDict(
         ("merge", {"fn": tool_merge, "wraps": ("merge",), "gated": None}),
         ("split", {"fn": tool_split, "wraps": ("split",), "gated": None}),
         ("partition", {"fn": tool_partition, "wraps": ("partition",), "gated": None}),
+        (
+            "filter_points",
+            {"fn": tool_filter_points, "wraps": ("filter_points",), "gated": None},
+        ),
+        (
+            "cast_rays",
+            {"fn": tool_cast_rays, "wraps": ("cast_rays",), "gated": None},
+        ),
+        (
+            "locate_points",
+            {"fn": tool_locate_points, "wraps": ("locate_points",), "gated": None},
+        ),
         (
             "interpolate",
             {"fn": tool_interpolate, "wraps": ("interpolate",), "gated": None},

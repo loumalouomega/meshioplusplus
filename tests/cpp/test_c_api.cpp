@@ -1859,6 +1859,26 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
               MIO_ERR_INVALID_ARG);
     EXPECT_EQ(mio_iga_evaluation_array(a, MIO_IGA_FIELD, 0, &pa, nullptr, nullptr, nullptr),
               MIO_ERR_INVALID_ARG);
+    // derivatives = 2 adds the symmetric second-derivative block (N, 2, 2, 2).
+    EXPECT_EQ(mio_iga_evaluation_array(a, MIO_IGA_SECOND_DERIVATIVES, 0, &pa, nullptr, nullptr,
+                                       nullptr),
+              MIO_ERR_INVALID_ARG);  // not requested at derivatives = 1
+    mio_iga_evaluation* c = mio_iga_evaluate(info, 0, uv, 2, 2, 16);
+    ASSERT_NE(c, nullptr) << mio_last_error();
+    ASSERT_EQ(mio_iga_evaluation_array(c, MIO_IGA_SECOND_DERIVATIVES, 0, &pa, &dtype, &ndim, shape),
+              MIO_OK);
+    EXPECT_EQ(dtype, MIO_FLOAT64);
+    EXPECT_EQ(ndim, 4);
+    EXPECT_EQ(shape[0], 2);
+    EXPECT_EQ(shape[1], 2);
+    EXPECT_EQ(shape[2], 2);
+    EXPECT_EQ(shape[3], 2);
+    const double* h2 = static_cast<const double*>(pa);
+    for (int i = 0; i < 2; ++i)  // symmetric d2 x / du dv = d2 x / dv du
+        for (int comp = 0; comp < 2; ++comp)
+            EXPECT_EQ(h2[((i * 2 + 0) * 2 + 1) * 2 + comp], h2[((i * 2 + 1) * 2 + 0) * 2 + comp]);
+    EXPECT_EQ(mio_iga_evaluate(info, 0, uv, 2, 3, 16), nullptr);
+    mio_iga_evaluation_free(c);
     mio_iga_evaluation_free(a);
     mio_iga_evaluation_free(b);
 
@@ -1882,6 +1902,110 @@ TEST(CApi, IgaRefinesAndEvaluatesTheNurbsModel) {
     EXPECT_EQ(mio_nurbs_info_count(mapped, MIO_NURBS_PATCHES), 1);
     mio_mesh_free(cells);
     mio_format_info_free(mapped);
+
+    // The closest point: the annulus is a surface in 2-D here.
+    {
+        const double q[4] = {3.0, 0.0, 0.0, 1.5};
+        double prm[4], cls[4], dst[2];
+        int32_t pdim = 0;
+        ASSERT_EQ(mio_iga_closest_point(info, 0, q, 2, prm, cls, dst, &pdim), MIO_OK)
+            << mio_last_error();
+        EXPECT_EQ(pdim, 2);
+        EXPECT_NEAR(cls[0], 2.0, 1e-12);
+        EXPECT_NEAR(cls[1], 0.0, 1e-12);
+        EXPECT_NEAR(dst[0], 1.0, 1e-12);
+        EXPECT_NEAR(cls[2], 0.0, 1e-12);  // (0, 1.5) is on the patch's edge x = 0
+        EXPECT_NEAR(cls[3], 1.5, 1e-12);
+        EXPECT_NEAR(dst[1], 0.0, 1e-12);
+        EXPECT_EQ(mio_iga_closest_point(info, 0, q, 2, nullptr, nullptr, nullptr, nullptr), MIO_OK);
+        EXPECT_EQ(mio_iga_closest_point(info, 5, q, 2, prm, cls, dst, nullptr),
+                  MIO_ERR_INVALID_ARG);
+        EXPECT_EQ(mio_iga_closest_point(info, -1, q, 2, prm, cls, dst, nullptr),
+                  MIO_ERR_INVALID_ARG);
+        EXPECT_EQ(mio_iga_closest_point(nullptr, 0, q, 2, prm, cls, dst, nullptr),
+                  MIO_ERR_INVALID_ARG);
+        const double bad[2] = {std::nan(""), 0.0};
+        EXPECT_EQ(mio_iga_closest_point(info, 0, bad, 1, prm, cls, dst, nullptr),
+                  MIO_ERR_INVALID_ARG);
+    }
+    // Knot removal undoes the insertion of the refinement: two knots per direction.
+    {
+        mio_iga_remove_opts ro;
+        mio_iga_remove_opts_init(&ro);
+        EXPECT_EQ(ro.num_knots, 0);
+        EXPECT_EQ(ro.reserved[0], 0);
+        ro.direction = 0;
+        double rk[4] = {0, 0, 0, 0};
+        int32_t rq[4] = {0, 0, 0, 0}, rr[4] = {0, 0, 0, 0};
+        int64_t nrep = 0;
+        mio_format_info* reduced = nullptr;
+        mio_mesh* cells_r = mio_iga_remove_knots(refined, &ro, &reduced, 4, rk, rq, rr, &nrep);
+        ASSERT_NE(cells_r, nullptr) << mio_last_error();
+        ASSERT_NE(reduced, nullptr);
+        EXPECT_EQ(nrep, 2);
+        EXPECT_NEAR(rk[0], 1.0 / 3.0, 1e-15);
+        EXPECT_NEAR(rk[1], 2.0 / 3.0, 1e-15);
+        EXPECT_EQ(rq[0], 1);
+        EXPECT_EQ(rr[0], 1);
+        EXPECT_EQ(rr[1], 1);
+        mio_mesh_free(cells_r);
+        mio_format_info_free(reduced);
+        // The capacity only limits what is written; the count is the full one.
+        nrep = 0;
+        cells_r = mio_iga_remove_knots(refined, &ro, nullptr, 1, rk, rq, rr, &nrep);
+        ASSERT_NE(cells_r, nullptr) << mio_last_error();
+        EXPECT_EQ(nrep, 2);
+        mio_mesh_free(cells_r);
+        // Listed knots: one value, one copy; errors are NULL with a message.
+        const double one = 1.0 / 3.0;
+        ro.knots = &one;
+        ro.num_knots = 1;
+        cells_r = mio_iga_remove_knots(refined, &ro, nullptr, 0, nullptr, nullptr, nullptr, &nrep);
+        ASSERT_NE(cells_r, nullptr) << mio_last_error();
+        EXPECT_EQ(nrep, 1);
+        mio_mesh_free(cells_r);
+        const double absent = 0.5;
+        ro.knots = &absent;
+        EXPECT_EQ(mio_iga_remove_knots(refined, &ro, nullptr, 0, nullptr, nullptr, nullptr, nullptr),
+                  nullptr);
+        ro.num_knots = 0;
+        ro.direction = 5;
+        EXPECT_EQ(mio_iga_remove_knots(refined, &ro, nullptr, 0, nullptr, nullptr, nullptr, nullptr),
+                  nullptr);
+        ro.direction = 0;
+        ro.tolerance = -1.0;
+        EXPECT_EQ(mio_iga_remove_knots(refined, &ro, nullptr, 0, nullptr, nullptr, nullptr, nullptr),
+                  nullptr);
+        EXPECT_EQ(mio_iga_remove_knots(nullptr, nullptr, nullptr, 0, nullptr, nullptr, nullptr,
+                                       nullptr),
+                  nullptr);
+    }
+    // Bezier extraction: the annulus has unequal degrees (refused by name); a
+    // bi-quadratic square gives one Bezier cell of nine points.
+    EXPECT_EQ(mio_iga_bezier_extract(info, 0), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("unequal degrees"), std::string::npos);
+    EXPECT_EQ(mio_iga_bezier_extract(info, -1), nullptr);
+    EXPECT_EQ(mio_iga_bezier_extract(nullptr, 0), nullptr);
+    {
+        const auto sq = mt::temp_path(".mesh");
+        std::ofstream(sq, std::ios::binary)
+            << "MFEM NURBS mesh v1.0\ndimension\n2\nelements\n1\n5 3 0 1 2 3\nboundary\n0\n"
+               "edges\n4\n0 0 1\n0 3 2\n1 0 3\n1 1 2\nvertices\n4\nknotvectors\n2\n"
+               "2 3 0 0 0 1 1 1\n2 3 0 0 0 1 1 1\nweights\n1\n1\n1\n1\n1\n1\n1\n1\n1\n"
+               "FiniteElementSpace\nFiniteElementCollection: NURBS2\nVDim: 2\nOrdering: 1\n"
+               "0 0\n1 0\n1 1\n0 1\n0.5 0\n0.5 1\n0 0.5\n1 0.5\n0.5 0.5\n";
+        mio_format_info* sq_info = nullptr;
+        mio_mesh* sq_mesh = mio_read_with_info(sq.c_str(), "mfem", nullptr, &sq_info);
+        ASSERT_NE(sq_mesh, nullptr) << mio_last_error();
+        mio_mesh_free(sq_mesh);
+        mio_mesh* bez = mio_iga_bezier_extract(sq_info, 0);
+        ASSERT_NE(bez, nullptr) << mio_last_error();
+        EXPECT_EQ(mio_mesh_num_points(bez), 9);
+        EXPECT_EQ(mio_iga_bezier_extract(sq_info, 3), nullptr);
+        mio_mesh_free(bez);
+        mio_format_info_free(sq_info);
+        std::remove(sq.c_str());
+    }
     mio_format_info_free(refined);
     mio_format_info_free(info);
     std::remove(path.c_str());
@@ -9339,4 +9463,251 @@ TEST(CApi, ProfileSolidFeaturesAndRefusals) {
     EXPECT_NE(std::string(mio_last_error()).find("sketch"), std::string::npos);
     EXPECT_EQ(mio_has_profile_solid_provider() == 0 || mio_has_profile_solid_provider() == 1, true);
     mio_mesh_free(s);
+}
+
+// ---- mass properties (roadmap 9.4) ---------------------------------------
+
+namespace {
+
+// Two unit hexahedra stacked along z (0 <= z <= 2), with a per-cell density.
+mio_mesh* build_mass_mesh() {
+    std::vector<double> pts;
+    for (int z = 0; z < 3; ++z)
+        for (int y = 0; y < 2; ++y)
+            for (int x = 0; x < 2; ++x) {
+                pts.push_back(x);
+                pts.push_back(y);
+                pts.push_back(z);
+            }
+    const std::int64_t conn[16] = {0, 1, 3, 2, 4, 5, 7, 6, 4, 5, 7, 6, 8, 9, 11, 10};
+    const std::array<double, 2> rho = {1.0, 3.0};
+    std::int64_t sc[1] = {2};
+    const std::int64_t top[1] = {1};
+    mio_mesh* m = mio_mesh_create();
+    EXPECT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 12, 3, pts.data()), MIO_OK);
+    EXPECT_EQ(mio_mesh_add_cell_block(m, "hexahedron", 2, 8, MIO_INT64, conn), MIO_OK);
+    EXPECT_EQ(mio_mesh_append_cell_data(m, "rho", MIO_FLOAT64, 1, sc, rho.data()), MIO_OK);
+    EXPECT_EQ(mio_mesh_add_region(m, "top", MIO_REGION_CELL, -1, -1, top, 1), MIO_OK);
+    return m;
+}
+
+}  // namespace
+
+TEST(CApi, MassPropertiesHandle) {
+    mio_mesh* m = build_mass_mesh();
+    mio_mass_properties_opts opts;
+    mio_mass_properties_opts_init(&opts);
+    EXPECT_EQ(opts.density, 1.0);
+    opts.density_array = "rho";
+    mio_mass_report* r = mio_mass_properties(m, &opts);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+
+    char buf[64] = {};
+    EXPECT_EQ(mio_mass_report_kind(r, buf, sizeof(buf)), 5);
+    EXPECT_STREQ(buf, "solid");
+    ASSERT_EQ(mio_mass_report_count(r), 2);  // the total and region "top"
+
+    mio_mass_entry total{};
+    ASSERT_EQ(mio_mass_report_entry(r, 0, &total), MIO_OK);
+    EXPECT_EQ(total.num_cells, 2);
+    EXPECT_NEAR(total.measure, 2.0, 1e-12);
+    EXPECT_NEAR(total.mass, 4.0, 1e-12);
+    EXPECT_NEAR(total.centre[2], (0.5 + 3.0 * 1.5) / 4.0, 1e-12);
+    EXPECT_GT(total.principal_moments[2], total.principal_moments[0] - 1e-12);
+
+    mio_mass_entry top{};
+    ASSERT_EQ(mio_mass_report_entry(r, 1, &top), MIO_OK);
+    EXPECT_NEAR(top.mass, 3.0, 1e-12);
+    EXPECT_GE(mio_mass_report_entry_name(r, 0, buf, sizeof(buf)), 0);
+    EXPECT_STREQ(buf, "");
+    EXPECT_EQ(mio_mass_report_entry_name(r, 1, buf, sizeof(buf)), 3);
+    EXPECT_STREQ(buf, "top");
+    EXPECT_EQ(mio_mass_report_warnings(r, nullptr, 0), 0);
+
+    // Out of range, NULL out and NULL handle.
+    EXPECT_NE(mio_mass_report_entry(r, 2, &top), MIO_OK);
+    EXPECT_NE(mio_mass_report_entry(r, -1, &top), MIO_OK);
+    EXPECT_NE(mio_mass_report_entry(r, 0, nullptr), MIO_OK);
+    EXPECT_EQ(mio_mass_report_count(nullptr), -1);
+    mio_mass_report_free(r);
+    mio_mass_report_free(nullptr);
+    mio_mesh_free(m);
+}
+
+TEST(CApi, MassPropertiesOptionsAndErrors) {
+    mio_mesh* m = build_mass_mesh();
+    // Defaults with a NULL opts: density 1, about the centre.
+    mio_mass_report* r = mio_mass_properties(m, nullptr);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    mio_mass_entry e{};
+    ASSERT_EQ(mio_mass_report_entry(r, 0, &e), MIO_OK);
+    EXPECT_NEAR(e.mass, 2.0, 1e-12);
+    mio_mass_report_free(r);
+
+    // A region restricts the total and lists no sub-regions.
+    mio_mass_properties_opts opts;
+    mio_mass_properties_opts_init(&opts);
+    opts.region = "top";
+    r = mio_mass_properties(m, &opts);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mass_report_count(r), 1);
+    mio_mass_report_free(r);
+
+    // About the origin: the second moment grows by m |c|^2 terms.
+    mio_mass_properties_opts_init(&opts);
+    opts.about = 1;
+    r = mio_mass_properties(m, &opts);
+    ASSERT_NE(r, nullptr) << mio_last_error();
+    mio_mass_entry about_origin{};
+    ASSERT_EQ(mio_mass_report_entry(r, 0, &about_origin), MIO_OK);
+    EXPECT_GT(about_origin.inertia[0], e.inertia[0]);
+    mio_mass_report_free(r);
+
+    // Refusals: an unknown region, a bad `about`, a NULL mesh.
+    mio_mass_properties_opts_init(&opts);
+    opts.region = "nope";
+    EXPECT_EQ(mio_mass_properties(m, &opts), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("nope"), std::string::npos);
+    mio_mass_properties_opts_init(&opts);
+    opts.about = 7;
+    EXPECT_EQ(mio_mass_properties(m, &opts), nullptr);
+    EXPECT_EQ(mio_mass_properties(nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
+}
+
+// ---- ray casting and point location (roadmap 9.3) -------------------------
+
+namespace {
+
+// Two unit hexahedra stacked along z, reused from the mass tests' builder.
+mio_mesh* build_locate_mesh() { return build_mass_mesh(); }
+
+}  // namespace
+
+TEST(CApi, CastRaysHitsACube) {
+    mio_mesh* cube = capi_cube_surface();
+    const double origins[6] = {-1, 0.5, 0.5, 5, 5, 5};
+    const double direction[3] = {1, 0, 0};
+    int32_t hit[2] = {-1, -1};
+    double distance[2] = {0, 0}, point[6] = {}, normal[6] = {};
+    int64_t cell[2] = {0, 0}, num_hits = -1;
+    mio_cast_rays_opts opts;
+    mio_cast_rays_opts_init(&opts);
+    ASSERT_EQ(mio_cast_rays(cube, origins, 2, direction, 1, &opts, hit, distance, point, normal,
+                            cell, &num_hits),
+              MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(hit[0], 1);
+    EXPECT_EQ(hit[1], 0);
+    EXPECT_EQ(num_hits, 1);
+    EXPECT_NEAR(distance[0], 1.0, 1e-12);
+    EXPECT_TRUE(std::isnan(distance[1]));
+    EXPECT_NEAR(point[0], 0.0, 1e-12);
+    EXPECT_NEAR(normal[0], -1.0, 1e-12);
+    EXPECT_GE(cell[0], 0);
+    EXPECT_EQ(cell[1], -1);
+    // Every output is optional; a distance limit applies.
+    opts.max_distance = 0.5;
+    ASSERT_EQ(mio_cast_rays(cube, origins, 2, direction, 1, &opts, nullptr, nullptr, nullptr,
+                            nullptr, nullptr, &num_hits),
+              MIO_OK);
+    EXPECT_EQ(num_hits, 0);
+    // Refusals: a zero direction, a bad direction count, a NULL mesh, an unknown region.
+    const double zero[3] = {0, 0, 0};
+    EXPECT_NE(mio_cast_rays(cube, origins, 2, zero, 1, nullptr, hit, nullptr, nullptr, nullptr,
+                            nullptr, nullptr),
+              MIO_OK);
+    EXPECT_NE(mio_cast_rays(cube, origins, 2, direction, 3, nullptr, hit, nullptr, nullptr, nullptr,
+                            nullptr, nullptr),
+              MIO_OK);
+    EXPECT_NE(mio_cast_rays(nullptr, origins, 2, direction, 1, nullptr, hit, nullptr, nullptr,
+                            nullptr, nullptr, nullptr),
+              MIO_OK);
+    mio_cast_rays_opts_init(&opts);
+    opts.region = "nope";
+    EXPECT_NE(mio_cast_rays(cube, origins, 2, direction, 1, &opts, hit, nullptr, nullptr, nullptr,
+                            nullptr, nullptr),
+              MIO_OK);
+    EXPECT_NE(std::string(mio_last_error()).find("nope"), std::string::npos);
+    mio_mesh_free(cube);
+}
+
+TEST(CApi, LocatePointsInTwoHexahedra) {
+    mio_mesh* m = build_locate_mesh();
+    const double pts[9] = {0.5, 0.5, 0.5, 0.25, 0.75, 1.5, 9, 9, 9};
+    int64_t cell[3], nodes[12], located = -1;
+    double bary[12];
+    mio_locate_points_opts opts;
+    mio_locate_points_opts_init(&opts);
+    EXPECT_EQ(opts.tolerance, 1e-12);
+    ASSERT_EQ(mio_locate_points(m, pts, 3, &opts, cell, nodes, bary, &located), MIO_OK)
+        << mio_last_error();
+    EXPECT_EQ(cell[0], 0);
+    EXPECT_EQ(cell[1], 1);
+    EXPECT_EQ(cell[2], -1);
+    EXPECT_EQ(located, 2);
+    double sum = 0.0;
+    for (int k = 0; k < 4; ++k)
+        sum += bary[k];
+    EXPECT_NEAR(sum, 1.0, 1e-12);
+    for (int k = 8; k < 12; ++k) {
+        EXPECT_EQ(nodes[k], -1);
+        EXPECT_EQ(bary[k], 0.0);
+    }
+    // Every output is optional; a NULL opts is the default.
+    EXPECT_EQ(mio_locate_points(m, pts, 3, nullptr, nullptr, nullptr, nullptr, &located), MIO_OK);
+    EXPECT_EQ(located, 2);
+    opts.tolerance = -1.0;
+    EXPECT_NE(mio_locate_points(m, pts, 3, &opts, cell, nodes, bary, &located), MIO_OK);
+    EXPECT_NE(mio_locate_points(nullptr, pts, 3, nullptr, cell, nodes, bary, &located), MIO_OK);
+    mio_mesh_free(m);
+}
+
+// ---- point-cloud conditioning (roadmap 9.9) --------------------------------
+
+TEST(CApi, FilterPointsRemovesAnOutlierAndMapsPoints) {
+    std::vector<double> pts;
+    for (int i = 0; i < 20; ++i) {
+        pts.push_back(0.1 * i);
+        pts.push_back(0.0);
+        pts.push_back(0.0);
+    }
+    pts.insert(pts.end(), {50.0, 50.0, 50.0});  // the outlier, point 20
+    mio_mesh* m = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(m, MIO_FLOAT64, 21, 3, pts.data()), MIO_OK);
+
+    mio_filter_points_opts opts;
+    mio_filter_points_opts_init(&opts);
+    EXPECT_EQ(opts.std_ratio, 1.0);
+    EXPECT_EQ(opts.min_neighbors, 4);
+    opts.radius = 0.5;
+    opts.min_neighbors = 2;
+    int64_t map[21] = {};
+    int64_t removed[4] = {-1, -1, -1, -1};
+    mio_mesh* out = mio_filter_points(m, &opts, map, removed);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(out), 20);
+    EXPECT_EQ(removed[1], 1);
+    EXPECT_EQ(removed[0] + removed[2] + removed[3], 0);
+    EXPECT_EQ(map[0], 0);
+    EXPECT_EQ(map[19], 19);
+    EXPECT_EQ(mio_filter_points_warnings(nullptr, 0), 0);
+    mio_mesh_free(out);
+
+    // Voxel thinning to a handful of points; both outputs optional.
+    mio_filter_points_opts_init(&opts);
+    opts.voxel_size = 0.5;
+    out = mio_filter_points(m, &opts, nullptr, nullptr);
+    ASSERT_NE(out, nullptr) << mio_last_error();
+    EXPECT_LT(mio_mesh_num_points(out), 21);
+    mio_mesh_free(out);
+
+    // Refusals: no step, a negative parameter, a NULL mesh.
+    mio_filter_points_opts_init(&opts);
+    EXPECT_EQ(mio_filter_points(m, &opts, nullptr, nullptr), nullptr);
+    EXPECT_NE(std::string(mio_last_error()).find("no step"), std::string::npos);
+    opts.radius = -1.0;
+    EXPECT_EQ(mio_filter_points(m, &opts, nullptr, nullptr), nullptr);
+    EXPECT_EQ(mio_filter_points(nullptr, nullptr, nullptr, nullptr), nullptr);
+    mio_mesh_free(m);
 }

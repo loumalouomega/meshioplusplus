@@ -135,6 +135,7 @@ module meshioplusplus
     public :: mio_detect_color_depth
     public :: mio_data_array_info
     public :: mio_field_integral_info
+    public :: mio_mass_entry
     public :: mio_convert, mio_version, mio_mesh_backend, mio_error_message
     public :: mio_cell_type_dimension, mio_cell_type_num_nodes
     public :: mio_pipeline_run_file, mio_pipeline_run_json, mio_pipeline_has_json
@@ -724,6 +725,17 @@ module meshioplusplus
         integer(c_int32_t) :: trim = 1
         integer(c_int32_t) :: reserved32(2) = 0
         integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_iga_remove_opts` (72 bytes).
+    type, bind(c) :: mio_iga_remove_opts_t
+        integer(c_int64_t) :: patch = 0
+        integer(c_int32_t) :: direction = 0
+        integer(c_int32_t) :: sample_subdivisions = 0
+        real(c_double) :: tolerance = 0.0_c_double
+        type(c_ptr) :: knots = c_null_ptr
+        integer(c_int64_t) :: num_knots = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Why `info%mesh_cad_surface` left a face out (C `mio_mesh_cad_face_status`).
@@ -1406,6 +1418,58 @@ module meshioplusplus
         integer(c_int32_t) :: pole = 0
         integer(c_int32_t) :: reserved0 = 0
         integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_filter_points_opts` (80 bytes).
+    type, bind(c) :: mio_filter_points_opts_t
+        integer(c_int64_t) :: statistical_k = 0
+        real(c_double) :: std_ratio = 1.0_c_double
+        real(c_double) :: radius = 0.0_c_double
+        integer(c_int64_t) :: min_neighbors = 4
+        real(c_double) :: voxel_size = 0.0_c_double
+        real(c_double) :: min_distance = 0.0_c_double
+        integer(c_int64_t) :: reserved(4) = 0
+    end type
+
+    !> Interop mirror of C `mio_cast_rays_opts` (64 bytes).
+    type, bind(c) :: mio_cast_rays_opts_t
+        real(c_double) :: max_distance = 0.0_c_double
+        type(c_ptr) :: region = c_null_ptr
+        integer(c_int64_t) :: reserved(6) = 0
+    end type
+
+    !> Interop mirror of C `mio_locate_points_opts` (64 bytes).
+    type, bind(c) :: mio_locate_points_opts_t
+        real(c_double) :: tolerance = 1.0e-12_c_double
+        integer(c_int64_t) :: reserved(7) = 0
+    end type
+
+    !> Interop mirror of C `mio_mass_properties_opts` (56 bytes).
+    type, bind(c) :: mio_mass_properties_opts_t
+        real(c_double) :: density = 1.0_c_double
+        type(c_ptr) :: density_array = c_null_ptr
+        type(c_ptr) :: region = c_null_ptr
+        real(c_double) :: thickness = 0.0_c_double
+        integer(c_int32_t) :: about = 0
+        integer(c_int32_t) :: reserved0 = 0
+        integer(c_int64_t) :: reserved(2) = 0
+    end type
+
+    !> One set of cells' mass properties (bind(c); layout must match
+    !> `mio_mass_entry` in meshioplusplus.h, 232 bytes): the whole selection or
+    !> one named cell region. `inertia` is `xx yy zz xy yz zx`; `principal_axes`
+    !> is a row-major 3x3, so axis k of the moment `principal_moments(k)` is
+    !> `principal_axes(k), principal_axes(k + 3), principal_axes(k + 6)`.
+    type, bind(c) :: mio_mass_entry
+        integer(c_int64_t) :: num_cells = 0
+        real(c_double) :: measure = 0.0_c_double
+        real(c_double) :: mass = 0.0_c_double
+        real(c_double) :: centre(3) = 0.0_c_double
+        real(c_double) :: inertia(6) = 0.0_c_double
+        real(c_double) :: principal_moments(3) = 0.0_c_double
+        real(c_double) :: principal_axes(9) = 0.0_c_double
+        real(c_double) :: gyration_radii(3) = 0.0_c_double
+        integer(c_int64_t) :: reserved(2) = 0
     end type
 
     !> Interop mirror of C `mio_hausdorff_opts`.
@@ -2431,7 +2495,7 @@ module meshioplusplus
     !> What `mio_iga_evaluation` holds (the C enum mio_iga_array).
     integer(c_int32_t), parameter, public :: MIO_IGA_POINTS = 0, MIO_IGA_DERIVATIVES = 1, &
                                              MIO_IGA_NORMALS = 2, MIO_IGA_INSIDE = 3, &
-                                             MIO_IGA_FIELD = 4
+                                             MIO_IGA_FIELD = 4, MIO_IGA_SECOND_DERIVATIVES = 5
     integer(c_int), parameter :: MIO_MDPA_PROPERTIES = 0, MIO_MDPA_ENTITY_NAMES = 1
     integer(c_int), parameter :: MIO_MDPA_SKIPPED = 2, MIO_MDPA_MODEL_PART_DATA = 3
     integer(c_int), parameter :: MIO_MDPA_TABLES = 4, MIO_MDPA_GEOMETRIES = 5
@@ -2900,6 +2964,10 @@ module meshioplusplus
         procedure :: render_text => mesh_render_text
         procedure :: write_snapshot => mesh_write_snapshot
         procedure :: hausdorff_distance => mesh_hausdorff_distance
+        procedure :: mass_properties => mesh_mass_properties
+        procedure :: cast_rays => mesh_cast_rays
+        procedure :: filter_points => mesh_filter_points
+        procedure :: locate_points => mesh_locate_points
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
         procedure :: match_periodic_nodes => mesh_match_periodic_nodes
@@ -3290,6 +3358,9 @@ module meshioplusplus
         procedure :: mdpa_data_values => format_info_mdpa_data_values
         procedure :: iga_refine => format_info_iga_refine
         procedure :: iga_sample => format_info_iga_sample
+        procedure :: iga_bezier_extract => format_info_iga_bezier_extract
+        procedure :: iga_remove_knots => format_info_iga_remove_knots
+        procedure :: iga_closest_point => format_info_iga_closest_point
         procedure :: iga_evaluate => format_info_iga_evaluate
         procedure :: mesh_cad_surface => format_info_mesh_cad_surface
     end type mio_format_info
@@ -3310,6 +3381,7 @@ module meshioplusplus
         procedure :: points => iga_evaluation_points
         procedure :: derivatives => iga_evaluation_derivatives
         procedure :: normals => iga_evaluation_normals
+        procedure :: second_derivatives => iga_evaluation_second_derivatives
         procedure :: inside => iga_evaluation_inside
         procedure :: field => iga_evaluation_field
     end type mio_iga_evaluation
@@ -4223,6 +4295,85 @@ module meshioplusplus
             integer(c_int) :: r
         end function
 
+        function c_mio_cast_rays(h, origins, num_rays, directions, num_directions, opts, hit, &
+                distance, point, normal, cell, num_hits) bind(c, name="mio_cast_rays") result(r)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t, c_double, mio_cast_rays_opts_t
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: origins(*), directions(*)
+            integer(c_int64_t), value :: num_rays, num_directions
+            type(mio_cast_rays_opts_t), intent(in) :: opts
+            integer(c_int32_t), intent(out) :: hit(*)
+            real(c_double), intent(out) :: distance(*), point(*), normal(*)
+            integer(c_int64_t), intent(out) :: cell(*), num_hits
+            integer(c_int) :: r
+        end function
+
+        function c_mio_locate_points(h, points, num_points, opts, cell, nodes, barycentric, &
+                num_located) bind(c, name="mio_locate_points") result(r)
+            import :: c_ptr, c_int, c_int64_t, c_double, mio_locate_points_opts_t
+            type(c_ptr), value :: h
+            real(c_double), intent(in) :: points(*)
+            integer(c_int64_t), value :: num_points
+            type(mio_locate_points_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: cell(*), nodes(*), num_located
+            real(c_double), intent(out) :: barycentric(*)
+            integer(c_int) :: r
+        end function
+
+        function c_mio_mass_properties(h, opts) bind(c, name="mio_mass_properties") result(r)
+            import :: c_ptr, mio_mass_properties_opts_t
+            type(c_ptr), value :: h
+            type(mio_mass_properties_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_mass_report_count(r) bind(c, name="mio_mass_report_count") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mass_report_entry(r, index, out) &
+                bind(c, name="mio_mass_report_entry") result(s)
+            import :: c_ptr, c_int, c_int64_t, mio_mass_entry
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index
+            type(mio_mass_entry), intent(out) :: out
+            integer(c_int) :: s
+        end function
+
+        function c_mio_mass_report_entry_name(r, index, buf, buflen) &
+                bind(c, name="mio_mass_report_entry_name") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: index, buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mass_report_kind(r, buf, buflen) &
+                bind(c, name="mio_mass_report_kind") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_mass_report_warnings(r, buf, buflen) &
+                bind(c, name="mio_mass_report_warnings") result(n)
+            import :: c_ptr, c_char, c_int64_t
+            type(c_ptr), value :: r
+            integer(c_int64_t), value :: buflen
+            character(kind=c_char), dimension(*), intent(out) :: buf
+            integer(c_int64_t) :: n
+        end function
+
+        subroutine c_mio_mass_report_free(r) bind(c, name="mio_mass_report_free")
+            import :: c_ptr
+            type(c_ptr), value :: r
+        end subroutine
+
         function c_mio_edit_regions(h, op, inputs, num_inputs, output, dim, tag, &
                                     keep_inputs) bind(c, name="mio_edit_regions") result(r)
             import :: c_ptr, c_int32_t, c_int64_t, mio_region_selector_t
@@ -4804,6 +4955,15 @@ module meshioplusplus
             type(mio_registration_opts_t), intent(in) :: opts
             type(mio_registration_report_t), intent(out) :: report
             integer(c_int) :: r
+        end function
+
+        function c_mio_filter_points(h, opts, point_map, num_removed) &
+                bind(c, name="mio_filter_points") result(r)
+            import :: c_ptr, c_int64_t, mio_filter_points_opts_t
+            type(c_ptr), value :: h
+            type(mio_filter_points_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: point_map(*), num_removed(4)
+            type(c_ptr) :: r
         end function
 
         function c_mio_estimate_normals(h, opts, num_degenerate, num_components) &
@@ -7111,6 +7271,40 @@ module meshioplusplus
             type(c_ptr), value :: info
             type(mio_iga_opts_t), intent(in) :: opts
             type(c_ptr), intent(out) :: mapped
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_iga_closest_point(info, patch, points, num_points, params, closest, &
+                                         distances, param_dim) bind(c, name="mio_iga_closest_point") &
+                result(st)
+            import :: c_ptr, c_double, c_int, c_int32_t, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int64_t), value :: patch, num_points
+            real(c_double), intent(in) :: points(*)
+            real(c_double), intent(out) :: params(*), closest(*), distances(*)
+            integer(c_int32_t), intent(out) :: param_dim
+            integer(c_int) :: st
+        end function
+
+        function c_mio_iga_remove_knots(info, opts, reduced, capacity, report_knots, &
+                                        report_requested, report_removed, num_report) &
+                bind(c, name="mio_iga_remove_knots") result(h)
+            import :: c_ptr, c_double, c_int32_t, c_int64_t, mio_iga_remove_opts_t
+            type(c_ptr), value :: info
+            type(mio_iga_remove_opts_t), intent(in) :: opts
+            type(c_ptr), intent(out) :: reduced
+            integer(c_int64_t), value :: capacity
+            real(c_double), intent(out) :: report_knots(*)
+            integer(c_int32_t), intent(out) :: report_requested(*), report_removed(*)
+            integer(c_int64_t), intent(out) :: num_report
+            type(c_ptr) :: h
+        end function
+
+        function c_mio_iga_bezier_extract(info, patch) bind(c, name="mio_iga_bezier_extract") &
+                result(h)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: info
+            integer(c_int64_t), value :: patch
             type(c_ptr) :: h
         end function
 
@@ -11402,6 +11596,248 @@ contains
         call clear_status(stat, errmsg)
     end function
 
+    !> The nearest surface hit of every ray (`origins(3, n)`, with one
+    !> `directions(3)` for all of them or `directions(3, n)`). Returns the number
+    !> of rays that hit, or -1 on failure. `hit(n)`, `distance(n)` (NaN on a
+    !> miss), `point(3, n)`, `normal(3, n)` (unit, NaN on a miss) and `cell(n)`
+    !> (the 1-based input cell hit, 0 on a miss) are optional outputs;
+    !> `max_distance` of 0 means no limit and `region` restricts the surface. See
+    !> doc/ray_queries.md.
+    function mesh_cast_rays(self, origins, directions, max_distance, region, hit, distance, &
+                            point, normal, cell, stat, errmsg) result(num_hits)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: origins(:, :), directions(:, :)
+        real(real64), intent(in), optional :: max_distance
+        character(*), intent(in), optional :: region
+        logical, allocatable, intent(out), optional :: hit(:)
+        real(real64), allocatable, intent(out), optional :: distance(:), point(:, :), normal(:, :)
+        integer(int64), allocatable, intent(out), optional :: cell(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: num_hits
+        type(mio_cast_rays_opts_t) :: opts
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_r
+        integer(c_int32_t), allocatable :: chit(:)
+        real(c_double), allocatable :: cdist(:), cpoint(:, :), cnormal(:, :)
+        integer(c_int64_t), allocatable :: ccell(:)
+        integer(c_int64_t) :: n, nd, nh
+        integer(c_int) :: s
+
+        num_hits = -1
+        n = int(size(origins, 2), c_int64_t)
+        nd = int(size(directions, 2), c_int64_t)
+        if (size(origins, 1) /= 3 .or. size(directions, 1) /= 3) then
+            call handle_failure('cast_rays', 'origins and directions must have three rows', &
+                                stat, errmsg)
+            return
+        end if
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: cast_rays layout mismatch'
+            error stop 1
+        end if
+        if (present(max_distance)) opts%max_distance = real(max_distance, c_double)
+        if (present(region)) then
+            buf_r = trim(region)//c_null_char
+            opts%region = c_loc(buf_r(1:1))
+        end if
+        allocate (chit(max(n, 1_c_int64_t)), cdist(max(n, 1_c_int64_t)), cpoint(3, max(n, 1_c_int64_t)), &
+                  cnormal(3, max(n, 1_c_int64_t)), ccell(max(n, 1_c_int64_t)))
+        s = c_mio_cast_rays(self%handle, origins, n, directions, nd, opts, chit, cdist, cpoint, &
+                            cnormal, ccell, nh)
+        if (s /= 0_c_int) then
+            call handle_failure('cast_rays', mio_error_message(), stat, errmsg)
+            return
+        end if
+        num_hits = int(nh, int64)
+        if (present(hit)) then
+            allocate (hit(n))
+            hit = chit(1:n) /= 0
+        end if
+        if (present(distance)) then
+            allocate (distance(n))
+            distance = real(cdist(1:n), real64)
+        end if
+        if (present(point)) then
+            allocate (point(3, n))
+            point = real(cpoint(:, 1:n), real64)
+        end if
+        if (present(normal)) then
+            allocate (normal(3, n))
+            normal = real(cnormal(:, 1:n), real64)
+        end if
+        if (present(cell)) then
+            allocate (cell(n))
+            cell = int(ccell(1:n), int64) + 1_int64
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The cell of the mesh containing each point (`points(3, n)`); returns the
+    !> number of points located, or -1 on failure. `cell(n)` is the 1-based input
+    !> cell (0 outside), `nodes(4, n)` the 1-based point ids of the containing
+    !> simplex (0 outside or as padding) and `barycentric(4, n)` its weights; the
+    !> mesh is a volume mesh or a planar triangle mesh. See doc/ray_queries.md.
+    function mesh_locate_points(self, points, tolerance, cell, nodes, barycentric, stat, &
+                                errmsg) result(num_located)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in) :: points(:, :)
+        real(real64), intent(in), optional :: tolerance
+        integer(int64), allocatable, intent(out), optional :: cell(:), nodes(:, :)
+        real(real64), allocatable, intent(out), optional :: barycentric(:, :)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(int64) :: num_located
+        type(mio_locate_points_opts_t) :: opts
+        integer(c_int64_t), allocatable :: ccell(:), cnodes(:, :)
+        real(c_double), allocatable :: cbary(:, :)
+        integer(c_int64_t) :: n, nl
+        integer(c_int) :: s
+
+        num_located = -1
+        n = int(size(points, 2), c_int64_t)
+        if (size(points, 1) /= 3) then
+            call handle_failure('locate_points', 'points must have three rows', stat, errmsg)
+            return
+        end if
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: locate_points layout mismatch'
+            error stop 1
+        end if
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        allocate (ccell(max(n, 1_c_int64_t)), cnodes(4, max(n, 1_c_int64_t)), &
+                  cbary(4, max(n, 1_c_int64_t)))
+        s = c_mio_locate_points(self%handle, points, n, opts, ccell, cnodes, cbary, nl)
+        if (s /= 0_c_int) then
+            call handle_failure('locate_points', mio_error_message(), stat, errmsg)
+            return
+        end if
+        num_located = int(nl, int64)
+        if (present(cell)) then
+            allocate (cell(n))
+            cell = int(ccell(1:n), int64) + 1_int64
+        end if
+        if (present(nodes)) then
+            allocate (nodes(4, n))
+            nodes = int(cnodes(:, 1:n), int64) + 1_int64
+        end if
+        if (present(barycentric)) then
+            allocate (barycentric(4, n))
+            barycentric = real(cbary(:, 1:n), real64)
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Mass, centre of mass and inertia of a body: the volume cells, the body a
+    !> closed triangle or polygon surface encloses, or (with `thickness > 0`) a
+    !> shell. Returns the total mass, or -1 on failure. `density_array` names a
+    !> scalar cell_data array of per-cell densities; `region` restricts the
+    !> total to a cell region; `about` is 'centroid' (default) or 'origin'.
+    !> `total` receives the whole selection, `regions`/`region_names` one entry
+    !> per named cell region, `body_kind` is 'solid' or 'shell' and `warnings`
+    !> the '\n'-joined warnings. See doc/mass_properties.md.
+    function mesh_mass_properties(self, density, density_array, region, thickness, about, &
+                                  body_kind, total, regions, region_names, warnings, &
+                                  stat, errmsg) result(mass)
+        class(mio_mesh), intent(in) :: self
+        real(real64), intent(in), optional :: density, thickness
+        character(*), intent(in), optional :: density_array, region, about
+        character(:), allocatable, intent(out), optional :: body_kind, warnings
+        type(mio_mass_entry), intent(out), optional :: total
+        type(mio_mass_entry), allocatable, intent(out), optional :: regions(:)
+        character(len=STRBUF_LEN), allocatable, intent(out), optional :: region_names(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64) :: mass
+        type(mio_mass_properties_opts_t) :: opts
+        type(mio_mass_entry) :: entry
+        type(c_ptr) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: buf_d, buf_r
+        character(kind=c_char) :: buf(STRBUF_LEN)
+        integer(c_int64_t) :: n, k, got
+        integer(c_int) :: s
+
+        mass = -1.0_real64
+        if (present(regions)) allocate (regions(0))
+        if (present(region_names)) allocate (region_names(0))
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. &
+            (c_sizeof(opts) /= 56_c_size_t .or. c_sizeof(entry) /= 232_c_size_t)) then
+            write (error_unit, '(a)') 'meshio++: mass_properties layout mismatch'
+            error stop 1
+        end if
+        if (present(density)) opts%density = real(density, c_double)
+        if (present(thickness)) opts%thickness = real(thickness, c_double)
+        if (present(density_array)) then
+            buf_d = trim(density_array)//c_null_char
+            opts%density_array = c_loc(buf_d(1:1))
+        end if
+        if (present(region)) then
+            buf_r = trim(region)//c_null_char
+            opts%region = c_loc(buf_r(1:1))
+        end if
+        if (present(about)) then
+            select case (trim(about))
+            case ('centroid', 'centre', 'center')
+                opts%about = 0_c_int32_t
+            case ('origin')
+                opts%about = 1_c_int32_t
+            case default
+                call handle_failure('mass_properties', &
+                                    "about must be 'centroid' or 'origin'", stat, errmsg)
+                return
+            end select
+        end if
+        rep = c_mio_mass_properties(self%handle, opts)
+        if (.not. c_associated(rep)) then
+            call handle_failure('mass_properties', mio_error_message(), stat, errmsg)
+            return
+        end if
+        n = c_mio_mass_report_count(rep)
+        s = c_mio_mass_report_entry(rep, 0_c_int64_t, entry)
+        if (n < 1 .or. s /= 0_c_int) then
+            call c_mio_mass_report_free(rep)
+            call handle_failure('mass_properties', mio_error_message(), stat, errmsg)
+            return
+        end if
+        mass = real(entry%mass, real64)
+        if (present(total)) total = entry
+        if (present(body_kind)) then
+            got = c_mio_mass_report_kind(rep, buf, int(STRBUF_LEN, c_int64_t))
+            body_kind = from_c_buf(buf, max(0, min(int(got), STRBUF_LEN - 1)))
+        end if
+        if (present(warnings)) then
+            got = c_mio_mass_report_warnings(rep, buf, int(STRBUF_LEN, c_int64_t))
+            warnings = from_c_buf(buf, max(0, min(int(got), STRBUF_LEN - 1)))
+        end if
+        if (present(regions) .or. present(region_names)) then
+            if (present(regions)) then
+                deallocate (regions)
+                allocate (regions(n - 1))
+            end if
+            if (present(region_names)) then
+                deallocate (region_names)
+                allocate (region_names(n - 1))
+            end if
+            do k = 1, n - 1
+                if (present(regions)) then
+                    s = c_mio_mass_report_entry(rep, k, regions(k))
+                    if (s /= 0_c_int) then
+                        call c_mio_mass_report_free(rep)
+                        call handle_failure('mass_properties', mio_error_message(), stat, errmsg)
+                        mass = -1.0_real64
+                        return
+                    end if
+                end if
+                if (present(region_names)) then
+                    got = c_mio_mass_report_entry_name(rep, k, buf, int(STRBUF_LEN, c_int64_t))
+                    region_names(k) = ''
+                    if (got > 0) region_names(k) = from_c_buf(buf, min(int(got), STRBUF_LEN - 1))
+                end if
+            end do
+        end if
+        call c_mio_mass_report_free(rep)
+        call clear_status(stat, errmsg)
+    end function
+
     !> The C value of a region kind name ('point', 'cell', 'side'), or -1 for
     !> any other string.
     pure function region_kind_code(kind) result(k)
@@ -12562,6 +12998,56 @@ contains
         end if
         if (present(num_degenerate)) num_degenerate = int(nd, int64)
         if (present(num_components)) num_components = int(nc, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remove outliers from, and thin, a point cloud: statistical outlier removal
+    !> (`statistical_k` neighbours, `std_ratio`), radius outlier removal (`radius`,
+    !> `min_neighbors`), voxel thinning (`voxel_size`) and Poisson-disk thinning
+    !> (`min_distance`), in that order; a step is off at 0 and at least one must
+    !> be on. Returns the point cloud (every per-point array gathered, Point
+    !> regions following, cells dropped). `point_map(n_out)` is each output
+    !> point's 1-based input point and `num_removed(4)` the points each step
+    !> removed. See doc/filter_points.md.
+    function mesh_filter_points(self, statistical_k, std_ratio, radius, min_neighbors, &
+                                voxel_size, min_distance, point_map, num_removed, stat, errmsg) &
+        result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: statistical_k, min_neighbors
+        real(real64), intent(in), optional :: std_ratio, radius, voxel_size, min_distance
+        integer(int64), allocatable, intent(out), optional :: point_map(:)
+        integer(int64), intent(out), optional :: num_removed(4)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_filter_points_opts_t) :: opts
+        integer(c_int64_t), allocatable :: cmap(:)
+        integer(c_int64_t) :: removed(4)
+        integer(int64) :: n_in, n_out
+
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 80_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: filter_points layout mismatch'
+            error stop 1
+        end if
+        if (present(statistical_k)) opts%statistical_k = int(statistical_k, c_int64_t)
+        if (present(std_ratio)) opts%std_ratio = real(std_ratio, c_double)
+        if (present(radius)) opts%radius = real(radius, c_double)
+        if (present(min_neighbors)) opts%min_neighbors = int(min_neighbors, c_int64_t)
+        if (present(voxel_size)) opts%voxel_size = real(voxel_size, c_double)
+        if (present(min_distance)) opts%min_distance = real(min_distance, c_double)
+        n_in = int(c_mio_mesh_num_points(self%handle), int64)
+        allocate (cmap(max(n_in, 1_int64)))
+        out%handle = c_mio_filter_points(self%handle, opts, cmap, removed)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('filter_points', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_removed)) num_removed = int(removed, int64)
+        if (present(point_map)) then
+            n_out = int(c_mio_mesh_num_points(out%handle), int64)
+            allocate (point_map(n_out))
+            point_map = int(cmap(1:n_out), int64) + 1_int64
+        end if
         call clear_status(stat, errmsg)
     end function
 
@@ -18029,6 +18515,135 @@ contains
         call clear_status(stat, errmsg)
     end function
 
+    !> The point of patch `patch` (1-based) of this NURBS model closest to each
+    !> column of `points(space_dim, N)` (a curve or a surface, rational or not):
+    !> the closest points `(space_dim, N)`, with `params(d, N)` their parameters
+    !> and `distances(N)` the distances. A point beyond the patch's edge lands on
+    !> the edge; a volume is refused.
+    function format_info_iga_closest_point(self, patch, points, params, distances, stat, &
+                                           errmsg) result(closest)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in) :: patch
+        real(real64), intent(in) :: points(:, :)
+        real(real64), allocatable, intent(out), optional :: params(:, :), distances(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: closest(:, :)
+        real(c_double), allocatable :: flat(:), p_out(:), c_out(:), d_out(:)
+        integer :: d, n, st
+        integer(c_int32_t) :: pdim
+        n = size(points, 2)
+        flat = reshape(real(points, c_double), [size(points)])
+        allocate (p_out(max(1, 2*n)), c_out(max(1, size(points))), d_out(max(1, n)))
+        st = c_mio_iga_closest_point(self%handle, int(patch - 1, c_int64_t), flat, &
+                                     int(n, c_int64_t), p_out, c_out, d_out, pdim)
+        d = int(pdim)
+        if (st /= 0) then
+            allocate (closest(size(points, 1), 0))
+            call handle_failure('iga_closest_point', mio_error_message(), stat, errmsg)
+            return
+        end if
+        closest = reshape(real(c_out(1:size(points)), real64), shape(points))
+        if (present(params)) params = reshape(real(p_out(1:d*n), real64), [d, n])
+        if (present(distances)) distances = real(d_out(1:n), real64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Remove knots from direction `direction` (1-based) of patch `patch` (1-based,
+    !> default 1) of this NURBS model while the geometry moves by at most
+    !> `tolerance` (default 0: only what is exact up to rounding). `knots` lists
+    !> the values to remove, one copy per entry (default: every copy of every
+    !> interior knot). The reduced model is sampled again; `reduced` receives it
+    !> and `report_knots`, `requested` and `removed` the knot values tried, the
+    !> copies asked for and the copies removed.
+    function format_info_iga_remove_knots(self, direction, knots, tolerance, patch, &
+                                          sample_subdivisions, reduced, report_knots, &
+                                          requested, removed, stat, errmsg) result(out)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in), optional :: direction, patch, sample_subdivisions
+        real(real64), intent(in), optional :: knots(:)
+        real(real64), intent(in), optional :: tolerance
+        class(mio_format_info), intent(inout), optional :: reduced
+        real(real64), allocatable, intent(out), optional :: report_knots(:)
+        integer, allocatable, intent(out), optional :: requested(:), removed(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_iga_remove_opts_t) :: opts
+        type(c_ptr) :: res, ih
+        real(c_double), allocatable :: rk(:)
+        integer(c_int32_t), allocatable :: rq(:), rr(:)
+        integer(c_int64_t) :: n, cap
+        real(c_double), allocatable, target :: kc(:)
+        if (c_sizeof(opts) /= 72_c_size_t) then
+            write (error_unit, '(a,i0,a)') 'meshio++: iga_remove_knots layout mismatch (', &
+                c_sizeof(opts), ' bytes)'
+            error stop 1
+        end if
+        if (present(direction)) opts%direction = int(direction - 1, c_int32_t)
+        if (present(patch)) opts%patch = int(patch - 1, c_int64_t)
+        if (present(sample_subdivisions)) opts%sample_subdivisions = int(sample_subdivisions, c_int32_t)
+        if (present(tolerance)) opts%tolerance = real(tolerance, c_double)
+        if (present(knots)) then
+            if (size(knots) > 0) then
+                kc = real(knots, c_double)
+                opts%knots = c_loc(kc)
+                opts%num_knots = int(size(knots), c_int64_t)
+            end if
+        end if
+        cap = max(16_c_int64_t, opts%num_knots)
+        allocate (rk(cap), rq(cap), rr(cap))
+        res = c_mio_iga_remove_knots(self%handle, opts, ih, cap, rk, rq, rr, n)
+        if (c_associated(res) .and. n > cap) then
+            call c_mio_mesh_free(res)
+            call c_mio_format_info_free(ih)
+            deallocate (rk, rq, rr)
+            cap = n
+            allocate (rk(cap), rq(cap), rr(cap))
+            res = c_mio_iga_remove_knots(self%handle, opts, ih, cap, rk, rq, rr, n)
+        end if
+        if (.not. c_associated(res)) then
+            call handle_failure('iga_remove_knots', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        if (present(reduced)) then
+            call format_info_free(reduced)
+            reduced%handle = ih
+        else
+            call c_mio_format_info_free(ih)
+        end if
+        if (present(report_knots)) report_knots = real(rk(1:n), real64)
+        if (present(requested)) requested = int(rq(1:n))
+        if (present(removed)) removed = int(rr(1:n))
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Bezier extraction of patch `patch` (1-based) of this NURBS model: every
+    !> interior knot raised to multiplicity p and the net cut into one VTK Bezier
+    !> curve, quadrilateral or hexahedron cell per knot-span product, with the
+    !> cell data HigherOrderDegrees, iga:patch and iga:span and, for a rational
+    !> patch, the point data RationalWeights. A patch with unequal degrees is
+    !> refused (raise them with `iga_refine` first).
+    function format_info_iga_bezier_extract(self, patch, stat, errmsg) result(out)
+        class(mio_format_info), intent(in) :: self
+        integer, intent(in), optional :: patch
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(c_ptr) :: res
+        integer(c_int64_t) :: pi
+        pi = 0
+        if (present(patch)) pi = int(patch - 1, c_int64_t)
+        res = c_mio_iga_bezier_extract(self%handle, pi)
+        if (.not. c_associated(res)) then
+            call handle_failure('iga_bezier_extract', mio_error_message(), stat, errmsg)
+            return
+        end if
+        out%handle = res
+        call clear_status(stat, errmsg)
+    end function
+
     !> Triangulate the faces of this B-rep (`info` from `m%read_with_info` of
     !> 'cad_json', 'step' or 'iges') into one conforming surface mesh with edges
     !> of about `target_size` (doc/mesh_cad.md): every edge sampled once and
@@ -19195,7 +19810,7 @@ contains
 
     !> Evaluate patch `patch` (1-based; the face of a B-rep) at the parametric
     !> coordinates `params(d, N)` (one column per point, `d` the parametric
-    !> dimension), each inside the patch's knot range. `derivatives` 0 or 1.
+    !> dimension), each inside the patch's knot range. `derivatives` 0, 1 or 2.
     function format_info_iga_evaluate(self, patch, params, derivatives, trim_samples, stat, &
                                       errmsg) result(ev)
         class(mio_format_info), intent(in) :: self
@@ -19288,6 +19903,25 @@ contains
         call iga_array(self, MIO_IGA_DERIVATIVES, 0, 'iga_derivatives', p, shp, ok, stat, errmsg)
         if (.not. ok .or. shp(1) == 0) return
         call c_f_pointer(p, vals, [shp(3), shp(2), shp(1)])
+        d = real(vals, real64)
+    end function
+
+    !> The second derivatives, `(space dimension, parametric dimension,
+    !> parametric dimension, N)` (`derivatives = 2` only): `d2 x / d u_k d u_l`.
+    function iga_evaluation_second_derivatives(self, stat, errmsg) result(d)
+        class(mio_iga_evaluation), intent(in) :: self
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        real(real64), allocatable :: d(:, :, :, :)
+        type(c_ptr) :: p
+        integer(c_int64_t) :: shp(MIO_MAX_NDIM)
+        logical :: ok
+        real(c_double), pointer :: vals(:, :, :, :)
+        allocate (d(0, 0, 0, 0))
+        call iga_array(self, MIO_IGA_SECOND_DERIVATIVES, 0, 'iga_second_derivatives', p, shp, ok, &
+                       stat, errmsg)
+        if (.not. ok .or. shp(1) == 0) return
+        call c_f_pointer(p, vals, [shp(4), shp(3), shp(2), shp(1)])
         d = real(vals, real64)
     end function
 

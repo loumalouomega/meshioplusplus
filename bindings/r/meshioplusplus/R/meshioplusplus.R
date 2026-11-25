@@ -2911,6 +2911,117 @@ mio_hausdorff_distance <- function(a, b, face_samples = 0, region_a = "", region
   )
 }
 
+#' Remove outliers from, and thin, a point cloud
+#'
+#' Applies up to four steps in this order, each seeing the points the one before
+#' kept, to the points of `mesh`: statistical outlier removal (`statistical_k`
+#' neighbours; a point whose mean neighbour distance exceeds the mean by
+#' `std_ratio` standard deviations goes; Rusu et al. 2008), radius outlier removal
+#' (fewer than `min_neighbors` other points within `radius`), voxel thinning (one
+#' real point, the one nearest the mean, per cube of side `voxel_size`) and
+#' Poisson-disk thinning (kept points at least `min_distance` apart, greedy in
+#' index order). A step is off at 0 and at least one must be on. See
+#' `doc/filter_points.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param statistical_k,std_ratio Statistical outlier removal.
+#' @param radius,min_neighbors Radius outlier removal.
+#' @param voxel_size Voxel thinning: the cube side.
+#' @param min_distance Poisson-disk thinning: the minimum distance.
+#' @return A list of `mesh` (the point cloud: per-point arrays gathered, Point
+#'   regions following, cells dropped), `point_map` (each output point's 1-based
+#'   input point), `num_removed` (named `statistical`, `radius`, `voxel`,
+#'   `poisson`) and `warnings` (a character vector).
+#' @export
+mio_filter_points <- function(mesh, statistical_k = 0, std_ratio = 1, radius = 0,
+                              min_neighbors = 4, voxel_size = 0, min_distance = 0) {
+  res <- .Call(
+    R_mio_filter_points, mesh, as.numeric(statistical_k), as.numeric(std_ratio),
+    as.numeric(radius), as.numeric(min_neighbors), as.numeric(voxel_size),
+    as.numeric(min_distance)
+  )
+  res$warnings <- if (nzchar(res$warnings)) strsplit(res$warnings, "\n", fixed = TRUE)[[1]] else character()
+  res
+}
+
+#' The nearest surface hit of a batch of rays
+#'
+#' Shoots every ray `origin + t * direction` (the direction is normalised, so
+#' `t` is a length) at the surface cells of `mesh` -- triangles, quadrilaterals
+#' and polygons, optionally one cell region -- and reports the nearest hit with
+#' `0 < t <= max_distance`. A ray through a shared edge or vertex hits once.
+#' See `doc/ray_queries.md`.
+#'
+#' @param mesh A `mio_mesh` with surface cells (a volume mesh is refused:
+#'   extract its surface first).
+#' @param origins A 3 x n matrix, one ray origin per column.
+#' @param directions A 3 x n matrix, or a vector of three numbers for every ray.
+#' @param max_distance Ignore hits farther than this; `0` for no limit.
+#' @param region Restrict the surface to this named cell region; `""` for all.
+#' @return A list of `hit` (logical, n), `distance` (n, `NaN` on a miss),
+#'   `point` and `normal` (3 x n, unit normal on the triangle's winding side,
+#'   `NaN` on a miss), `cell` (n, the 1-based input cell hit, 0 on a miss) and
+#'   `num_hits`.
+#' @export
+mio_cast_rays <- function(mesh, origins, directions, max_distance = 0, region = "") {
+  .Call(
+    R_mio_cast_rays, mesh, as.matrix(origins), if (is.matrix(directions)) directions else as.numeric(directions),
+    as.numeric(max_distance), as.character(region)
+  )
+}
+
+#' The cell containing each point
+#'
+#' Reduces `mesh` to simplices (as `mio_interpolate()` does) and finds, for each
+#' point, the first containing simplex in ascending order; a point on a shared
+#' face belongs to the lowest-numbered cell. A weight at least `-tolerance`
+#' counts as inside. Volume meshes and planar triangle meshes are located. See
+#' `doc/ray_queries.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param points A 3 x n matrix, one point per column.
+#' @param tolerance Barycentric containment tolerance.
+#' @return A list of `cell` (n, the 1-based input cell, 0 outside), `nodes`
+#'   (4 x n, the 1-based point ids of the containing simplex, 0 for none or
+#'   padding), `barycentric` (4 x n) and `num_located`.
+#' @export
+mio_locate_points <- function(mesh, points, tolerance = 1e-12) {
+  .Call(R_mio_locate_points, mesh, as.matrix(points), as.numeric(tolerance))
+}
+
+#' Mass, centre of mass and inertia of a body
+#'
+#' Integrates a density over the volume cells of a mesh, over the body a closed
+#' triangle or polygon surface encloses, or (with `thickness`) over a shell,
+#' and reports the mass, centre of mass, inertia tensor, principal moments and
+#' axes and radii of gyration for the whole selection and for every named cell
+#' region. See `doc/mass_properties.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param density Density of every cell.
+#' @param density_array Name of a scalar `cell_data` array of per-cell
+#'   densities, replacing `density`; `""` uses `density`.
+#' @param region Restrict the total to this named cell region; `""` for all.
+#' @param thickness Above zero, surface cells are a shell of this thickness.
+#' @param about `"centroid"` (default) or `"origin"`: the point the inertia
+#'   tensor is taken about.
+#' @return A list of `kind` (`"solid"` or `"shell"`), `total` (a list of `name`,
+#'   `num_cells`, `measure`, `mass`, `centre`, `inertia` (`xx yy zz xy yz zx`),
+#'   `principal_moments` (ascending), `principal_axes` (a 3 x 3 matrix with one
+#'   axis per column) and `gyration_radii`), `regions` (a list of such lists,
+#'   one per named cell region) and `warnings` (a character vector).
+#' @export
+mio_mass_properties <- function(mesh, density = 1, density_array = "", region = "",
+                                thickness = 0, about = c("centroid", "origin")) {
+  about <- match.arg(about)
+  res <- .Call(
+    R_mio_mass_properties, mesh, as.numeric(density), as.character(density_array),
+    as.character(region), as.numeric(thickness), if (about == "origin") 1L else 0L
+  )
+  res$warnings <- if (nzchar(res$warnings)) strsplit(res$warnings, "\n", fixed = TRUE)[[1]] else character()
+  res
+}
+
 #' Repair a surface mesh's orientation, holes and pinched vertices
 #'
 #' Surface repair beyond `mio_clean()`: weld (opt-in) -> triangulate (blocks
@@ -3704,12 +3815,14 @@ mio_nurbs_info <- function(info) .Call(R_mio_nurbs_info, info)
 #'   the trimming loops.
 #' @param patch Patch (B-rep: face) to evaluate, 1-based.
 #' @param params A `(d, N)` matrix of parametric coordinates, one column per point.
-#' @param derivatives 0, or 1 for the first derivatives and the surface normals.
+#' @param derivatives 0; 1 for the first derivatives and the surface normals; 2 also
+#'   for the second derivatives.
 #' @return `mio_iga_refine()` and `mio_iga_sample()`: `list(mesh = , info = )`.
 #'   `mio_iga_evaluate()`: a list with `points` (`(space_dimension, N)`),
 #'   `fields` (one `(components, N)` matrix per NURBS field), `derivatives`
 #'   (`(space_dimension, d, N)`) and `normals` (`(3, N)`), both `NULL` unless
-#'   `derivatives = 1` (and a surface in 3-D for the normals), and `inside`
+#'   `derivatives = 1` (and a surface in 3-D for the normals), `second_derivatives`
+#'   (`(space_dimension, d, d, N)`, `NULL` unless `derivatives = 2`), and `inside`
 #'   (a logical vector for a B-rep face, else `NULL`).
 #' @export
 mio_iga_refine <- function(info, subdivisions = 1L, elevate = 0L, sample_subdivisions = 0L,
@@ -3724,6 +3837,26 @@ mio_iga_sample <- function(info, sample_subdivisions = 0L, trim_samples = 16L, e
                            trim = TRUE) {
   .Call(R_mio_iga_sample, info, as.integer(sample_subdivisions), as.integer(trim_samples),
         isTRUE(edges), isTRUE(trim))
+}
+
+#' @rdname mio_iga_refine
+#' @export
+mio_iga_closest_point <- function(info, points, patch = 1L) {
+  .Call(R_mio_iga_closest_point, info, as.integer(patch), points)
+}
+
+#' @rdname mio_iga_refine
+#' @export
+mio_iga_remove_knots <- function(info, direction = 1L, knots = numeric(), tolerance = 0,
+                                 patch = 1L, sample_subdivisions = 0L) {
+  .Call(R_mio_iga_remove_knots, info, as.integer(patch), as.integer(direction),
+        as.numeric(knots), as.numeric(tolerance), as.integer(sample_subdivisions))
+}
+
+#' @rdname mio_iga_refine
+#' @export
+mio_iga_bezier_extract <- function(info, patch = 1L) {
+  .Call(R_mio_iga_bezier_extract, info, as.integer(patch))
 }
 
 #' @rdname mio_iga_refine

@@ -24,9 +24,12 @@ mp.iga_sample(face, subdivisions=8)                         # the face as Lagran
 
 | Operation | What it does |
 |---|---|
-| `iga_evaluate(mesh, params, patch=0, derivatives=0)` | Points, NURBS fields and, with `derivatives=1`, first derivatives `(N, d, space dim)` and unit normals of a surface in 3-D, at the parametric coordinates `params` `(N, d)`. For a B-rep face, `inside`: whether each point lies in the face's trimming loops (even-odd over all of them). Rational, in 1, 2 or 3 parametric dimensions. |
+| `iga_evaluate(mesh, params, patch=0, derivatives=0)` | Points, NURBS fields and, with `derivatives=1`, first derivatives `(N, d, space dim)` and unit normals of a surface in 3-D, and with `derivatives=2` also the symmetric second derivatives `(N, d, d, space dim)`, at the parametric coordinates `params` `(N, d)`. For a B-rep face, `inside`: whether each point lies in the face's trimming loops (even-odd over all of them). Rational, in 1, 2 or 3 parametric dimensions. |
 | `iga_refine(mesh, subdivisions=1, elevate=0, sample_subdivisions=0)` | Degree elevation by `elevate`, then knot insertion splitting every nonzero knot span in `subdivisions` parts: the refined model, sampled again, with the refined model in `info`. |
 | `iga_sample(mesh, subdivisions=0)` | The model as Lagrange cells. |
+| `iga_remove_knots(mesh, direction=0, knots=(), tolerance=0.0, patch=0)` | Knot removal on one patch ([below](#knot-removal)). |
+| `iga_closest_point(mesh, points, patch=0)` | The closest point of a curve or surface patch to each query point ([below](#closest-point)). |
+| `iga_bezier_extract(mesh, patch=0)` | One patch of a NURBS model as VTK Bezier cells ([below](#bezier-extraction)). |
 
 `mesh` is a mesh whose `info` holds a model; `model="nurbs"` or `"brep"` picks one when it holds both, and a bare model dict is accepted too.
 
@@ -41,6 +44,24 @@ Both refinements are exact rearrangements of the same NURBS: the geometry, the p
 - A face's Kratos control-point ids (`control_point_ids`) have no meaning on a refined net and are cleared; edge curves and vertices are untouched.
 
 The refined model writes back through the format it came from: `mp.write("fine.mesh", fine, file_format="mfem")` writes an `MFEM NURBS mesh` from `fine.info["nurbs"]`, `mp.write("fine.cad.json", fine)` the refined B-rep. Any other format gets the sampled cells.
+
+## Bezier extraction
+
+`iga_bezier_extract(mesh, patch=0)` (C++ `iga_bezier_extract(info, patch)`, `meshioplusplus iga-bezier`, the MCP tool of the same name and the flat bindings) takes one patch of a NURBS model to the piecewise-Bezier form finite element codes assemble on. Every interior knot is raised to multiplicity `p` in each direction by exact knot insertion on the homogeneous net (a rational patch stays exact), and the refined net is cut at its nonzero knot spans: one `VTK_BEZIER_CURVE`, `VTK_BEZIER_QUADRILATERAL` or `VTK_BEZIER_HEXAHEDRON` cell per span product, with `(p+1)^d` points in the node order of the same-shape Lagrange cell, in Cartesian coordinates (the homogeneous values divided by the weight). Points are not shared between cells, as VTK's Bezier cells expect.
+
+The cells carry the cell data `HigherOrderDegrees` (Float64 `(cells, 3)`, an unused direction 0), `iga:patch` and `iga:span` (as `iga_sample` writes them), the point data `RationalWeights` when the patch is rational (any weight other than 1) and one point array per NURBS field. A VTU file keeps them as Bezier cells and a reader or ParaView evaluates them exactly. A patch whose directions have different degrees is refused by name, as VTK's Bezier cells take one order: raise them with `iga_refine(..., elevate=...)` first. A B-rep model is not a NURBS model and is refused too. The extraction *operators* per element, the other form the literature uses, are not produced.
+
+## Knot removal
+
+`iga_remove_knots(mesh, direction=0, knots=(), tolerance=0.0, patch=0)` (C++ `iga_remove_knots(info, patch, direction, knots, tolerance, report)`, `meshioplusplus iga-remove-knots`, the MCP tool of the same name and the flat bindings) is the inverse of knot insertion, The NURBS Book's A5.8 run on the homogeneous net. Interior knots of one direction of one patch are removed while the geometry, and the NURBS fields, move by at most `tolerance`: the book's bound `d * wmin / (1 + Pmax)` on the homogeneous net (`wmin` the smallest weight, `Pmax` the largest control-point norm) keeps the curve or surface within `d` of the original. A tolerance of 0 removes only what is exact up to rounding (`1e-12` of the net's size), which is what undoes a knot insertion exactly, a rational patch included.
+
+`knots` lists the values to remove, one copy per entry (a value listed twice asks for two); empty asks for every copy of every interior knot. A knot of a surface or volume goes only if it goes from every line of the net, as the net must stay a tensor product, so the operation finds the number of copies every line can lose first and removes exactly that many. The report gives, per distinct knot value, the copies asked for and removed. The result is the model with that patch replaced and sampled again (the cell maps cleared, as `iga_refine` does). A knot that is not an interior knot of the direction, or that is listed more often than its multiplicity, is refused by name, as is a B-rep and a model whose patch topology joins several patches (they share knot vectors, so one patch alone cannot lose a knot).
+
+## Closest point
+
+`iga_closest_point(mesh, points, patch=0)` (C++ `iga_closest_point(info, patch, points)`, `meshioplusplus iga-closest-point`, the MCP tool of the same name and the flat bindings) finds, for each query point, the point of one patch nearest to it: the parameters, the point and the distance. It takes a curve (one parametric direction, in 1, 2 or 3 space dimensions) or a surface (two directions, in 2 or 3), rational or not. A lattice of samples (`degree + 1` per knot span and direction, at most about 64 per direction on a surface) seeds a Newton iteration on the squared distance with the exact second derivatives of `iga_evaluate(derivatives=2)`, clamped to the knot range (a point beyond an edge lands on the edge), falling back on Gauss-Newton where the Hessian is not positive definite and halving the step until the distance drops. The three nearest samples seed three runs and the closest result wins, so a point near a fold of the patch usually finds the global minimum, though no global guarantee is given, and a point equidistant from several places of the patch gets one of them. Each point is independent, so the result does not depend on the thread count.
+
+On a surface in 3-D it agrees with the projector behind [`project_to_cad`](./project_to_cad.md) to the projector's own tolerance, and it is the more accurate where a point lands on an edge. A volume (three directions) is refused by name, and so is a B-rep.
 
 ## Sampling
 
@@ -70,8 +91,12 @@ The [pipeline](/pipeline#the-rules) carries the model a CAD JSON, STEP, IGES or 
 
 - **Not a second entity kind in `Mesh`.** Operations on a mesh (`refine`, `smooth`, `partition`, …) still see only the sampling; the model changes only through these three operations. Putting patches and trims inside `Mesh` itself (every backend, binding and the ABI) is a recorded [non-goal](/roadmap#non-goals-and-decisions-taken) that a consumer needing it can reopen.
 - **Not a mesher.** `iga_sample` keeps the cells of a trimmed face whose centre its loops contain, so its trimmed edges are staircases; the loops themselves stay exact. A conforming triangulation that follows the trims is [`mesh_cad_surface`](/mesh_cad), on the same side channel.
-- **Not yet:** Bézier extraction, knot removal as an operation, second derivatives through the public `iga_evaluate` (the core evaluates them since v17.18.0 for `mesh_cad_surface`'s curvature sizing, not yet exposed), closest-point projection as a public query on a patch (a mesh's points are projected onto a B-rep's faces and edges by [`project_to_cad`](./project_to_cad.md), v17.23.0), and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
+- **Not yet:** the extraction operators per element, the closest point on a volume, knot removal, Bezier extraction and the closest point on a B-rep's face (a mesh's points are projected onto a B-rep's faces and edges by [`project_to_cad`](./project_to_cad.md), v17.23.0), and refinement of one patch of an MFEM model (the patch-level `iga_insert_knots` and `iga_elevate_degree` act on a single `NurbsPatch`, leaving the neighbours to the caller).
 
 ## Verification
+
+### Second derivatives
+
+`derivatives=2` adds `second_derivatives`, the full symmetric `d2 x / d u_k d u_l` of shape `(N, d, d, space dim)`, for curves, surfaces and volumes, rational or not (rational ones by the quotient rule `R_kl = (((A_kl - W_kl R) - W_k R_l) - W_l R_k) / W`). The first derivatives of order 2 come from the second-order basis recurrence and may differ from those of `derivatives=1` in the last bits. C: `MIO_IGA_SECOND_DERIVATIVES` of `mio_iga_array` (`derivatives` 0 to 2). The Python twin repeats the arithmetic order of the core, so both engines are bit-identical.
 
 The tests refine all six NURBS fixtures of the [MFEM](/formats/mfem) reader and every [CAD JSON](/formats/cad_json) fixture by h, p and both, on dense parameter grids: points, first derivatives, NURBS fields and the trimming test agree with the unrefined model to 1e-11, rational circles and spheres stay on their analytic surface to 1e-14, derivatives match central differences, a refined MFEM model writes and reads back, and the C++ core and the numpy twin return the same bits (`tests/python/test_iga.py`, `tests/cpp/test_iga.cpp`).

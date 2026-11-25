@@ -74,7 +74,7 @@ end
 export Mesh, MeshBorrow, MeshioError, BorrowError, Region
 export FormatInfo, read_with_info, write_with_info, format_name, mdpa_info, gmsh_info, nurbs_info,
        brep_info
-export iga_refine, iga_sample, iga_evaluate
+export iga_refine, iga_sample, iga_evaluate, iga_bezier_extract, iga_remove_knots, iga_closest_point
 export mesh_cad_surface, project_to_cad
 export write_gltf
 export render, render_text, render_png, write_snapshot, detect_color_depth, Frame, rgba
@@ -137,6 +137,7 @@ export deviation, deviation_regions, exaggerate, colorize
 export tetrahedralize, has_netgen, tetrahedralize_backends
 export remesh_quads, remesh_quads_backends
 export cut_level_set, cut_quadrature, has_cutcells
+export mass_properties, cast_rays, locate_points, filter_points
 export has_mmg, has_mmg_elas, adapt, metric_from_hessian, discretize_levelset, mesh_domain, move
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point

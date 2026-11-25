@@ -3009,6 +3009,35 @@
     ]
    }
   },
+  "cast_rays": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "origins"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "directions"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_distance"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "region"
+     }
+    ]
+   }
+  },
   "cell_data_to_point_data": {
    "kind": "function",
    "signature": {
@@ -5280,6 +5309,52 @@
     ]
    }
   },
+  "filter_points": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "points"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "statistical_k"
+     },
+     {
+      "default": "1.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "std_ratio"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "radius"
+     },
+     {
+      "default": "4",
+      "kind": "KEYWORD_ONLY",
+      "name": "min_neighbors"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "voxel_size"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "min_distance"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "find_interface": {
    "kind": "function",
    "signature": {
@@ -6515,6 +6590,52 @@
     ]
    }
   },
+  "iga_bezier_extract": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "patch"
+     },
+     {
+      "default": "'auto'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "model"
+     }
+    ]
+   }
+  },
+  "iga_closest_point": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "points"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "patch"
+     },
+     {
+      "default": "'auto'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "model"
+     }
+    ]
+   }
+  },
   "iga_evaluate": {
    "kind": "function",
    "signature": {
@@ -6592,6 +6713,52 @@
       "default": "True",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "trim"
+     }
+    ]
+   }
+  },
+  "iga_remove_knots": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "direction"
+     },
+     {
+      "default": "()",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "knots"
+     },
+     {
+      "default": "0.0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "tolerance"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "patch"
+     },
+     {
+      "default": "'auto'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "model"
+     },
+     {
+      "default": "0",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "sample_subdivisions"
+     },
+     {
+      "default": "False",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "return_report"
      }
     ]
    }
@@ -6800,6 +6967,26 @@
     ]
    }
   },
+  "locate_points": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "points"
+     },
+     {
+      "default": "1e-12",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
+     }
+    ]
+   }
+  },
   "lsdyna": {
    "kind": "module"
   },
@@ -6853,6 +7040,42 @@
   },
   "marc": {
    "kind": "module"
+  },
+  "mass_properties": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "1.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "density"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "density_array"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "region"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "thickness"
+     },
+     {
+      "default": "'centroid'",
+      "kind": "KEYWORD_ONLY",
+      "name": "about"
+     }
+    ]
+   }
   },
   "match_periodic_nodes": {
    "kind": "function",

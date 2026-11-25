@@ -372,7 +372,10 @@ export class MeshioPlusPlusLoadError extends Error {
  *   segment: (mesh: Mesh, featureAngle?: number, normalTolerance?: number, curvatureTolerance?: number, minPatchCells?: number, region?: string, prefix?: string, method?: 'angle' | 'primitive', tolerance?: number) => {mesh: Mesh, numPatches: number, numMerged: number, numFeatureEdges: number, numBoundaryEdges: number, numNonManifoldEdges: number},
  *   igaRefine: (info: object, options?: {subdivisions?: number | number[], elevate?: number | number[], sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
  *   igaSample: (info: object, options?: {sampleSubdivisions?: number, trimSamples?: number, edges?: boolean, trim?: boolean}) => {mesh: Mesh, info: object},
- *   igaEvaluate: (info: object, patch: number, params: ArrayLike<number>, options?: {derivatives?: 0 | 1, trimSamples?: number}) => object,
+ *   igaBezierExtract: (info: object, patch?: number) => Mesh,
+ *   igaClosestPoint: (info: object, patch: number, points: ArrayLike<number>) => {paramDim: number, spaceDim: number, params: Float64Array, points: Float64Array, distances: Float64Array},
+ *   igaRemoveKnots: (info: object, options?: {direction?: number, knots?: ArrayLike<number>, tolerance?: number, patch?: number, sampleSubdivisions?: number}) => {mesh: Mesh, info: object, report: {knots: number[], requested: number[], removed: number[], numRemoved: number}},
+ *   igaEvaluate: (info: object, patch: number, params: ArrayLike<number>, options?: {derivatives?: 0 | 1 | 2, trimSamples?: number}) => object,
  *   meshCadSurface: (info: object, options: {targetSize: number, maxChordalDeviation?: number, minPointsPerEdge?: number, tolerance?: number, recordFaceIds?: boolean, edges?: boolean, matchUnreferencedTrims?: boolean, strict?: boolean, maxPoints?: number, minAngle?: number, smoothIterations?: number, smoothMethod?: 'laplacian'|'odt', order?: 1|2|3, curvatureDeviation?: number, cellsAcrossGaps?: number, grading?: number, poleRings?: number, faceSizes?: object, edgeSizes?: object, background?: Mesh, backgroundArray?: string, metric?: 'mean'|'varying', virtualEdges?: boolean, reparamConditionNumber?: number, modelTolerances?: boolean, virtualFaces?: boolean, lopCorners?: boolean, metricBackground?: Mesh, metricArray?: string, metricError?: number, untangle?: boolean, quads?: 'none'|'dominant'|'all', quadPairs?: 'matching'|'greedy'}) => {mesh: Mesh, numPoints: number, numTriangles: number, numEdgeSegments: number, numFaces: number, numFailed: number, numEdges: number, numOpenEdges: number, numNonManifoldEdges: number, numMisorientedEdges: number, numDegenerateDropped: number, tolerance: number, minAngleDeg: number, maxAngleDeg: number, minEdge: number, maxEdge: number, maxEdgeGap: number, faces: Array<object>, warnings: string[], numRefinementPoints: number, numFacesBelowBound: number, numSmoothed: number, numCurvedStraightened: number, angleHistogram: number[], virtualEdges: number[][], reparametrised: Array<object>, mergedFaces: Array<object>, toleranceUses: Array<object>, loppedCorners: Array<object>, numUntangled: number, numQuads: number, numLeftoverTriangles: number, minQuadScaledJacobian: number, minMetricAngle: number},
  *   fitPrimitives: (mesh: Mesh, patchData?: string, tolerance?: number, relative?: boolean, minInlierFraction?: number, types?: string[], maxIterations?: number, options?: {region?: string, seeds?: number[][], featureAngle?: number, rimAngle?: number, outputRegion?: string, usedPoints?: string, criterion?: string}) => {mesh: Mesh, numPatches: number, numPlane: number, numSphere: number, numCylinder: number, numCone: number, numTorus: number, numUnfitted: number, numFeatureCells: number, warnings: string[]},
  *   fitCad: (mesh: Mesh, options?: {stepPath?: string, tolerance?: number, exactEdges?: boolean, types?: string[], meshDeflection?: number, maxDemotionRounds?: number, freeform?: boolean, freeformDegree?: number, freeformMaxControl?: number, freeformSplit?: boolean, fillets?: boolean, threads?: boolean, mergeFaces?: boolean, backend?: 'auto' | 'occt' | 'native', refineSegmentation?: boolean, maxRefineIterations?: number, refineEpsilon?: number, normalWeight?: number, allowMerge?: boolean, allowSplit?: boolean, ransacSeed?: number, refineTolerance?: number, relativeTolerance?: boolean, freeformGeneral?: boolean, freeformTolerance?: number, freeformSmoothing?: number, maxFreeformPoles?: number, maxFreeformIterations?: number, maxFreeformSplits?: number, sewTolerance?: number, extendSurfaces?: boolean, snapJunctions?: boolean, faceDeviation?: boolean, freeformMode?: 'legacy' | 'adaptive' | 'network' | 'auto', freeformParameterization?: 'auto' | 'projection' | 'lscm' | 'harmonic', extraordinaryVertex?: 'g0' | 'g1' | 'g1x' | 'g1xx', localRefine?: 'knots' | 'thb', freeformG1ToleranceDeg?: number, freeformMaxControlPoints?: number, layoutTargetPatchSize?: number, layoutMaxValenceDeviation?: number, resegmentRounds?: number, layoutSnapToFeatures?: boolean, validateBySurfaceSampling?: boolean, constrainPrimitives?: boolean, validationReport?: boolean, validationAcceptance?: boolean, freeformFitSchedule?: 'legacy' | 'continuation', freeformObjective?: 'default' | 'pdm' | 'tdm' | 'sdm', kinematicSurfaces?: boolean, freeformG1Solve?: 'sweeps' | 'coupled'}) => object,
@@ -382,6 +385,10 @@ export class MeshioPlusPlusLoadError extends Error {
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
  *   renderPng: (mesh: Mesh, options?: RenderOptions, compress?: number) => Uint8Array,
  *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
+ *   filterPoints: (mesh: Mesh, options?: {statisticalK?: number, stdRatio?: number, radius?: number, minNeighbors?: number, voxelSize?: number, minDistance?: number}) => {mesh: Mesh, pointMap: Int32Array, numRemoved: {statistical: number, radius: number, voxel: number, poisson: number}, warnings: string[]},
+ *   castRays: (mesh: Mesh, origins: Float64Array | number[], directions: Float64Array | number[], maxDistance?: number, region?: string) => {hit: Int32Array, distance: Float64Array, point: Float64Array, normal: Float64Array, cell: Int32Array, numHits: number},
+ *   locatePoints: (mesh: Mesh, points: Float64Array | number[], tolerance?: number) => {cell: Int32Array, nodes: Int32Array, barycentric: Float64Array, numLocated: number},
+ *   massProperties: (mesh: Mesh, density?: number, densityArray?: string, region?: string, thickness?: number, about?: string) => {kind: string, total: object, regions: object[], warnings: string[]},
  *   editRegions: (mesh: Mesh, edits: Array<{op: string, inputs: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>, output?: string, dim?: number, tag?: number, keepInputs?: boolean}>) => Mesh,
  *   regionAdjacency: (mesh: Mesh, regions?: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>) => Mesh,
  *   findInterface: (meshA: Mesh, regionA: string | object, regionB: string | object, options?: {meshB?: Mesh, mode?: 'conforming'|'proximity', master?: 'a'|'b', gapTolerance?: number, angleTolerance?: number, overlapTolerance?: number}) => {mesh: Mesh, report: object},
@@ -1298,6 +1305,9 @@ export async function loadMeshioPlusPlus(
         refinePatches: (mesh, options = {}) => Module.refinePatches(mesh, options),
         igaRefine: (info, options = {}) => Module.igaRefine(info, options),
         igaSample: (info, options = {}) => Module.igaSample(info, options),
+        igaBezierExtract: (info, patch = 0) => Module.igaBezierExtract(info, patch),
+        igaRemoveKnots: (info, options = {}) => Module.igaRemoveKnots(info, options),
+        igaClosestPoint: (info, patch, points) => Module.igaClosestPoint(info, patch, points),
         igaEvaluate: (info, patch, params, options = {}) =>
             Module.igaEvaluate(info, patch, params, options),
         meshCadSurface: (info, options) => Module.meshCadSurface(info, options),
@@ -1321,6 +1331,13 @@ export async function loadMeshioPlusPlus(
         renderPng: (mesh, options = {}, compress = 0) => Module.renderPng(mesh, options, compress),
         hausdorffDistance: (a, b, faceSamples = 0, regionA = '', regionB = '') =>
             Module.hausdorffDistance(a, b, faceSamples, regionA, regionB),
+        filterPoints: (mesh, options) => Module.filterPoints(mesh, options),
+        castRays: (mesh, origins, directions, maxDistance = 0, region = '') =>
+            Module.castRays(mesh, origins, directions, maxDistance, region),
+        locatePoints: (mesh, points, tolerance = 1e-12) =>
+            Module.locatePoints(mesh, points, tolerance),
+        massProperties: (mesh, density = 1, densityArray = '', region = '', thickness = 0, about = 'centroid') =>
+            Module.massProperties(mesh, density, densityArray, region, thickness, about),
         editRegions: (mesh, edits) =>
             Module.editRegions(mesh, Array.isArray(edits) ? edits : [edits]),
         regionAdjacency: (mesh, regions = []) => Module.regionAdjacency(mesh, regions),

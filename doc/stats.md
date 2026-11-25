@@ -21,7 +21,7 @@ print(s["num_inverted"])              # cells with negative volume
 
 ## What is measured
 
-- **Bounding box / extent / centroid** — over all points (a parallel reduction).
+- **Bounding box / extent / centroid** — over all points (a parallel reduction). The `centroid` is the **mean of the points**, not the centre of mass of the body; for that, and for the mass and inertia, use [`mass_properties`](/mass_properties).
 - **Per-cell-type counts** — the number of cells of each type.
 - **Total area** — the area of 2D cells (triangles, quads) plus the boundary surface area of 3D cells (computed via [surface extraction](/extract_surface)).
 - **Signed & unsigned volume** — of 3D cells (tetra / hex / wedge / pyramid), via the divergence theorem over each cell's outward-wound faces. `signed` sums the volumes; `unsigned` sums their magnitudes.

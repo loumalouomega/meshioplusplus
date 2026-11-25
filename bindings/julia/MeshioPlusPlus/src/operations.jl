@@ -4879,6 +4879,190 @@ function hausdorff_distance(a::Mesh, b::Mesh; face_samples::Integer=0,
 end
 
 """
+    filter_points(m; statistical_k=0, std_ratio=1.0, radius=0.0, min_neighbors=4,
+                  voxel_size=0.0, min_distance=0.0) -> (; mesh, point_map, num_removed, warnings)
+
+Remove outliers from, and thin, the points of `m`: up to four steps in this
+order, each seeing the points the one before kept -- statistical outlier removal
+(`statistical_k` neighbours; a point whose mean neighbour distance exceeds the
+mean by `std_ratio` standard deviations goes), radius outlier removal (fewer than
+`min_neighbors` other points within `radius`), voxel thinning (one real point,
+the one nearest the mean, per cube of side `voxel_size`) and Poisson-disk
+thinning (kept points at least `min_distance` apart, greedy in index order). A
+step is off at 0 and at least one must be on. Returns the point cloud `mesh`
+(per-point arrays gathered, Point regions following, cells dropped), `point_map`
+(each output point's 1-based input point), `num_removed` (a named tuple
+`(statistical, radius, voxel, poisson)`) and `warnings`. See
+`doc/filter_points.md`.
+"""
+function filter_points(m::Mesh; statistical_k::Integer=0, std_ratio::Real=1.0,
+                       radius::Real=0.0, min_neighbors::Integer=4, voxel_size::Real=0.0,
+                       min_distance::Real=0.0)
+    opts = _CFilterPointsOpts(Int64(statistical_k), Float64(std_ratio), Float64(radius),
+                              Int64(min_neighbors), Float64(voxel_size), Float64(min_distance),
+                              ntuple(_ -> Int64(0), 4))
+    h = _handle(m)
+    n_in = Int(num_points(m))
+    map = Vector{Int64}(undef, max(n_in, 1))
+    removed = Vector{Int64}(undef, 4)
+    ptr = GC.@preserve map removed ccall(_sym(:mio_filter_points), Ptr{Cvoid},
+                                         (Ptr{Cvoid}, Ref{_CFilterPointsOpts}, Ptr{Int64},
+                                          Ptr{Int64}), h, Ref(opts), pointer(map), pointer(removed))
+    out = Mesh(_check_ptr(ptr))
+    n_out = Int(num_points(out))
+    text = _getstring((buf, k) -> ccall(_sym(:mio_filter_points_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, point_map=Int[map[i] + 1 for i in 1:n_out],
+     num_removed=(statistical=Int(removed[1]), radius=Int(removed[2]), voxel=Int(removed[3]),
+                  poisson=Int(removed[4])),
+     warnings=isempty(text) ? String[] : String.(split(text, '\n')))
+end
+
+"""
+    cast_rays(m, origins, directions; max_distance=0.0, region="")
+        -> (; hit, distance, point, normal, cell, num_hits)
+
+The nearest surface hit of every ray `origin + t * direction` (the direction is
+normalised, so `t` is a length) at the triangle, quad and polygon cells of `m`,
+optionally one cell region, with `0 < t <= max_distance` (`0` for no limit).
+`origins` is a `3 x n` matrix, one ray per column; `directions` is a `3 x n`
+matrix or three numbers for every ray. Returns `hit` (a `Vector{Bool}`),
+`distance` (`NaN` on a miss), `point` and `normal` (`3 x n`, the unit triangle
+normal on its winding side, `NaN` on a miss), `cell` (the 1-based input cell hit,
+`0` on a miss) and `num_hits`. See `doc/ray_queries.md`.
+"""
+function cast_rays(m::Mesh, origins::AbstractMatrix{<:Real}, directions::AbstractVecOrMat{<:Real};
+                   max_distance::Real=0.0, region::AbstractString="")
+    size(origins, 1) == 3 || throw(ArgumentError("origins must be a 3 x n matrix"))
+    dirs = directions isa AbstractVector ? reshape(Vector{Cdouble}(directions), 3, 1) :
+           Matrix{Cdouble}(directions)
+    size(dirs, 1) == 3 || throw(ArgumentError("directions must have three rows"))
+    n = size(origins, 2)
+    nd = size(dirs, 2)
+    o = Matrix{Cdouble}(origins)
+    hit = Vector{Int32}(undef, max(n, 1))
+    distance = Vector{Cdouble}(undef, max(n, 1))
+    point = Matrix{Cdouble}(undef, 3, max(n, 1))
+    normal = Matrix{Cdouble}(undef, 3, max(n, 1))
+    cell = Vector{Int64}(undef, max(n, 1))
+    nh = Ref{Int64}(0)
+    rg = Vector{UInt8}(codeunits(String(region) * "\0"))
+    h = _handle(m)
+    GC.@preserve o dirs hit distance point normal cell rg begin
+        opts = _CCastRaysOpts(Float64(max_distance), Cstring(pointer(rg)),
+                              ntuple(_ -> Int64(0), 6))
+        _check(ccall(_sym(:mio_cast_rays), Cint,
+                     (Ptr{Cvoid}, Ptr{Cdouble}, Int64, Ptr{Cdouble}, Int64, Ref{_CCastRaysOpts},
+                      Ptr{Int32}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Int64},
+                      Ptr{Int64}),
+                     h, pointer(o), Int64(n), pointer(dirs), Int64(nd), Ref(opts), pointer(hit),
+                     pointer(distance), pointer(point), pointer(normal), pointer(cell), nh))
+    end
+    (hit=Bool[hit[i] != 0 for i in 1:n], distance=distance[1:n], point=point[:, 1:n],
+     normal=normal[:, 1:n], cell=Int[cell[i] + 1 for i in 1:n], num_hits=Int(nh[]))
+end
+
+"""
+    locate_points(m, points; tolerance=1e-12) -> (; cell, nodes, barycentric, num_located)
+
+The cell of `m` containing each column of the `3 x n` matrix `points`. `m` is
+reduced to simplices (as `interpolate` does) and the first containing simplex in
+ascending order wins, so a point on a shared face belongs to the lowest-numbered
+cell; a weight at least `-tolerance` counts as inside. Volume meshes and planar
+triangle meshes are located. Returns `cell` (the 1-based input cell, `0`
+outside), `nodes` (`4 x n`, the 1-based point ids of the containing simplex, `0`
+for none or padding), `barycentric` (`4 x n`) and `num_located`. See
+`doc/ray_queries.md`.
+"""
+function locate_points(m::Mesh, points::AbstractMatrix{<:Real}; tolerance::Real=1e-12)
+    size(points, 1) == 3 || throw(ArgumentError("points must be a 3 x n matrix"))
+    n = size(points, 2)
+    p = Matrix{Cdouble}(points)
+    cell = Vector{Int64}(undef, max(n, 1))
+    nodes = Matrix{Int64}(undef, 4, max(n, 1))
+    bary = Matrix{Cdouble}(undef, 4, max(n, 1))
+    nl = Ref{Int64}(0)
+    h = _handle(m)
+    GC.@preserve p cell nodes bary begin
+        opts = _CLocatePointsOpts(Float64(tolerance), ntuple(_ -> Int64(0), 7))
+        _check(ccall(_sym(:mio_locate_points), Cint,
+                     (Ptr{Cvoid}, Ptr{Cdouble}, Int64, Ref{_CLocatePointsOpts}, Ptr{Int64},
+                      Ptr{Int64}, Ptr{Cdouble}, Ptr{Int64}),
+                     h, pointer(p), Int64(n), Ref(opts), pointer(cell), pointer(nodes),
+                     pointer(bary), nl))
+    end
+    (cell=Int[cell[i] + 1 for i in 1:n], nodes=Int.(nodes[:, 1:n]) .+ 1,
+     barycentric=bary[:, 1:n], num_located=Int(nl[]))
+end
+
+"""
+    mass_properties(m; density=1.0, density_array="", region="", thickness=0.0,
+                    about=:centroid)
+        -> (; kind, total, regions, warnings)
+
+Mass, centre of mass and inertia of a body: the volume cells of `m`, the body a
+closed triangle or polygon surface encloses, or (with `thickness > 0`) a shell.
+`density_array` names a scalar `cell_data` array of per-cell densities,
+`region` restricts the total to a named cell region and `about` is `:centroid`
+or `:origin`, the point the inertia tensor is taken about. `total` and each of
+`regions` (one per named cell region) is a named tuple of `name`, `num_cells`,
+`measure` (volume, or area for a shell), `mass`, `centre`, `inertia`
+(`xx yy zz xy yz zx`), `principal_moments` (ascending), `principal_axes` (a
+3x3 matrix, one axis per column) and `gyration_radii`. See
+`doc/mass_properties.md`.
+"""
+function mass_properties(m::Mesh; density::Real=1.0, density_array::AbstractString="",
+                         region::AbstractString="", thickness::Real=0.0,
+                         about::Union{Symbol,AbstractString}=:centroid)
+    about_code = Symbol(about) === :centroid ? Int32(0) :
+                 Symbol(about) === :origin ? Int32(1) :
+                 throw(ArgumentError("about must be :centroid or :origin"))
+    da = Vector{UInt8}(codeunits(String(density_array) * "\0"))
+    rg = Vector{UInt8}(codeunits(String(region) * "\0"))
+    h = _handle(m)
+    handle = GC.@preserve da rg begin
+        opts = _CMassPropertiesOpts(Float64(density), Cstring(pointer(da)), Cstring(pointer(rg)),
+                                    Float64(thickness), about_code, Int32(0),
+                                    ntuple(_ -> Int64(0), 2))
+        _check_ptr(ccall(_sym(:mio_mass_properties), Ptr{Cvoid}, (Ptr{Cvoid}, Ref{_CMassPropertiesOpts}),
+                          h, Ref(opts)))
+    end
+    try
+        function entry(i::Int64)
+            e = Ref{_CMassEntry}()
+            _check(ccall(_sym(:mio_mass_report_entry), Cint, (Ptr{Cvoid}, Int64, Ptr{_CMassEntry}),
+                         handle, i, e))
+            name = _getstring() do buf, len
+                ccall(_sym(:mio_mass_report_entry_name), Int64,
+                      (Ptr{Cvoid}, Int64, Ptr{UInt8}, Int64), handle, i, buf, len)
+            end
+            r = e[]
+            (name=name, num_cells=Int(r.num_cells), measure=r.measure, mass=r.mass,
+             centre=collect(r.centre), inertia=collect(r.inertia),
+             principal_moments=collect(r.principal_moments),
+             principal_axes=[r.principal_axes[3 * i0 + j0 + 1] for i0 in 0:2, j0 in 0:2],
+             gyration_radii=collect(r.gyration_radii))
+        end
+        n = _check_count(ccall(_sym(:mio_mass_report_count), Int64, (Ptr{Cvoid},), handle),
+                         "mio_mass_report_count")
+        kind = _getstring() do buf, len
+            ccall(_sym(:mio_mass_report_kind), Int64, (Ptr{Cvoid}, Ptr{UInt8}, Int64),
+                  handle, buf, len)
+        end
+        text = _getstring() do buf, len
+            ccall(_sym(:mio_mass_report_warnings), Int64, (Ptr{Cvoid}, Ptr{UInt8}, Int64),
+                  handle, buf, len)
+        end
+        total = entry(Int64(0))
+        regions = [entry(Int64(i)) for i in 1:(n - 1)]
+        return (kind=kind, total=total, regions=regions,
+                warnings=isempty(text) ? String[] : String.(split(text, '\n')))
+    finally
+        ccall(_sym(:mio_mass_report_free), Cvoid, (Ptr{Cvoid},), handle)
+    end
+end
+
+"""
     check_quality(m; require="", max_inverted=0, max_degenerate=0)
         -> (; passed, num_checks, num_failed, num_cells, num_inverted, num_degenerate, summary)
 

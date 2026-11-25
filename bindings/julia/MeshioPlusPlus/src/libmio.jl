@@ -891,6 +891,18 @@ struct _CIgaOpts
     reserved::NTuple{6,Int64}
 end
 
+"""Mirror of C `mio_iga_remove_opts`. ABI; build through
+[`iga_remove_knots`](@ref)."""
+struct _CIgaRemoveOpts
+    patch::Int64
+    direction::Int32
+    sample_subdivisions::Int32
+    tolerance::Cdouble
+    knots::Ptr{Cdouble}
+    num_knots::Int64
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_mesh_cad_surface_opts`. ABI; build through
 [`mesh_cad_surface`](@ref)."""
 struct _CMeshCadSurfaceOpts
@@ -1868,6 +1880,54 @@ struct _CHausdorffReport
     reserved::NTuple{4,Int64}
 end
 
+"""Mirror of C `mio_filter_points_opts` (roadmap 9.9), 80 bytes."""
+struct _CFilterPointsOpts
+    statistical_k::Int64
+    std_ratio::Cdouble
+    radius::Cdouble
+    min_neighbors::Int64
+    voxel_size::Cdouble
+    min_distance::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+"""Mirror of C `mio_cast_rays_opts` (roadmap 9.3), 64 bytes."""
+struct _CCastRaysOpts
+    max_distance::Cdouble
+    region::Cstring
+    reserved::NTuple{6,Int64}
+end
+
+"""Mirror of C `mio_locate_points_opts`, 64 bytes."""
+struct _CLocatePointsOpts
+    tolerance::Cdouble
+    reserved::NTuple{7,Int64}
+end
+
+"""Mirror of C `mio_mass_properties_opts` (roadmap 9.4)."""
+struct _CMassPropertiesOpts
+    density::Cdouble
+    density_array::Cstring
+    region::Cstring
+    thickness::Cdouble
+    about::Int32
+    reserved0::Int32
+    reserved::NTuple{2,Int64}
+end
+
+"""Mirror of C `mio_mass_entry`."""
+struct _CMassEntry
+    num_cells::Int64
+    measure::Cdouble
+    mass::Cdouble
+    centre::NTuple{3,Cdouble}
+    inertia::NTuple{6,Cdouble}
+    principal_moments::NTuple{3,Cdouble}
+    principal_axes::NTuple{9,Cdouble}
+    gyration_radii::NTuple{3,Cdouble}
+    reserved::NTuple{2,Int64}
+end
+
 """Mirror of C `mio_region_selector` (v16.23.0); `-2` is `MIO_REGION_ANY`."""
 struct _CRegionSelector
     name::Cstring
@@ -2694,6 +2754,8 @@ function _check_abi_layout()
               "($(sizeof(_CFitPrimitivesReport)) bytes)")
     sizeof(_CIgaOpts) == 96 ||
         error("meshio++: mio_iga_opts layout mismatch ($(sizeof(_CIgaOpts)) bytes)")
+    sizeof(_CIgaRemoveOpts) == 72 ||
+        error("meshio++: mio_iga_remove_opts layout mismatch ($(sizeof(_CIgaRemoveOpts)) bytes)")
     sizeof(_CMeshCadSurfaceOpts) == 104 ||
         error("meshio++: mio_mesh_cad_surface_opts layout mismatch " *
               "($(sizeof(_CMeshCadSurfaceOpts)) bytes)")
@@ -2879,6 +2941,19 @@ function _check_abi_layout()
         error("meshio++: mio_snapshot_opts layout mismatch ($(sizeof(_CSnapshotOpts)) bytes)")
     sizeof(_CHausdorffOpts) == 80 ||
         error("meshio++: mio_hausdorff_opts layout mismatch ($(sizeof(_CHausdorffOpts)) bytes)")
+    sizeof(_CFilterPointsOpts) == 80 ||
+        error("meshio++: mio_filter_points_opts layout mismatch " *
+              "($(sizeof(_CFilterPointsOpts)) bytes)")
+    sizeof(_CCastRaysOpts) == 64 ||
+        error("meshio++: mio_cast_rays_opts layout mismatch ($(sizeof(_CCastRaysOpts)) bytes)")
+    sizeof(_CLocatePointsOpts) == 64 ||
+        error("meshio++: mio_locate_points_opts layout mismatch " *
+              "($(sizeof(_CLocatePointsOpts)) bytes)")
+    sizeof(_CMassPropertiesOpts) == 56 ||
+        error("meshio++: mio_mass_properties_opts layout mismatch " *
+              "($(sizeof(_CMassPropertiesOpts)) bytes)")
+    sizeof(_CMassEntry) == 232 ||
+        error("meshio++: mio_mass_entry layout mismatch ($(sizeof(_CMassEntry)) bytes)")
     sizeof(_CHausdorffReport) == 152 ||
         error("meshio++: mio_hausdorff_report layout mismatch " *
               "($(sizeof(_CHausdorffReport)) bytes)")

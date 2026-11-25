@@ -160,6 +160,27 @@ _VERBS = (
         add_args="add_sample_args",
     ),
     _Verb(
+        "iga-remove-knots",
+        "_iga",
+        "remove_knots_cmd",
+        "Remove knots from a NURBS patch within a tolerance (The NURBS Book A5.8)",
+        add_args="add_remove_knots_args",
+    ),
+    _Verb(
+        "iga-closest-point",
+        "_iga",
+        "closest_point_cmd",
+        "Closest point of a NURBS patch to query points (JSON)",
+        add_args="add_closest_point_args",
+    ),
+    _Verb(
+        "iga-bezier",
+        "_iga",
+        "bezier_cmd",
+        "Bezier extraction of a NURBS patch into VTK Bezier cells",
+        add_args="add_bezier_args",
+    ),
+    _Verb(
         "iga-evaluate",
         "_iga",
         "evaluate_cmd",
@@ -261,6 +282,30 @@ _VERBS = (
         "symmetry_plane_cmd",
         "The plane a mesh is most nearly symmetric about",
         "add_symmetry_args",
+    ),
+    _Verb(
+        "filter-points",
+        "_filter_points",
+        "filter_points_cmd",
+        "Outlier removal and thinning of a point cloud",
+    ),
+    _Verb(
+        "cast-rays",
+        "_cast_rays",
+        "cast_rays_cmd",
+        "The nearest surface hit of a batch of rays",
+    ),
+    _Verb(
+        "locate",
+        "_locate",
+        "locate_cmd",
+        "The cell containing each point of a file",
+    ),
+    _Verb(
+        "mass",
+        "_mass",
+        "mass_cmd",
+        "Mass, centre of mass and inertia of a body",
     ),
     _Verb(
         "point-normals",

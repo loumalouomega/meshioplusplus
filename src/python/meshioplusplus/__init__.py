@@ -127,6 +127,7 @@ if TYPE_CHECKING:
     from ._bake_texture import bake_texture
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
+    from ._cast_rays import cast_rays, locate_points
     from ._check_conformity import check_conformity
     from ._check_tetrahedra import check_tetrahedra
     from ._clean import clean
@@ -156,6 +157,7 @@ if TYPE_CHECKING:
     from ._error_size import error_size
     from ._extrude import extrude, revolve
     from ._feature_edges import feature_edges
+    from ._filter_points import filter_points
     from ._find_intersections import find_intersections
     from ._fit_cad import fit_cad
     from ._fit_cad_loop import constrain_primitives, face_support, fit_cad_iterate
@@ -192,7 +194,14 @@ if TYPE_CHECKING:
     from ._hausdorff import hausdorff_distance
     from ._hessian import hessian
     from ._hull import convex_hull, delaunay_2d
-    from ._iga import iga_evaluate, iga_refine, iga_sample
+    from ._iga import (
+        iga_bezier_extract,
+        iga_closest_point,
+        iga_evaluate,
+        iga_refine,
+        iga_remove_knots,
+        iga_sample,
+    )
     from ._interfaces import (
         contact_pairs,
         find_interface,
@@ -220,6 +229,7 @@ if TYPE_CHECKING:
     )
     from ._interpolate import interpolate
     from ._isosurface import isosurface
+    from ._mass_properties import mass_properties
     from ._measure import align_datums, measure, measure_table
     from ._merge import merge
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
@@ -410,6 +420,10 @@ _LAZY_ATTRS = {
     "convex_hull": "_hull",
     "delaunay_2d": "_hull",
     "estimate_normals": "_point_normals",
+    "mass_properties": "_mass_properties",
+    "cast_rays": "_cast_rays",
+    "filter_points": "_filter_points",
+    "locate_points": "_cast_rays",
     "reconstruct_surface": "_reconstruct_surface",
     "morph": "_morph",
     "prepare_metric": "_metric",
@@ -454,8 +468,11 @@ _LAZY_ATTRS = {
     "feature_edges": "_feature_edges",
     "fit_cad": "_fit_cad",
     "fit_primitives": "_fit_primitives",
+    "iga_bezier_extract": "_iga",
+    "iga_closest_point": "_iga",
     "iga_evaluate": "_iga",
     "iga_refine": "_iga",
+    "iga_remove_knots": "_iga",
     "iga_sample": "_iga",
     "segment": "_segment",
     "select": "_select",
@@ -777,8 +794,11 @@ __all__ = [
     "feature_edges",
     "fit_cad",
     "fit_primitives",
+    "iga_bezier_extract",
+    "iga_closest_point",
     "iga_evaluate",
     "iga_refine",
+    "iga_remove_knots",
     "iga_sample",
     "segment",
     "select",
@@ -860,6 +880,10 @@ __all__ = [
     "convex_hull",
     "delaunay_2d",
     "estimate_normals",
+    "mass_properties",
+    "cast_rays",
+    "filter_points",
+    "locate_points",
     "reconstruct_surface",
     "morph",
     "prepare_metric",

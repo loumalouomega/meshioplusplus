@@ -136,12 +136,51 @@ function t_mfem_nurbs()
     expect_equal(size(a.points), [2, 2]);
     assert(max(abs(a.points(:) - b.points(:))) < 1e-13);
     expect_equal(size(a.derivatives), [2, 2, 2]);
+    assert(isempty(a.second_derivatives));
+    c2 = mio.iga_evaluate(r.info, 1, uv, 'derivatives', 2);
+    expect_equal(size(c2.second_derivatives), [2, 2, 2, 2]);
+    assert(isequal(c2.second_derivatives(:, 1, 2, :), c2.second_derivatives(:, 2, 1, :)));
     assert(isempty(a.normals));
     assert(isempty(a.inside));
     expect_equal(numel(a.fields), 0);
     assert(isempty(b.derivatives));
     expect_error(@() mio.iga_evaluate(r.info, 1, [2, 0.5]), 'knot range');
     expect_error(@() mio.iga_evaluate(r.info, 1, [0.5, 0.5, 0.5]), 'params');
+    % closest point: the annulus is a surface in 2-D here
+    cp = mio.iga_closest_point(r.info, [3 0; 0 1.5]);
+    expect_equal(size(cp.params), [2 2]);
+    assert(max(abs(cp.points(1, :) - [2 0])) < 1e-12);
+    assert(max(abs(cp.distances - [1; 0])) < 1e-10);
+    expect_error(@() mio.iga_closest_point(r.info, [3 0], 4), 'patch');
+    % knot removal undoes the refinement's insertions: two knots per direction
+    red = mio.iga_remove_knots(fine.info, 'direction', 1);
+    expect_equal(red.report.num_removed, 2);
+    expect_equal(red.report.removed, [1; 1]);
+    assert(max(abs(red.report.knots - [1/3; 2/3])) < 1e-15);
+    red_info = mio.nurbs_info(red.info);
+    expect_equal(red_info.patches(1).degrees(:)', [3 2]);
+    mio.release(red.mesh);
+    mio.format_info_release(red.info);
+    expect_error(@() mio.iga_remove_knots(fine.info, 'knots', 0.5), 'knot');
+    expect_error(@() mio.iga_remove_knots(fine.info, 'direction', 4), 'direction');
+    % Bezier extraction: the annulus has unequal degrees; a bi-quadratic square is
+    % one Bezier cell of nine points
+    expect_error(@() mio.iga_bezier_extract(r.info, 1), 'unequal degrees');
+    square = [tempname() '.mesh'];
+    write_lines(square, {'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', ...
+        '5 3 0 1 2 3', 'boundary', '0', 'edges', '4', '0 0 1', '0 3 2', '1 0 3', '1 1 2', ...
+        'vertices', '4', 'knotvectors', '2', '2 3 0 0 0 1 1 1', '2 3 0 0 0 1 1 1', ...
+        'weights', '1', '1', '1', '1', '1', '1', '1', '1', '1', ...
+        'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', 'Ordering: 1', ...
+        '0 0', '1 0', '1 1', '0 1', '0.5 0', '0.5 1', '0 0.5', '1 0.5', '0.5 0.5'});
+    sq = mio.read_with_info(square, 'format', 'mfem');
+    bez = mio.iga_bezier_extract(sq.info);
+    expect_equal(mio.num_points(bez), 9);
+    expect_error(@() mio.iga_bezier_extract(sq.info, 2), 'out of range');
+    mio.release(bez);
+    mio.release(sq.mesh);
+    mio.format_info_release(sq.info);
+    delete(square);
     sampled = mio.iga_sample(r.info);
     expect_equal(mio.format_info_format(sampled.info), 'mfem');
     assert(mio.num_points(sampled.mesh) > 0);

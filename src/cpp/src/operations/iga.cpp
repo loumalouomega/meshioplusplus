@@ -255,8 +255,8 @@ IgaTable iga_make_table(const NurbsPatch& rP, const std::string& rWhat, bool Rat
 
 IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDArray& rParams,
                                  std::int32_t Derivatives, const std::string& rWhat) {
-    if (Derivatives < 0 || Derivatives > 1)
-        iga_fail("derivatives must be 0 or 1");
+    if (Derivatives < 0 || Derivatives > 2)
+        iga_fail("derivatives must be 0, 1 or 2");
     const IgaTable t = iga_make_table(rP, rWhat, Rational);
     const IgaShape& sh = t.mShape;
     if (rParams.Dtype() != DType::Float64 ||
@@ -282,7 +282,8 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
         }
     IgaEvaluation out;
     out.mPoints = NDArray(DType::Float64, {n, sdim});
-    std::vector<double> values(n * nv), ders(Derivatives ? n * dim * nv : 0);
+    std::vector<double> values(n * nv), ders(Derivatives ? n * dim * nv : 0),
+        ders2(Derivatives == 2 ? n * dim * dim * nv : 0);
     parallel_for(n, [&](std::size_t i) {
         std::array<std::size_t, 3> span{0, 0, 0};
         std::array<double, 3> u{0, 0, 0};
@@ -290,8 +291,14 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
             u[d] = std::min(std::max(params[i * dim + d], lo[d]), hi[d]);
             span[d] = detail::nurbs_find_span(rP.mDegrees[d], rP.mKnots[d], sh.mCounts[d], u[d]);
         }
-        detail::iga_eval_point(t.mNet, span.data(), u.data(), Derivatives, values.data() + i * nv,
-                               Derivatives ? ders.data() + i * dim * nv : nullptr);
+        if (Derivatives == 2)
+            detail::iga_eval_point_d2(t.mNet, span.data(), u.data(), values.data() + i * nv,
+                                      ders.data() + i * dim * nv,
+                                      ders2.data() + i * dim * dim * nv);
+        else
+            detail::iga_eval_point(t.mNet, span.data(), u.data(), Derivatives,
+                                   values.data() + i * nv,
+                                   Derivatives ? ders.data() + i * dim * nv : nullptr);
     });
     double* px = out.mPoints.As<double>();
     for (std::size_t i = 0; i < n; ++i)
@@ -314,6 +321,16 @@ IgaEvaluation iga_evaluate_patch(const NurbsPatch& rP, bool Rational, const NDAr
             for (std::size_t k = 0; k < dim; ++k)
                 for (std::size_t d = 0; d < sdim; ++d)
                     pd[(i * dim + k) * sdim + d] = ders[(i * dim + k) * nv + d];
+        if (Derivatives == 2) {
+            out.mSecondDerivatives = NDArray(DType::Float64, {n, dim, dim, sdim});
+            double* ps = out.mSecondDerivatives.As<double>();
+            for (std::size_t i = 0; i < n; ++i)
+                for (std::size_t k = 0; k < dim; ++k)
+                    for (std::size_t l = 0; l < dim; ++l)
+                        for (std::size_t d = 0; d < sdim; ++d)
+                            ps[((i * dim + k) * dim + l) * sdim + d] =
+                                ders2[((i * dim + k) * dim + l) * nv + d];
+        }
         if (dim == 2 && sdim == 3) {
             out.mNormals = NDArray(DType::Float64, {n, std::size_t{3}});
             double* pn = out.mNormals.As<double>();
@@ -656,6 +673,452 @@ Mesh iga_sample(const NurbsInfo& rInfo, const IgaSampleOptions& rOptions, NurbsI
         pMapped->mCellSpan = NDArray(DType::Int64, {0, 3});
         pMapped->mBoundaryCellPatch = NDArray(DType::Int64, {0});
     }
+    for (std::size_t f = 0; f < fields.size(); ++f)
+        mesh.AddPointData(rInfo.mFieldNames[f], std::move(fields[f]));
+    return mesh;
+}
+
+NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch, std::int32_t Direction,
+                           const std::vector<double>& rKnots, double Tolerance,
+                           IgaRemoveKnotsReport* pReport) {
+    if (Patch >= rInfo.mPatches.size())
+        iga_fail("patch " + std::to_string(Patch) + " is out of range (the model has " +
+                 std::to_string(rInfo.mPatches.size()) + ")");
+    if (!std::isfinite(Tolerance) || Tolerance < 0.0)
+        iga_fail("the tolerance must be finite and not negative");
+    if (rInfo.mTopology.mDimension != 0 && rInfo.mPatches.size() > 1)
+        iga_fail("a model whose patch topology joins " + std::to_string(rInfo.mPatches.size()) +
+                 " patches shares knot vectors between them; remove knots from a model of one "
+                 "patch");
+    const NurbsPatch& patch = rInfo.mPatches[Patch];
+    const std::string what = "patch " + std::to_string(Patch);
+    const IgaShape sh = iga_check_patch(patch, what);
+    iga_check_direction(sh, Direction);
+    const bool rational = iga_is_rational(patch);
+    if (rational)
+        iga_check_weights(patch, what);
+    const auto dir = static_cast<std::size_t>(Direction);
+    detail::IgaNet net = iga_make_net(patch, sh, rational);
+
+    // The knots to remove: distinct values ascending, each with its count.
+    const std::vector<double>& k = net.mKnots[dir];
+    const int p = net.mDegrees[dir];
+    const double lo = k[static_cast<std::size_t>(p)], hi = k[sh.mCounts[dir]];
+    std::vector<double> values;
+    std::vector<std::int32_t> asked;
+    if (rKnots.empty()) {
+        for (std::size_t i = static_cast<std::size_t>(p) + 1; i < sh.mCounts[dir]; ++i) {
+            if (!(k[i] > lo && k[i] < hi))
+                continue;
+            if (!values.empty() && values.back() == k[i])
+                ++asked.back();
+            else {
+                values.push_back(k[i]);
+                asked.push_back(1);
+            }
+        }
+    } else {
+        std::vector<double> sorted = rKnots;
+        std::sort(sorted.begin(), sorted.end());
+        for (const double u : sorted) {
+            if (!std::isfinite(u))
+                iga_fail("a knot to remove is not finite");
+            if (!values.empty() && values.back() == u)
+                ++asked.back();
+            else {
+                values.push_back(u);
+                asked.push_back(1);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        if (!(values[i] > lo && values[i] < hi))
+            iga_fail("knot " + std::to_string(values[i]) +
+                     " is not an interior knot of direction " + std::to_string(Direction));
+        const auto mult = static_cast<std::int32_t>(std::count(k.begin(), k.end(), values[i]));
+        if (mult == 0)
+            iga_fail("knot " + std::to_string(values[i]) +
+                     " is not in the knot vector of direction " + std::to_string(Direction));
+        if (asked[i] > mult)
+            iga_fail("knot " + std::to_string(values[i]) + " occurs " + std::to_string(mult) +
+                     " time(s) in direction " + std::to_string(Direction) + ", not " +
+                     std::to_string(asked[i]));
+    }
+
+    // TOL = d * wmin / (1 + Pmax), with a floor at the net's rounding level.
+    double wmin = 1.0, pmax = 0.0, big = 0.0;
+    const double* w = patch.mWeights.As<double>();
+    const double* x = patch.mControlPoints.As<double>();
+    for (std::size_t i = 0; i < sh.mNumPoints; ++i) {
+        if (rational)
+            wmin = i == 0 ? w[0] : std::min(wmin, w[i]);
+        double norm = 0.0;
+        for (std::size_t d = 0; d < sh.mSdim; ++d)
+            norm += x[i * sh.mSdim + d] * x[i * sh.mSdim + d];
+        pmax = std::max(pmax, std::sqrt(norm));
+    }
+    for (const double v : net.mValues)
+        big = std::max(big, std::abs(v));
+    const double tol = std::max(Tolerance * wmin / (1.0 + pmax), 1e-12 * (1.0 + big));
+
+    IgaRemoveKnotsReport report;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const int done = detail::iga_net_remove_knot(net, dir, values[i], asked[i], tol);
+        report.mKnots.push_back(values[i]);
+        report.mRequested.push_back(asked[i]);
+        report.mRemoved.push_back(done);
+        report.mNumRemoved += done;
+    }
+
+    NurbsInfo out;
+    out.mFieldNames = rInfo.mFieldNames;
+    out.mTopology = rInfo.mTopology;
+    out.mPatches = rInfo.mPatches;
+    out.mPatches[Patch] = iga_patch_from_net(net, sh, rational);
+    out.mCellPatch = NDArray(DType::Int64, {0});
+    out.mCellSpan = NDArray(DType::Int64, {0, 3});
+    out.mBoundaryCellPatch = NDArray(DType::Int64, {0});
+    if (pReport)
+        *pReport = std::move(report);
+    return out;
+}
+
+IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
+                                  const NDArray& rPoints) {
+    if (Patch >= rInfo.mPatches.size())
+        iga_fail("patch " + std::to_string(Patch) + " is out of range (the model has " +
+                 std::to_string(rInfo.mPatches.size()) + ")");
+    NurbsPatch patch = rInfo.mPatches[Patch];
+    const std::string what = "patch " + std::to_string(Patch);
+    patch.mFields.clear();  // only the geometry takes part
+    const bool rational = iga_is_rational(patch);
+    const IgaTable t = iga_make_table(patch, what, rational);
+    const IgaShape& sh = t.mShape;
+    const std::size_t dim = sh.mDim, sdim = sh.mSdim;
+    if (dim > 2)
+        iga_fail("the closest point on a volume is not computed; " + what + " has " +
+                 std::to_string(dim) + " parametric directions (curves and surfaces only)");
+    if (rPoints.Dtype() != DType::Float64 || rPoints.Shape().size() != 2 ||
+        rPoints.Shape()[1] != sdim)
+        iga_fail("points are not Float64 (N, " + std::to_string(sdim) + ")");
+    const std::size_t n = rPoints.Shape()[0];
+    const double* q = rPoints.As<double>();
+    for (std::size_t i = 0; i < n * sdim; ++i)
+        if (!std::isfinite(q[i]))
+            iga_fail("a query point has a non-finite coordinate");
+
+    std::array<double, 2> lo{0, 0}, hi{0, 0};
+    for (std::size_t d = 0; d < dim; ++d) {
+        lo[d] = patch.mKnots[d][static_cast<std::size_t>(patch.mDegrees[d])];
+        hi[d] = patch.mKnots[d][sh.mCounts[d]];
+    }
+    const auto eval = [&](const double* pU, double* pX, double* pD1, double* pD2) {
+        std::array<std::size_t, 3> span{0, 0, 0};
+        std::array<double, 3> u{0, 0, 0};
+        for (std::size_t d = 0; d < dim; ++d) {
+            u[d] = std::min(std::max(pU[d], lo[d]), hi[d]);
+            span[d] =
+                detail::nurbs_find_span(patch.mDegrees[d], patch.mKnots[d], sh.mCounts[d], u[d]);
+        }
+        if (pD2)
+            detail::iga_eval_point_d2(t.mNet, span.data(), u.data(), pX, pD1, pD2);
+        else
+            detail::iga_eval_point(t.mNet, span.data(), u.data(), 0, pX, nullptr);
+    };
+
+    // The seed lattice: degree + 1 samples per nonzero knot span.
+    std::array<std::vector<double>, 2> axis;
+    for (std::size_t d = 0; d < dim; ++d) {
+        const std::vector<double>& k = patch.mKnots[d];
+        std::size_t spans = 0;
+        for (std::size_t s = static_cast<std::size_t>(patch.mDegrees[d]); s < sh.mCounts[d]; ++s)
+            spans += k[s] < k[s + 1] ? 1 : 0;
+        const std::size_t cap = dim == 1 ? 4096 : 64;
+        std::size_t per = static_cast<std::size_t>(patch.mDegrees[d]) + 1;
+        per = std::max<std::size_t>(1, std::min(per, cap > spans ? (cap - 1) / spans : 1));
+        axis[d].push_back(lo[d]);
+        for (std::size_t s = static_cast<std::size_t>(patch.mDegrees[d]); s < sh.mCounts[d]; ++s)
+            if (k[s] < k[s + 1])
+                for (std::size_t j = 1; j <= per; ++j)
+                    axis[d].push_back(j == per ? k[s + 1]
+                                               : k[s] + (k[s + 1] - k[s]) * static_cast<double>(j) /
+                                                            static_cast<double>(per));
+    }
+    const std::size_t n0 = axis[0].size(), n1 = dim == 2 ? axis[1].size() : 1;
+    std::vector<double> seed_x(n0 * n1 * sdim);
+    for (std::size_t b = 0; b < n1; ++b)
+        for (std::size_t a = 0; a < n0; ++a) {
+            const double u[2] = {axis[0][a], dim == 2 ? axis[1][b] : 0.0};
+            eval(u, seed_x.data() + (a + n0 * b) * sdim, nullptr, nullptr);
+        }
+
+    IgaClosestPoint out;
+    out.mParams = NDArray(DType::Float64, {n, dim});
+    out.mPoints = NDArray(DType::Float64, {n, sdim});
+    out.mDistances = NDArray(DType::Float64, {n});
+    double* op = out.mParams.As<double>();
+    double* ox = out.mPoints.As<double>();
+    double* od = out.mDistances.As<double>();
+    parallel_for(n, [&](std::size_t i) {
+        const double* p = q + i * sdim;
+        // The three nearest samples, ascending distance then index.
+        std::array<std::size_t, 3> best{0, 0, 0};
+        std::array<double, 3> bestd{1e300, 1e300, 1e300};
+        for (std::size_t s = 0; s < n0 * n1; ++s) {
+            double d2 = 0.0;
+            for (std::size_t d = 0; d < sdim; ++d)
+                d2 += (seed_x[s * sdim + d] - p[d]) * (seed_x[s * sdim + d] - p[d]);
+            for (std::size_t r = 0; r < 3; ++r)
+                if (d2 < bestd[r]) {
+                    for (std::size_t m = 2; m > r; --m) {
+                        best[m] = best[m - 1];
+                        bestd[m] = bestd[m - 1];
+                    }
+                    best[r] = s;
+                    bestd[r] = d2;
+                    break;
+                }
+        }
+        double win_f = 1e300;
+        std::array<double, 2> win_u{lo[0], dim == 2 ? lo[1] : 0.0};
+        std::array<double, 3> x{0, 0, 0};
+        std::array<double, 12> dd1{}, dd2{};
+        for (std::size_t r = 0; r < 3; ++r) {
+            if (bestd[r] >= 1e300)
+                break;
+            std::array<double, 2> u{axis[0][best[r] % n0], dim == 2 ? axis[1][best[r] / n0] : 0.0};
+            const auto residual = [&](const std::array<double, 2>& rU, double* pX, double* pRes) {
+                eval(rU.data(), pX, nullptr, nullptr);
+                double f = 0.0;
+                for (std::size_t d = 0; d < sdim; ++d) {
+                    pRes[d] = pX[d] - p[d];
+                    f += 0.5 * pRes[d] * pRes[d];
+                }
+                return f;
+            };
+            std::array<double, 3> res{0, 0, 0};
+            double f = residual(u, x.data(), res.data());
+            for (int iter = 0; iter < 80; ++iter) {
+                eval(u.data(), x.data(), dd1.data(), dd2.data());
+                double g[2] = {0, 0}, H[2][2] = {{0, 0}, {0, 0}}, G[2][2] = {{0, 0}, {0, 0}};
+                for (std::size_t d = 0; d < sdim; ++d)
+                    res[d] = x[d] - p[d];
+                for (std::size_t k = 0; k < dim; ++k) {
+                    for (std::size_t d = 0; d < sdim; ++d)
+                        g[k] += res[d] * dd1[k * sdim + d];
+                    for (std::size_t l = 0; l < dim; ++l)
+                        for (std::size_t d = 0; d < sdim; ++d) {
+                            G[k][l] += dd1[k * sdim + d] * dd1[l * sdim + d];
+                            H[k][l] += dd1[k * sdim + d] * dd1[l * sdim + d] +
+                                       res[d] * dd2[(k * dim + l) * sdim + d];
+                        }
+                }
+                bool free_[2] = {true, true};
+                std::size_t nfree = 0;
+                for (std::size_t k = 0; k < dim; ++k) {
+                    if ((u[k] <= lo[k] && g[k] > 0.0) || (u[k] >= hi[k] && g[k] < 0.0))
+                        free_[k] = false;
+                    nfree += free_[k] ? 1 : 0;
+                }
+                if (nfree == 0)
+                    break;
+                double step[2] = {0, 0};
+                if (dim == 2 && nfree == 2) {
+                    auto solve = [&](double A[2][2]) {
+                        const double det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
+                        if (!(A[0][0] > 0.0 && det > 0.0))
+                            return false;
+                        step[0] = -(A[1][1] * g[0] - A[0][1] * g[1]) / det;
+                        step[1] = -(-A[1][0] * g[0] + A[0][0] * g[1]) / det;
+                        return true;
+                    };
+                    if (!solve(H) && !solve(G)) {
+                        const double scale = G[0][0] + G[1][1] + 1e-300;
+                        step[0] = -g[0] / scale;
+                        step[1] = -g[1] / scale;
+                    }
+                } else {
+                    for (std::size_t k = 0; k < dim; ++k) {
+                        if (!free_[k])
+                            continue;
+                        const double h = H[k][k] > 0.0 ? H[k][k] : G[k][k] > 0.0 ? G[k][k] : 1e300;
+                        step[k] = -g[k] / h;
+                    }
+                }
+                double alpha = 1.0;
+                bool moved = false;
+                std::array<double, 2> trial = u;
+                std::array<double, 3> xt{0, 0, 0}, rt{0, 0, 0};
+                double ft = f;
+                for (int half = 0; half < 40 && !moved; ++half, alpha *= 0.5) {
+                    for (std::size_t k = 0; k < dim; ++k)
+                        trial[k] = std::min(std::max(u[k] + alpha * step[k], lo[k]), hi[k]);
+                    ft = residual(trial, xt.data(), rt.data());
+                    // A step that does not raise f beyond rounding: near the minimum f is flat,
+                    // and a strict test would stop a few ulps short of it.
+                    moved = ft <= f + 1e-14 * f;
+                }
+                if (!moved)
+                    break;
+                double change = 0.0;
+                for (std::size_t k = 0; k < dim; ++k)
+                    change = std::max(change, std::abs(trial[k] - u[k]) / (hi[k] - lo[k]));
+                u = trial;
+                x = xt;
+                f = ft;
+                if (change < 1e-15)
+                    break;
+            }
+            if (f < win_f) {
+                win_f = f;
+                win_u = u;
+            }
+        }
+        eval(win_u.data(), x.data(), nullptr, nullptr);
+        double dist2 = 0.0;
+        for (std::size_t d = 0; d < sdim; ++d) {
+            ox[i * sdim + d] = x[d];
+            dist2 += (x[d] - p[d]) * (x[d] - p[d]);
+        }
+        for (std::size_t k = 0; k < dim; ++k)
+            op[i * dim + k] = win_u[k];
+        od[i] = std::sqrt(dist2);
+    });
+    return out;
+}
+
+Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch) {
+    if (Patch >= rInfo.mPatches.size())
+        iga_fail("patch " + std::to_string(Patch) + " is out of range (the model has " +
+                 std::to_string(rInfo.mPatches.size()) + ")");
+    const NurbsPatch& patch = rInfo.mPatches[Patch];
+    const std::string what = "patch " + std::to_string(Patch);
+    const IgaShape sh = iga_check_patch(patch, what);
+    if (patch.mFields.size() != rInfo.mFieldNames.size())
+        iga_fail(what + " has " + std::to_string(patch.mFields.size()) + " fields for " +
+                 std::to_string(rInfo.mFieldNames.size()) + " names");
+    const int p = patch.mDegrees[0];
+    for (std::size_t d = 1; d < sh.mDim; ++d)
+        if (patch.mDegrees[d] != p)
+            iga_fail(what +
+                     " has unequal degrees; Bezier cells take one order, elevate with "
+                     "iga_elevate_degree first");
+    const bool rational = iga_is_rational(patch);
+    if (rational)
+        iga_check_weights(patch, what);
+    detail::IgaNet net = iga_make_net(patch, sh, rational);
+
+    // Raise every interior knot to multiplicity p.
+    for (std::size_t d = 0; d < sh.mDim; ++d) {
+        const std::vector<double>& k = net.mKnots[d];
+        std::vector<double> ins;
+        std::size_t i = static_cast<std::size_t>(p) + 1;
+        while (i < sh.mCounts[d]) {
+            std::size_t j = i;
+            while (j < k.size() && k[j] == k[i])
+                ++j;
+            const int mult = static_cast<int>(j - i);
+            for (int m = mult; m < p; ++m)
+                ins.push_back(k[i]);
+            i = j;
+        }
+        if (!ins.empty())
+            detail::iga_net_insert(net, d, ins);
+    }
+
+    // Elements of the refined net: spans of nonzero length.
+    std::array<std::vector<std::size_t>, 3> elem;
+    std::array<std::vector<std::int64_t>, 3> elem_no;
+    for (std::size_t d = 0; d < 3; ++d) {
+        if (d >= sh.mDim) {
+            elem[d].push_back(static_cast<std::size_t>(p));
+            elem_no[d].push_back(0);
+            continue;
+        }
+        const std::vector<double>& k = net.mKnots[d];
+        std::int64_t no = 0;
+        for (std::size_t s = static_cast<std::size_t>(p); s < net.mCounts[d]; ++s)
+            if (k[s] < k[s + 1]) {
+                elem[d].push_back(s);
+                elem_no[d].push_back(no++);
+            }
+    }
+    const std::size_t dim = sh.mDim, sdim = sh.mSdim;
+    const lagrange::Shape shape = dim == 1   ? lagrange::Shape::Line
+                                  : dim == 2 ? lagrange::Shape::Quad
+                                             : lagrange::Shape::Hexahedron;
+    const auto lattice = lagrange::vtk_lattice(shape, p);
+    const std::size_t nn = lattice.size();
+    const std::size_t ncell = elem[0].size() * elem[1].size() * elem[2].size();
+    const std::size_t npts = ncell * nn;
+    const std::size_t C = net.mColumns;
+    const std::size_t cols = sdim == 2 ? 2 : 3;
+
+    NDArray points(DType::Float64, {npts, cols});
+    NDArray weights(DType::Float64, {npts});
+    std::vector<NDArray> fields;
+    for (const std::size_t c : sh.mFieldComps)
+        fields.emplace_back(DType::Float64, c == 1 ? std::vector<std::size_t>{npts}
+                                                   : std::vector<std::size_t>{npts, c});
+    NDArray conn(DType::Int64, {ncell, nn});
+    NDArray degrees(DType::Float64, {ncell, std::size_t{3}});
+    NDArray cpatch(DType::Int64, {ncell});
+    NDArray cspan(DType::Int64, {ncell, std::size_t{3}});
+    std::int64_t* pc = conn.As<std::int64_t>();
+    double* pdeg = degrees.As<double>();
+    double* px = points.As<double>();
+    double* pw = weights.As<double>();
+    std::size_t cell = 0;
+    for (std::size_t iw = 0; iw < elem[2].size(); ++iw)
+        for (std::size_t jv = 0; jv < elem[1].size(); ++jv)
+            for (std::size_t iu = 0; iu < elem[0].size(); ++iu, ++cell) {
+                for (std::size_t n = 0; n < nn; ++n) {
+                    const std::size_t g0 = elem[0][iu] - static_cast<std::size_t>(p) +
+                                           static_cast<std::size_t>(lattice[n][0]);
+                    const std::size_t g1 = dim > 1 ? elem[1][jv] - static_cast<std::size_t>(p) +
+                                                         static_cast<std::size_t>(lattice[n][1])
+                                                   : 0;
+                    const std::size_t g2 = dim > 2 ? elem[2][iw] - static_cast<std::size_t>(p) +
+                                                         static_cast<std::size_t>(lattice[n][2])
+                                                   : 0;
+                    const double* row =
+                        net.mValues.data() + (g0 + net.mCounts[0] * (g1 + net.mCounts[1] * g2)) * C;
+                    const std::size_t at = cell * nn + n;
+                    pc[at] = static_cast<std::int64_t>(at);
+                    const double w = rational ? row[C - 1] : 1.0;
+                    pw[at] = w;
+                    for (std::size_t d = 0; d < cols; ++d)
+                        px[at * cols + d] = d < sdim ? (rational ? row[d] / w : row[d]) : 0.0;
+                    std::size_t c = sdim;
+                    for (std::size_t f = 0; f < fields.size(); ++f) {
+                        double* pf = fields[f].As<double>() + at * sh.mFieldComps[f];
+                        for (std::size_t d = 0; d < sh.mFieldComps[f]; ++d, ++c)
+                            pf[d] = rational ? row[c] / w : row[c];
+                    }
+                }
+                for (std::size_t d = 0; d < 3; ++d)
+                    pdeg[cell * 3 + d] = d < dim ? static_cast<double>(p) : 0.0;
+                cpatch.As<std::int64_t>()[cell] = static_cast<std::int64_t>(Patch);
+                cspan.As<std::int64_t>()[cell * 3 + 0] = elem_no[0][iu];
+                cspan.As<std::int64_t>()[cell * 3 + 1] = dim > 1 ? elem_no[1][jv] : 0;
+                cspan.As<std::int64_t>()[cell * 3 + 2] = dim > 2 ? elem_no[2][iw] : 0;
+            }
+
+    Mesh mesh;
+    mesh.AssignPoints(std::move(points));
+    const char* type = dim == 1   ? "VTK_BEZIER_CURVE"
+                       : dim == 2 ? "VTK_BEZIER_QUADRILATERAL"
+                                  : "VTK_BEZIER_HEXAHEDRON";
+    mesh.AddCellBlock(type, std::move(conn));
+    std::vector<NDArray> a, b, c;
+    a.push_back(std::move(degrees));
+    b.push_back(std::move(cpatch));
+    c.push_back(std::move(cspan));
+    mesh.AddCellData("HigherOrderDegrees", std::move(a));
+    mesh.AddCellData(kIgaPatchName, std::move(b));
+    mesh.AddCellData(kIgaSpanName, std::move(c));
+    if (rational)
+        mesh.AddPointData("RationalWeights", std::move(weights));
     for (std::size_t f = 0; f < fields.size(); ++f)
         mesh.AddPointData(rInfo.mFieldNames[f], std::move(fields[f]));
     return mesh;

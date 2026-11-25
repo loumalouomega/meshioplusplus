@@ -1,6 +1,9 @@
 \name{mio_iga_refine}
 \alias{mio_iga_refine}
 \alias{mio_iga_sample}
+\alias{mio_iga_bezier_extract}
+\alias{mio_iga_remove_knots}
+\alias{mio_iga_closest_point}
 \alias{mio_iga_evaluate}
 \title{Refine, sample and evaluate a NURBS model}
 \usage{
@@ -9,6 +12,13 @@ mio_iga_refine(info, subdivisions = 1L, elevate = 0L, sample_subdivisions = 0L,
 
 mio_iga_sample(info, sample_subdivisions = 0L, trim_samples = 16L, edges = TRUE,
   trim = TRUE)
+
+mio_iga_bezier_extract(info, patch = 1L)
+
+mio_iga_closest_point(info, points, patch = 1L)
+
+mio_iga_remove_knots(info, direction = 1L, knots = numeric(), tolerance = 0, patch = 1L,
+  sample_subdivisions = 0L)
 
 mio_iga_evaluate(info, patch, params, derivatives = 0L, trim_samples = 16L)
 }
@@ -21,7 +31,8 @@ mio_iga_evaluate(info, patch, params, derivatives = 0L, trim_samples = 16L)
 the trimming loops.}
 \item{patch}{Patch (B-rep: face) to evaluate, 1-based.}
 \item{params}{A \code{(d, N)} matrix of parametric coordinates, one column per point.}
-\item{derivatives}{0, or 1 for the first derivatives and the surface normals.}
+\item{derivatives}{0; 1 for the first derivatives and the surface normals; 2 also
+for the second derivatives.}
 }
 \description{The isogeometric layer (v16.43.0): act on the NURBS model a reader
 kept in a format-info handle (an MFEM NURBS mesh, Kratos CAD JSON, STEP or IGES,
@@ -33,11 +44,26 @@ nonzero knot span in \code{subdivisions} parts (an MFEM model refines every
 direction alike). The geometry, the fields and a trimmed face's trimming loops
 do not change. \code{mio_iga_sample()} samples the model into Lagrange cells.
 \code{mio_iga_evaluate()} evaluates patch \code{patch} at the columns of
-\code{params}.}
+\code{params}. \code{mio_iga_bezier_extract()} extracts patch \code{patch} (1-based) of
+an MFEM NURBS model as VTK Bezier curve, quadrilateral or hexahedron cells, one per
+knot-span product, with the cell data \code{HigherOrderDegrees}, \code{iga:patch}
+and \code{iga:span} and, for a rational patch, the point data \code{RationalWeights};
+a patch with unequal degrees is refused. \code{mio_iga_remove_knots()} removes knots from
+direction \code{direction} (1-based) of patch \code{patch} of a NURBS model while the
+geometry moves by at most \code{tolerance} (The NURBS Book's A5.8; 0 removes only what
+is exact up to rounding); \code{knots} lists the values to remove, one copy per entry
+(default every copy of every interior knot). \code{mio_iga_closest_point()} finds, for
+each column of the \code{(space_dim, N)} matrix \code{points}, the closest point of
+patch \code{patch} (a curve or a surface, rational or not): a point beyond the patch's
+edge lands on the edge, and a volume is refused.}
 \value{\code{mio_iga_refine()} and \code{mio_iga_sample()}: \code{list(mesh = , info = )}, the
 sampled mesh and the model (refined, or with the sampling's cell maps), for
 \code{mio_write_with_info()}. \code{mio_iga_evaluate()}: a list with \code{points}
 (\code{(space_dimension, N)}), \code{fields} (one \code{(components, N)} matrix per
 NURBS field), \code{derivatives} (\code{(space_dimension, d, N)}) and \code{normals}
-(\code{(3, N)}), both \code{NULL} unless \code{derivatives = 1}, and \code{inside}
-(a logical vector for a B-rep face, else \code{NULL}).}
+(\code{(3, N)}), both \code{NULL} unless \code{derivatives = 1}, \code{second_derivatives}
+(\code{(space_dimension, d, d, N)}, \code{NULL} unless \code{derivatives = 2}), and \code{inside}
+(a logical vector for a B-rep face, else \code{NULL}). \code{mio_iga_bezier_extract()}: the mesh. \code{mio_iga_remove_knots()}: \code{list(mesh = , info = , report = )},
+the report holding \code{knots}, \code{requested}, \code{removed} (per distinct knot value) and
+\code{num_removed}. \code{mio_iga_closest_point()}: \code{list(params = , points = , distances = )},
+the parameters \code{(d, N)}, the closest points \code{(space_dim, N)} and the distances.}

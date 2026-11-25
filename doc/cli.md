@@ -114,7 +114,7 @@ The first word completes to a verb (or an alias such as `c`), the next to the su
 
 ## JSON output
 
-Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `reconstruct`, `fit-curves`, `silhouette`, `step-elements`, `measure`, `align-datums`, `remove-islands`, `flip-normals`, `clip`, `offset-surface`, `thicken`, `hollow`, `face-support`, `fit-cad-iterate`, `constrain-primitives`, `profile-solid`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
+Every verb that prints a report takes `--json`: `info` (with or without `--fast`), `quality`, `check`, `check-conformity`, `check-tetrahedra`, `find-intersections`, `thickness`, `deviation`, `deviation-regions`, `exaggerate`, `colorize`, `diff`, `convert`, `stats`, `regions`, `data info`, `data integrate`, `pipeline`, `feature-edges`, `segment`, `refine-patches`, `fit-primitives`, `tessellate`, `region-adjacency`, `find-interface`, `contact-pairs`, `split-interface`, `hausdorff`, `periodic`, `graph`, `geodesic`, `parameterize`, `eigenmodes`, `morph`, `untangle`, `metric`, `coordinates`, `hull`, `delaunay`, `point-normals`, `filter-points`, `mass`, `cast-rays`, `locate`, `reconstruct`, `fit-curves`, `silhouette`, `step-elements`, `measure`, `align-datums`, `remove-islands`, `flip-normals`, `clip`, `offset-surface`, `thicken`, `hollow`, `face-support`, `fit-cad-iterate`, `constrain-primitives`, `profile-solid`, `register`, `register-landmarks`, `auto-align`, `symmetry-plane`, `agglomerate` and `resample`, and the Python-only `guard-check`, `grid-spectrum` and `dataset list`. The output is always strict JSON — a non-finite number is `null`, never a bare `NaN` — and both CLIs print **the same shape** for every verb they share: the same keys, strings, integers, booleans and nulls, and floats that round-trip (`tests/python/test_cli_json.py` holds the shared reports to it). The shapes are the Python API's own reports:
 
 | Verb | JSON |
 |---|---|
@@ -137,8 +137,8 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `segment` | `num_patches`, `num_merged`, `num_feature_edges`, `num_boundary_edges` and `num_non_manifold_edges` |
 | `refine-patches` | `num_patches`, `num_iterations`, `num_splits`, `num_merges`, `num_absorbed`, `num_primitive`, `num_freeform`, `num_facets`, `tolerance`, `explained_area_fraction`, `initial_explained_area_fraction`, `hausdorff_max`, `hausdorff_rms`, `initial_energy`, `energy` and `stop` (`unchanged`, `small_gain`, `iteration_cap` or `energy_rose`) |
 | `fit-primitives` | `num_patches`, one count per type (`num_plane` … `num_torus`), `num_unfitted`, `num_feature_cells` and `warnings` |
-| `iga-refine`, `iga-sample` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
-| `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals`; for a B-rep face `inside`; arrays flattened row-major |
+| `iga-refine`, `iga-sample`, `iga-bezier`, `iga-remove-knots` | `operation`, `model` (`nurbs` or `brep`), `num_patches`, `num_points`, `num_cells` and `cell_blocks` |
+| `iga-evaluate` | `num_points`, `space_dim`, `points`, `fields` (`components`, `values`), and with `--derivatives 1` `derivatives` and `normals` (`2` adds `second_derivatives`); for a B-rep face `inside`; arrays flattened row-major |
 | `tessellate` | `Tessellation.schema` without `version`: `levels`, `curved`, the source and output counts, `stencil_width` and the `watertight` facet counts |
 | `to-cad` | `backend` (`occt` or `native`, v17.9.0), `valid`, `tolerance`, the volumes and their ratio, `max_deviation`, the faces by type (`num_bspline`, `num_fillet` and `num_helical` among them, and of those `num_variable_fillet`, `num_blend` and `num_rounded_thread`), `num_vertex_blend` and `num_chamfer` (v17.2.0) and, of the fillets and threads, `num_conic_blend`, `num_tapered_thread` and `num_variable_pitch_thread`, `num_faceted_faces`, `num_patches`, `num_demoted`, the exact and approximated edges, `num_solids` and `num_split_patches`; `closed` (v17.11.0, always); with `--refine` (v17.11.0) also `refined`, `refine_iterations`, `num_refine_splits`, `num_refine_merges`, `initial_explained_area_fraction`, `explained_area_fraction` and `refinement_kept`; with `--freeform-general` `num_freeform_general`, `num_freeform_refinements` and `avg_freeform_poles`; with `--extend-surfaces` `num_extended_edges`; with `--snap-junctions` `num_snapped_junctions`; with `--face-deviation` `hausdorff_max` and `hausdorff_rms`; with `--constrain-primitives` `num_constrained_primitives` and `num_constraint_groups`; with `--validation-report` (unreleased) `validation_reported`, `cad_to_mesh_max`, `cad_to_mesh_p95`, `cad_to_mesh_p99`, `mesh_to_cad_max`, `mesh_to_cad_p95`, `mesh_to_cad_p99`, `normal_deviation_max_deg`, `normal_deviation_p95_deg`, `step_round_trip_checked`, `step_round_trip_valid`, `step_round_trip_volume_ratio` and `total_freeform_control_points`; outside `--freeform-mode legacy` (v17.12.0) also `freeform_mode`, `brep_checked`, `num_freeform_adaptive`, `num_network_patches`, `num_network_edges`, `num_extraordinary_vertices`, `num_resegmented`, `num_escalations`, `facet_area_fraction`, `max_g1_angle_deg`, `max_freeform_distance`, `rms_freeform_distance` and `faces`, one record per patch tried as a surface (`patch`, `face`, `kind`, `param_method`, `num_ctrl`, `iterations`, `refinements`, `max_dist`, `rms_dist`, `reverse_max_dist`, `max_g1_angle_deg`, `escalation_steps`, `demotion_reason`) |
 | `region-adjacency` | `facets` and `measure` |
@@ -156,6 +156,10 @@ Every verb that prints a report takes `--json`: `info` (with or without `--fast`
 | `coordinates` | `output`, `system`, `num_arrays`, `num_singular` |
 | `hull` | `output`, `dimension`, `num_vertices`, `num_facets`, `area`, `volume`, `perimeter` |
 | `point-normals` | `output`, `num_degenerate`, `num_components` |
+| `filter-points` | `output`, `num_kept`, `num_input`, `num_removed_statistical`, `num_removed_radius`, `num_removed_voxel`, `num_removed_poisson`, `warnings` |
+| `mass` | `kind`, `total`, `regions`, `warnings`; each entry `name`, `num_cells`, `measure`, `mass`, `centre`, `inertia`, `principal_moments`, `principal_axes`, `gyration_radii` |
+| `cast-rays` | `output`, `num_rays`, `num_hits` |
+| `locate` | `output`, `num_points`, `num_located` |
 | `reconstruct` | `output`, `num_samples`, `spacing`, `cell_size`, `max_distance`, `num_lattice_points`, `num_undefined`, `num_triangles`, `num_components`, `estimated_normals` |
 | `register` | `output` (with `--output`), `matrix` (4 rows of 4), `initial_rms`, `rms`, `iterations`, `num_pairs`, `converged`, `num_rejected`, `candidate_rms`, `chosen_candidate`, `warnings` |
 | `fit-curves` | `pieces` (`type`, `start`, `end`, `centre`, `radius`, `sweep`, `residual`, `num_points`, `chain`, `frame`), `frames` (4 rows of 4 each), `num_lines`, `num_arcs`, `num_circles`, `max_residual`, `tolerance`, `warnings` |
@@ -1667,6 +1671,55 @@ meshioplusplus iga-sample plate.cad.json plate.vtu -s 8
 
 ---
 
+## meshioplusplus iga-closest-point
+
+Print, as JSON, the point of a NURBS patch closest to each query point (see [isogeometric layer](/iga#closest-point)).
+
+```text
+meshioplusplus iga-closest-point [options] INFILE
+```
+
+| Option | Meaning |
+|---|---|
+| `-p`, `--point x[,y[,z]]` | A query point with the patch's space dimension; repeat for more |
+| `--patch N` | The patch, 0-based (default 0) |
+
+The JSON carries `num_points`, `space_dim` and the flat row-major arrays `params`, `points` (the closest points) and `distances`.
+
+```sh
+meshioplusplus iga-closest-point pipe.mesh -p 1.5,0.2,0.1 --patch 1
+```
+
+---
+
+## meshioplusplus iga-remove-knots
+
+Remove knots from one patch of a NURBS model within a tolerance (see [isogeometric layer](/iga#knot-removal)). Takes `iga-refine`'s input, format and summary options; the JSON summary adds `knots`, `requested`, `removed` and `num_removed`.
+
+| Option | Meaning |
+|---|---|
+| `-d`, `--direction N` | The parametric direction, 0-based (default 0) |
+| `-k`, `--knot U` | A knot value to remove one copy of; repeat for more (default: every copy of every interior knot) |
+| `-t`, `--tolerance T` | The largest deviation of the geometry; 0 removes only what is exact up to rounding (default 0) |
+| `--patch N` | The patch, 0-based (default 0) |
+| `--sample-subdivisions N` | Cells per knot span of the written sampling (default 0, automatic) |
+
+```sh
+meshioplusplus iga-remove-knots fine.mesh coarse.mesh -o mfem --direction 0 --tolerance 1e-6
+```
+
+---
+
+## meshioplusplus iga-bezier
+
+Bezier extraction of one patch of a NURBS model into VTK Bezier cells (see [isogeometric layer](/iga#bezier-extraction)). Takes `iga-sample`'s input, format and summary options, with `--patch N` the patch to extract (default 0). A VTU output keeps the cells as Bezier cells with their `HigherOrderDegrees` and `RationalWeights`.
+
+```sh
+meshioplusplus iga-bezier pipe.mesh pipe_bezier.vtu --patch 1
+```
+
+---
+
 ## meshioplusplus iga-evaluate
 
 Evaluate a patch (a B-rep's face) at parametric coordinates and print the result as JSON (see [isogeometric layer](/iga)).
@@ -1680,7 +1733,7 @@ meshioplusplus iga-evaluate [options] INFILE
 | `-i/--input-format` | Explicit input format |
 | `-p/--param u[,v[,w]]` | A parametric point, one number per direction of the patch; repeat for more points |
 | `--patch N` | The patch (face), 0-based (default `0`) |
-| `--derivatives 0\|1` | `1` adds the first derivatives and the surface normals |
+| `--derivatives 0\|1\|2` | `1` adds the first derivatives and the surface normals; `2` also the second derivatives (`second_derivatives`) |
 | `--trim-samples N` | B-rep: points per knot span a trimming curve is sampled at (default `16`) |
 
 ```sh
@@ -2119,6 +2172,91 @@ Both CLIs print the same JSON.
 meshioplusplus point-normals scan.ply scan.pcd
 meshioplusplus point-normals scan.xyz out.xyz --k 24 --orientation viewpoint --viewpoint 0,0,2.5 --json
 ```
+
+---
+
+## meshioplusplus filter-points
+
+Outlier removal and thinning of a point cloud (see [point-cloud conditioning](/filter_points)): up to four steps in a fixed order, each off at its default. The output is the surviving points as a point cloud.
+
+```
+meshioplusplus filter-points [options] INFILE OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--outliers statistical` | Statistical outlier removal (uses `--k` and `--std-ratio`) |
+| `--k N` | Neighbours per mean distance for `--outliers` (default `16`) |
+| `--std-ratio R` | Standard deviations above the mean for `--outliers` (default `1`) |
+| `--radius R` | Radius outlier removal: a point needs `--min-neighbors` others within this radius |
+| `--min-neighbors N` | Others needed within `--radius` (default `4`) |
+| `--voxel S` | Voxel thinning: one real point per cube of this side |
+| `--poisson D` | Poisson-disk thinning: kept points are at least this far apart |
+| `--json` | Emit the report (`output`, `num_kept`, `num_input`, `num_removed_*`, `warnings`) |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+```sh
+meshioplusplus filter-points scan.ply clean.ply --outliers statistical --voxel 0.5
+meshioplusplus filter-points scan.xyz thin.xyz --poisson 0.02 --json
+```
+
+---
+
+## meshioplusplus mass
+
+Mass, centre of mass and inertia of a body: volume cells, a closed surface, or a shell (see [mass properties](/mass_properties)).
+
+```
+meshioplusplus mass [options] INFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--density D` | Density of every cell (default `1`) |
+| `--density-array NAME` | A scalar `cell_data` array of per-cell densities, replacing `--density` |
+| `--region NAME` | Restrict the total to this cell region |
+| `--thickness T` | Treat surface cells as a shell of this thickness (open surfaces allowed) |
+| `--about centroid\|origin` | The point the inertia tensor is taken about (default `centroid`) |
+| `--json` | Emit the report (`kind`, `total`, `regions`, `warnings`) |
+| `--input-format` (`-i`) | Force the input format |
+
+```sh
+meshioplusplus mass part.stl --density 7850 --json
+```
+
+---
+
+## meshioplusplus cast-rays
+
+The nearest surface hit of a batch of rays (see [ray casting and point location](/ray_queries)). `RAYS` is a point file whose points are the ray origins; the output is a vertex mesh of the rays that hit, with `ray:index`, `ray:distance`, `ray:cell` and `ray:normal`.
+
+```
+meshioplusplus cast-rays [options] SURFACE RAYS OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--direction X,Y,Z` | One direction for every ray (default: the point array `directions` of `RAYS`) |
+| `--max-distance D` | Ignore hits farther than this (default: no limit) |
+| `--region NAME` | Restrict the surface to this cell region |
+| `--json` | Emit the report: `output`, `num_rays`, `num_hits` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
+
+---
+
+## meshioplusplus locate
+
+The cell of a volume mesh (or planar triangle mesh) containing each point of a file (see [ray casting and point location](/ray_queries)). The output is a vertex mesh of the points that fell inside, with `locate:cell`, `locate:nodes` and `locate:barycentric`.
+
+```
+meshioplusplus locate [options] MESH POINTS OUTFILE
+```
+
+| Option | Description |
+|--------|-------------|
+| `--tolerance T` | A barycentric weight at least `-T` counts as inside (default `1e-12`) |
+| `--json` | Emit the report: `output`, `num_points`, `num_located` |
+| `--input-format` / `--output-format` (`-i`/`-o`) | Force input/output format |
 
 ---
 

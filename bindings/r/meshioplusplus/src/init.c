@@ -143,6 +143,10 @@ extern SEXP R_mio_find_interface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
 extern SEXP R_mio_contact_pairs(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_split_interface(SEXP, SEXP, SEXP);
 extern SEXP R_mio_hausdorff_distance(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_mass_properties(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_cast_rays(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_filter_points(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_locate_points(SEXP, SEXP, SEXP);
 extern SEXP R_mio_check_quality(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_repair(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_shrinkwrap(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -265,6 +269,9 @@ extern SEXP R_mio_gmsh_info(SEXP);
 extern SEXP R_mio_nurbs_info(SEXP);
 extern SEXP R_mio_iga_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_iga_sample(SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_iga_bezier_extract(SEXP, SEXP);
+extern SEXP R_mio_iga_remove_knots(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_iga_closest_point(SEXP, SEXP, SEXP);
 extern SEXP R_mio_mesh_cad_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                                    SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                                    SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
@@ -422,6 +429,10 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_contact_pairs, 6),
                                               CALLDEF(R_mio_split_interface, 3),
                                               CALLDEF(R_mio_hausdorff_distance, 5),
+                                              CALLDEF(R_mio_mass_properties, 6),
+                                              CALLDEF(R_mio_cast_rays, 5),
+                                              CALLDEF(R_mio_filter_points, 7),
+                                              CALLDEF(R_mio_locate_points, 3),
                                               CALLDEF(R_mio_check_quality, 4),
                                               CALLDEF(R_mio_repair, 9),
                                               CALLDEF(R_mio_shrinkwrap, 9),
@@ -530,6 +541,9 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_nurbs_info, 1),
                                               CALLDEF(R_mio_iga_refine, 7),
                                               CALLDEF(R_mio_iga_sample, 5),
+                                              CALLDEF(R_mio_iga_bezier_extract, 2),
+                                              CALLDEF(R_mio_iga_remove_knots, 6),
+                                              CALLDEF(R_mio_iga_closest_point, 3),
                                               CALLDEF(R_mio_mesh_cad_surface, 36),
                                               CALLDEF(R_mio_iga_evaluate, 5),
                                               CALLDEF(R_mio_brep_info, 1),

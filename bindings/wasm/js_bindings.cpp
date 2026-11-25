@@ -130,6 +130,10 @@
 #include "meshioplusplus/operations/render.hpp"
 #include "meshioplusplus/operations/interfaces.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/normals.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
@@ -6778,6 +6782,94 @@ val iga_sample_js(const val& rInfo, const val& rOptions) {
     });
 }
 
+// `igaClosestPoint(info, patch, points)`: the closest point of one patch (0-based)
+// of an MFEM NURBS model to each query point (`points` flat, `spaceDim` numbers each).
+val iga_closest_point_js(const val& rInfo, double patch, const val& rPoints) {
+    return with_js_errors([&]() -> val {
+        if (iga_js_format(rInfo) != "mfem")
+            throw std::invalid_argument(
+                "meshio++: iga: the closest point takes a NURBS model, not a B-rep");
+        if (!std::isfinite(patch) || patch != std::floor(patch) || patch < 0)
+            throw std::invalid_argument("meshio++: iga: patch must be a non-negative integer");
+        const auto index = static_cast<std::size_t>(patch);
+        const meshioplusplus::NurbsInfo nurbs = val_to_nurbs_info(rInfo);
+        if (index >= nurbs.mPatches.size())
+            throw std::invalid_argument("meshio++: iga: patch out of range");
+        const std::size_t sdim = nurbs.mPatches[index].mControlPoints.Shape()[1];
+        const NDArray points = nurbs_js_doubles(rPoints, sdim, "points");
+        const meshioplusplus::IgaClosestPoint r =
+            meshioplusplus::iga_closest_point(nurbs, index, points);
+        val out = val::object();
+        out.set("paramDim", static_cast<double>(cols_of(r.mParams)));
+        out.set("spaceDim", static_cast<double>(sdim));
+        out.set("params", ndarray_to_typed_array(r.mParams));
+        out.set("points", ndarray_to_typed_array(r.mPoints));
+        out.set("distances", ndarray_to_typed_array(r.mDistances));
+        return out;
+    });
+}
+
+// `igaRemoveKnots(info, options)`: knot removal on one patch (0-based) of an
+// MFEM NURBS model; `options` is `{direction, knots, tolerance, patch,
+// sampleSubdivisions}`. Returns `{mesh, info, report}`.
+val iga_remove_knots_js(const val& rInfo, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        if (iga_js_format(rInfo) != "mfem")
+            throw std::invalid_argument(
+                "meshio++: iga: knot removal takes a NURBS model, not a B-rep");
+        const std::int32_t direction = iga_js_int(rOptions, "direction", 0);
+        const std::int32_t patch = iga_js_int(rOptions, "patch", 0);
+        if (patch < 0)
+            throw std::invalid_argument("meshio++: iga: the patch index is negative");
+        double tolerance = 0.0;
+        if (!rOptions.isUndefined() && !rOptions.isNull() && rOptions.hasOwnProperty("tolerance"))
+            tolerance = rOptions["tolerance"].as<double>();
+        std::vector<double> knots;
+        if (!rOptions.isUndefined() && !rOptions.isNull() && rOptions.hasOwnProperty("knots")) {
+            const val k = rOptions["knots"];
+            const auto n = k["length"].as<std::size_t>();
+            for (std::size_t i = 0; i < n; ++i)
+                knots.push_back(k[static_cast<unsigned>(i)].as<double>());
+        }
+        const meshioplusplus::IgaSampleOptions so = iga_js_sample_options(rOptions);
+        meshioplusplus::IgaRemoveKnotsReport report;
+        const meshioplusplus::NurbsInfo reduced = meshioplusplus::iga_remove_knots(
+            val_to_nurbs_info(rInfo), static_cast<std::size_t>(patch), direction, knots, tolerance,
+            &report);
+        meshioplusplus::NurbsInfo mapped;
+        val out = val::object();
+        out.set("mesh", mesh_to_val(meshioplusplus::iga_sample(reduced, so, &mapped)));
+        out.set("info", nurbs_info_to_val(mapped));
+        val rep = val::object();
+        val rk = val::array(), rq = val::array(), rr = val::array();
+        for (std::size_t i = 0; i < report.mKnots.size(); ++i) {
+            rk.call<void>("push", report.mKnots[i]);
+            rq.call<void>("push", static_cast<int>(report.mRequested[i]));
+            rr.call<void>("push", static_cast<int>(report.mRemoved[i]));
+        }
+        rep.set("knots", rk);
+        rep.set("requested", rq);
+        rep.set("removed", rr);
+        rep.set("numRemoved", static_cast<int>(report.mNumRemoved));
+        out.set("report", rep);
+        return out;
+    });
+}
+
+// `igaBezierExtract(info, patch)`: one patch (0-based) of an MFEM NURBS model as
+// VTK Bezier cells (operations/iga.hpp `iga_bezier_extract`).
+val iga_bezier_extract_js(const val& rInfo, int Patch) {
+    return with_js_errors([&]() -> val {
+        if (iga_js_format(rInfo) != "mfem")
+            throw std::invalid_argument(
+                "meshio++: iga: Bezier extraction takes a NURBS model, not a B-rep");
+        if (Patch < 0)
+            throw std::invalid_argument("meshio++: iga: the patch index is negative");
+        return mesh_to_val(meshioplusplus::iga_bezier_extract(val_to_nurbs_info(rInfo),
+                                                              static_cast<std::size_t>(Patch)));
+    });
+}
+
 // Mesh generation from CAD (v17.13.0): `meshCadSurface` triangulates the faces
 // of the B-rep side-channel object `readMeshSelective(path, {info: true}).info`
 // of a Kratos CAD JSON file (or STEP/IGES in the full build). See
@@ -7162,6 +7254,8 @@ val iga_evaluate_js(const val& rInfo, double patch, const val& rParams, const va
             out.set("derivatives", ndarray_to_typed_array(e.mDerivatives));
         if (e.mNormals.Size())
             out.set("normals", ndarray_to_typed_array(e.mNormals));
+        if (e.mSecondDerivatives.Size())
+            out.set("secondDerivatives", ndarray_to_typed_array(e.mSecondDerivatives));
         if (fmt == "cad_json")
             out.set("inside", ndarray_to_typed_array(e.mInside));
         return out;
@@ -7587,6 +7681,111 @@ val hausdorff_distance_js(const val& rA, const val& rB, double faceSamples,
         out.set("numSamplesB", static_cast<double>(r.mNumSamplesB));
         out.set("worstPointA", float64_array_from(r.mWorstPointA.data(), 3));
         out.set("worstPointB", float64_array_from(r.mWorstPointB.data(), 3));
+        return out;
+    });
+}
+
+/// A flat JS number array (`Float64Array` or plain array) as doubles.
+std::vector<double> js_flat_doubles(const val& rArr) {
+    const unsigned n = rArr["length"].as<unsigned>();
+    std::vector<double> out(n);
+    for (unsigned i = 0; i < n; ++i)
+        out[i] = rArr[i].as<double>();
+    return out;
+}
+
+/**
+ * @brief The nearest surface hit of a batch of rays. See operations/cast_rays.hpp.
+ * `origins` and `directions` are flat `[x, y, z, ...]` arrays (`directions` of
+ * length 3 serves every ray). Returns `{hit, distance, point, normal, cell,
+ * numHits}`: `hit` and `cell` are `Int32Array`s (`cell` the 0-based input cell,
+ * -1 on a miss), the rest `Float64Array`s.
+ */
+val cast_rays_js(const val& rMesh, const val& rOrigins, const val& rDirections, double maxDistance,
+                 const std::string& rRegion) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::CastRaysOptions options;
+        options.mMaxDistance = maxDistance;
+        options.mRegion = rRegion;
+        const meshioplusplus::CastRaysResult r = meshioplusplus::cast_rays(
+            val_to_mesh(rMesh), js_flat_doubles(rOrigins), js_flat_doubles(rDirections), options);
+        std::vector<std::int32_t> hit(r.mHit.begin(), r.mHit.end());
+        std::vector<std::int32_t> cell(r.mCell.begin(), r.mCell.end());
+        val out = val::object();
+        out.set("hit", int32_array_from(hit.data(), hit.size()));
+        out.set("distance", float64_array_from(r.mDistance.data(), r.mDistance.size()));
+        out.set("point", float64_array_from(r.mPoint.data(), r.mPoint.size()));
+        out.set("normal", float64_array_from(r.mNormal.data(), r.mNormal.size()));
+        out.set("cell", int32_array_from(cell.data(), cell.size()));
+        out.set("numHits", static_cast<double>(r.mNumHits));
+        return out;
+    });
+}
+
+/**
+ * @brief The cell containing each point. See operations/locate_points.hpp.
+ * `points` is a flat `[x, y, z, ...]` array. Returns `{cell, nodes,
+ * barycentric, numLocated}`: `cell` (0-based input cell, -1 outside) and
+ * `nodes` (four 0-based point ids per point, -1 for none or padding) are
+ * `Int32Array`s, `barycentric` (four weights per point) a `Float64Array`.
+ */
+val locate_points_js(const val& rMesh, const val& rPoints, double tolerance) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::LocatePointsOptions options;
+        options.mTolerance = tolerance;
+        const meshioplusplus::LocatePointsResult r =
+            meshioplusplus::locate_points(val_to_mesh(rMesh), js_flat_doubles(rPoints), options);
+        std::vector<std::int32_t> cell(r.mCell.begin(), r.mCell.end());
+        std::vector<std::int32_t> nodes(r.mNodes.begin(), r.mNodes.end());
+        val out = val::object();
+        out.set("cell", int32_array_from(cell.data(), cell.size()));
+        out.set("nodes", int32_array_from(nodes.data(), nodes.size()));
+        out.set("barycentric", float64_array_from(r.mBarycentric.data(), r.mBarycentric.size()));
+        out.set("numLocated", static_cast<double>(r.mNumLocated));
+        return out;
+    });
+}
+
+/**
+ * @brief Mass, centre of mass and inertia of a body. See
+ * operations/mass_properties.hpp.
+ */
+val mass_entry_to_js(const meshioplusplus::MassProperties& rP) {
+    val out = val::object();
+    out.set("name", rP.mName);
+    out.set("numCells", static_cast<double>(rP.mNumCells));
+    out.set("measure", rP.mMeasure);
+    out.set("mass", rP.mMass);
+    out.set("centre", float64_array_from(rP.mCentre.data(), 3));
+    out.set("inertia", float64_array_from(rP.mInertia.data(), 6));
+    out.set("principalMoments", float64_array_from(rP.mPrincipalMoments.data(), 3));
+    out.set("principalAxes", float64_array_from(rP.mPrincipalAxes.data(), 9));
+    out.set("gyrationRadii", float64_array_from(rP.mGyrationRadii.data(), 3));
+    return out;
+}
+
+val mass_properties_js(const val& rMesh, double density, const std::string& rDensityArray,
+                       const std::string& rRegion, double thickness, const std::string& rAbout) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MassPropertiesOptions options;
+        options.mDensity = density;
+        options.mDensityArray = rDensityArray;
+        options.mRegion = rRegion;
+        options.mThickness = thickness;
+        options.mAbout = meshioplusplus::mass_about_from_name(rAbout);
+        const meshioplusplus::MassPropertiesReport r =
+            meshioplusplus::mass_properties(val_to_mesh(rMesh), options);
+        val out = val::object();
+        out.set("kind", r.mKind);
+        out.set("total", mass_entry_to_js(r.mTotal));
+        val regions = val::array();
+        for (std::size_t i = 0; i < r.mRegions.size(); ++i)
+            regions.set(static_cast<unsigned>(i), mass_entry_to_js(r.mRegions[i]));
+        out.set("regions", regions);
+        val warnings = val::array();
+        for (std::size_t i = 0; i < r.mWarnings.size(); ++i)
+            warnings.set(static_cast<unsigned>(i), r.mWarnings[i]);
+        out.set("warnings", warnings);
         return out;
     });
 }
@@ -8330,6 +8529,55 @@ val estimate_normals_js(const val& rMeshObj, const val& rOptions) {
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
         out.set("numComponents", static_cast<double>(r.mNumComponents));
+        return out;
+    });
+}
+
+/**
+ * @brief Outlier removal and thinning of a point cloud. @p rOptions is
+ * `{statisticalK, stdRatio, radius, minNeighbors, voxelSize, minDistance}`,
+ * every key optional (a step is off at 0). Returns `{mesh, pointMap,
+ * numRemoved, warnings}`: `pointMap` is an `Int32Array` of each output point's
+ * 0-based input point. See operations/filter_points.hpp.
+ */
+val filter_points_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PointFilterOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(
+                rOptions, "filterPoints options",
+                {"statisticalK", "stdRatio", "radius", "minNeighbors", "voxelSize", "minDistance"});
+            if (rOptions.hasOwnProperty("statisticalK"))
+                options.mStatisticalK =
+                    static_cast<std::int64_t>(rOptions["statisticalK"].as<double>());
+            if (rOptions.hasOwnProperty("stdRatio"))
+                options.mStdRatio = rOptions["stdRatio"].as<double>();
+            if (rOptions.hasOwnProperty("radius"))
+                options.mRadius = rOptions["radius"].as<double>();
+            if (rOptions.hasOwnProperty("minNeighbors"))
+                options.mMinNeighbors =
+                    static_cast<std::int64_t>(rOptions["minNeighbors"].as<double>());
+            if (rOptions.hasOwnProperty("voxelSize"))
+                options.mVoxelSize = rOptions["voxelSize"].as<double>();
+            if (rOptions.hasOwnProperty("minDistance"))
+                options.mMinDistance = rOptions["minDistance"].as<double>();
+        }
+        meshioplusplus::PointFilterResult r =
+            meshioplusplus::filter_points(val_to_mesh(rMeshObj), options);
+        std::vector<std::int32_t> map(r.mPointMap.begin(), r.mPointMap.end());
+        val removed = val::object();
+        removed.set("statistical", static_cast<double>(r.mNumRemovedStatistical));
+        removed.set("radius", static_cast<double>(r.mNumRemovedRadius));
+        removed.set("voxel", static_cast<double>(r.mNumRemovedVoxel));
+        removed.set("poisson", static_cast<double>(r.mNumRemovedPoisson));
+        val warnings = val::array();
+        for (std::size_t i = 0; i < r.mWarnings.size(); ++i)
+            warnings.set(static_cast<unsigned>(i), r.mWarnings[i]);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", int32_array_from(map.data(), map.size()));
+        out.set("numRemoved", removed);
+        out.set("warnings", warnings);
         return out;
     });
 }
@@ -11235,11 +11483,18 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("move", &move_js);
     emscripten::function("metricFromHessian", &metric_from_hessian_js);
     emscripten::function("igaEvaluate", &iga_evaluate_js);
+    emscripten::function("igaBezierExtract", &iga_bezier_extract_js);
+    emscripten::function("igaRemoveKnots", &iga_remove_knots_js);
+    emscripten::function("igaClosestPoint", &iga_closest_point_js);
     emscripten::function("render", &render_js);
     emscripten::function("renderText", &render_text_js);
     emscripten::function("renderPng", &render_png_js);
     emscripten::function("checkQuality", &check_quality_js);
     emscripten::function("hausdorffDistance", &hausdorff_distance_js);
+    emscripten::function("massProperties", &mass_properties_js);
+    emscripten::function("castRays", &cast_rays_js);
+    emscripten::function("filterPoints", &filter_points_js);
+    emscripten::function("locatePoints", &locate_points_js);
     emscripten::function("editRegions", &edit_regions_js);
     emscripten::function("regionAdjacency", &region_adjacency_js);
     emscripten::function("findInterface", &find_interface_js);

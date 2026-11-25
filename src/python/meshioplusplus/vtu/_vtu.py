@@ -627,7 +627,6 @@ class VtuReader:
             piece_cells = {}
             piece_point_data = {}
             piece_cell_data_raw = {}
-            cell_data_raw.append(piece_cell_data_raw)
             point_data.append(piece_point_data)
 
             num_points = int(piece.attrib["NumberOfPoints"])
@@ -664,6 +663,9 @@ class VtuReader:
                         raise ReadError()
 
                     cells.append(piece_cells)
+                    # Cell data belongs to a piece only when it has cells: a piece with
+                    # points alone (NumberOfCells="0") adds nothing to either list.
+                    cell_data_raw.append(piece_cell_data_raw)
 
                 elif child.tag == "PointData":
                     for c in child:
@@ -733,9 +735,13 @@ class VtuReader:
             n = len(np.asarray(piece_cells["types"]).reshape(-1))
             raw[FILE_INDEX_KEY] = np.arange(running, running + n, dtype=np.int64)
             running += n
-        self.cells, self.cell_data = _organize_cells(
-            point_offsets, cells, cell_data_raw
-        )
+        if cells:
+            self.cells, self.cell_data = _organize_cells(
+                point_offsets, cells, cell_data_raw
+            )
+        else:
+            # Points and no cells (every piece NumberOfCells="0"): as the native reader.
+            self.cells, self.cell_data = [], {}
         file_to_global = file_to_global_from(self.cell_data)
         self.regions, self.field_data = regions_from_field_arrays(
             field_data, len(self.points), file_to_global, "vtu"

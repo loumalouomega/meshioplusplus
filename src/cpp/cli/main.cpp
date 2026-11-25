@@ -146,6 +146,10 @@
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
@@ -2633,7 +2637,8 @@ void cli_iga_write(const std::string& rPath, const std::string& rFormat, const M
 }
 
 void cli_iga_summary(const cli_parsed& rP, const char* pName, const char* pModel, const Mesh& rMesh,
-                     std::size_t Patches) {
+                     std::size_t Patches,
+                     const meshioplusplus::IgaRemoveKnotsReport* pRemoved = nullptr) {
     std::size_t ncells = 0;
     for (const auto cb : rMesh.CellRange())
         ncells += cb.NumCells();
@@ -2654,10 +2659,31 @@ void cli_iga_summary(const cli_parsed& rP, const char* pName, const char* pModel
             json.EndObject();
         }
         json.EndArray();
+        if (pRemoved) {
+            json.Key("knots");
+            json.BeginArray();
+            for (const double u : pRemoved->mKnots)
+                json.Number(u);
+            json.EndArray();
+            json.Key("requested");
+            json.BeginArray();
+            for (const auto n : pRemoved->mRequested)
+                json.Int(n);
+            json.EndArray();
+            json.Key("removed");
+            json.BeginArray();
+            for (const auto n : pRemoved->mRemoved)
+                json.Int(n);
+            json.EndArray();
+            json.Field("num_removed", pRemoved->mNumRemoved);
+        }
         json.EndObject();
     } else if (!has_flag(rP, "quiet")) {
         std::cout << pName << ": " << Patches << " patch(es), " << rMesh.NumPoints() << " points, "
-                  << ncells << " cells\n";
+                  << ncells << " cells";
+        if (pRemoved)
+            std::cout << ", " << pRemoved->mNumRemoved << " knot(s) removed";
+        std::cout << "\n";
     }
 }
 
@@ -2722,6 +2748,113 @@ int cmd_iga_sample(const std::vector<std::string>& rArgs) {
     }
     cli_iga_write(p.positionals[1], opt_value(p, "output-format"), mesh, mapped, model.mBrep);
     cli_iga_summary(p, "iga_sample", model.mNurbs ? "nurbs" : "brep", mesh, patches);
+    return 0;
+}
+
+int cmd_iga_closest_point(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(
+        rArgs, cli_specs({input_flag_specs(),
+                          {{"point", {"-p"}, true}, {"patch", {}, true}, {"json", {}, false}}}));
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("iga-closest-point requires exactly INFILE");
+    if (!has_opt(p, "point"))
+        throw std::runtime_error("iga-closest-point requires at least one --point x[,y[,z]]");
+    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    if (!model.mNurbs)
+        throw std::runtime_error(
+            "iga-closest-point takes a NURBS model (an MFEM NURBS mesh), not a B-rep");
+    const auto patch =
+        static_cast<std::size_t>(has_opt(p, "patch") ? std::stoll(opt_value(p, "patch")) : 0);
+    const std::size_t sdim = patch < model.mNurbs->mPatches.size()
+                                 ? model.mNurbs->mPatches[patch].mControlPoints.Shape()[1]
+                                 : 0;
+    std::vector<double> flat;
+    for (const std::string& text : opt_values(p, "point")) {
+        std::size_t n = 0;
+        for (std::size_t at = 0; at <= text.size();) {
+            const std::size_t comma = std::min(text.find(',', at), text.size());
+            flat.push_back(meshioplusplus::detail::stod_c(text.substr(at, comma - at)));
+            at = comma + 1;
+            ++n;
+        }
+        if (sdim && n != sdim)
+            throw std::runtime_error("--point needs " + std::to_string(sdim) +
+                                     " numbers per point");
+    }
+    const std::size_t d = sdim ? sdim : 3;
+    NDArray points(meshioplusplus::DType::Float64, {flat.size() / d, d});
+    std::copy(flat.begin(), flat.end(), points.As<double>());
+    const meshioplusplus::IgaClosestPoint r =
+        meshioplusplus::iga_closest_point(*model.mNurbs, patch, points);
+    meshioplusplus::cli::JsonOut json(std::cout);
+    const auto array = [&](const char* pName, const NDArray& rA) {
+        json.Key(pName);
+        json.BeginArray();
+        for (std::size_t i = 0; i < rA.Size(); ++i)
+            json.Number(rA.As<double>()[i]);
+        json.EndArray();
+    };
+    json.BeginObject();
+    json.Field("num_points", points.Shape()[0]);
+    json.Field("space_dim", r.mPoints.Shape()[1]);
+    array("params", r.mParams);
+    array("points", r.mPoints);
+    array("distances", r.mDistances);
+    json.EndObject();
+    std::cout << "\n";
+    return 0;
+}
+
+int cmd_iga_remove_knots(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"direction", {"-d"}, true},
+                                          {"knot", {"-k"}, true},
+                                          {"tolerance", {"-t"}, true},
+                                          {"patch", {}, true},
+                                          {"sample-subdivisions", {}, true}},
+                                         report_flag_specs()}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("iga-remove-knots requires exactly INFILE and OUTFILE");
+    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    if (!model.mNurbs)
+        throw std::runtime_error(
+            "iga-remove-knots takes a NURBS model (an MFEM NURBS mesh), not a B-rep");
+    const auto patch =
+        static_cast<std::size_t>(has_opt(p, "patch") ? std::stoll(opt_value(p, "patch")) : 0);
+    const auto direction = static_cast<std::int32_t>(
+        has_opt(p, "direction") ? std::stol(opt_value(p, "direction")) : 0);
+    double tolerance = 0.0;
+    if (has_opt(p, "tolerance"))
+        tolerance = meshioplusplus::detail::stod_c(opt_value(p, "tolerance"));
+    std::vector<double> knots;
+    for (const std::string& text : opt_values(p, "knot"))
+        knots.push_back(meshioplusplus::detail::stod_c(text));
+    const meshioplusplus::IgaSampleOptions so = cli_iga_sample_options(p, "sample-subdivisions");
+    meshioplusplus::IgaRemoveKnotsReport report;
+    const meshioplusplus::NurbsInfo reduced = meshioplusplus::iga_remove_knots(
+        *model.mNurbs, patch, direction, knots, tolerance, &report);
+    std::optional<meshioplusplus::NurbsInfo> mapped;
+    mapped.emplace();
+    const Mesh mesh = meshioplusplus::iga_sample(reduced, so, &*mapped);
+    cli_iga_write(p.positionals[1], opt_value(p, "output-format"), mesh, mapped, std::nullopt);
+    cli_iga_summary(p, "iga_remove_knots", "nurbs", mesh, reduced.mPatches.size(), &report);
+    return 0;
+}
+
+int cmd_iga_bezier(const std::vector<std::string>& rArgs) {
+    auto p =
+        cli_parse(rArgs, cli_specs({io_flag_specs(), {{"patch", {}, true}}, report_flag_specs()}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("iga-bezier requires exactly INFILE and OUTFILE");
+    CliIgaModel model = cli_iga_read(p.positionals[0], opt_value(p, "input-format"));
+    if (!model.mNurbs)
+        throw std::runtime_error(
+            "iga-bezier takes a NURBS model (an MFEM NURBS mesh), not a B-rep");
+    const auto patch =
+        static_cast<std::size_t>(has_opt(p, "patch") ? std::stoll(opt_value(p, "patch")) : 0);
+    const Mesh mesh = meshioplusplus::iga_bezier_extract(*model.mNurbs, patch);
+    write_mesh_cli(p.positionals[1], mesh, opt_value(p, "output-format"));
+    cli_iga_summary(p, "iga_bezier_extract", "nurbs", mesh, 1);
     return 0;
 }
 
@@ -3181,6 +3314,8 @@ int cmd_iga_evaluate(const std::vector<std::string>& rArgs) {
         array("derivatives", e.mDerivatives);
     if (e.mNormals.Size())
         array("normals", e.mNormals);
+    if (e.mSecondDerivatives.Size())
+        array("second_derivatives", e.mSecondDerivatives);
     if (model.mBrep)
         array("inside", e.mInside);
     json.EndObject();
@@ -4579,6 +4714,306 @@ int cmd_symmetry_plane(const std::vector<std::string>& rArgs) {
 
 // point-normals: normals of a point cloud by local plane fits. See
 // operations/point_normals.hpp.
+/// A mesh's points as flat `[x, y, z, ...]` (a planar mesh's `z` is 0).
+std::vector<double> cli_flat_points(const Mesh& rMesh) {
+    std::vector<double> out;
+    const std::size_t n = rMesh.NumPoints();
+    out.reserve(3 * n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const meshioplusplus::detail::Vec3 p = meshioplusplus::detail::read_point(
+            rMesh.Points(), rMesh.PointDim(), static_cast<std::int64_t>(i));
+        out.insert(out.end(), {p[0], p[1], p[2]});
+    }
+    return out;
+}
+
+/// A vertex mesh of `rXyz` (flat triples) carrying the given point arrays.
+Mesh cli_vertex_mesh(const std::vector<double>& rXyz,
+                     const std::vector<std::pair<std::string, NDArray>>& rArrays) {
+    const std::size_t n = rXyz.size() / 3;
+    Mesh out;
+    NDArray pts =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, {n, std::size_t{3}});
+    std::copy(rXyz.begin(), rXyz.end(), pts.As<double>());
+    out.AssignPoints(std::move(pts));
+    NDArray conn =
+        meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {n, std::size_t{1}});
+    for (std::size_t i = 0; i < n; ++i)
+        conn.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
+    out.AddCellBlock("vertex", std::move(conn));
+    for (const auto& kv : rArrays)
+        out.AddPointData(kv.first, kv.second);
+    return out;
+}
+
+NDArray cli_i64_array(const std::vector<std::int64_t>& rV) {
+    NDArray a = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64, {rV.size()});
+    std::copy(rV.begin(), rV.end(), a.As<std::int64_t>());
+    return a;
+}
+
+NDArray cli_f64_array(const std::vector<double>& rV, std::size_t Cols) {
+    std::vector<std::size_t> shape = {rV.size() / Cols};
+    if (Cols > 1)
+        shape.push_back(Cols);
+    NDArray a = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Float64, shape);
+    std::copy(rV.begin(), rV.end(), a.As<double>());
+    return a;
+}
+
+int cmd_filter_points(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"outliers", {}, true},
+                                          {"k", {}, true},
+                                          {"std-ratio", {}, true},
+                                          {"radius", {}, true},
+                                          {"min-neighbors", {}, true},
+                                          {"voxel", {}, true},
+                                          {"poisson", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("filter-points requires INFILE OUTFILE");
+    meshioplusplus::PointFilterOptions o;
+    if (has_opt(p, "outliers")) {
+        if (opt_value(p, "outliers") != "statistical")
+            throw std::runtime_error("filter-points: --outliers must be 'statistical'");
+        o.mStatisticalK = 16;
+        cli_opt_int64(p, "k", o.mStatisticalK);
+    }
+    cli_opt_double(p, "std-ratio", o.mStdRatio);
+    cli_opt_double(p, "radius", o.mRadius);
+    cli_opt_int64(p, "min-neighbors", o.mMinNeighbors);
+    cli_opt_double(p, "voxel", o.mVoxelSize);
+    cli_opt_double(p, "poisson", o.mMinDistance);
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::PointFilterResult r = meshioplusplus::filter_points(mesh, o);
+    const std::int64_t kept = static_cast<std::int64_t>(r.mMesh.NumPoints());
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("num_kept", kept);
+        json.Field("num_input", r.mNumInput);
+        json.Field("num_removed_statistical", r.mNumRemovedStatistical);
+        json.Field("num_removed_radius", r.mNumRemovedRadius);
+        json.Field("num_removed_voxel", r.mNumRemovedVoxel);
+        json.Field("num_removed_poisson", r.mNumRemovedPoisson);
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        return 0;
+    }
+    std::cout << "kept " << kept << " of " << r.mNumInput << " points (statistical "
+              << r.mNumRemovedStatistical << ", radius " << r.mNumRemovedRadius << ", voxel "
+              << r.mNumRemovedVoxel << ", poisson " << r.mNumRemovedPoisson << " removed)\n";
+    for (const std::string& w : r.mWarnings)
+        std::cout << "  warning: " << w << "\n";
+    return 0;
+}
+
+int cmd_cast_rays(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"direction", {}, true},
+                                          {"max-distance", {}, true},
+                                          {"region", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("cast-rays requires SURFACE RAYS and OUTFILE");
+    const Mesh surface = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const Mesh rays = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+    std::vector<double> directions;
+    if (has_opt(p, "direction")) {
+        auto in = meshioplusplus::detail::make_classic_istringstream(opt_value(p, "direction"));
+        std::string item;
+        while (std::getline(in, item, ','))
+            directions.push_back(meshioplusplus::detail::stod_c(item));
+        if (directions.size() != 3)
+            throw std::runtime_error("cast-rays: --direction expects three numbers");
+    } else if (rays.HasPointData("directions")) {
+        const NDArray& d = rays.PointData("directions");
+        for (std::size_t i = 0; i < d.Size(); ++i)
+            directions.push_back(meshioplusplus::detail::read_double(d, i));
+    } else {
+        throw std::runtime_error(
+            "cast-rays: give --direction X,Y,Z or a point array 'directions' in the rays file");
+    }
+    meshioplusplus::CastRaysOptions options;
+    cli_opt_double(p, "max-distance", options.mMaxDistance);
+    if (has_opt(p, "region"))
+        options.mRegion = opt_value(p, "region");
+    const std::vector<double> origins = cli_flat_points(rays);
+    const meshioplusplus::CastRaysResult r =
+        meshioplusplus::cast_rays(surface, origins, directions, options);
+
+    std::vector<double> xyz, distance, normal;
+    std::vector<std::int64_t> index, cell;
+    for (std::size_t i = 0; i < r.mHit.size(); ++i) {
+        if (!r.mHit[i])
+            continue;
+        xyz.insert(xyz.end(), r.mPoint.begin() + 3 * i, r.mPoint.begin() + 3 * i + 3);
+        normal.insert(normal.end(), r.mNormal.begin() + 3 * i, r.mNormal.begin() + 3 * i + 3);
+        distance.push_back(r.mDistance[i]);
+        index.push_back(static_cast<std::int64_t>(i));
+        cell.push_back(r.mCell[i]);
+    }
+    const Mesh out = cli_vertex_mesh(xyz, {{"ray:index", cli_i64_array(index)},
+                                           {"ray:distance", cli_f64_array(distance, 1)},
+                                           {"ray:cell", cli_i64_array(cell)},
+                                           {"ray:normal", cli_f64_array(normal, 3)}});
+    write_mesh_cli(p.positionals[2], out, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[2]);
+        json.Field("num_rays", static_cast<std::int64_t>(r.mHit.size()));
+        json.Field("num_hits", r.mNumHits);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumHits << " of " << r.mHit.size() << " rays hit the surface\n";
+    return 0;
+}
+
+int cmd_locate(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(
+        rArgs, cli_specs({io_flag_specs(), {{"tolerance", {}, true}, {"json", {}, false}}}));
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("locate requires MESH POINTS and OUTFILE");
+    const Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const Mesh points = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+    meshioplusplus::LocatePointsOptions options;
+    cli_opt_double(p, "tolerance", options.mTolerance);
+    const std::vector<double> xyz_in = cli_flat_points(points);
+    const meshioplusplus::LocatePointsResult r =
+        meshioplusplus::locate_points(mesh, xyz_in, options);
+
+    std::vector<double> xyz, bary;
+    std::vector<std::int64_t> cell, nodes, index;
+    for (std::size_t i = 0; i < r.mCell.size(); ++i) {
+        if (r.mCell[i] < 0)
+            continue;
+        xyz.insert(xyz.end(), xyz_in.begin() + 3 * i, xyz_in.begin() + 3 * i + 3);
+        bary.insert(bary.end(), r.mBarycentric.begin() + 4 * i, r.mBarycentric.begin() + 4 * i + 4);
+        nodes.insert(nodes.end(), r.mNodes.begin() + 4 * i, r.mNodes.begin() + 4 * i + 4);
+        cell.push_back(r.mCell[i]);
+        index.push_back(static_cast<std::int64_t>(i));
+    }
+    NDArray node_array = meshioplusplus::NDArray::Uninit(meshioplusplus::DType::Int64,
+                                                         {cell.size(), std::size_t{4}});
+    std::copy(nodes.begin(), nodes.end(), node_array.As<std::int64_t>());
+    const Mesh out = cli_vertex_mesh(xyz, {{"locate:cell", cli_i64_array(cell)},
+                                           {"locate:nodes", node_array},
+                                           {"locate:barycentric", cli_f64_array(bary, 4)}});
+    write_mesh_cli(p.positionals[2], out, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[2]);
+        json.Field("num_points", static_cast<std::int64_t>(r.mCell.size()));
+        json.Field("num_located", r.mNumLocated);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mNumLocated << " of " << r.mCell.size() << " points lie inside the mesh\n";
+    return 0;
+}
+
+std::string stats_g6(double v);  // defined with `cmd_stats` below
+
+int cmd_mass(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({input_flag_specs(),
+                                         {{"density", {}, true},
+                                          {"density-array", {}, true},
+                                          {"region", {}, true},
+                                          {"thickness", {}, true},
+                                          {"about", {}, true},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 1)
+        throw std::runtime_error("mass requires exactly INFILE");
+    meshioplusplus::MassPropertiesOptions o;
+    cli_opt_double(p, "density", o.mDensity);
+    cli_opt_double(p, "thickness", o.mThickness);
+    if (has_opt(p, "density-array"))
+        o.mDensityArray = opt_value(p, "density-array");
+    if (has_opt(p, "region"))
+        o.mRegion = opt_value(p, "region");
+    if (has_opt(p, "about"))
+        o.mAbout = meshioplusplus::mass_about_from_name(opt_value(p, "about"));
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    const meshioplusplus::MassPropertiesReport r = meshioplusplus::mass_properties(mesh, o);
+
+    const auto vec = [](const double* pV, std::size_t N) {
+        std::string t = "[";
+        for (std::size_t k = 0; k < N; ++k)
+            t += (k ? ", " : "") + stats_g6(pV[k]);
+        return t + "]";
+    };
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        const auto array = [&](const char* pKey, const double* pV, std::size_t N) {
+            json.Key(pKey);
+            json.BeginArray();
+            for (std::size_t k = 0; k < N; ++k)
+                json.Number(pV[k]);
+            json.EndArray();
+        };
+        const auto entry = [&](const meshioplusplus::MassProperties& rP) {
+            json.BeginObject();
+            json.Field("name", rP.mName);
+            json.Field("num_cells", rP.mNumCells);
+            json.Field("measure", rP.mMeasure);
+            json.Field("mass", rP.mMass);
+            array("centre", rP.mCentre.data(), 3);
+            array("inertia", rP.mInertia.data(), 6);
+            array("principal_moments", rP.mPrincipalMoments.data(), 3);
+            array("principal_axes", rP.mPrincipalAxes.data(), 9);
+            array("gyration_radii", rP.mGyrationRadii.data(), 3);
+            json.EndObject();
+        };
+        json.BeginObject();
+        json.Field("kind", r.mKind);
+        json.Key("total");
+        entry(r.mTotal);
+        json.Key("regions");
+        json.BeginArray();
+        for (const auto& rp : r.mRegions)
+            entry(rp);
+        json.EndArray();
+        json.Key("warnings");
+        json.BeginArray();
+        for (const std::string& w : r.mWarnings)
+            json.String(w);
+        json.EndArray();
+        json.EndObject();
+        return 0;
+    }
+    const auto print = [&](const meshioplusplus::MassProperties& rP, const char* pIndent) {
+        std::cout << pIndent << "cells:              " << rP.mNumCells << "\n";
+        std::cout << pIndent
+                  << (r.mKind == "shell" ? "area:               " : "volume:             ")
+                  << stats_g6(rP.mMeasure) << "\n";
+        std::cout << pIndent << "mass:               " << stats_g6(rP.mMass) << "\n";
+        std::cout << pIndent << "centre of mass:     " << vec(rP.mCentre.data(), 3) << "\n";
+        std::cout << pIndent << "inertia xx yy zz xy yz zx: " << vec(rP.mInertia.data(), 6) << "\n";
+        std::cout << pIndent << "principal moments:  " << vec(rP.mPrincipalMoments.data(), 3)
+                  << "\n";
+        std::cout << pIndent << "gyration radii:     " << vec(rP.mGyrationRadii.data(), 3) << "\n";
+    };
+    std::cout << "<meshio++ mass properties: " << r.mKind << ">\n";
+    print(r.mTotal, "  ");
+    for (const auto& rp : r.mRegions) {
+        std::cout << "  region '" << rp.mName << "':\n";
+        print(rp, "    ");
+    }
+    for (const std::string& w : r.mWarnings)
+        std::cout << "  warning: " << w << "\n";
+    return 0;
+}
+
 int cmd_point_normals(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"k", {}, true},
@@ -10539,6 +10974,15 @@ const CliVerb kCliVerbs[] = {
      &cmd_iga_refine},
     {"iga-sample", nullptr, "  iga-sample              Sample a NURBS model into Lagrange cells\n",
      &cmd_iga_sample},
+    {"iga-closest-point", nullptr,
+     "  iga-closest-point       Closest point of a NURBS patch to query points (JSON)\n",
+     &cmd_iga_closest_point},
+    {"iga-remove-knots", nullptr,
+     "  iga-remove-knots        Remove knots from a NURBS patch within a tolerance\n",
+     &cmd_iga_remove_knots},
+    {"iga-bezier", nullptr,
+     "  iga-bezier              Bezier extraction of a NURBS patch into VTK Bezier cells\n",
+     &cmd_iga_bezier},
     {"iga-evaluate", nullptr,
      "  iga-evaluate            Evaluate a NURBS patch at parametric coordinates (JSON)\n",
      &cmd_iga_evaluate},
@@ -10570,6 +11014,15 @@ const CliVerb kCliVerbs[] = {
      &cmd_coordinates},
     {"hull", nullptr,
      "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n", &cmd_hull},
+    {"filter-points", nullptr,
+     "  filter-points           Outlier removal and thinning of a point cloud\n",
+     &cmd_filter_points},
+    {"cast-rays", nullptr, "  cast-rays               The nearest surface hit of a batch of rays\n",
+     &cmd_cast_rays},
+    {"locate", nullptr, "  locate                  The cell containing each point of a file\n",
+     &cmd_locate},
+    {"mass", nullptr, "  mass                    Mass, centre of mass and inertia of a body\n",
+     &cmd_mass},
     {"point-normals", nullptr,
      "  point-normals           Normals of a point cloud by local plane fits\n",
      &cmd_point_normals},

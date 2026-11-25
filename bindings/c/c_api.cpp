@@ -117,6 +117,10 @@
 #include "meshioplusplus/operations/data_info.hpp"
 #include "meshioplusplus/operations/data_integrate.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/operations/decimate.hpp"
 #include "meshioplusplus/operations/decimate_volume.hpp"
@@ -357,6 +361,10 @@ struct mio_data_info {
 
 struct mio_data_integrate {
     meshioplusplus::DataIntegrateReport mReport;
+};
+
+struct mio_mass_report {
+    meshioplusplus::MassPropertiesReport mReport;
 };
 
 /// Opaque handle behind mio_read_metadata_*; modelled on mio_data_info above,
@@ -9775,6 +9783,124 @@ mio_mesh* mio_iga_sample(const mio_format_info* info, const mio_iga_opts* opts,
     });
 }
 
+mio_status mio_iga_closest_point(const mio_format_info* info, int64_t patch, const double* points,
+                                 int64_t num_points, double* params, double* closest,
+                                 double* distances, int32_t* param_dim) {
+    return guarded([&]() -> mio_status {
+        if (!info || num_points < 0 || (num_points > 0 && !points) || patch < 0)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: iga_closest_point: info/points is NULL, or the patch or the "
+                        "point count is negative");
+        const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo);
+        if (!p_nurbs)
+            return fail(MIO_ERR_INVALID_ARG, kCapiIgaNotNurbs);
+        const auto pi = static_cast<std::size_t>(patch);
+        if (pi >= p_nurbs->mPatches.size())
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: iga: patch " + std::to_string(patch) + " is out of range");
+        const std::size_t sdim = p_nurbs->mPatches[pi].mControlPoints.Shape().size() == 2
+                                     ? p_nurbs->mPatches[pi].mControlPoints.Shape()[1]
+                                     : 0;
+        meshioplusplus::NDArray q(meshioplusplus::DType::Float64,
+                                  {static_cast<std::size_t>(num_points), sdim});
+        if (sdim > 0 && num_points > 0)
+            std::copy(points, points + static_cast<std::size_t>(num_points) * sdim, q.As<double>());
+        try {
+            const meshioplusplus::IgaClosestPoint r =
+                meshioplusplus::iga_closest_point(*p_nurbs, pi, q);
+            const auto n = static_cast<std::size_t>(num_points);
+            const std::size_t dim = r.mParams.Shape()[1];
+            if (param_dim)
+                *param_dim = static_cast<int32_t>(dim);
+            if (params)
+                std::copy(r.mParams.As<double>(), r.mParams.As<double>() + n * dim, params);
+            if (closest)
+                std::copy(r.mPoints.As<double>(), r.mPoints.As<double>() + n * sdim, closest);
+            if (distances)
+                std::copy(r.mDistances.As<double>(), r.mDistances.As<double>() + n, distances);
+        } catch (const std::invalid_argument& e) {
+            return fail(MIO_ERR_INVALID_ARG, e.what());
+        }
+        return MIO_OK;
+    });
+}
+
+static_assert(sizeof(mio_iga_remove_opts) == 72, "mio_iga_remove_opts layout changed");
+static_assert(offsetof(mio_iga_remove_opts, reserved) == 40,
+              "mio_iga_remove_opts: the reserved tail moved");
+
+void mio_iga_remove_opts_init(mio_iga_remove_opts* opts) {
+    if (opts)
+        *opts = mio_iga_remove_opts{};
+}
+
+mio_mesh* mio_iga_remove_knots(const mio_format_info* info, const mio_iga_remove_opts* opts,
+                               mio_format_info** reduced, int64_t capacity, double* report_knots,
+                               int32_t* report_requested, int32_t* report_removed,
+                               int64_t* num_report) {
+    if (reduced)
+        *reduced = nullptr;
+    if (num_report)
+        *num_report = 0;
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo);
+        if (!p_nurbs)
+            throw std::invalid_argument(kCapiIgaNotNurbs);
+        mio_iga_remove_opts o;
+        mio_iga_remove_opts_init(&o);
+        if (opts)
+            o = *opts;
+        if (o.patch < 0)
+            throw std::invalid_argument("meshio++: iga: the patch index is negative");
+        if (o.direction < 0)
+            throw std::invalid_argument("meshio++: iga: the direction is negative");
+        if (o.num_knots < 0 || (o.num_knots > 0 && !o.knots))
+            throw std::invalid_argument("meshio++: iga: the knot list is NULL or negative");
+        std::vector<double> knots;
+        if (o.num_knots > 0)
+            knots.assign(o.knots, o.knots + o.num_knots);
+        meshioplusplus::IgaSampleOptions so;
+        so.mSubdivisions = o.sample_subdivisions;
+        meshioplusplus::IgaRemoveKnotsReport report;
+        const meshioplusplus::NurbsInfo r = meshioplusplus::iga_remove_knots(
+            *p_nurbs, static_cast<std::size_t>(o.patch), o.direction, knots, o.tolerance, &report);
+        meshioplusplus::NurbsInfo mapped;
+        auto mesh =
+            std::make_unique<mio_mesh>(mio_mesh{meshioplusplus::iga_sample(r, so, &mapped)});
+        const auto n = static_cast<int64_t>(report.mKnots.size());
+        for (int64_t i = 0; i < std::min(n, capacity); ++i) {
+            const auto k = static_cast<std::size_t>(i);
+            if (report_knots)
+                report_knots[i] = report.mKnots[k];
+            if (report_requested)
+                report_requested[i] = report.mRequested[k];
+            if (report_removed)
+                report_removed[i] = report.mRemoved[k];
+        }
+        if (num_report)
+            *num_report = n;
+        if (reduced)
+            *reduced = capi_iga_handle(info->mFormat, std::move(mapped));
+        return mesh.release();
+    });
+}
+
+mio_mesh* mio_iga_bezier_extract(const mio_format_info* info, int64_t patch) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        if (!info)
+            throw std::invalid_argument("meshio++: format info handle is NULL");
+        const auto* p_nurbs = std::get_if<meshioplusplus::NurbsInfo>(&info->mInfo);
+        if (!p_nurbs)
+            throw std::invalid_argument(kCapiIgaNotNurbs);
+        if (patch < 0)
+            throw std::invalid_argument("meshio++: iga: the patch index is negative");
+        return new mio_mesh{
+            meshioplusplus::iga_bezier_extract(*p_nurbs, static_cast<std::size_t>(patch))};
+    });
+}
+
 mio_iga_evaluation* mio_iga_evaluate(const mio_format_info* info, int64_t patch,
                                      const double* params, int64_t num_points, int32_t derivatives,
                                      int32_t trim_samples) {
@@ -9835,6 +9961,9 @@ mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation, int32_
                 break;
             case MIO_IGA_NORMALS:
                 a = e.mNormals.Size() ? &e.mNormals : nullptr;
+                break;
+            case MIO_IGA_SECOND_DERIVATIVES:
+                a = e.mSecondDerivatives.Size() ? &e.mSecondDerivatives : nullptr;
                 break;
             case MIO_IGA_INSIDE:
                 a = evaluation->mFace ? &e.mInside : nullptr;
@@ -12706,6 +12835,265 @@ mio_mesh* mio_metric_from_hessian(const mio_mesh* mesh, const char* hessian, dou
         if (output)
             o.mOutput = output;
         return new mio_mesh{meshioplusplus::metric_from_hessian(mesh->mMesh, o)};
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Mass properties (roadmap 9.4)
+// ---------------------------------------------------------------------------
+
+static_assert(sizeof(mio_mass_properties_opts) == 56,
+              "mio_mass_properties_opts layout changed: update the size in meshioplusplus.h");
+static_assert(offsetof(mio_mass_properties_opts, reserved) == 40,
+              "mio_mass_properties_opts: the reserved tail moved");
+static_assert(sizeof(mio_mass_entry) == 232,
+              "mio_mass_entry layout changed: update the size in meshioplusplus.h");
+
+void mio_mass_properties_opts_init(mio_mass_properties_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_mass_properties_opts{};
+    opts->density = 1.0;
+}
+
+mio_mass_report* mio_mass_properties(const mio_mesh* mesh, const mio_mass_properties_opts* opts) {
+    return capi_guarded_null<mio_mass_report>([&]() -> mio_mass_report* {
+        capi_require(mesh, "meshio++: mass_properties: mesh is NULL");
+        meshioplusplus::MassPropertiesOptions options;
+        if (opts) {
+            options.mDensity = opts->density;
+            options.mThickness = opts->thickness;
+            if (opts->density_array)
+                options.mDensityArray = opts->density_array;
+            if (opts->region)
+                options.mRegion = opts->region;
+            options.mAbout = opts->about == 1 ? meshioplusplus::MassAbout::Origin
+                                              : meshioplusplus::MassAbout::Centroid;
+            if (opts->about != 0 && opts->about != 1)
+                throw std::invalid_argument("meshio++: mass_properties: about must be 0 or 1");
+        }
+        return new mio_mass_report{meshioplusplus::mass_properties(mesh->mMesh, options)};
+    });
+}
+
+int64_t mio_mass_report_kind(const mio_mass_report* report, char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(report, "meshio++: report is NULL");
+        return copy_string(report->mReport.mKind, buf, buflen);
+    });
+}
+
+int64_t mio_mass_report_count(const mio_mass_report* report) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(report, "meshio++: report is NULL");
+        return static_cast<int64_t>(1 + report->mReport.mRegions.size());
+    });
+}
+
+namespace {
+const meshioplusplus::MassProperties& capi_mass_entry(const mio_mass_report* pReport,
+                                                      int64_t Index) {
+    capi_require(pReport, "meshio++: report is NULL");
+    if (Index < 0 || static_cast<std::size_t>(Index) > pReport->mReport.mRegions.size())
+        throw meshioplusplus::ReadError("meshio++: mass entry index out of range");
+    return Index == 0 ? pReport->mReport.mTotal
+                      : pReport->mReport.mRegions[static_cast<std::size_t>(Index - 1)];
+}
+}  // namespace
+
+mio_status mio_mass_report_entry(const mio_mass_report* report, int64_t index,
+                                 mio_mass_entry* out) {
+    return guarded([&]() -> mio_status {
+        if (!out)
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: mass entry: out is NULL");
+        const meshioplusplus::MassProperties& e = capi_mass_entry(report, index);
+        *out = mio_mass_entry{};
+        out->num_cells = e.mNumCells;
+        out->measure = e.mMeasure;
+        out->mass = e.mMass;
+        std::copy(e.mCentre.begin(), e.mCentre.end(), out->centre);
+        std::copy(e.mInertia.begin(), e.mInertia.end(), out->inertia);
+        std::copy(e.mPrincipalMoments.begin(), e.mPrincipalMoments.end(), out->principal_moments);
+        std::copy(e.mPrincipalAxes.begin(), e.mPrincipalAxes.end(), out->principal_axes);
+        std::copy(e.mGyrationRadii.begin(), e.mGyrationRadii.end(), out->gyration_radii);
+        return MIO_OK;
+    });
+}
+
+int64_t mio_mass_report_entry_name(const mio_mass_report* report, int64_t index, char* buf,
+                                   int64_t buflen) {
+    return capi_guarded_count([&]() -> int64_t {
+        return copy_string(capi_mass_entry(report, index).mName, buf, buflen);
+    });
+}
+
+int64_t mio_mass_report_warnings(const mio_mass_report* report, char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(report, "meshio++: report is NULL");
+        std::string joined;
+        for (const std::string& w : report->mReport.mWarnings)
+            joined += (joined.empty() ? "" : "\n") + w;
+        return copy_string(joined, buf, buflen);
+    });
+}
+
+void mio_mass_report_free(mio_mass_report* report) {
+    delete report;
+}
+
+// ---------------------------------------------------------------------------
+// Ray casting and point location (roadmap 9.3)
+// ---------------------------------------------------------------------------
+
+static_assert(sizeof(mio_cast_rays_opts) == 64,
+              "mio_cast_rays_opts layout changed: update the size in meshioplusplus.h");
+static_assert(offsetof(mio_cast_rays_opts, reserved) == 16,
+              "mio_cast_rays_opts: the reserved tail moved");
+static_assert(sizeof(mio_locate_points_opts) == 64,
+              "mio_locate_points_opts layout changed: update the size in meshioplusplus.h");
+static_assert(offsetof(mio_locate_points_opts, reserved) == 8,
+              "mio_locate_points_opts: the reserved tail moved");
+
+void mio_cast_rays_opts_init(mio_cast_rays_opts* opts) {
+    if (opts)
+        *opts = mio_cast_rays_opts{};
+}
+
+void mio_locate_points_opts_init(mio_locate_points_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_locate_points_opts{};
+    opts->tolerance = 1e-12;
+}
+
+mio_status mio_cast_rays(const mio_mesh* mesh, const double* origins, int64_t num_rays,
+                         const double* directions, int64_t num_directions,
+                         const mio_cast_rays_opts* opts, int32_t* hit, double* distance,
+                         double* point, double* normal, int64_t* cell, int64_t* num_hits) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || num_rays < 0 || (num_rays > 0 && !origins) || !directions)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: cast_rays: mesh/origins/directions is NULL "
+                        "or num_rays is negative");
+        if (num_directions != 1 && num_directions != num_rays)
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: cast_rays: num_directions must be 1 or num_rays");
+        meshioplusplus::CastRaysOptions options;
+        if (opts) {
+            options.mMaxDistance = opts->max_distance;
+            if (opts->region)
+                options.mRegion = opts->region;
+        }
+        const std::vector<double> o(origins, origins + 3 * static_cast<std::size_t>(num_rays));
+        const std::vector<double> d(directions,
+                                    directions + 3 * static_cast<std::size_t>(num_directions));
+        const meshioplusplus::CastRaysResult r =
+            meshioplusplus::cast_rays(mesh->mMesh, o, d, options);
+        const std::size_t n = r.mHit.size();
+        for (std::size_t i = 0; i < n; ++i) {
+            if (hit)
+                hit[i] = r.mHit[i];
+            if (distance)
+                distance[i] = r.mDistance[i];
+            if (cell)
+                cell[i] = r.mCell[i];
+        }
+        if (point)
+            std::copy(r.mPoint.begin(), r.mPoint.end(), point);
+        if (normal)
+            std::copy(r.mNormal.begin(), r.mNormal.end(), normal);
+        if (num_hits)
+            *num_hits = r.mNumHits;
+        return MIO_OK;
+    });
+}
+
+mio_status mio_locate_points(const mio_mesh* mesh, const double* points, int64_t num_points,
+                             const mio_locate_points_opts* opts, int64_t* cell, int64_t* nodes,
+                             double* barycentric, int64_t* num_located) {
+    return guarded([&]() -> mio_status {
+        if (!mesh || num_points < 0 || (num_points > 0 && !points))
+            return fail(MIO_ERR_INVALID_ARG,
+                        "meshio++: locate_points: mesh/points is NULL or num_points is negative");
+        meshioplusplus::LocatePointsOptions options;
+        if (opts)
+            options.mTolerance = opts->tolerance;
+        const std::vector<double> p(points, points + 3 * static_cast<std::size_t>(num_points));
+        const meshioplusplus::LocatePointsResult r =
+            meshioplusplus::locate_points(mesh->mMesh, p, options);
+        if (cell)
+            std::copy(r.mCell.begin(), r.mCell.end(), cell);
+        if (nodes)
+            std::copy(r.mNodes.begin(), r.mNodes.end(), nodes);
+        if (barycentric)
+            std::copy(r.mBarycentric.begin(), r.mBarycentric.end(), barycentric);
+        if (num_located)
+            *num_located = r.mNumLocated;
+        return MIO_OK;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Point-cloud conditioning (roadmap 9.9)
+// ---------------------------------------------------------------------------
+
+static_assert(sizeof(mio_filter_points_opts) == 80,
+              "mio_filter_points_opts layout changed: update the size in meshioplusplus.h");
+static_assert(offsetof(mio_filter_points_opts, reserved) == 48,
+              "mio_filter_points_opts: the reserved tail moved");
+
+namespace {
+std::string& capi_filter_points_warnings() {
+    thread_local std::string warnings;
+    return warnings;
+}
+}  // namespace
+
+void mio_filter_points_opts_init(mio_filter_points_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_filter_points_opts{};
+    opts->std_ratio = 1.0;
+    opts->min_neighbors = 4;
+}
+
+mio_mesh* mio_filter_points(const mio_mesh* mesh, const mio_filter_points_opts* opts,
+                            int64_t* point_map, int64_t* num_removed) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        mio_filter_points_opts o;
+        mio_filter_points_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::PointFilterOptions options;
+        options.mStatisticalK = o.statistical_k;
+        options.mStdRatio = o.std_ratio;
+        options.mRadius = o.radius;
+        options.mMinNeighbors = o.min_neighbors;
+        options.mVoxelSize = o.voxel_size;
+        options.mMinDistance = o.min_distance;
+        meshioplusplus::PointFilterResult r = meshioplusplus::filter_points(mesh->mMesh, options);
+        if (point_map)
+            std::copy(r.mPointMap.begin(), r.mPointMap.end(), point_map);
+        if (num_removed) {
+            num_removed[0] = r.mNumRemovedStatistical;
+            num_removed[1] = r.mNumRemovedRadius;
+            num_removed[2] = r.mNumRemovedVoxel;
+            num_removed[3] = r.mNumRemovedPoisson;
+        }
+        std::string& w = capi_filter_points_warnings();
+        w.clear();
+        for (const std::string& s : r.mWarnings)
+            w += (w.empty() ? "" : "\n") + s;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+int64_t mio_filter_points_warnings(char* buf, int64_t buflen) {
+    return capi_guarded_count([&]() {
+        if (buflen < 0)
+            throw std::invalid_argument("meshio++: negative warnings buffer length");
+        return copy_string(capi_filter_points_warnings(), buf, buflen);
     });
 }
 

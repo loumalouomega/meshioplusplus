@@ -84,6 +84,7 @@
 #include "meshioplusplus/operations/repair.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
@@ -2747,6 +2748,32 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                        {{"NumDegenerate", static_cast<double>(nr.mNumDegenerate)},
                         {"NumComponents", static_cast<double>(nr.mNumComponents)}});
         return std::move(nr.mMesh);
+    }
+    if (op == "FilterPoints") {
+        PointFilterOptions opts;
+        const auto integer = [&](const char* pKey, std::int64_t Fallback) {
+            const double v = pipe_number(rStep, pKey, static_cast<double>(Fallback));
+            const auto i = static_cast<std::int64_t>(v);
+            if (static_cast<double>(i) != v)
+                throw std::invalid_argument(std::string("pipeline: FilterPoints: ") + pKey +
+                                            " must be an integer");
+            return i;
+        };
+        opts.mStatisticalK = integer("StatisticalK", 0);
+        opts.mStdRatio = pipe_number(rStep, "StdRatio", 1.0);
+        opts.mRadius = pipe_number(rStep, "Radius", 0.0);
+        opts.mMinNeighbors = integer("MinNeighbors", 4);
+        opts.mVoxelSize = pipe_number(rStep, "VoxelSize", 0.0);
+        opts.mMinDistance = pipe_number(rStep, "MinDistance", 0.0);
+        PointFilterResult fr = filter_points(mesh, opts);
+        for (const std::string& w : fr.mWarnings)
+            rReport.mWarnings.push_back("filter_points: " + w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumRemovedStatistical", static_cast<double>(fr.mNumRemovedStatistical)},
+                        {"NumRemovedRadius", static_cast<double>(fr.mNumRemovedRadius)},
+                        {"NumRemovedVoxel", static_cast<double>(fr.mNumRemovedVoxel)},
+                        {"NumRemovedPoisson", static_cast<double>(fr.mNumRemovedPoisson)}});
+        return std::move(fr.mMesh);
     }
     if (op == "ReconstructSurface") {
         ReconstructSurfaceOptions opts;

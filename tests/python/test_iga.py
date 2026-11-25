@@ -11,6 +11,7 @@ circles, and against central differences for the derivatives. The two engines
 pinned in ``tests/cpp/test_iga.cpp``.
 """
 
+import math
 import pathlib
 
 import numpy as np
@@ -252,6 +253,75 @@ def test_brep_engines_are_bit_identical(name, variant):
         b = _iga._evaluate_brep_py(brep, fi, u, 1, 16)
         for k in ("points", "derivatives", "normals", "inside"):
             np.testing.assert_array_equal(a[k], b[k], err_msg=k)
+
+
+@needs_core
+@pytest.mark.parametrize("name", NURBS)
+def test_second_derivatives_are_bit_identical_between_engines(name):
+    info = _nurbs(name).info["nurbs"]
+    for pi, p in enumerate(info["patches"][:3]):
+        u = _params(p, 25, seed=pi)
+        a = _core.iga_evaluate_nurbs(info, pi, u, 2)
+        b = _iga._evaluate_patch(p, _iga._is_rational(p), u, 2, "p")
+        dim, sdim = len(p["degrees"]), np.asarray(p["control_points"]).shape[1]
+        assert a["second_derivatives"].shape == (25, dim, dim, sdim)
+        for k in ("points", "derivatives", "second_derivatives", "normals"):
+            if k in a or k in b:
+                np.testing.assert_array_equal(a[k], b[k], err_msg=k)
+
+
+@needs_core
+@pytest.mark.parametrize("name", CAD)
+def test_brep_second_derivatives_are_bit_identical_between_engines(name):
+    brep = _cad(name).info["brep"]
+    for fi, face in enumerate(brep["faces"][:3]):
+        u = _params(brep["patches"][face["patch"]], 20, seed=fi)
+        a = _core.iga_evaluate_brep(brep, fi, u, 2, 16)
+        b = _iga._evaluate_brep_py(brep, fi, u, 2, 16)
+        for k in ("points", "derivatives", "second_derivatives", "normals", "inside"):
+            np.testing.assert_array_equal(a[k], b[k], err_msg=k)
+
+
+@pytest.mark.parametrize("name", NURBS)
+def test_second_derivatives_match_central_differences(name):
+    info = _nurbs(name).info["nurbs"]
+    for pi, p in enumerate(info["patches"][:2]):
+        dim = len(p["degrees"])
+        lo = np.array([_range(p, d)[0] for d in range(dim)])
+        hi = np.array([_range(p, d)[1] for d in range(dim)])
+        u = lo + (hi - lo) * np.random.default_rng(pi).uniform(0.2, 0.8, size=(10, dim))
+        got = _iga.iga_evaluate(info, u, patch=pi, derivatives=2)["second_derivatives"]
+        h = 1e-5
+        for l in range(dim):
+            e = np.zeros(dim)
+            e[l] = h * (hi[l] - lo[l])
+            fwd = _iga.iga_evaluate(info, u + e, patch=pi, derivatives=1)["derivatives"]
+            bwd = _iga.iga_evaluate(info, u - e, patch=pi, derivatives=1)["derivatives"]
+            np.testing.assert_allclose(
+                got[:, :, l], (fwd - bwd) / (2 * e[l]), rtol=1e-4, atol=1e-4
+            )
+        np.testing.assert_array_equal(got, np.swapaxes(got, 1, 2))  # symmetric
+
+
+def test_python_twin_second_derivatives_without_the_core(monkeypatch):
+    # The numpy twin alone, on a rational quarter circle: x . x'' + x' . x' = 0.
+    patch = {
+        "degrees": [2],
+        "knots": [np.array([0, 0, 0, 1, 1, 1], dtype=float)],
+        "control_points": np.array([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]),
+        "weights": np.array([1.0, np.sqrt(0.5), 1.0]),
+        "fields": [],
+    }
+    u = np.linspace(0.05, 0.95, 9)[:, None]
+    res = _iga._evaluate_patch(patch, True, u, 2, "arc")
+    x, d1, d2 = (
+        res["points"],
+        res["derivatives"][:, 0],
+        res["second_derivatives"][:, 0, 0],
+    )
+    np.testing.assert_allclose(
+        np.sum(x * d2, axis=1) + np.sum(d1 * d1, axis=1), 0.0, atol=1e-10
+    )
 
 
 def test_knot_multiplicities_follow_the_elevation():
@@ -576,7 +646,7 @@ def test_public_names_are_exported():
         (lambda m: _iga.iga_evaluate(m, [[5.0, 5.0]]), "outside the knot range"),
         (lambda m: _iga.iga_evaluate(m, [[0.5]]), "parameters"),
         (lambda m: _iga.iga_evaluate(m, [[0.5, 0.5]], patch=9), "outside"),
-        (lambda m: _iga.iga_evaluate(m, [[0.5, 0.5]], derivatives=2), "derivatives"),
+        (lambda m: _iga.iga_evaluate(m, [[0.5, 0.5]], derivatives=3), "derivatives"),
         (lambda m: _iga.iga_refine(m, model="brep"), "no 'brep'"),
         (lambda m: _iga.iga_refine(m, model="stl"), "model must be"),
     ],
@@ -653,3 +723,357 @@ def test_mixed_degree_faces_do_not_share_a_block():
         c.data.shape[1] for c in out.cells if c.type == "VTK_LAGRANGE_QUADRILATERAL"
     )
     assert nodes == [16, 25]
+
+
+# --- Bezier extraction (roadmap 9.8.2) -----------------------------------------
+
+
+def _bernstein(n, i, t):
+    return math.comb(n, i) * t**i * (1.0 - t) ** (n - i)
+
+
+def _bezier_point(mesh, cell, t, p, dim):
+    from meshioplusplus._lagrange import vtk_lattice
+
+    lat = vtk_lattice({1: "line", 2: "quad", 3: "hexahedron"}[dim], p)
+    conn = mesh.cells[0].data[cell]
+    w = mesh.point_data.get("RationalWeights", np.ones(len(mesh.points)))
+    num, den = 0.0, 0.0
+    for node, ijk in zip(conn, lat):
+        b = np.prod([_bernstein(p, ijk[d], t[d]) for d in range(dim)])
+        num = num + b * w[node] * mesh.points[node]
+        den += b * w[node]
+    return num / den
+
+
+def _arc_model():
+    s = math.sqrt(0.5)
+    return {
+        "patches": [
+            {
+                "degrees": [2],
+                "knots": [[0, 0, 0, 1, 1, 1]],
+                "control_points": np.array([[1, 0], [1, 1], [0, 1.0]]),
+                "weights": np.array([1, s, 1.0]),
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize("subdivisions", [1, 3])
+def test_bezier_extraction_of_a_rational_arc_is_exact(subdivisions):
+    model = mp.iga_refine(_arc_model(), subdivisions=subdivisions).info["nurbs"]
+    out = mp.iga_bezier_extract(model)
+    assert out.cells[0].type == "VTK_BEZIER_CURVE"
+    assert len(out.cells[0].data) == subdivisions
+    assert out.points.shape == (3 * subdivisions, 2)
+    assert "RationalWeights" in out.point_data
+    deg = out.cell_data["HigherOrderDegrees"][0]
+    assert deg.shape == (subdivisions, 3) and (deg[:, 0] == 2).all()
+    assert out.cell_data["iga:span"][0][:, 0].tolist() == list(range(subdivisions))
+    edges = np.linspace(0.0, 1.0, subdivisions + 1)
+    for c in range(subdivisions):
+        for t in (0.0, 0.3, 0.8, 1.0):
+            u = edges[c] + t * (edges[c + 1] - edges[c])
+            ref = mp.iga_evaluate(model, [[u]])["points"][0]
+            np.testing.assert_allclose(
+                _bezier_point(out, c, [t], 2, 1), ref, atol=1e-13
+            )
+
+
+def test_bezier_extraction_of_a_surface_and_a_volume():
+    s = math.sqrt(0.5)
+    pts, w = [], []
+    for r in (1.0, 2.0):
+        pts += [[r, 0, 0], [r, r, 0], [0, r, 0]]
+        w += [1.0, s, 1.0]
+    annulus = {
+        "patches": [
+            {
+                "degrees": [2, 1],
+                "knots": [[0, 0, 0, 1, 1, 1], [0, 0, 1, 1]],
+                "control_points": np.array(pts, dtype=float),
+                "weights": np.array(w),
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="unequal degrees"):
+        mp.iga_bezier_extract(annulus)
+    up = mp.iga_refine(annulus, elevate=(0, 1), subdivisions=(2, 2, 1)).info["nurbs"]
+    out = mp.iga_bezier_extract(up)
+    assert out.cells[0].type == "VTK_BEZIER_QUADRILATERAL"
+    assert len(out.cells[0].data) == 4
+    span = out.cell_data["iga:span"][0]
+    for c in range(4):
+        t = [0.3, 0.7]
+        u = [(span[c, 0] + t[0]) / 2, (span[c, 1] + t[1]) / 2]
+        ref = mp.iga_evaluate(up, [u])["points"][0]
+        np.testing.assert_allclose(_bezier_point(out, c, t, 2, 2), ref, atol=1e-13)
+
+    box = {
+        "patches": [
+            {
+                "degrees": [1, 1, 1],
+                "knots": [[0, 0, 1, 1]] * 3,
+                "control_points": np.array(
+                    [[i, j, k] for k in (0, 1) for j in (0, 1) for i in (0, 1)],
+                    dtype=float,
+                )
+                * [1.0, 2.0, 3.0],
+                "weights": np.ones(8),
+            }
+        ]
+    }
+    hexes = mp.iga_bezier_extract(mp.iga_refine(box, subdivisions=2).info["nurbs"])
+    assert hexes.cells[0].type == "VTK_BEZIER_HEXAHEDRON"
+    assert len(hexes.cells[0].data) == 8
+    assert "RationalWeights" not in hexes.point_data
+
+
+def test_bezier_extraction_round_trips_through_vtu(tmp_path):
+    out = mp.iga_bezier_extract(
+        mp.iga_refine(_arc_model(), subdivisions=2).info["nurbs"]
+    )
+    path = tmp_path / "arc.vtu"
+    mp.write(path, out)
+    back = mp.read(path)
+    assert back.cells[0].type == "VTK_BEZIER_CURVE"
+    np.testing.assert_array_equal(back.points[:, :2], out.points)
+    np.testing.assert_array_equal(
+        back.point_data["RationalWeights"], out.point_data["RationalWeights"]
+    )
+    np.testing.assert_array_equal(
+        back.cell_data["HigherOrderDegrees"][0], out.cell_data["HigherOrderDegrees"][0]
+    )
+
+
+def test_bezier_extraction_refuses_bad_input():
+    with pytest.raises(ValueError, match="patch 1"):
+        mp.iga_bezier_extract(_arc_model(), patch=1)
+    with pytest.raises(ValueError, match="'nurbs' model"):
+        mp.iga_bezier_extract({"faces": [], "patches": []})
+
+
+# --- knot removal (roadmap 9.8.3) ------------------------------------------------
+
+
+def _curve_model():
+    return {
+        "patches": [
+            {
+                "degrees": [3],
+                "knots": [[0, 0, 0, 0, 0.5, 1, 1, 1, 1]],
+                "control_points": np.array(
+                    [[0, 0], [1, 2], [2, 3.5], [3.5, 3], [4, 0.5]]
+                ),
+                "weights": np.ones(5),
+            }
+        ]
+    }
+
+
+def test_knot_removal_undoes_an_insertion_exactly():
+    fine = mp.iga_refine(_arc_model(), subdivisions=3)
+    out, rep = mp.iga_remove_knots(fine, return_report=True)
+    assert rep["num_removed"] == 2 and rep["removed"] == [1, 1]
+    back = out.info["nurbs"]["patches"][0]
+    ref = _arc_model()["patches"][0]
+    np.testing.assert_array_equal(back["knots"][0], ref["knots"][0])
+    np.testing.assert_allclose(
+        back["control_points"], ref["control_points"], atol=1e-13
+    )
+    np.testing.assert_allclose(back["weights"], ref["weights"], atol=1e-13)
+    one = mp.iga_remove_knots(fine, knots=[1 / 3])
+    assert len(one.info["nurbs"]["patches"][0]["control_points"]) == 4
+
+
+def test_knot_removal_respects_the_tolerance():
+    model = _curve_model()
+    _, rep = mp.iga_remove_knots(model, return_report=True)
+    assert rep["num_removed"] == 0  # the knot is needed
+    u = np.linspace(0.0, 1.0, 41)[:, None]
+    ref = mp.iga_evaluate(model, u)["points"]
+    for tol in (0.01, 0.1, 0.5, 2.0):
+        out, rep = mp.iga_remove_knots(model, tolerance=tol, return_report=True)
+        got = mp.iga_evaluate(out, u)["points"] if rep["num_removed"] else ref
+        assert np.abs(got - ref).max() <= tol * 1.000001
+    _, rep = mp.iga_remove_knots(model, tolerance=100.0, return_report=True)
+    assert rep["num_removed"] == 1
+
+
+def test_knot_removal_refuses_bad_input():
+    fine = mp.iga_refine(_arc_model(), subdivisions=2)
+    with pytest.raises(ValueError, match="not an interior knot"):
+        mp.iga_remove_knots(fine, knots=[0.0])
+    with pytest.raises(ValueError, match="not in the knot vector"):
+        mp.iga_remove_knots(fine, knots=[0.3])
+    with pytest.raises(ValueError, match="direction 1"):
+        mp.iga_remove_knots(fine, direction=1)
+    with pytest.raises(ValueError, match="tolerance"):
+        mp.iga_remove_knots(fine, tolerance=-1.0)
+    with pytest.raises(ValueError, match="'nurbs' model"):
+        mp.iga_remove_knots({"faces": [], "patches": []})
+
+
+SQUARE_MESH = """MFEM NURBS mesh v1.0
+dimension
+2
+elements
+1
+5 3 0 1 2 3
+boundary
+0
+edges
+4
+0 0 1
+0 3 2
+1 0 3
+1 1 2
+vertices
+4
+knotvectors
+2
+2 3 0 0 0 1 1 1
+2 3 0 0 0 1 1 1
+weights
+1
+1
+1
+1
+1
+1
+1
+1
+1
+FiniteElementSpace
+FiniteElementCollection: NURBS2
+VDim: 2
+Ordering: 1
+0 0
+1 0
+1 1
+0 1
+0.5 0
+0.5 1
+0 0.5
+1 0.5
+0.5 0.5
+"""
+
+
+def test_knot_removal_through_the_cli_and_the_mcp_tool(tmp_path, capsys):
+    import json
+
+    from meshioplusplus._cli._main import main
+    from meshioplusplus.mcp import _tools
+
+    square = tmp_path / "square.mesh"
+    square.write_text(SQUARE_MESH)
+    fine = tmp_path / "fine.mesh"
+    assert (
+        main(["iga-refine", str(square), str(fine), "-o", "mfem", "-s", "3", "-q"]) == 0
+    )
+    capsys.readouterr()
+    out = tmp_path / "reduced.mesh"
+    code = main(
+        ["iga-remove-knots", str(fine), str(out), "-o", "mfem", "--direction", "0",
+         "--json"]
+    )  # fmt: skip
+    got = json.loads(capsys.readouterr().out)
+    assert code == 0 and got["operation"] == "iga_remove_knots"
+    assert got["knots"] == pytest.approx([1 / 3, 2 / 3]) and got["removed"] == [1, 1]
+    assert out.read_text().startswith("MFEM NURBS mesh v1.0")
+    res = _tools.tool_iga_remove_knots(
+        str(fine), str(tmp_path / "t.mesh"), output_format="mfem", direction=1,
+        knots=[1 / 3],
+    )  # fmt: skip
+    res = json.loads(res) if isinstance(res, str) else res
+    assert res["num_removed"] == 1
+
+
+# --- closest point (roadmap 9.8.4) -----------------------------------------------
+
+
+def _annulus_model():
+    s = math.sqrt(0.5)
+    pts, w = [], []
+    for r in (1.0, 2.0):
+        pts += [[r, 0, 0], [r, r, 0], [0, r, 0]]
+        w += [1.0, s, 1.0]
+    return {
+        "patches": [
+            {
+                "degrees": [2, 1],
+                "knots": [[0, 0, 0, 1, 1, 1], [0, 0, 1, 1]],
+                "control_points": np.array(pts, dtype=float),
+                "weights": np.array(w),
+            }
+        ]
+    }
+
+
+def test_closest_point_on_a_curve_and_a_surface():
+    res = mp.iga_closest_point(_arc_model(), [[2.0, 2.0], [0.3, 0.0], [1.0, -1.0]])
+    np.testing.assert_allclose(res["points"][0], [math.sqrt(0.5)] * 2, atol=1e-12)
+    np.testing.assert_allclose(res["distances"][0], 2 * math.sqrt(2) - 1, atol=1e-12)
+    np.testing.assert_allclose(res["points"][2], [1.0, 0.0], atol=1e-12)  # clamped
+    assert res["params"].shape == (3, 1)
+    rng = np.random.default_rng(3)
+    th = rng.uniform(0.1, 1.4, 20)
+    r = rng.uniform(1.1, 1.9, 20)
+    z = rng.uniform(-0.5, 0.5, 20)
+    pts = np.stack([r * np.cos(th), r * np.sin(th), z], axis=1)
+    surf = mp.iga_closest_point(_annulus_model(), pts)
+    np.testing.assert_allclose(surf["points"][:, :2], pts[:, :2], atol=1e-10)
+    np.testing.assert_allclose(surf["points"][:, 2], 0.0, atol=1e-12)
+    np.testing.assert_allclose(surf["distances"], np.abs(z), atol=1e-10)
+    assert surf["params"].shape == (20, 2)
+    uv = surf["params"]
+    back = mp.iga_evaluate(_annulus_model(), uv)["points"]
+    np.testing.assert_allclose(back, surf["points"], atol=1e-12)
+
+
+def test_closest_point_refuses_volumes_and_bad_points():
+    box = {
+        "patches": [
+            {
+                "degrees": [1, 1, 1],
+                "knots": [[0, 0, 1, 1]] * 3,
+                "control_points": np.array(
+                    [[i, j, k] for k in (0, 1) for j in (0, 1) for i in (0, 1)],
+                    dtype=float,
+                ),
+                "weights": np.ones(8),
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="volume"):
+        mp.iga_closest_point(box, [[0.5, 0.5, 0.5]])
+    with pytest.raises(ValueError, match="Float64"):
+        mp.iga_closest_point(_arc_model(), [[0.0, 0.0, 0.0]])
+    with pytest.raises(ValueError, match="non-finite"):
+        mp.iga_closest_point(_arc_model(), [[float("nan"), 0.0]])
+    with pytest.raises(ValueError, match="patch 3"):
+        mp.iga_closest_point(_arc_model(), [[0.0, 0.0]], patch=3)
+    with pytest.raises(ValueError, match="'nurbs' model"):
+        mp.iga_closest_point({"faces": [], "patches": []}, [[0.0, 0.0]])
+
+
+def test_closest_point_through_the_cli_and_the_mcp_tool(tmp_path, capsys):
+    import json
+
+    from meshioplusplus._cli._main import main
+    from meshioplusplus.mcp import _tools
+
+    square = tmp_path / "square.mesh"
+    square.write_text(SQUARE_MESH)
+    assert (
+        main(["iga-closest-point", str(square), "-p", "1.5,0.5", "-p", "0.25,-1"]) == 0
+    )
+    got = json.loads(capsys.readouterr().out)
+    assert got["num_points"] == 2 and got["space_dim"] == 2
+    assert got["points"] == pytest.approx([1.0, 0.5, 0.25, 0.0])
+    assert got["distances"] == pytest.approx([0.5, 1.0])
+    res = _tools.tool_iga_closest_point(str(square), [[2.0, 2.0]])
+    res = json.loads(res) if isinstance(res, str) else res
+    assert res["points"] == [[1.0, 1.0]] and res["num_points"] == 1

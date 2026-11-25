@@ -274,12 +274,45 @@ end
         write_with_info(fine, refined, joinpath(dir, "refined.mesh"); format="mfem")
         uv = [0.3 0.9; 0.7 0.2]
         a = iga_evaluate(info, 1, uv; derivatives=1)
+        c2 = iga_evaluate(info, 1, uv; derivatives=2)
+        @test size(c2.second_derivatives) == (2, 2, 2, 2)
+        @test c2.second_derivatives[:, 1, 2, :] == c2.second_derivatives[:, 2, 1, :]
+        @test a.second_derivatives === nothing
         b = iga_evaluate(refined, 1, uv)
         @test size(a.points) == (2, 2)
         @test maximum(abs.(a.points .- b.points)) < 1e-13
         @test size(a.derivatives) == (2, 2, 2)
         @test a.normals === nothing && a.inside === nothing && isempty(a.fields)
         @test_throws MeshioError iga_evaluate(info, 1, reshape([2.0, 0.5], 2, 1))
+        # closest point: the annulus is a surface in 2-D here
+        cp = iga_closest_point(info, [3.0 0.0; 0.0 1.5])
+        @test size(cp.params) == (2, 2)
+        @test cp.points[:, 1] ≈ [2.0, 0.0] atol = 1e-12
+        @test cp.distances ≈ [1.0, 0.0] atol = 1e-10
+        @test_throws MeshioError iga_closest_point(info, reshape([3.0, 0.0], 2, 1); patch=4)
+        # knot removal undoes the refinement's insertions: two knots per direction
+        red_mesh, red_info, rep = iga_remove_knots(refined; direction=1)
+        @test rep.num_removed == 2 && rep.removed == [1, 1] && rep.requested == [1, 1]
+        @test rep.knots ≈ [1 / 3, 2 / 3]
+        @test nurbs_info(red_info).patches[1].degrees == Int32[3, 2]
+        @test_throws MeshioError iga_remove_knots(refined; knots=[0.5])
+        @test_throws MeshioError iga_remove_knots(refined; direction=4)
+        close(red_mesh); close(red_info)
+        # Bezier extraction: the annulus has unequal degrees; a bi-quadratic square
+        # is one Bezier cell of nine points
+        @test_throws MeshioError iga_bezier_extract(info, 1)
+        square = joinpath(dir, "square.mesh")
+        write(square, join(["MFEM NURBS mesh v1.0", "dimension", "2", "elements", "1",
+            "5 3 0 1 2 3", "boundary", "0", "edges", "4", "0 0 1", "0 3 2", "1 0 3", "1 1 2",
+            "vertices", "4", "knotvectors", "2", "2 3 0 0 0 1 1 1", "2 3 0 0 0 1 1 1",
+            "weights", fill("1", 9)...,
+            "FiniteElementSpace", "FiniteElementCollection: NURBS2", "VDim: 2", "Ordering: 1",
+            "0 0", "1 0", "1 1", "0 1", "0.5 0", "0.5 1", "0 0.5", "1 0.5", "0.5 0.5"], "\n") * "\n")
+        sq_mesh, sq_info = read_with_info(square; format="mfem")
+        bez = iga_bezier_extract(sq_info)
+        @test num_points(bez) == 9
+        @test_throws MeshioError iga_bezier_extract(sq_info, 2)
+        close(bez); close(sq_mesh); close(sq_info)
         sampled, mapped = iga_sample(info)
         @test format_name(mapped) == "mfem"
         close(sampled); close(mapped); close(fine); close(refined)
@@ -1543,6 +1576,69 @@ end
     @test_throws MeshioError sets_to_data(m, :field)
     @test_throws MeshioError data_to_sets(m, :point, "temperature")
     close(back); close(labels); close(m)
+end
+
+@testset "point-cloud conditioning (filter_points)" begin
+    cloud = Mesh()
+    xyz = hcat([[0.1 * i, 0.0, 0.0] for i in 0:19]..., [50.0, 50.0, 50.0])
+    set_points!(cloud, xyz)
+    r = filter_points(cloud; radius=0.5, min_neighbors=2)
+    @test num_points(r.mesh) == 20
+    @test r.point_map == collect(1:20)
+    @test r.num_removed == (statistical=0, radius=1, voxel=0, poisson=0)
+    @test isempty(r.warnings)
+    v = filter_points(cloud; voxel_size=0.5)
+    @test num_points(v.mesh) < 21
+    @test_throws Exception filter_points(cloud)
+    @test_throws Exception filter_points(cloud; radius=-1.0)
+end
+
+@testset "ray casting and point location" begin
+    cube = Mesh()
+    set_points!(cube, Float64[0 1 1 0 0 1 1 0; 0 0 1 1 0 0 1 1; 0 0 0 0 1 1 1 1])
+    add_cell_block!(cube, "triangle",
+                   Int64[1 1 5 5 1 1 2 2 3 3 4 4;
+                         3 4 6 7 2 6 3 7 4 8 1 5;
+                         2 3 7 8 6 5 7 6 8 7 5 8])
+    r = cast_rays(cube, [-1.0 -1.0; 0.5 9.0; 0.5 9.0], [1.0, 0.0, 0.0])
+    @test r.hit == [true, false]
+    @test r.distance[1] ≈ 1.0
+    @test isnan(r.distance[2])
+    @test r.normal[:, 1] ≈ [-1.0, 0.0, 0.0]
+    @test r.point[:, 1] ≈ [0.0, 0.5, 0.5]
+    @test r.cell[1] > 0 && r.cell[2] == 0
+    @test r.num_hits == 1
+    @test cast_rays(cube, reshape([-1.0, 0.5, 0.5], 3, 1), [1.0, 0.0, 0.0];
+                    max_distance=0.5).num_hits == 0
+    @test_throws Exception cast_rays(cube, reshape([0.0, 0.0, 0.0], 3, 1), [0.0, 0.0, 0.0])
+    @test_throws Exception cast_rays(cube, reshape([0.0, 0.0, 0.0], 3, 1), [1.0, 0.0, 0.0];
+                                     region="nope")
+
+    m = fixture()
+    l = locate_points(m, [0.1 99.0; 0.1 99.0; 0.1 99.0])
+    @test size(l.nodes) == (4, 2)
+    @test size(l.barycentric) == (4, 2)
+    @test l.cell[2] == 0
+    @test l.nodes[:, 2] == [0, 0, 0, 0]
+    @test_throws Exception locate_points(m, reshape([0.0, 0.0, 0.0], 3, 1); tolerance=-1.0)
+end
+
+@testset "mass properties" begin
+    m = fixture()
+    add_region!(m, "second", :cell, [2])
+    r = mass_properties(m; density_array="material")
+    @test r.kind == "solid"
+    @test r.total.num_cells == 2
+    @test r.total.measure > 0
+    @test 7 * r.total.measure < r.total.mass < 9 * r.total.measure
+    @test length(r.regions) == 1 && r.regions[1].name == "second"
+    @test size(r.total.principal_axes) == (3, 3)
+    @test length(r.total.inertia) == 6
+    @test isempty(r.warnings)
+    @test_throws Exception mass_properties(m; region="nope")
+    @test_throws ArgumentError mass_properties(m; about=:moon)
+    o = mass_properties(m; about=:origin)
+    @test o.total.mass > 0
 end
 
 @testset "field integration (data_integrate)" begin

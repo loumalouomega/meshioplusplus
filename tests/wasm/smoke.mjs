@@ -3722,6 +3722,9 @@ step('igaRefine, igaSample, igaEvaluate: a NURBS model refined exactly and writt
     assert.ok(new TextDecoder().decode(m.FS.readFile('/annulus_fine.mesh')).startsWith('MFEM NURBS mesh v1.0'));
     const uv = [0.3, 0.7, 0.9, 0.2];
     const a = m.igaEvaluate(mesh.info, 0, uv, { derivatives: 1 });
+    const c2 = m.igaEvaluate(mesh.info, 0, uv, { derivatives: 2 });
+    assert.equal(c2.secondDerivatives.length, (uv.length / 2) * 2 * 2 * c2.spaceDim);
+    assert.equal(a.secondDerivatives, undefined);
     const b = m.igaEvaluate(fine.info, 0, uv);
     assert.equal(a.spaceDim, 2);
     for (let i = 0; i < 4; i++) assert.ok(Math.abs(a.points[i] - b.points[i]) < 1e-13);
@@ -3734,6 +3737,34 @@ step('igaRefine, igaSample, igaEvaluate: a NURBS model refined exactly and writt
     const s = m.igaSample(mesh.info);
     assert.equal(s.info.format, 'mfem');
     assert.equal(s.mesh.cells[0].type, 'quad9');
+    // The closest point: the annulus is a surface in 2-D here.
+    const cp = m.igaClosestPoint(mesh.info, 0, [3, 0, 0, 1.5]);
+    assert.equal(cp.paramDim, 2);
+    assert.ok(Math.abs(cp.points[0] - 2) < 1e-12 && Math.abs(cp.distances[0] - 1) < 1e-12);
+    assert.throws(() => m.igaClosestPoint(mesh.info, 4, [3, 0]), /patch/);
+    // Knot removal undoes the refinement's insertions: two knots per direction.
+    const red = m.igaRemoveKnots(fine.info, { direction: 0 });
+    assert.equal(red.report.numRemoved, 2);
+    assert.deepEqual(Array.from(red.report.removed), [1, 1]);
+    assert.ok(Math.abs(red.report.knots[0] - 1 / 3) < 1e-15);
+    assert.equal(red.info.format, 'mfem');
+    assert.throws(() => m.igaRemoveKnots(fine.info, { knots: [0.5] }), /knot/);
+    assert.throws(() => m.igaRemoveKnots(fine.info, { direction: 4 }), /direction/);
+    // Bezier extraction: the annulus has unequal degrees (refused); a
+    // bi-quadratic square is one Bezier cell of nine points.
+    assert.throws(() => m.igaBezierExtract(mesh.info, 0), /unequal degrees/);
+    m.FS.writeFile('/square.mesh', [
+        'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', '5 3 0 1 2 3', 'boundary', '0',
+        'edges', '4', '0 0 1', '0 3 2', '1 0 3', '1 1 2', 'vertices', '4', 'knotvectors', '2',
+        '2 3 0 0 0 1 1 1', '2 3 0 0 0 1 1 1', 'weights', ...new Array(9).fill('1'),
+        'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', 'Ordering: 1',
+        '0 0', '1 0', '1 1', '0 1', '0.5 0', '0.5 1', '0 0.5', '1 0.5', '0.5 0.5',
+    ].join('\n') + '\n');
+    const square = m.readMeshSelective('/square.mesh', { format: 'mfem', info: true });
+    const bez = m.igaBezierExtract(square.info);
+    assert.equal(bez.cells[0].type, 'VTK_BEZIER_QUADRILATERAL');
+    assert.ok(bez.points.length > 0);
+    assert.throws(() => m.igaBezierExtract(square.info, 1), /out of range/);
 });
 
 step('meshCadSurface: a trimmed CAD JSON face triangulated and reported', () => {
@@ -5817,6 +5848,42 @@ step('featureEdges, hausdorffDistance, editRegions, matchPeriodicNodes', () => {
     assert.throws(() => m.refinePatches(sg.mesh, { bogus: 1 }), /bogus/);
     assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: 2 ** 53 + 2 }), /2\^53/);
     assert.throws(() => m.refinePatches(sg.mesh, { ransacSeed: -1 }), /2\^53/);
+
+    const noisyCloud = {
+        points: new Float64Array([...Array(20).keys()].flatMap((i) => [0.1 * i, 0, 0]).concat([50, 50, 50])),
+        dim: 3,
+        cells: [],
+        point_data: {},
+        cell_data: {},
+        field_data: {},
+    };
+    const fpr = m.filterPoints(noisyCloud, { radius: 0.5, minNeighbors: 2 });
+    assert.equal(fpr.mesh.points.length, 20 * 3);
+    assert.deepEqual(Array.from(fpr.pointMap), Array.from({ length: 20 }, (_, i) => i));
+    assert.equal(fpr.numRemoved.radius, 1);
+    assert.throws(() => m.filterPoints(noisyCloud), /no step/);
+    assert.throws(() => m.filterPoints(noisyCloud, { bogus: 1 }), /bogus/);
+
+    const cr = m.castRays(cubeSurface, [-1, 0.5, 0.5, -1, 9, 9], [1, 0, 0]);
+    assert.deepEqual(Array.from(cr.hit), [1, 0]);
+    assert.ok(Math.abs(cr.distance[0] - 1) < 1e-12);
+    assert.ok(Number.isNaN(cr.distance[1]));
+    assert.equal(cr.cell[1], -1);
+    assert.equal(cr.numHits, 1);
+    assert.throws(() => m.castRays(cubeSurface, [0, 0, 0], [0, 0, 0]), /direction/);
+    const lp = m.locatePoints(tetv, [0.1, 0.1, 0.1, 99, 99, 99]);
+    assert.equal(lp.cell.length, 2);
+    assert.equal(lp.nodes.length, 8);
+    assert.equal(lp.barycentric.length, 8);
+    assert.equal(lp.cell[1], -1);
+
+    const mp = m.massProperties(cubeSurface, 2);
+    assert.equal(mp.kind, 'solid');
+    assert.ok(Math.abs(mp.total.mass - 2) < 1e-12);
+    assert.ok(Math.abs(mp.total.centre[0] - 0.5) < 1e-12);
+    assert.ok(Math.abs(mp.total.inertia[0] - 1 / 3) < 1e-12);
+    assert.equal(mp.regions.length, 0);
+    assert.throws(() => m.massProperties(cubeSurface, 1, '', 'nope'), /nope/);
 
     const h = m.hausdorffDistance(cubeSurface, cubeSurface, 2);
     assert.ok(Math.abs(h.distance) < 1e-12); // face samples: rounding, not exactly 0

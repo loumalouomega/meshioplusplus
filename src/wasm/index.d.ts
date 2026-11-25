@@ -2438,6 +2438,25 @@ export interface SequenceReader {
  * mesh file there before calling `readMesh`, and read them back out after
  * `writeMesh`/`convert`. See https://emscripten.org/docs/api_reference/Filesystem-API.html
  */
+/** One set of cells' mass properties (the whole selection, or a cell region). */
+export interface MassPropertiesEntry {
+  /** The region's name; empty for the total. */
+  name: string;
+  numCells: number;
+  /** Volume, or area for a shell. */
+  measure: number;
+  mass: number;
+  /** Centre of mass. */
+  centre: Float64Array;
+  /** `xx yy zz xy yz zx`, about the chosen point. */
+  inertia: Float64Array;
+  /** Ascending. */
+  principalMoments: Float64Array;
+  /** A row-major 3x3; column k is the axis of moment k. */
+  principalAxes: Float64Array;
+  gyrationRadii: Float64Array;
+}
+
 export interface MeshioPlusPlusModule {
   FS: {
     writeFile(path: string, data: string | ArrayBufferView, opts?: object): void;
@@ -4359,6 +4378,66 @@ export interface MeshioPlusPlusModule {
   ): { mesh: Mesh; info: MfemInfo | CadJsonInfo };
 
   /**
+   * The point of patch `patch` (0-based) of an MFEM NURBS model closest to
+   * each query point (`points`: `spaceDim` numbers per point, flat), for a
+   * curve or a surface, rational or not. A point beyond the patch's edge lands
+   * on the edge; a volume and a B-rep are refused.
+   */
+  igaClosestPoint(
+    info: MfemInfo,
+    patch: number,
+    points: ArrayLike<number>,
+  ): {
+    paramDim: number;
+    spaceDim: number;
+    params: Float64Array;
+    points: Float64Array;
+    distances: Float64Array;
+  };
+
+  /**
+   * Remove knots from one patch of an MFEM NURBS model (The NURBS Book's
+   * A5.8): interior knots of `direction` (0-based) go while the geometry and
+   * the NURBS fields move by at most `tolerance` (0 removes only what is
+   * exact up to rounding, which undoes a knot insertion). `knots` lists the
+   * values to remove, one copy per entry (default: every copy of every
+   * interior knot). The reduced model is sampled again; `report` lists, per
+   * distinct knot value, the copies asked for and removed. A B-rep and a
+   * model whose patch topology joins several patches are refused.
+   */
+  igaRemoveKnots(
+    info: MfemInfo,
+    options?: {
+      direction?: number;
+      knots?: ArrayLike<number>;
+      tolerance?: number;
+      patch?: number;
+      sampleSubdivisions?: number;
+    },
+  ): {
+    mesh: Mesh;
+    info: MfemInfo;
+    report: {
+      knots: number[];
+      requested: number[];
+      removed: number[];
+      numRemoved: number;
+    };
+  };
+
+  /**
+   * Bezier extraction of patch `patch` (0-based) of an MFEM NURBS model: every
+   * interior knot raised to multiplicity p and the net cut at its knot spans
+   * into one `VTK_BEZIER_CURVE`, `VTK_BEZIER_QUADRILATERAL` or
+   * `VTK_BEZIER_HEXAHEDRON` cell per span product, (p+1)^d unshared points
+   * each, with the cell data `HigherOrderDegrees`, `iga:patch` and `iga:span`
+   * and, for a rational patch, the point data `RationalWeights`. A patch with
+   * unequal degrees is refused (raise them with `igaRefine` first), as is a
+   * B-rep.
+   */
+  igaBezierExtract(info: MfemInfo, patch?: number): Mesh;
+
+  /**
    * Triangulate the faces of a B-rep (`readMeshSelective(path, {info:
    * true}).info` of a CAD JSON file, or STEP/IGES in the full artifact) into
    * one conforming surface mesh with edges of about `targetSize`, with no CAD
@@ -4489,14 +4568,16 @@ export interface MeshioPlusPlusModule {
    * Evaluate patch `patch` (0-based; the face of a B-rep) at `params`, a flat
    * array with the parametric dimension's worth of numbers per point.
    * `derivatives: 1` adds the first derivatives (`(N, d, spaceDim)`) and the
-   * unit normals of a surface in 3-D; a B-rep face also reports `inside`
+   * unit normals of a surface in 3-D; `derivatives: 2` also the symmetric
+   * second derivatives `secondDerivatives` (`(N, d, d, spaceDim)`); a B-rep
+   * face also reports `inside`
    * (1 where its trimming loops contain the point).
    */
   igaEvaluate(
     info: MfemInfo | CadJsonInfo,
     patch: number,
     params: ArrayLike<number>,
-    options?: { derivatives?: 0 | 1; trimSamples?: number },
+    options?: { derivatives?: 0 | 1 | 2; trimSamples?: number },
   ): {
     spaceDim: number;
     points: Float64Array;
@@ -4504,6 +4585,7 @@ export interface MeshioPlusPlusModule {
     fieldComponents: number[];
     derivatives?: Float64Array;
     normals?: Float64Array;
+    secondDerivatives?: Float64Array;
     inside?: Uint8Array;
   };
 
@@ -4569,6 +4651,103 @@ export interface MeshioPlusPlusModule {
     numSamplesB: number;
     worstPointA: Float64Array;
     worstPointB: Float64Array;
+  };
+
+  /**
+   * Remove outliers from, and thin, a point cloud: up to four steps in this
+   * order, each seeing the points the one before kept -- statistical outlier
+   * removal (`statisticalK` neighbours, `stdRatio` standard deviations above
+   * the mean), radius outlier removal (`radius`, `minNeighbors`), voxel thinning
+   * (`voxelSize`: one real point per cube, the one nearest its mean) and
+   * Poisson-disk thinning (`minDistance`, greedy in index order). A step is off
+   * at 0 and at least one must be on. `pointMap` holds each output point's
+   * 0-based input point. See doc/filter_points.md.
+   * @throws {Error} on a negative or non-finite parameter, no step enabled, or a
+   *   voxel size too small for the cloud's extent.
+   */
+  filterPoints(
+    mesh: Mesh,
+    options?: {
+      statisticalK?: number;
+      stdRatio?: number;
+      radius?: number;
+      minNeighbors?: number;
+      voxelSize?: number;
+      minDistance?: number;
+    },
+  ): {
+    mesh: Mesh;
+    pointMap: Int32Array;
+    numRemoved: { statistical: number; radius: number; voxel: number; poisson: number };
+    warnings: string[];
+  };
+
+  /**
+   * The nearest surface hit of a batch of rays. `origins` is a flat
+   * `[x, y, z, ...]` array; `directions` is one `[x, y, z]` for every ray or
+   * one per ray (not necessarily unit vectors). Hits need `0 < t <= maxDistance`
+   * (`0` for no limit); `region` restricts the surface to a cell region.
+   * `cell` is the 0-based input cell hit, -1 on a miss; `distance`, `point`
+   * and `normal` are `NaN` on a miss. See doc/ray_queries.md.
+   * @throws {Error} on a zero direction, a volume mesh, an unknown region or a
+   *   mesh with no surface cell.
+   */
+  castRays(
+    mesh: Mesh,
+    origins: Float64Array | number[],
+    directions: Float64Array | number[],
+    maxDistance?: number,
+    region?: string,
+  ): {
+    hit: Int32Array;
+    distance: Float64Array;
+    point: Float64Array;
+    normal: Float64Array;
+    cell: Int32Array;
+    numHits: number;
+  };
+
+  /**
+   * The cell of `mesh` containing each point of the flat `[x, y, z, ...]`
+   * array `points` (volume meshes and planar triangle meshes). `cell` is the
+   * 0-based input cell (-1 outside), `nodes` four 0-based point ids per point
+   * (-1 for none or padding) and `barycentric` four weights per point. See
+   * doc/ray_queries.md.
+   * @throws {Error} on a negative tolerance or a mesh with no tetrahedron or
+   *   triangle after simplexification.
+   */
+  locatePoints(
+    mesh: Mesh,
+    points: Float64Array | number[],
+    tolerance?: number,
+  ): {
+    cell: Int32Array;
+    nodes: Int32Array;
+    barycentric: Float64Array;
+    numLocated: number;
+  };
+
+  /**
+   * Mass, centre of mass and inertia of a body: the volume cells of `mesh`, the
+   * body a closed triangle or polygon surface encloses, or (with
+   * `thickness > 0`) a shell. `densityArray` names a scalar cell array of
+   * per-cell densities; `region` restricts the total to a cell region;
+   * `about` is `'centroid'` (default) or `'origin'`. See doc/mass_properties.md.
+   * @throws {Error} on an open surface without a thickness, an unknown region
+   *   or array, a non-finite density, or nothing to integrate.
+   */
+  massProperties(
+    mesh: Mesh,
+    density?: number,
+    densityArray?: string,
+    region?: string,
+    thickness?: number,
+    about?: 'centroid' | 'origin',
+  ): {
+    kind: 'solid' | 'shell';
+    total: MassPropertiesEntry;
+    regions: MassPropertiesEntry[];
+    warnings: string[];
   };
 
   /**

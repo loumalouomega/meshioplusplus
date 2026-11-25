@@ -203,10 +203,10 @@ program test_fortran_api
             ! ---- the isogeometric layer: refine, write back, evaluate
             block
                 type(mio_mesh) :: fine
-                type(mio_format_info) :: refined
+                type(mio_format_info) :: refined, refined_again
                 type(mio_iga_evaluation) :: ev_a, ev_b
                 real(real64) :: uv(2, 2)
-                real(real64), allocatable :: pa(:, :), pb(:, :), da(:, :, :), nrm(:, :)
+                real(real64), allocatable :: pa(:, :), pb(:, :), da(:, :, :), nrm(:, :), d2(:, :, :, :)
                 fine = info%iga_refine(subdivisions=[3], elevate=[1], refined=refined, &
                                        stat=ierr, errmsg=msg)
                 call check(ierr == 0, 'iga_refine succeeds')
@@ -227,18 +227,100 @@ program test_fortran_api
                     call check(all(shape(da) == [2, 2, 2]), 'iga derivatives shape')
                     nrm = ev_a%normals(stat=ierr)
                     call check(ierr /= 0, 'a planar patch has no 3-D normals')
+                    d2 = ev_a%second_derivatives(stat=ierr)
+                    call check(ierr /= 0, 'derivatives = 1 carries no second derivatives')
+                    call ev_a%free()
+                    ev_a = info%iga_evaluate(1, uv, derivatives=2, stat=ierr)
+                    call check(ierr == 0, 'iga_evaluate with derivatives = 2 succeeds')
+                    d2 = ev_a%second_derivatives(stat=ierr)
+                    call check(ierr == 0 .and. all(shape(d2) == [2, 2, 2, 2]), &
+                               'iga second derivatives shape')
+                    call check(maxval(abs(d2(:, 1, 2, :) - d2(:, 2, 1, :))) == 0.0_real64, &
+                               'the second derivatives are symmetric')
+                    call ev_a%free()
+                    ev_a = info%iga_evaluate(1, uv, derivatives=1, stat=ierr)
                     call check(ev_a%num_fields() == 0, 'iga carries no fields here')
                     call ev_a%free()
                     call ev_b%free()
                 end if
                 call fine%free()
                 call refined%free()
+                fine = info%iga_refine(subdivisions=[3], elevate=[1], refined=refined_again, stat=ierr)
+                call fine%free()
                 fine = info%iga_sample(stat=ierr)
                 call check(ierr == 0, 'iga_sample succeeds')
                 call fine%free()
                 ev_a = info%iga_evaluate(1, reshape([2.0_real64, 0.5_real64], [2, 1]), stat=ierr)
                 call check(ierr /= 0, 'an out-of-range parameter fails')
                 call ev_a%free()
+                ! ---- closest point: the annulus is a surface in 2-D here
+                block
+                    real(real64) :: q(2, 2), prm(2, 2), dst(2)
+                    real(real64), allocatable :: cls(:, :), prm_a(:, :), dst_a(:)
+                    q = reshape([3.0_real64, 0.0_real64, 0.0_real64, 1.5_real64], [2, 2])
+                    cls = info%iga_closest_point(1, q, params=prm_a, distances=dst_a, stat=ierr)
+                    call check(ierr == 0, 'iga_closest_point succeeds')
+                    call check(all(shape(cls) == [2, 2]) .and. all(shape(prm_a) == [2, 2]), &
+                               'closest point shapes')
+                    call check(abs(cls(1, 1) - 2.0_real64) < 1.0e-12_real64 .and. &
+                               abs(dst_a(1) - 1.0_real64) < 1.0e-12_real64, 'closest point value')
+                    cls = info%iga_closest_point(4, q, stat=ierr)
+                    call check(ierr /= 0, 'a patch out of range is refused')
+                end block
+                ! ---- knot removal undoes the refinement's insertions: two knots per direction
+                block
+                    type(mio_format_info) :: reduced
+                    real(real64), allocatable :: rk(:)
+                    integer, allocatable :: rq(:), rm(:)
+                    fine = refined_again%iga_remove_knots(direction=1, reduced=reduced, report_knots=rk, &
+                                                         requested=rq, removed=rm, stat=ierr)
+                    call check(ierr == 0, 'iga_remove_knots succeeds')
+                    call check(size(rk) == 2 .and. all(rm == 1) .and. all(rq == 1), 'two knots removed once')
+                    call check(abs(rk(1) - 1.0_real64/3.0_real64) < 1.0e-15_real64, 'the first knot is 1/3')
+                    call fine%free()
+                    call reduced%free()
+                    fine = refined_again%iga_remove_knots(direction=1, knots=[0.5_real64], stat=ierr)
+                    call check(ierr /= 0, 'an absent knot is refused')
+                    call fine%free()
+                    fine = refined_again%iga_remove_knots(direction=3, stat=ierr)
+                    call check(ierr /= 0, 'a bad direction is refused')
+                    call fine%free()
+                end block
+                ! ---- Bezier extraction: the annulus has unequal degrees; a bi-quadratic
+                ! square is one Bezier cell of nine points
+                fine = info%iga_bezier_extract(1, stat=ierr)
+                call check(ierr /= 0, 'unequal degrees are refused by iga_bezier_extract')
+                call fine%free()
+                block
+                    type(mio_format_info) :: sq_info
+                    type(mio_mesh) :: sq_mesh
+                    character(:), allocatable :: sq_path
+                    sq_path = prefix//'_square.mesh'
+                    open (newunit=unit, file=sq_path, status='replace')
+                    write (unit, '(a)') 'MFEM NURBS mesh v1.0', 'dimension', '2', 'elements', '1', &
+                        '5 3 0 1 2 3', 'boundary', '0', 'edges', '4', '0 0 1', '0 3 2', '1 0 3', &
+                        '1 1 2', 'vertices', '4', 'knotvectors', '2', '2 3 0 0 0 1 1 1', &
+                        '2 3 0 0 0 1 1 1', 'weights', '1', '1', '1', '1', '1', '1', '1', '1', '1', &
+                        'FiniteElementSpace', 'FiniteElementCollection: NURBS2', 'VDim: 2', &
+                        'Ordering: 1', '0 0', '1 0', '1 1', '0 1', '0.5 0', '0.5 1', '0 0.5', &
+                        '1 0.5', '0.5 0.5'
+                    close (unit)
+                    call back%read_with_info(sq_path, sq_info, 'mfem', stat=ierr)
+                    call check(ierr == 0, 'square read_with_info succeeds')
+                    fine = sq_info%iga_bezier_extract(1, stat=ierr)
+                    call check(ierr == 0, 'iga_bezier_extract succeeds')
+                    call check(fine%num_points() == 9, 'one Bezier cell of nine points')
+                    call fine%free()
+                    fine = sq_info%iga_bezier_extract(2, stat=ierr)
+                    call check(ierr /= 0, 'a patch out of range fails')
+                    call fine%free()
+                    call sq_mesh%free()
+                    call sq_info%free()
+                    call back%free()
+                    open (newunit=unit, file=sq_path, status='old')
+                    close (unit, status='delete')
+                end block
+                call refined_again%free()
             end block
             open (newunit=unit, file=output_path, status='old')
             close (unit, status='delete')
@@ -3038,7 +3120,9 @@ contains
         real(real64) :: g_matrix(4, 4)
         logical :: g_ok
         integer :: ierr
-        real(real64) :: cube_points(3, 8), d, ab
+        real(real64) :: cube_points(3, 8), d, ab, mass
+        type(mio_mass_entry) :: mtotal
+        character(:), allocatable :: mkind
         logical :: passed
         integer(int64) :: nchecks
         character(:), allocatable :: text
@@ -3339,6 +3423,83 @@ contains
         d = sq%hausdorff_distance(other, a_to_b=ab, stat=ierr)
         call check(ierr == 0, 'hausdorff_distance succeeded')
         call check(d == 0.0_real64 .and. ab == 0.0_real64, 'a cube is at distance 0 from itself')
+        ! Mass properties of the same closed cube.
+        mass = other%mass_properties(density=2.0_real64, total=mtotal, body_kind=mkind, stat=ierr)
+        call check(ierr == 0, 'mass_properties succeeded')
+        call check(mkind == 'solid', 'a closed surface is a solid')
+        call check(mtotal%measure > 0.0_real64, 'the enclosed volume is positive')
+        call check(abs(mass - 2.0_real64*mtotal%measure) < 1.0e-12_real64, 'mass is density times volume')
+        call check(mtotal%principal_moments(1) <= mtotal%principal_moments(3), &
+                   'principal moments are ascending')
+        ! Rays at the same closed cube, and point location in a tetrahedron.
+        block
+            real(real64) :: org(3, 2), dir(3, 1), tpts(3, 4), q(3, 2), w(4, 2)
+            type(mio_mesh) :: tet
+            integer(int64), allocatable :: lcell(:), lnodes(:, :)
+            real(real64), allocatable :: lbary(:, :)
+            logical, allocatable :: rhit(:)
+            integer(int64), allocatable :: rcell(:)
+            integer(int64) :: nh
+            org(:, 1) = [-1.0_real64, 0.5_real64, 0.5_real64]
+            org(:, 2) = [-1.0_real64, 99.0_real64, 99.0_real64]
+            dir(:, 1) = [1.0_real64, 0.0_real64, 0.0_real64]
+            nh = other%cast_rays(org, dir, hit=rhit, cell=rcell, stat=ierr)
+            call check(ierr == 0, 'cast_rays succeeded')
+            call check(nh == 1_int64, 'one of the two rays hits the cube')
+            call check(rhit(1) .and. .not. rhit(2), 'the first ray hits and the second misses')
+            call check(rcell(1) >= 1_int64 .and. rcell(2) == 0_int64, 'hit cells are 1-based, 0 on a miss')
+            nh = other%cast_rays(org, dir, max_distance=0.5_real64, stat=ierr)
+            call check(ierr == 0 .and. nh == 0_int64, 'a distance limit drops the hit')
+            dir(:, 1) = 0.0_real64
+            nh = other%cast_rays(org, dir, stat=ierr)
+            call check(ierr /= 0, 'cast_rays rejects a zero direction')
+            tpts(:, 1) = [0.0_real64, 0.0_real64, 0.0_real64]
+            tpts(:, 2) = [1.0_real64, 0.0_real64, 0.0_real64]
+            tpts(:, 3) = [0.0_real64, 1.0_real64, 0.0_real64]
+            tpts(:, 4) = [0.0_real64, 0.0_real64, 1.0_real64]
+            call tet%create()
+            call tet%set_points(tpts)
+            call tet%add_cell_block('tetra', reshape([1_int64, 2_int64, 3_int64, 4_int64], [4, 1]))
+            q(:, 1) = [0.1_real64, 0.1_real64, 0.1_real64]
+            q(:, 2) = [5.0_real64, 5.0_real64, 5.0_real64]
+            nh = tet%locate_points(q, cell=lcell, nodes=lnodes, barycentric=lbary, stat=ierr)
+            call check(ierr == 0, 'locate_points succeeded')
+            call check(nh == 1_int64, 'one of the two points is inside the tetrahedron')
+            call check(lcell(1) == 1_int64 .and. lcell(2) == 0_int64, 'cells are 1-based, 0 outside')
+            call check(all(lnodes(:, 1) == [1_int64, 2_int64, 3_int64, 4_int64]), 'nodes are 1-based')
+            w = lbary
+            call check(abs(sum(w(:, 1)) - 1.0_real64) < 1.0e-12_real64, 'the weights sum to one')
+            nh = tet%locate_points(q, tolerance=-1.0_real64, stat=ierr)
+            call check(ierr /= 0, 'locate_points rejects a negative tolerance')
+            call tet%free()
+        end block
+        ! Point-cloud conditioning: a line of points and one far outlier.
+        block
+            type(mio_mesh) :: cloud_in, cloud_out
+            real(real64) :: cpts(3, 21)
+            integer(int64), allocatable :: cmap(:)
+            integer(int64) :: removed(4)
+            integer :: ci
+            do ci = 1, 20
+                cpts(:, ci) = [0.1_real64*real(ci - 1, real64), 0.0_real64, 0.0_real64]
+            end do
+            cpts(:, 21) = [50.0_real64, 50.0_real64, 50.0_real64]
+            call cloud_in%create()
+            call cloud_in%set_points(cpts)
+            cloud_out = cloud_in%filter_points(radius=0.5_real64, min_neighbors=2, point_map=cmap, &
+                                               num_removed=removed, stat=ierr)
+            call check(ierr == 0, 'filter_points succeeded')
+            call check(cloud_out%num_points() == 20_int64, 'the outlier is removed')
+            call check(removed(2) == 1_int64 .and. removed(1) == 0_int64, 'the radius step removed one')
+            call check(size(cmap) == 20 .and. cmap(1) == 1_int64 .and. cmap(20) == 20_int64, &
+                       'the point map is 1-based')
+            call cloud_out%free()
+            cloud_out = cloud_in%filter_points(stat=ierr)
+            call check(ierr /= 0, 'filter_points needs a step')
+            call cloud_in%free()
+        end block
+        mass = other%mass_properties(about='moon', stat=ierr)
+        call check(ierr /= 0, 'mass_properties rejects an unknown reference point')
         call other%free()
 
         ! Regions: bottom and top faces' nodes, then their union, then periodic

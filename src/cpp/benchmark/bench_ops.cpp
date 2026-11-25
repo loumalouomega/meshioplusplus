@@ -150,6 +150,10 @@
 #include "meshioplusplus/operations/remove_islands.hpp"
 #include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/silhouette.hpp"
+#include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/locate_points.hpp"
+#include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/stats.hpp"
 #include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/tensor_invariants.hpp"
@@ -2674,6 +2678,61 @@ int main(int argc, char** argv) {
             if (pD)
                 pD->Bytes(r.mCentroid, sizeof r.mCentroid);
         });
+        // Rays from every point of the volume at its skin, and the jittered
+        // points located back in the volume: the digests cover every result.
+        row("cast_rays", [&](MeshDigest* pD) {
+            const std::vector<double> ray_xyz(
+                volume.Points().As<double>(),
+                volume.Points().As<double>() + 3 * volume.NumPoints());
+            const mio::CastRaysResult r = mio::cast_rays(surface, ray_xyz, {0.3, 0.5, 0.8});
+            i64(pD, r.mNumHits);
+            doubles(pD, r.mDistance);
+            doubles(pD, r.mPoint);
+            if (pD)
+                pD->Bytes(r.mCell.data(), r.mCell.size() * sizeof r.mCell[0]);
+        });
+        row("filter_points", [&](MeshDigest* pD) {
+            mio::PointFilterOptions o;
+            o.mStatisticalK = 8;
+            o.mStdRatio = 2.0;
+            o.mRadius = 0.15;
+            o.mMinNeighbors = 3;
+            o.mVoxelSize = 0.04;
+            o.mMinDistance = 0.05;
+            const mio::PointFilterResult r = mio::filter_points(cloud, o);
+            i64(pD, r.mNumRemovedStatistical);
+            i64(pD, r.mNumRemovedRadius);
+            i64(pD, r.mNumRemovedVoxel);
+            i64(pD, r.mNumRemovedPoisson);
+            if (pD)
+                pD->Bytes(r.mPointMap.data(), r.mPointMap.size() * sizeof r.mPointMap[0]);
+        });
+        row("locate_points", [&](MeshDigest* pD) {
+            const Mesh& jit = jittered;
+            const std::vector<double> jit_xyz(jit.Points().As<double>(),
+                                              jit.Points().As<double>() + 3 * jit.NumPoints());
+            const mio::LocatePointsResult r = mio::locate_points(volume, jit_xyz);
+            i64(pD, r.mNumLocated);
+            doubles(pD, r.mBarycentric);
+            if (pD) {
+                pD->Bytes(r.mCell.data(), r.mCell.size() * sizeof r.mCell[0]);
+                pD->Bytes(r.mNodes.data(), r.mNodes.size() * sizeof r.mNodes[0]);
+            }
+        });
+        row("mass_properties", [&](MeshDigest* pD) {
+            // The tetrahedral cube (volume cells) and its closed skin (a body
+            // by the divergence theorem); the digest covers both reports.
+            for (const Mesh* pMesh : {&volume, &surface}) {
+                const mio::MassPropertiesReport r = mio::mass_properties(*pMesh);
+                f64(pD, r.mTotal.mMeasure);
+                f64(pD, r.mTotal.mMass);
+                if (pD) {
+                    pD->Bytes(r.mTotal.mCentre.data(), sizeof r.mTotal.mCentre);
+                    pD->Bytes(r.mTotal.mInertia.data(), sizeof r.mTotal.mInertia);
+                    pD->Bytes(r.mTotal.mPrincipalMoments.data(), sizeof r.mTotal.mPrincipalMoments);
+                }
+            }
+        });
         row("check_quality", [&](MeshDigest* pD) {
             mio::QualityGateOptions o;
             o.mThresholds = mio::parse_quality_thresholds("scaled_jacobian >= 0.2");
@@ -2742,6 +2801,86 @@ int main(int argc, char** argv) {
             o.mSubdivisions = {static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), 1};
             o.mElevate = {1, 1, 0};
             of(pD, mio::iga_sample(mio::iga_refine(cad_box(), o)));
+        });
+        // A degree-2 NURBS block, refined and cut into Bezier hexahedra.
+        const auto nurbs_block = [&]() {
+            mio::NurbsPatch p;
+            p.mDegrees = {2, 2, 2};
+            p.mKnots = {{0, 0, 0, 1, 1, 1}, {0, 0, 0, 1, 1, 1}, {0, 0, 0, 1, 1, 1}};
+            p.mControlPoints = mio::NDArray(mio::DType::Float64, {27, 3});
+            p.mWeights = mio::NDArray(mio::DType::Float64, {27});
+            double* x = p.mControlPoints.As<double>();
+            double* w = p.mWeights.As<double>();
+            for (std::size_t k = 0; k < 3; ++k)
+                for (std::size_t j = 0; j < 3; ++j)
+                    for (std::size_t i = 0; i < 3; ++i) {
+                        const std::size_t c = i + 3 * (j + 3 * k);
+                        x[3 * c] = 0.5 * static_cast<double>(i) + 0.1 * static_cast<double>(j * k);
+                        x[3 * c + 1] = 0.5 * static_cast<double>(j) + 0.05 * static_cast<double>(i);
+                        x[3 * c + 2] =
+                            0.5 * static_cast<double>(k) + 0.02 * static_cast<double>(i * j);
+                        w[c] = 1.0 + 0.1 * static_cast<double>((i + j + k) % 3);
+                    }
+            mio::NurbsInfo info;
+            info.mPatches.push_back(std::move(p));
+            return info;
+        };
+        row("iga_closest_point", [&](MeshDigest* pD) {
+            mio::NurbsPatch sheet;
+            sheet.mDegrees = {3, 3};
+            sheet.mKnots = {{0, 0, 0, 0, 1, 1, 1, 1}, {0, 0, 0, 0, 1, 1, 1, 1}};
+            sheet.mControlPoints = mio::NDArray(mio::DType::Float64, {16, 3});
+            sheet.mWeights = mio::NDArray(mio::DType::Float64, {16});
+            for (std::size_t j = 0; j < 4; ++j)
+                for (std::size_t i = 0; i < 4; ++i) {
+                    double* x = sheet.mControlPoints.As<double>() + 3 * (i + 4 * j);
+                    x[0] = static_cast<double>(i);
+                    x[1] = static_cast<double>(j);
+                    x[2] = 0.3 * static_cast<double>((i * j) % 3) - 0.2 * static_cast<double>(i);
+                    sheet.mWeights.As<double>()[i + 4 * j] =
+                        1.0 + 0.1 * static_cast<double>((i + j) % 3);
+                }
+            mio::NurbsInfo info;
+            info.mPatches.push_back(std::move(sheet));
+            mio::IgaRefineOptions o;
+            o.mSubdivisions = {2, 2, 1};
+            info = mio::iga_refine(info, o);
+            const std::size_t m = 64 * static_cast<std::size_t>(n);
+            mio::NDArray q(mio::DType::Float64, {m, 3});
+            for (std::size_t i = 0; i < m; ++i) {
+                const double a = static_cast<double>(i % 37) / 37.0,
+                             b = static_cast<double>(i % 29) / 29.0;
+                double* x = q.As<double>() + 3 * i;
+                x[0] = -0.2 + 3.4 * a;
+                x[1] = -0.2 + 3.4 * b;
+                x[2] = 0.7 * std::sin(6.0 * a + 3.0 * b);
+            }
+            const mio::IgaClosestPoint r = mio::iga_closest_point(info, 0, q);
+            doubles(pD, std::vector<double>(r.mParams.As<double>(),
+                                            r.mParams.As<double>() + r.mParams.Size()));
+            doubles(pD, std::vector<double>(r.mPoints.As<double>(),
+                                            r.mPoints.As<double>() + r.mPoints.Size()));
+            doubles(pD, std::vector<double>(r.mDistances.As<double>(),
+                                            r.mDistances.As<double>() + r.mDistances.Size()));
+        });
+        row("iga_remove_knots", [&](MeshDigest* pD) {
+            mio::IgaRefineOptions o;
+            o.mSubdivisions = {static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), 2};
+            const mio::NurbsInfo refined = mio::iga_refine(nurbs_block(), o);
+            mio::IgaRemoveKnotsReport rep;
+            mio::NurbsInfo cut = mio::iga_remove_knots(refined, 0, 0, {}, 0.0, &rep);
+            std::int64_t removed = rep.mNumRemoved;
+            cut = mio::iga_remove_knots(cut, 0, 1, {}, 0.0, &rep);
+            removed += rep.mNumRemoved;
+            cut = mio::iga_remove_knots(cut, 0, 2, {}, 0.0, &rep);
+            removed += rep.mNumRemoved;
+            i64(pD, removed);
+            of(pD, mio::iga_sample(cut));
+        });
+        row("iga_bezier_extract", [&](MeshDigest* pD) {
+            mio::IgaRefineOptions o;
+            o.mSubdivisions = {static_cast<std::int32_t>(n), static_cast<std::int32_t>(n), 2};
+            of(pD, mio::iga_bezier_extract(mio::iga_refine(nurbs_block(), o), 0));
         });
         // The data operations: data only, so points and cells pass through.
         row("data_calc", [&](MeshDigest* pD) {

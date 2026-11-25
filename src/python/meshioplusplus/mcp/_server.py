@@ -155,6 +155,23 @@ def _register_inspection(server: FastMCP) -> None:
         keep|drop for the halo of a .pvtu/.pvtp/.pvd."""
 
     @server.tool()
+    @_forward(_tools.tool_mass_properties)
+    def mass_properties(
+        input_path: str,
+        file_format: Optional[str] = None,
+        density: float = 1.0,
+        density_array: Optional[str] = None,
+        region: Optional[str] = None,
+        thickness: float = 0.0,
+        about: str = "centroid",
+    ) -> dict:
+        """Mass, centre of mass and inertia of a body: volume cells, a closed
+        surface, or a shell when thickness > 0. density is per cell (or the
+        name of a scalar cell_data array); about is centroid|origin. Returns
+        measure, mass, centre, inertia (xx yy zz xy yz zx), principal moments
+        and axes, gyration radii, for the whole mesh and each cell region."""
+
+    @server.tool()
     @_forward(_tools.tool_quality)
     def quality(
         input_path: str,
@@ -2737,6 +2754,79 @@ def _register_operations(server: FastMCP) -> None:
         keep every cell)."""
 
     @server.tool()
+    @_forward(_tools.tool_iga_closest_point)
+    def iga_closest_point(
+        input_path: str,
+        points: List[List[float]],
+        input_format: Optional[str] = None,
+        patch: int = 0,
+        model: str = "auto",
+    ) -> dict:
+        """The point of a NURBS patch (an MFEM NURBS mesh) closest to each of
+        points, a list of [x], [x, y] or [x, y, z] (at most 10000 per call),
+        for a curve (one parametric direction) or a surface (two), rational or
+        not, in 1 to 3 space dimensions.
+
+        A lattice of samples seeds a Newton iteration on the squared distance
+        with the exact second derivatives, clamped to the patch's knot range:
+        a point beyond an edge lands on the edge. The answer carries
+        num_points, params (N x d), points (the closest points, N x space
+        dimension) and distances (N). A volume and a B-rep are refused by
+        name."""
+
+    @server.tool()
+    @_forward(_tools.tool_iga_remove_knots)
+    def iga_remove_knots(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        direction: int = 0,
+        knots: Optional[List[float]] = None,
+        tolerance: float = 0.0,
+        patch: int = 0,
+        model: str = "auto",
+        sample_subdivisions: int = 0,
+    ) -> dict:
+        """Remove knots from one patch of a NURBS model (an MFEM NURBS mesh
+        of one patch), the inverse of refine's knot insertion (The NURBS
+        Book's A5.8, on the homogeneous net so rational patches are handled).
+
+        Knots of the parametric direction (0-based) are removed while the
+        geometry and the NURBS fields move by at most tolerance, in the
+        book's bound d * wmin / (1 + Pmax): tolerance 0 removes only what is
+        exact up to rounding (undoing an insertion), a larger one trades
+        accuracy for fewer control points. knots lists the values to remove,
+        each entry one copy (a value twice asks for two); omitted, every copy
+        of every interior knot is tried. A knot of a surface or volume goes
+        only if it goes from every line of the control net. Reports knots,
+        requested, removed (per distinct knot value) and num_removed; the
+        reduced model is written like iga_refine's. A B-rep is not a NURBS
+        model and a model whose patch topology joins several patches shares
+        knot vectors between them: both are refused by name."""
+
+    @server.tool()
+    @_forward(_tools.tool_iga_bezier_extract)
+    def iga_bezier_extract(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        patch: int = 0,
+        model: str = "auto",
+    ) -> dict:
+        """Bezier extraction of one patch of a NURBS model (an MFEM NURBS
+        mesh): every interior knot is inserted up to multiplicity p per
+        direction (exactly, rational patches included) and the refined net is
+        cut at its nonzero knot spans into VTK_BEZIER_CURVE / _QUADRILATERAL /
+        _HEXAHEDRON cells, (p+1)^d points each in Cartesian coordinates, not
+        shared between cells. The cells carry HigherOrderDegrees, iga:patch
+        and iga:span; a rational patch's points carry RationalWeights, and the
+        NURBS fields ride as point data. Use a VTU output to keep them as
+        Bezier cells. A patch with unequal degrees is refused (iga_refine with
+        elevate first); a B-rep model is not a NURBS model."""
+
+    @server.tool()
     @_forward(_tools.tool_iga_evaluate)
     def iga_evaluate(
         input_path: str,
@@ -2754,7 +2844,8 @@ def _register_operations(server: FastMCP) -> None:
         patch's knot range (at most 10000 per call). The answer carries the
         points (N x space dimension) and the NURBS fields; derivatives=1 adds
         the first derivatives (N x d x space dimension) and, for a surface in
-        3-D, the unit normals; a B-rep face also reports inside: whether each
+        3-D, the unit normals; derivatives=2 also second_derivatives
+        (N x d x d x space dimension); a B-rep face also reports inside: whether each
         point lies within its trimming loops (trim_samples per knot span)."""
 
     @server.tool()
@@ -4658,6 +4749,61 @@ def _register_operations(server: FastMCP) -> None:
         """Sample the source mesh's data arrays onto the target mesh's
         geometry (method: nearest | barycentric); writes the target copy with
         the sampled arrays attached."""
+
+    @server.tool()
+    @_forward(_tools.tool_filter_points)
+    def filter_points(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        statistical_k: int = 0,
+        std_ratio: float = 1.0,
+        radius: float = 0.0,
+        min_neighbors: int = 4,
+        voxel_size: float = 0.0,
+        min_distance: float = 0.0,
+    ) -> dict:
+        """Remove outliers from and thin a point cloud; steps run in order and
+        are off at 0: statistical outlier removal (statistical_k neighbours,
+        std_ratio), radius outlier removal (radius, min_neighbors), voxel
+        thinning (voxel_size: one real point per cube) and Poisson-disk thinning
+        (min_distance). Writes the surviving points; the report counts what
+        each step removed."""
+
+    @server.tool()
+    @_forward(_tools.tool_cast_rays)
+    def cast_rays(
+        surface_path: str,
+        rays_path: str,
+        output_path: str,
+        surface_format: Optional[str] = None,
+        rays_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        direction: Optional[List[float]] = None,
+        max_distance: float = 0.0,
+        region: Optional[str] = None,
+    ) -> dict:
+        """Shoot rays at a surface (triangle, quad or polygon cells) and write
+        a vertex mesh of the hit points with ray:index, ray:distance, ray:cell
+        and ray:normal. rays_path holds the origins as points; direction is
+        [x, y, z] for every ray, else its point array 'directions'.
+        max_distance 0 means no limit."""
+
+    @server.tool()
+    @_forward(_tools.tool_locate_points)
+    def locate_points(
+        mesh_path: str,
+        points_path: str,
+        output_path: str,
+        mesh_format: Optional[str] = None,
+        points_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        tolerance: float = 1e-12,
+    ) -> dict:
+        """Find the cell of a volume mesh (or planar triangle mesh) containing
+        each point of a file; writes a vertex mesh of the points inside with
+        locate:cell, locate:nodes and locate:barycentric."""
 
     @server.tool()
     @_forward(_tools.tool_conservative_interpolate)

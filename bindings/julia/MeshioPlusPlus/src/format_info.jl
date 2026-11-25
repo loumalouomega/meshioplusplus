@@ -464,6 +464,89 @@ function iga_sample(info::FormatInfo; kwargs...)
     mesh, FormatInfo(mapped[])
 end
 
+"""
+    iga_closest_point(info, points; patch=1) -> (; params, points, distances)
+
+The point of patch `patch` of a NURBS model closest to each column of the
+`(space_dim, N)` matrix `points` (a curve or a surface, rational or not): the
+parameters `(d, N)`, the closest points `(space_dim, N)` and the distances `N`.
+A point beyond the patch's edge lands on the edge; a volume is refused.
+"""
+function iga_closest_point(info::FormatInfo, points::AbstractMatrix{<:Real}; patch::Integer=1)
+    q = Matrix{Float64}(points)
+    n = size(q, 2)
+    params = Matrix{Float64}(undef, 2, n)
+    closest = Matrix{Float64}(undef, size(q, 1), n)
+    dist = Vector{Float64}(undef, n)
+    pdim = Ref{Int32}(0)
+    st = ccall(_sym(:mio_iga_closest_point), Cint,
+               (Ptr{Cvoid}, Int64, Ptr{Cdouble}, Int64, Ptr{Cdouble}, Ptr{Cdouble},
+                Ptr{Cdouble}, Ptr{Int32}),
+               _handle(info), Int64(patch - 1), q, Int64(n), params, closest, dist, pdim)
+    _check(st)
+    return (params=params[1:pdim[], :], points=closest, distances=dist)
+end
+
+"""
+    iga_remove_knots(info; direction=1, knots=Float64[], tolerance=0.0, patch=1,
+                     sample_subdivisions=0) -> (Mesh, FormatInfo, report)
+
+Remove knots from direction `direction` (1-based) of patch `patch` of a NURBS
+model while the geometry and the NURBS fields move by at most `tolerance` (The
+NURBS Book's A5.8; 0 removes only what is exact up to rounding, which undoes a
+knot insertion). `knots` lists the values to remove, one copy per entry (empty:
+every copy of every interior knot). The reduced model is sampled again; the
+`report` is a named tuple `(knots, requested, removed, num_removed)`, per
+distinct knot value, ascending. A B-rep, and a model whose patch topology joins
+several patches, are refused.
+"""
+function iga_remove_knots(info::FormatInfo; direction::Integer=1,
+                          knots::AbstractVector{<:Real}=Float64[], tolerance::Real=0.0,
+                          patch::Integer=1, sample_subdivisions::Integer=0)
+    kn = collect(Float64, knots)
+    GC.@preserve kn begin
+        opts = _CIgaRemoveOpts(Int64(patch - 1), Int32(direction - 1), Int32(sample_subdivisions),
+                               Float64(tolerance), isempty(kn) ? C_NULL : pointer(kn),
+                               Int64(length(kn)), (0, 0, 0, 0))
+        n = Ref{Int64}(0)
+        reduced = Ref{Ptr{Cvoid}}(C_NULL)
+        # the first call sizes the report, the second fills it
+        ptr = ccall(_sym(:mio_iga_remove_knots), Ptr{Cvoid},
+                    (Ptr{Cvoid}, Ref{_CIgaRemoveOpts}, Ptr{Ptr{Cvoid}}, Int64, Ptr{Cdouble},
+                     Ptr{Int32}, Ptr{Int32}, Ptr{Int64}),
+                    _handle(info), Ref(opts), reduced, 0, C_NULL, C_NULL, C_NULL, n)
+        close(Mesh(_check_ptr(ptr)))
+        close(FormatInfo(reduced[]))
+        rk = Vector{Float64}(undef, n[])
+        rq = Vector{Int32}(undef, n[])
+        rr = Vector{Int32}(undef, n[])
+        reduced = Ref{Ptr{Cvoid}}(C_NULL)
+        ptr = ccall(_sym(:mio_iga_remove_knots), Ptr{Cvoid},
+                    (Ptr{Cvoid}, Ref{_CIgaRemoveOpts}, Ptr{Ptr{Cvoid}}, Int64, Ptr{Cdouble},
+                     Ptr{Int32}, Ptr{Int32}, Ptr{Int64}),
+                    _handle(info), Ref(opts), reduced, n[], rk, rq, rr, n)
+        mesh = Mesh(_check_ptr(ptr))
+        report = (knots=rk, requested=Int.(rq), removed=Int.(rr), num_removed=Int(sum(rr)))
+        return mesh, FormatInfo(reduced[]), report
+    end
+end
+
+"""
+    iga_bezier_extract(info, patch=1) -> Mesh
+
+Bezier extraction of patch `patch` (1-based) of a NURBS model: every interior
+knot raised to multiplicity `p` and the net cut at its knot spans into one VTK
+Bezier curve, quadrilateral or hexahedron cell per span product, `(p+1)^d`
+unshared points each, with the cell data `HigherOrderDegrees`, `iga:patch` and
+`iga:span` and, for a rational patch, the point data `RationalWeights`. A patch
+with unequal degrees is refused (raise them with [`iga_refine`](@ref) first).
+"""
+function iga_bezier_extract(info::FormatInfo, patch::Integer=1)
+    ptr = ccall(_sym(:mio_iga_bezier_extract), Ptr{Cvoid},
+                (Ptr{Cvoid}, Int64), _handle(info), Int64(patch - 1))
+    Mesh(_check_ptr(ptr))
+end
+
 # --- mesh generation from CAD (v17.13.0; doc/mesh_cad.md) ----------------------
 
 const _MESH_CAD_FACE_STATUS_NAMES = ("ok", "empty", "open_loop", "self_intersecting",
@@ -770,17 +853,19 @@ const MIO_IGA_DERIVATIVES = Int32(1)
 const MIO_IGA_NORMALS = Int32(2)
 const MIO_IGA_INSIDE = Int32(3)
 const MIO_IGA_FIELD = Int32(4)
+const MIO_IGA_SECOND_DERIVATIVES = Int32(5)
 
 """
     iga_evaluate(info, patch, params; derivatives=0, trim_samples=16)
-        -> (; points, fields, derivatives, normals, inside)
+        -> (; points, fields, derivatives, normals, inside, second_derivatives)
 
 Evaluate patch `patch` (1-based; the face of a B-rep) of a NURBS model at the
 parametric coordinates in `params`, a `(d, N)` matrix with one column per point
 (`d` the parametric dimension), each inside the patch's knot range. `points` is
 `(space dimension, N)`, `fields` one `(components, N)` matrix per NURBS field.
 With `derivatives=1`, `derivatives` is `(space dimension, d, N)` and `normals`
-`(3, N)` (surfaces in 3-D); for a B-rep face `inside` is a `Vector{Bool}` of the
+`(3, N)` (surfaces in 3-D); with `derivatives=2`, `second_derivatives` is
+`(space dimension, d, d, N)`, the symmetric `d2 x / d u_k d u_l`; for a B-rep face `inside` is a `Vector{Bool}` of the
 trimming test. Absent parts are `nothing`.
 """
 function iga_evaluate(info::FormatInfo, patch::Integer, params::AbstractMatrix{<:Real};
@@ -805,7 +890,8 @@ function iga_evaluate(info::FormatInfo, patch::Integer, params::AbstractMatrix{<
         inside = opt(MIO_IGA_INSIDE)
         (points=arr(MIO_IGA_POINTS), fields=[arr(MIO_IGA_FIELD, k) for k in 0:nf-1],
          derivatives=opt(MIO_IGA_DERIVATIVES), normals=opt(MIO_IGA_NORMALS),
-         inside=inside === nothing ? nothing : Vector{Bool}(inside .!= 0))
+         inside=inside === nothing ? nothing : Vector{Bool}(inside .!= 0),
+         second_derivatives=opt(MIO_IGA_SECOND_DERIVATIVES))
     finally
         ccall(_sym(:mio_iga_evaluation_free), Cvoid, (Ptr{Cvoid},), ev)
     end

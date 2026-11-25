@@ -7447,7 +7447,10 @@ typedef enum mio_iga_array {
     /** UInt8 (N): 1 where a B-rep face's trimming loops contain the point. */
     MIO_IGA_INSIDE = 3,
     /** Float64 (N, components): NURBS field `index` of a patch. */
-    MIO_IGA_FIELD = 4
+    MIO_IGA_FIELD = 4,
+    /** Float64 (N, parametric dimension, parametric dimension, space dimension):
+     *  the symmetric second derivatives d2 x / d u_k d u_l; with derivatives = 2. */
+    MIO_IGA_SECOND_DERIVATIVES = 5
 } mio_iga_array;
 
 /** Opaque result of mio_iga_evaluate. Destroy with mio_iga_evaluation_free(). */
@@ -7459,7 +7462,8 @@ typedef struct mio_iga_evaluation mio_iga_evaluation;
  * (d the parametric dimension: mio_nurbs_info_int(MIO_NURBS_PATCHES, patch,
  * field 0), 2 for a face), point after point, each inside the knot range.
  *
- * @param derivatives 0, or 1 for the first derivatives and the surface normals.
+ * @param derivatives 0; 1 for the first derivatives and the surface normals; 2
+ *        also for the second derivatives (MIO_IGA_SECOND_DERIVATIVES).
  * @param trim_samples B-rep: points per knot span a trimming curve is sampled at.
  * @return the result (free with mio_iga_evaluation_free), or NULL on failure.
  */
@@ -7482,6 +7486,83 @@ MIO_API mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation
 
 /** Destroy an evaluation. NULL is a no-op. */
 MIO_API void mio_iga_evaluation_free(mio_iga_evaluation* evaluation);
+
+/**
+ * The point of patch `patch` (0-based) of a NURBS model closest to each of
+ * `num_points` query points: `points` is `num_points * space_dim` doubles
+ * (row-major, space_dim the patch's), a curve or a surface, rational or not
+ * (see doc/iga.md). Each output pointer is optional and caller-allocated:
+ * `params` `num_points * d` doubles (d the patch's parametric dimension, 1 or
+ * 2, so `2 * num_points` always suffices), `closest` `num_points * space_dim`,
+ * `distances` `num_points`; `param_dim` receives d.
+ * @return MIO_OK, or MIO_ERR_INVALID_ARG with mio_last_error() for a volume, a
+ *         B-rep, a bad patch or a non-finite point.
+ */
+MIO_API mio_status mio_iga_closest_point(const mio_format_info* info, int64_t patch,
+                                         const double* points, int64_t num_points, double* params,
+                                         double* closest, double* distances, int32_t* param_dim);
+
+/**
+ * Options for mio_iga_remove_knots (72 bytes). Initialize through
+ * mio_iga_remove_opts_init().
+ */
+typedef struct mio_iga_remove_opts {
+    /** The patch, 0-based. */
+    int64_t patch;
+    /** The parametric direction to remove knots from, 0-based. */
+    int32_t direction;
+    /** The sampling of the returned cells: cells per knot span, 0 automatic (0 to 64). */
+    int32_t sample_subdivisions;
+    /** The largest deviation of the geometry; 0 removes only what is exact up to rounding. */
+    double tolerance;
+    /** The knot values to remove, each entry one copy; NULL or num_knots == 0 asks for every
+     *  copy of every interior knot. */
+    const double* knots;
+    int64_t num_knots;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
+} mio_iga_remove_opts;
+
+/** Initialize knot-removal options: patch 0, direction 0, tolerance 0, every knot, automatic
+ * sampling. */
+MIO_API void mio_iga_remove_opts_init(mio_iga_remove_opts* opts);
+
+/**
+ * Knot removal on one patch of a NURBS model (The NURBS Book's A5.8; see
+ * doc/iga.md): interior knots of `opts->direction` go while the geometry and
+ * the NURBS fields move by at most `opts->tolerance`. The reduced model is
+ * sampled again, like mio_iga_refine.
+ *
+ * @param reduced optional out: a new handle holding the reduced model (free
+ *                with mio_format_info_free).
+ * @param capacity entries the three report arrays can hold.
+ * @param report_knots optional out: each distinct knot value tried, ascending.
+ * @param report_requested optional out: the copies asked for of each.
+ * @param report_removed optional out: the copies removed of each.
+ * @param num_report optional out: the number of distinct knot values (may exceed
+ *                   capacity, which only limits what is written).
+ * @return the sampled cells (free with mio_mesh_free), or NULL on failure (a bad patch,
+ *         direction or tolerance, a knot that is not an interior knot, a B-rep, a model
+ *         whose topology joins several patches): see mio_last_error().
+ */
+MIO_API mio_mesh* mio_iga_remove_knots(const mio_format_info* info, const mio_iga_remove_opts* opts,
+                                       mio_format_info** reduced, int64_t capacity,
+                                       double* report_knots, int32_t* report_requested,
+                                       int32_t* report_removed, int64_t* num_report);
+
+/**
+ * Bezier extraction of one patch of a NURBS model: every interior knot raised
+ * to multiplicity p, the net cut into one VTK_BEZIER_CURVE, _QUADRILATERAL or
+ * _HEXAHEDRON cell per knot-span product ((p+1)^d unshared points each, in
+ * Cartesian coordinates), with Float64 cell data "HigherOrderDegrees" (cells x
+ * 3), Int64 "iga:patch" and "iga:span", point data "RationalWeights" when the
+ * patch is rational and the NURBS fields. See doc/iga.md.
+ *
+ * @param info  a model handle of a NURBS mesh (not a B-rep).
+ * @param patch the patch, 0-based.
+ * @return the cells (free with mio_mesh_free), or NULL on failure (a bad patch,
+ *         unequal degrees, a B-rep): see mio_last_error().
+ */
+MIO_API mio_mesh* mio_iga_bezier_extract(const mio_format_info* info, int64_t patch);
 
 /* ---------------------------------------------------------------------
  * Mesh generation from CAD (v17.13.0): a conforming triangle mesh of the
@@ -9411,6 +9492,172 @@ MIO_API mio_mesh* mio_move(const mio_mesh* mesh, const mio_move_opts* opts, mio_
 MIO_API mio_mesh* mio_metric_from_hessian(const mio_mesh* mesh, const char* hessian,
                                           double error, double hmin, double hmax,
                                           const char* output);
+
+/**
+ * Options for mio_mass_properties (roadmap 9.4). Same ABI rules as above:
+ * initialize through mio_mass_properties_opts_init(). Size: 56 bytes. The
+ * strings are borrowed for the call only.
+ */
+typedef struct mio_mass_properties_opts {
+    double density;            /**< density of every cell (default 1) */
+    const char* density_array; /**< scalar cell_data array of per-cell densities; NULL or "" for
+                                  `density` */
+    const char* region;  /**< restrict the total to this cell region; NULL or "" for all cells */
+    double thickness;    /**< above 0, surface cells are a shell of this thickness */
+    int32_t about;       /**< 0: inertia about the centre of mass; 1: about the origin */
+    int32_t reserved0;   /**< must be zero */
+    int64_t reserved[2]; /**< must be zero; room for additive growth */
+} mio_mass_properties_opts;
+
+/** Initialize mass-properties options: density 1, no array or region, no shell, about the centre.
+ */
+MIO_API void mio_mass_properties_opts_init(mio_mass_properties_opts* opts);
+
+/** One set of cells' mass properties (the whole selection, or one cell region).
+ *  Size: 232 bytes. */
+typedef struct mio_mass_entry {
+    int64_t num_cells; /**< cells that took part */
+    double measure;    /**< volume, or area for a shell */
+    double mass;
+    double centre[3];            /**< centre of mass */
+    double inertia[6];           /**< xx yy zz xy yz zx, about the chosen point */
+    double principal_moments[3]; /**< ascending */
+    double principal_axes[9];    /**< row-major 3x3; column k belongs to moment k */
+    double gyration_radii[3];
+    int64_t reserved[2]; /**< zero; room for additive growth */
+} mio_mass_entry;
+
+/** Opaque mass-properties report; see mio_mass_properties. */
+typedef struct mio_mass_report mio_mass_report;
+
+/**
+ * Mass, centre of mass and inertia of a body: volume cells, a closed surface,
+ * or a shell when opts->thickness > 0 (operations/mass_properties.hpp).
+ * @return a report the caller frees with mio_mass_report_free, or NULL with
+ *         the error set (an open surface without a thickness, an unknown
+ *         region or density array, a non-finite density, nothing to integrate).
+ */
+MIO_API mio_mass_report* mio_mass_properties(const mio_mesh* mesh,
+                                             const mio_mass_properties_opts* opts);
+
+/** "solid" or "shell", copied by the string-getter rule 5; -1 on error. */
+MIO_API int64_t mio_mass_report_kind(const mio_mass_report* report, char* buf, int64_t buflen);
+
+/** Number of entries: 1 (the total, index 0) plus one per named cell region; -1 on error. */
+MIO_API int64_t mio_mass_report_count(const mio_mass_report* report);
+
+/** Fill `out` with entry `index` (0 is the total). */
+MIO_API mio_status mio_mass_report_entry(const mio_mass_report* report, int64_t index,
+                                         mio_mass_entry* out);
+
+/** The name of entry `index` ("" for the total), string-getter rule 5; -1 on error. */
+MIO_API int64_t mio_mass_report_entry_name(const mio_mass_report* report, int64_t index, char* buf,
+                                           int64_t buflen);
+
+/** The report's warnings joined by '\n', string-getter rule 5; -1 on error. */
+MIO_API int64_t mio_mass_report_warnings(const mio_mass_report* report, char* buf, int64_t buflen);
+
+/** Free a report; NULL is a no-op. */
+MIO_API void mio_mass_report_free(mio_mass_report* report);
+
+/**
+ * Options for mio_cast_rays (roadmap 9.3). Same ABI rules as above:
+ * initialize through mio_cast_rays_opts_init(). Size: 64 bytes. The string is
+ * borrowed for the call only.
+ */
+typedef struct mio_cast_rays_opts {
+    double max_distance; /**< ignore hits farther than this; 0 for no limit */
+    const char* region;  /**< restrict the surface to this cell region; NULL or "" for all */
+    int64_t reserved[6]; /**< must be zero; room for additive growth */
+} mio_cast_rays_opts;
+
+/** Initialize ray-casting options: no distance limit, every surface cell. */
+MIO_API void mio_cast_rays_opts_init(mio_cast_rays_opts* opts);
+
+/**
+ * The nearest surface hit of `num_rays` rays (operations/cast_rays.hpp).
+ * `origins` holds three doubles per ray; `directions` holds `num_directions`
+ * triples, which must be 1 (one direction for every ray) or `num_rays`; a
+ * direction need not be a unit vector. Every output pointer is optional (NULL
+ * skips it) and, when given, holds: `hit` num_rays values (1 or 0), `distance`
+ * num_rays (NaN on a miss), `point` and `normal` 3 * num_rays (NaN on a miss;
+ * the normal is the unit triangle normal on its winding side), `cell`
+ * num_rays (the global input cell hit, -1 on a miss) and `num_hits` one value.
+ * The surface is the mesh's triangle, quad and polygon cells; a hit needs t > 0.
+ * @return MIO_OK, or MIO_ERR_INVALID_ARG with the error set (a zero or
+ *         non-finite direction, a volume mesh, an unknown region, no surface).
+ */
+MIO_API mio_status mio_cast_rays(const mio_mesh* mesh, const double* origins, int64_t num_rays,
+                                 const double* directions, int64_t num_directions,
+                                 const mio_cast_rays_opts* opts, int32_t* hit, double* distance,
+                                 double* point, double* normal, int64_t* cell, int64_t* num_hits);
+
+/**
+ * Options for mio_locate_points (roadmap 9.3). Size: 64 bytes.
+ */
+typedef struct mio_locate_points_opts {
+    double tolerance;    /**< a barycentric weight at least -tolerance counts as inside */
+    int64_t reserved[7]; /**< must be zero; room for additive growth */
+} mio_locate_points_opts;
+
+/** Initialize location options: tolerance 1e-12. */
+MIO_API void mio_locate_points_opts_init(mio_locate_points_opts* opts);
+
+/**
+ * The cell of `mesh` containing each of `num_points` points
+ * (operations/locate_points.hpp), searched as mio_interpolate searches it. The
+ * mesh is reduced to simplices; the first containing one, in ascending order,
+ * wins. `points` holds three doubles per point. Every output pointer is
+ * optional and, when given, holds: `cell` num_points values (the global input
+ * cell, -1 outside), `nodes` 4 * num_points (the containing simplex's point ids,
+ * -1 outside or as padding), `barycentric` 4 * num_points (its weights, 0
+ * outside or as padding) and `num_located` one value.
+ * @return MIO_OK, or MIO_ERR_INVALID_ARG with the error set (a negative
+ *         tolerance, a non-finite coordinate, no tetrahedron or triangle).
+ */
+MIO_API mio_status mio_locate_points(const mio_mesh* mesh, const double* points, int64_t num_points,
+                                     const mio_locate_points_opts* opts, int64_t* cell,
+                                     int64_t* nodes, double* barycentric, int64_t* num_located);
+
+/**
+ * Options for mio_filter_points (roadmap 9.9). Same ABI rules as above:
+ * initialize through mio_filter_points_opts_init(). Size: 80 bytes. A step is
+ * off at 0; at least one must be on.
+ */
+typedef struct mio_filter_points_opts {
+    int64_t statistical_k; /**< statistical outlier removal: neighbours per mean distance */
+    double std_ratio;      /**< ... standard deviations above the mean (default 1) */
+    double radius;         /**< radius outlier removal: the search radius */
+    int64_t min_neighbors; /**< ... other points needed within `radius` (default 4) */
+    double voxel_size;     /**< voxel thinning: the cube side */
+    double min_distance;   /**< Poisson-disk thinning: minimum distance between kept points */
+    int64_t reserved[4];   /**< must be zero; room for additive growth */
+} mio_filter_points_opts;
+
+/** Initialize point-filter options: every step off, std_ratio 1, min_neighbors 4. */
+MIO_API void mio_filter_points_opts_init(mio_filter_points_opts* opts);
+
+/**
+ * Remove outliers from, and thin, a point cloud (operations/filter_points.hpp):
+ * statistical outlier removal, radius outlier removal, voxel thinning and
+ * Poisson-disk thinning, in that order. The result is a point cloud: the
+ * surviving points with every per-point array gathered, one `vertex` block,
+ * Point regions following, cells and cell/side regions dropped.
+ * @param point_map optional; room for the input mesh's point count int64 values;
+ *        the first `mio_mesh_num_points(result)` receive each output point's input
+ *        point (0-based).
+ * @param num_removed optional; four int64 values: removed by the statistical,
+ *        radius, voxel and Poisson-disk steps.
+ * @return a new mesh the caller frees, or NULL with the error set (a negative or
+ *         non-finite parameter, no step enabled, a non-finite coordinate, a
+ *         voxel size too small for the extent).
+ */
+MIO_API mio_mesh* mio_filter_points(const mio_mesh* mesh, const mio_filter_points_opts* opts,
+                                    int64_t* point_map, int64_t* num_removed);
+
+/** The warnings of the calling thread's last mio_filter_points, joined by '\n'
+ *  (string-getter rule 5); -1 on error. */
+MIO_API int64_t mio_filter_points_warnings(char* buf, int64_t buflen);
 
 #ifdef __cplusplus
 }

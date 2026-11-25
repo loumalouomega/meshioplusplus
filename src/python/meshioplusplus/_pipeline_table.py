@@ -518,6 +518,14 @@ OP_TABLE = {
         "Viewpoint",
         "RecordVariation",
     ),
+    "FilterPoints": (
+        "StatisticalK",
+        "StdRatio",
+        "Radius",
+        "MinNeighbors",
+        "VoxelSize",
+        "MinDistance",
+    ),
     "ReconstructSurface": (
         "Normals",
         "K",
@@ -1586,6 +1594,12 @@ KEY_DEFAULTS = {
         ("K", "number", 16.0),
         ("Orientation", "text", "consistent"),
         ("RecordVariation", "flag", False),
+    ),
+    "FilterPoints": (
+        ("StdRatio", "number", 1.0),
+        ("Radius", "number", 0.0),
+        ("VoxelSize", "number", 0.0),
+        ("MinDistance", "number", 0.0),
     ),
     "ReconstructSurface": (
         ("Normals", "text", "normals"),

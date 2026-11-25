@@ -623,6 +623,64 @@ def test_stats(mesh_file):
     assert out["cell_type_counts"] == {"triangle": 2, "tetra": 1}
 
 
+def test_mass_properties(tmp_path):
+    path = str(tmp_path / "cube.vtu")
+    pts = [[x, y, z] for z in (0.0, 2.0) for y in (0.0, 2.0) for x in (0.0, 2.0)]
+    mesh = meshioplusplus.Mesh(pts, [("hexahedron", [[0, 1, 3, 2, 4, 5, 7, 6]])])
+    meshioplusplus.write(path, mesh)
+    out = _dump(_tools.tool_mass_properties(path, density=2.0))
+    assert out["kind"] == "solid"
+    assert out["total"]["mass"] == pytest.approx(16.0)
+    assert out["total"]["centre"] == pytest.approx([1.0, 1.0, 1.0])
+    assert out["total"]["inertia"][0] == pytest.approx(16.0 * 8.0 / 12.0)
+
+
+def test_filter_points(tmp_path):
+    import numpy as np
+
+    rng = np.random.default_rng(2)
+    pts = np.vstack(
+        [
+            rng.uniform(0, 1, (400, 3)) * [1, 1, 0.01],
+            rng.uniform(0, 1, (4, 3)) + [3, 3, 2],
+        ]
+    )
+    src = str(tmp_path / "scan.vtu")
+    meshioplusplus.write(
+        src, meshioplusplus.Mesh(pts, [("vertex", np.arange(len(pts)).reshape(-1, 1))])
+    )
+    out = str(tmp_path / "clean.vtu")
+    rep = _dump(_tools.tool_filter_points(src, out, statistical_k=10, std_ratio=2.0))
+    assert rep["num_input"] == 404
+    assert rep["num_removed_statistical"] >= 4
+    assert len(meshioplusplus.read(out).points) == rep["num_points"]
+
+
+def test_cast_rays_and_locate_points(tmp_path):
+    sphere = meshioplusplus.uv_sphere(1.0, 32, 16)
+    spath = str(tmp_path / "sphere.vtu")
+    meshioplusplus.write(spath, sphere)
+    rays = meshioplusplus.Mesh([[3.0, 0.0, 0.0], [9.0, 9.0, 9.0]], [])
+    rpath = str(tmp_path / "rays.vtu")
+    meshioplusplus.write(rpath, rays)
+    out = str(tmp_path / "hits.vtu")
+    rep = _dump(_tools.tool_cast_rays(spath, rpath, out, direction=[-1, 0, 0]))
+    assert rep["num_rays"] == 2 and rep["num_hits"] == 1
+    hits = meshioplusplus.read(out)
+    assert hits.point_data["ray:distance"][0] == pytest.approx(2.0, abs=0.02)
+
+    box = meshioplusplus.box(dims=(2, 2, 2), size=(2.0, 2.0, 2.0))
+    bpath = str(tmp_path / "box.vtu")
+    meshioplusplus.write(bpath, box)
+    pts = meshioplusplus.Mesh([[0.5, 0.5, 0.5], [5.0, 5.0, 5.0]], [])
+    ppath = str(tmp_path / "pts.vtu")
+    meshioplusplus.write(ppath, pts)
+    lout = str(tmp_path / "located.vtu")
+    rep = _dump(_tools.tool_locate_points(bpath, ppath, lout))
+    assert rep["num_points"] == 2 and rep["num_located"] == 1
+    assert meshioplusplus.read(lout).point_data["locate:cell"][0] == 0
+
+
 def test_quality_summary_and_annotated_output(mesh_file, tmp_path):
     out = _dump(_tools.tool_quality(mesh_file))
     assert out["num_cells"] == 3
@@ -1509,12 +1567,27 @@ def test_iga_tools_refine_sample_and_evaluate(tmp_path):
     ev = _dump(_tools.tool_iga_evaluate(plate, [[0.5, 0.5], [2.0, 2.0]], derivatives=1))
     assert ev["inside"] == [True, False]
     assert ev["num_points"] == 2 and len(ev["normals"]) == 2
+    ev2 = _dump(_tools.tool_iga_evaluate(plate, [[0.5, 0.5]], derivatives=2))
+    assert len(ev2["second_derivatives"][0]) == 2  # d x d blocks per point
     ev = _dump(_tools.tool_iga_evaluate(nurbs, [[0.3, 0.7, 0.4]], patch=1))
     assert len(ev["points"][0]) == 3
     with pytest.raises(ValueError, match="knot range"):
         _tools.tool_iga_evaluate(plate, [[9.0, 9.0]])
     with pytest.raises(ValueError, match="at most"):
         _tools.tool_iga_evaluate(plate, [[0.5, 0.5]] * 10001)
+
+
+def test_iga_bezier_extract_tool(tmp_path):
+    nurbs = str(
+        pathlib.Path(__file__).parent / "meshes" / "mfem" / "nurbs" / "pipe-nurbs.mesh"
+    )
+    out = _dump(_tools.tool_iga_bezier_extract(nurbs, str(tmp_path / "b.vtu"), patch=1))
+    assert out["num_cells"] == 2
+    back = meshioplusplus.read(tmp_path / "b.vtu")
+    assert back.cells[0].type == "VTK_BEZIER_HEXAHEDRON"
+    assert "HigherOrderDegrees" in back.cell_data
+    with pytest.raises(ValueError, match="patch 99"):
+        _tools.tool_iga_bezier_extract(nurbs, str(tmp_path / "x.vtu"), patch=99)
 
 
 def _two_tetra10():
