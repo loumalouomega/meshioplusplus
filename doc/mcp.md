@@ -77,6 +77,8 @@ Claude Desktop (`claude_desktop_config.json`):
 
 Interactive browsing: `npx @modelcontextprotocol/inspector meshioplusplus-mcp`.
 
+The server runs where meshio++ is installed. A container image, registry and directory listings (Glama, the official MCP Registry, Smithery, Docker) and a hosted endpoint are planned work, tracked in the [roadmap](./roadmap.md#hosted-mcp).
+
 ### Over HTTP (`--http`)
 
 The same process can serve over HTTP instead (v10.23.0, the `[dashboard]` extra): MCP over streamable HTTP at `/mcp` for agents, plus a small JSON API the [dataset dashboard](./dashboard#the-companion-process) calls — `GET /api/health`, `POST /api/tools/<name>` (every tool below, dispatched through the same sandbox and sanitizer) and `GET /api/files` (a sandboxed download).
