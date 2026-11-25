@@ -273,9 +273,27 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     }
     const SparseCsr a = csr_from_triplets(m, m, std::move(ata));
     std::vector<double> x(m, 0.0);
-    const SparseSolveReport rep = csr_pcg(a, atb.data(), x.data(), 1e-12, 20 * m + 100);
-    if (!(rep.mRelativeResidual <= 1e-8))
-        return out;
+    bool solved = false;
+    CsrLdlt ldlt;
+    if (ldlt.Factor(a)) {
+        ldlt.Solve(atb.data(), x.data());
+        std::vector<double> ax(m, 0.0);
+        csr_multiply(a, x.data(), ax.data());
+        double r2 = 0.0, b2 = 0.0;
+        for (std::size_t i = 0; i < m; ++i) {
+            const double diff = atb[i] - ax[i];
+            r2 += diff * diff;
+            b2 += atb[i] * atb[i];
+        }
+        const double rel = b2 > 0.0 ? std::sqrt(r2 / b2) : std::sqrt(r2);
+        solved = std::isfinite(rel) && rel <= 1e-8;
+    }
+    if (!solved) {
+        std::fill(x.begin(), x.end(), 0.0);
+        const SparseSolveReport rep = csr_ic0_pcg(a, atb.data(), x.data(), 1e-12, 20 * m + 100);
+        if (!(rep.mRelativeResidual <= 1e-8))
+            return out;
+    }
     out.mU.assign(n, 0.0);
     out.mV.assign(n, 0.0);
     for (std::size_t i = 0; i < n; ++i)

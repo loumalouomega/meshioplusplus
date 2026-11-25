@@ -280,7 +280,7 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         }
         const detail::SparseCsr a = detail::csr_from_triplets(n, n, std::move(poisson));
         const detail::SparseSolveReport r =
-            detail::csr_pcg(a, rhs.data(), phi.data(), rOptions.mTolerance, cap);
+            detail::csr_ic0_pcg(a, rhs.data(), phi.data(), rOptions.mTolerance, cap);
         result.mPoissonIterations = static_cast<std::int64_t>(r.mIterations);
         result.mConverged = result.mConverged && r.mConverged;
     }

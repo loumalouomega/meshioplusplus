@@ -828,7 +828,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             for (std::size_t i = 1; i + 1 < nu; ++i)
                 for (std::size_t c = 0; c < 3; ++c)
                     x[3 * ((i - 1) + mi * (j - 1)) + c] = s.mPoles[3 * (i + nu * j) + c];
-        const SparseSolveReport rep = csr_pcg(a, ne.mB.data(), x.data(), 1e-13, 20 * dim + 200);
+        const SparseSolveReport rep = csr_ic0_pcg(a, ne.mB.data(), x.data(), 1e-13, 20 * dim + 200);
         for (std::size_t j = 1; j + 1 < nv; ++j)
             for (std::size_t i = 1; i + 1 < nu; ++i)
                 for (std::size_t c = 0; c < 3; ++c)
@@ -1325,7 +1325,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             for (std::size_t i = 0; i < np; ++i)
                 keep_ref[i] = out.mPatches[i].mRefinements;
             const SparseSolveReport rep =
-                csr_pcg(a, rhs.data(), x.data(), 1e-9, 20 * 3 * ncol + 200);
+                csr_ic0_pcg(a, rhs.data(), x.data(), 1e-9, 20 * 3 * ncol + 200);
             // Write the solution back: the chains, each patch's sides and
             // poles (its boundary rows through its map), its parameters.
             for (std::size_t c = 0; c < nc; ++c)

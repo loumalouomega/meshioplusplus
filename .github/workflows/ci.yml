@@ -677,11 +677,19 @@ jobs:
         run: |
           python3 tools/bench_instructions.py --check benchmark/instructions_S.csv \
             --jobs 4 --out instructions.csv --summary "$GITHUB_STEP_SUMMARY"
+      - name: Allocation and peak live memory check (advisory)
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
+        run: |
+          python3 tools/bench_allocs.py --check benchmark/allocs_S.csv \
+            --advisory --jobs 4 --out allocs.csv --summary "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: instructions
-          path: instructions.csv
+          path: |
+            instructions.csv
+            allocs.csv
 
   cpp-install:
     name: C++ API install (${{ matrix.name }})

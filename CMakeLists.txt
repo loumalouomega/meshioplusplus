@@ -2352,6 +2352,14 @@ if(MESHIOPLUSPLUS_BUILD_BENCHMARKS)
   # parallel backends and thread counts).
   add_executable(meshioplusplus_bench_ops src/cpp/benchmark/bench_ops.cpp)
   target_link_libraries(meshioplusplus_bench_ops PRIVATE meshioplusplus_core_obj)
+  # Allocation-counting twin of bench_ops (roadmap 5.28.1): links an opt-in
+  # global operator new/delete counter into this binary only, never the library
+  # or the default bench_ops binary.
+  add_executable(meshioplusplus_bench_ops_allocs
+                 src/cpp/benchmark/bench_ops.cpp
+                 src/cpp/benchmark/bench_allocs.cpp)
+  target_link_libraries(meshioplusplus_bench_ops_allocs PRIVATE meshioplusplus_core_obj)
+  target_compile_definitions(meshioplusplus_bench_ops_allocs PRIVATE MESHIOPLUSPLUS_BENCH_ALLOCS=1)
   # The core's maps and sets against the candidates that could replace them
   # (bench_containers.cpp; roadmap 5.22).
   add_executable(meshioplusplus_bench_containers src/cpp/benchmark/bench_containers.cpp)
@@ -2428,7 +2436,7 @@ if(MESHIOPLUSPLUS_WARNINGS)
       meshioplusplus_core_obj meshioplusplus_core_meshio meshioplusplus_core_native
       meshioplusplus_core_kratos _core meshioplusplus_c_obj meshioplusplus
       meshioplusplus_cli meshioplusplus_tests meshioplusplus_bench
-      meshioplusplus_bench_ops meshioplusplus_bench_containers)
+      meshioplusplus_bench_ops meshioplusplus_bench_ops_allocs meshioplusplus_bench_containers)
     meshioplusplus_target_warnings(${_mio_t})
   endforeach()
 endif()
@@ -2439,7 +2447,7 @@ if(MESHIOPLUSPLUS_HARDENED_STL)
       meshioplusplus_core_obj meshioplusplus_core_meshio meshioplusplus_core_native
       meshioplusplus_core_kratos _core meshioplusplus_c_obj meshioplusplus
       meshioplusplus_cli meshioplusplus_tests meshioplusplus_bench
-      meshioplusplus_bench_ops meshioplusplus_bench_containers)
+      meshioplusplus_bench_ops meshioplusplus_bench_ops_allocs meshioplusplus_bench_containers)
     meshioplusplus_target_hardened_stl(${_mio_t})
   endforeach()
 endif()

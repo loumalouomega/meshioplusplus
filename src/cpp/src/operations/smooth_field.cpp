@@ -68,22 +68,32 @@ SmoothFieldResult smooth_field(const Mesh& rMesh, const SmoothFieldOptions& rOpt
 
     NDArray out(DType::Float64, field.Shape());
     double* po = out.As<double>();
-    std::vector<double> rhs(n), x(n);
     SmoothFieldResult result;
     const std::size_t cap =
         rOptions.mMaxIterations > 0 ? static_cast<std::size_t>(rOptions.mMaxIterations) : n + 100;
+    std::vector<std::vector<double>> rhs_cols(comps, std::vector<double>(n));
+    std::vector<std::vector<double>> x_cols(comps, std::vector<double>(n));
+    std::vector<const double*> rhs_ptrs(comps);
+    std::vector<double*> x_ptrs(comps);
     for (std::size_t c = 0; c < comps; ++c) {
         for (std::size_t i = 0; i < n; ++i) {
             const double f = detail::read_double(field, i * comps + c);
-            rhs[i] = (mass[i] > 0.0 ? mass[i] : 1.0) * f;
-            x[i] = f;
+            rhs_cols[c][i] = (mass[i] > 0.0 ? mass[i] : 1.0) * f;
+            x_cols[c][i] = f;
         }
-        const detail::SparseSolveReport report =
-            detail::csr_pcg(a, rhs.data(), x.data(), rOptions.mTolerance, cap);
-        result.mIterations += static_cast<std::int64_t>(report.mIterations);
-        result.mConverged = result.mConverged && report.mConverged;
+        rhs_ptrs[c] = rhs_cols[c].data();
+        x_ptrs[c] = x_cols[c].data();
+    }
+    detail::CsrIc0 precond;
+    precond.Build(a);
+    detail::CsrPcgWorkspace ws;
+    const std::vector<detail::SparseSolveReport> reps = detail::csr_ic0_pcg_block(
+        a, precond, comps, rhs_ptrs.data(), x_ptrs.data(), ws, rOptions.mTolerance, cap);
+    for (std::size_t c = 0; c < comps; ++c) {
+        result.mIterations += static_cast<std::int64_t>(reps[c].mIterations);
+        result.mConverged = result.mConverged && reps[c].mConverged;
         for (std::size_t i = 0; i < n; ++i)
-            po[i * comps + c] = x[i];
+            po[i * comps + c] = x_cols[c][i];
     }
     result.mNumDegenerate = fem.mNumDegenerate;
     result.mMesh = detail::clone_mesh(rMesh);

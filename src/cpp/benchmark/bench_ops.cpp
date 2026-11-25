@@ -198,6 +198,9 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/skin.hpp"
 #include "mesh_digest.hpp"
+#if defined(MESHIOPLUSPLUS_BENCH_ALLOCS)
+#include "bench_allocs.hpp"
+#endif
 
 // `--instructions` brackets one run of a row with Cachegrind's client requests
 // (valgrind >= 3.22), so `valgrind --tool=cachegrind --instr-at-start=no`
@@ -620,6 +623,7 @@ int main(int argc, char** argv) {
     int runs = 3;
     bool hash = false;
     bool instructions = false;
+    bool allocs = false;
     bool list = false;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -639,12 +643,14 @@ int main(int argc, char** argv) {
             hash = true;
         } else if (a == "--instructions") {
             instructions = true;
+        } else if (a == "--allocs") {
+            allocs = true;
         } else if (a == "--list") {
             list = true;
         } else {
             std::fprintf(stderr,
                          "usage: %s [--tier S|M|L|XL]... [--ops a,b,...] [--runs N] [--hash] "
-                         "[--instructions] [--list]\n",
+                         "[--instructions] [--allocs] [--list]\n",
                          argv[0]);
             return 2;
         }
@@ -655,6 +661,16 @@ int main(int argc, char** argv) {
         return 2;
     }
 #endif
+#if !defined(MESHIOPLUSPLUS_BENCH_ALLOCS)
+    if (allocs) {
+        std::fprintf(stderr, "--allocs: use the meshioplusplus_bench_ops_allocs target\n");
+        return 2;
+    }
+#endif
+    if (instructions && allocs) {
+        std::fprintf(stderr, "--instructions and --allocs are mutually exclusive\n");
+        return 2;
+    }
     if (chosen.empty())
         chosen = {"S", "M", "L"};
     // OMP_NUM_THREADS is honoured by OpenMP itself and read by the THREADS
@@ -678,8 +694,12 @@ int main(int argc, char** argv) {
         return chosen_op && !list;
     };
 
-    if (!list)
-        std::printf("backend,threads,op,cells,median_s,runs,digest\n");
+    if (!list) {
+        if (allocs)
+            std::printf("backend,threads,op,cells,allocs,total_bytes,peak_live_bytes,digest\n");
+        else
+            std::printf("backend,threads,op,cells,median_s,runs,digest\n");
+    }
     for (const std::string& tier : chosen) {
         auto it = tiers.find(tier);
         if (it == tiers.end()) {
@@ -762,6 +782,24 @@ int main(int argc, char** argv) {
                 return;
             MeshDigest digest;
             rFn(hash ? &digest : nullptr);  // warmup, hashed with --hash
+            char dig[24] = "";
+            if (hash)
+                std::snprintf(dig, sizeof dig, "%016llx",
+                              static_cast<unsigned long long>(digest.Value()));
+            if (allocs) {
+#if defined(MESHIOPLUSPLUS_BENCH_ALLOCS)
+                mio::bench::alloc_counter_start();
+                rFn(nullptr);
+                const mio::bench::AllocStats st = mio::bench::alloc_counter_stop();
+                std::printf("%s,%s,%s,%zu,%llu,%llu,%llu,%s\n", mio::parallel_backend_name(),
+                            threads.c_str(), pOp, ncells,
+                            static_cast<unsigned long long>(st.mAllocs),
+                            static_cast<unsigned long long>(st.mTotalBytes),
+                            static_cast<unsigned long long>(st.mPeakLiveBytes), dig);
+                std::fflush(stdout);
+#endif
+                return;
+            }
             double s = 0.0;
             if (instructions) {
 #if defined(MESHIOPLUSPLUS_BENCH_CACHEGRIND)
@@ -774,10 +812,6 @@ int main(int argc, char** argv) {
             } else {
                 s = bench_ops_median([&] { rFn(nullptr); }, runs);
             }
-            char dig[24] = "";
-            if (hash)
-                std::snprintf(dig, sizeof dig, "%016llx",
-                              static_cast<unsigned long long>(digest.Value()));
             std::printf("%s,%s,%s,%zu,%.6f,%d,%s\n", mio::parallel_backend_name(), threads.c_str(),
                         pOp, ncells, s, instructions ? 1 : runs, dig);
             std::fflush(stdout);

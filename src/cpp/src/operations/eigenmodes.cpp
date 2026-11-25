@@ -54,20 +54,20 @@ double lap_hash(std::uint64_t Row, std::uint64_t Col) {
 /// `sum a_i M_i b_i`, the M-inner product (M diagonal), in fixed chunks.
 double lap_mdot(const LapColumn& rA, const LapColumn& rB, const std::vector<double>& rMass) {
     const std::size_t n = rA.size();
-    const std::size_t chunks = (n + detail::kSparseChunk - 1) / detail::kSparseChunk;
-    std::vector<double> part(chunks, 0.0);
-    parallel_for(chunks, [&](std::size_t c) {
-        const std::size_t lo = c * detail::kSparseChunk;
-        const std::size_t hi = std::min(n, lo + detail::kSparseChunk);
+    const auto chunk = [&](std::size_t lo, std::size_t hi) {
         double s = 0.0;
         for (std::size_t i = lo; i < hi; ++i)
             s += rA[i] * rMass[i] * rB[i];
-        part[c] = s;
-    });
-    double s = 0.0;
-    for (const double v : part)
-        s += v;
-    return s;
+        return s;
+    };
+    if (n <= (std::size_t{1} << 15)) {
+        double s = 0.0;
+        for (std::size_t b = 0; b < n; b += detail::kSparseChunk)
+            s += chunk(b, std::min(n, b + detail::kSparseChunk));
+        return s;
+    }
+    return parallel_reduce(n, detail::kSparseChunk, 0.0, chunk,
+                           [](double L, double R) { return L + R; });
 }
 
 /// Eigen-decomposition of a symmetric P x P matrix (row-major) by cyclic
@@ -169,31 +169,50 @@ EigenmodeResult laplacian_eigenmodes(const Mesh& rMesh, const EigenmodeOptions& 
     result.mNumDegenerate = fem.mNumDegenerate;
     const std::int64_t cap = rOptions.mMaxIterations > 0 ? rOptions.mMaxIterations : 300;
     std::vector<LapColumn> y(p, LapColumn(n)), ky(p, LapColumn(n));
-    std::vector<double> rhs(n);
-    // Inexact inverse iteration: each solve only as accurate as the block
-    // already is (Rayleigh-Ritz then judges the pairs exactly), tightening
-    // as the residual falls.
+    std::vector<LapColumn> rhs_cols(p, LapColumn(n));
+    std::vector<const double*> rhs_ptrs(p);
+    std::vector<double*> y_ptrs(p);
+    for (std::size_t j = 0; j < p; ++j) {
+        rhs_ptrs[j] = rhs_cols[j].data();
+        y_ptrs[j] = y[j].data();
+    }
+    // Factor (K + s M) once with sparse LDL^T; fall back to IC(0)-preconditioned
+    // block PCG when symbolic fill exceeds the budget (very large surfaces).
+    detail::CsrLdlt ldlt;
+    const bool direct = ldlt.Factor(shifted);
+    detail::CsrIc0 ic0;
+    detail::CsrPcgWorkspace pcg_ws;
+    if (!direct)
+        ic0.Build(shifted);
+
+    std::vector<double> kp(p * p), w, v, kx(n);
+    std::vector<std::size_t> order(p);
     double solve_tol = 1e-4;
     for (std::int64_t it = 1; it <= cap; ++it) {
-        // y_j = (K + s M)^-1 M x_j, warm-started from x_j / (theta_j + s).
+        // y_j = (K + s M)^-1 M x_j.
         for (std::size_t j = 0; j < p; ++j) {
-            for (std::size_t r = 0; r < n; ++r) {
-                rhs[r] = mass[r] * x[j][r];
-                y[j][r] = std::isfinite(theta[j]) ? x[j][r] / (theta[j] + shift) : 0.0;
+            for (std::size_t r = 0; r < n; ++r)
+                rhs_cols[j][r] = mass[r] * x[j][r];
+            if (!direct) {
+                const double inv_s = std::isfinite(theta[j]) ? 1.0 / (theta[j] + shift) : 0.0;
+                for (std::size_t r = 0; r < n; ++r)
+                    y[j][r] = inv_s != 0.0 ? x[j][r] * inv_s : 0.0;
             }
-            detail::csr_pcg(shifted, rhs.data(), y[j].data(), solve_tol, 20 * n + 100);
+        }
+        if (direct) {
+            ldlt.SolveBlock(p, rhs_ptrs.data(), y_ptrs.data());
+        } else {
+            detail::csr_ic0_pcg_block(shifted, ic0, p, rhs_ptrs.data(), y_ptrs.data(), pcg_ws,
+                                      solve_tol, 20 * n + 100);
         }
         lap_orthonormalise(y, mass, seed);
         // Rayleigh-Ritz: the projected stiffness in the M-orthonormal basis.
         for (std::size_t j = 0; j < p; ++j)
             detail::csr_multiply(stiffness, y[j].data(), ky[j].data());
-        std::vector<double> kp(p * p);
         for (std::size_t i = 0; i < p; ++i)
             for (std::size_t j = i; j < p; ++j)
                 kp[i * p + j] = kp[j * p + i] = detail::sparse_dot(y[i].data(), ky[j].data(), n);
-        std::vector<double> w, v;
         lap_jacobi(kp, p, w, v);
-        std::vector<std::size_t> order(p);
         std::iota(order.begin(), order.end(), std::size_t{0});
         std::stable_sort(order.begin(), order.end(),
                          [&](std::size_t A, std::size_t B) { return w[A] < w[B]; });
@@ -209,7 +228,6 @@ EigenmodeResult laplacian_eigenmodes(const Mesh& rMesh, const EigenmodeOptions& 
         }
         // The wanted pairs' residuals |K x - theta M x|_{M^-1} / (theta + s).
         double worst = 0.0;
-        std::vector<double> kx(n);
         for (std::size_t j = 0; j < k; ++j) {
             detail::csr_multiply(stiffness, x[j].data(), kx.data());
             double s = 0.0;

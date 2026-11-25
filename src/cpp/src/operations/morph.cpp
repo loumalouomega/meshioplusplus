@@ -380,20 +380,39 @@ MorphResult morph(const Mesh& rMesh, const MorphOptions& rOptions) {
             }
         }
         if (num_free > 0) {
-            const detail::SparseCsr a =
-                detail::csr_from_triplets(num_free, num_free, std::move(kff));
-            std::vector<double> b(num_free), u(num_free);
-            for (std::size_t c = 0; c < dim && c < 3; ++c) {
-                for (std::size_t r = 0; r < num_free; ++r)
-                    b[r] = rhs[r][c];
-                std::fill(u.begin(), u.end(), 0.0);
-                const detail::SparseSolveReport rep =
-                    detail::csr_pcg(a, b.data(), u.data(), rOptions.mTolerance, cap);
-                result.mIterations += static_cast<std::int64_t>(rep.mIterations);
-                result.mConverged = result.mConverged && rep.mConverged;
-                for (std::size_t i = 0; i < n; ++i)
-                    if (!fixed[i])
-                        xyz[i][c] += u[static_cast<std::size_t>(slot[i])];
+            const std::size_t ncols = dim < 3 ? dim : 3;
+            bool any_rhs = false;
+            for (std::size_t r = 0; r < num_free && !any_rhs; ++r)
+                for (std::size_t c = 0; c < ncols; ++c)
+                    if (rhs[r][c] != 0.0) {
+                        any_rhs = true;
+                        break;
+                    }
+            if (any_rhs) {
+                const detail::SparseCsr a =
+                    detail::csr_from_triplets(num_free, num_free, std::move(kff));
+                std::vector<std::vector<double>> b_cols(ncols, std::vector<double>(num_free));
+                std::vector<std::vector<double>> u_cols(ncols, std::vector<double>(num_free, 0.0));
+                std::vector<const double*> b_ptrs(ncols);
+                std::vector<double*> u_ptrs(ncols);
+                for (std::size_t c = 0; c < ncols; ++c) {
+                    for (std::size_t r = 0; r < num_free; ++r)
+                        b_cols[c][r] = rhs[r][c];
+                    b_ptrs[c] = b_cols[c].data();
+                    u_ptrs[c] = u_cols[c].data();
+                }
+                detail::CsrIc0 precond;
+                precond.Build(a);
+                detail::CsrPcgWorkspace ws;
+                const std::vector<detail::SparseSolveReport> reps = detail::csr_ic0_pcg_block(
+                    a, precond, ncols, b_ptrs.data(), u_ptrs.data(), ws, rOptions.mTolerance, cap);
+                for (std::size_t c = 0; c < ncols; ++c) {
+                    result.mIterations += static_cast<std::int64_t>(reps[c].mIterations);
+                    result.mConverged = result.mConverged && reps[c].mConverged;
+                    for (std::size_t i = 0; i < n; ++i)
+                        if (!fixed[i])
+                            xyz[i][c] += u_cols[c][static_cast<std::size_t>(slot[i])];
+                }
             }
         }
         for (std::size_t i = 0; i < n; ++i)

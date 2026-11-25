@@ -45,6 +45,9 @@
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/parallel.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/field_recovery.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -130,42 +133,41 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
                                         "replace it)");
     }
 
-    // --- recovery: gradient -> cell_data_to_point_data -> point_data_to_cell_data ---
-    // The recovery operator IS this existing averaging round trip -- reused,
-    // not reimplemented, exactly as gradient(mLocation=Point) itself composes
-    // cell_data_to_point_data. Every intermediate mesh below is private working
-    // state (see the file comment); only `out`, built from a fresh clone of
-    // rMesh further down, is ever returned.
+    // --- recovery: gradient -> cell_to_point -> point_to_cell (zero mesh clones) ---
+    // The recovery operator IS the same averaging round trip as composing the
+    // public operations, driven through their core-private array-level helpers
+    // (roadmap 5.27) so `rMesh` is cloned once (for `out`) and each cell's
+    // measure is computed once.
     GradientOptions grad_opts;
     grad_opts.mArrayName = rOptions.mArrayName;
     grad_opts.mLocation = DataLocation::Cell;
     grad_opts.mOutputName = kErrRawName;
     grad_opts.mOverwrite = true;
-    const GradientResult raw = gradient(rMesh, grad_opts);
+    const detail::GradientArrayResult raw = detail::gradient_array(rMesh, grad_opts);
 
-    DataAverageOptions to_point;
-    to_point.names = {kErrRawName};
-    to_point.weight = CellPointWeight::Measure;
-    to_point.overwrite = true;
-    const Mesh recovered_pt = cell_data_to_point_data(raw.mMesh, to_point);
-
-    DataAverageOptions to_cell;
-    to_cell.names = {kErrRawName};
-    to_cell.suffix = kErrRecSuffix;
-    to_cell.overwrite = true;
-    const Mesh recovered = point_data_to_cell_data(recovered_pt, to_cell);
-    const std::string rec_name = std::string(kErrRawName) + kErrRecSuffix;
-
-    // --- per-cell indicator ----------------------------------------------------
     const std::size_t nblocks = rMesh.NumCellBlocks();
     Mesh out = detail::clone_mesh(rMesh);
     if (nblocks == 0)
         return ErrorResult{std::move(out), 0.0, 0, 0};
 
+    DataAverageOptions to_point;
+    to_point.names = {kErrRawName};
+    to_point.weight = CellPointWeight::Measure;
+    to_point.overwrite = true;
+    std::vector<std::vector<double>> raw_measures;
+    const NDArray recovered_pt =
+        detail::cell_to_point_array(rMesh, raw.mBlocks, kErrRawName, to_point, &raw_measures);
+
+    DataAverageOptions to_cell;
+    to_cell.names = {kErrRawName};
+    to_cell.suffix = kErrRecSuffix;
+    to_cell.overwrite = true;
+    const std::vector<NDArray> rec_blocks =
+        detail::point_to_cell_array(rMesh, recovered_pt, kErrRawName, to_cell);
+
+    // --- per-cell indicator ----------------------------------------------------
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t total = static_cast<std::size_t>(detail::total_cells(bases));
-    const NDArray& points = rMesh.Points();
-    const std::size_t pdim = rMesh.PointDim();
 
     // A flat, block-major buffer of every cell's indicator (NaN where
     // unevaluable), used both as the per-block cell_data source and as the
@@ -180,10 +182,14 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
         const std::size_t ncells = cb.NumCells();
-        const NDArray& raw_arr = recovered.CellData(kErrRawName, b);
-        const NDArray& rec_arr = recovered.CellData(rec_name, b);
+        const NDArray& raw_arr = raw.mBlocks[b];
+        const NDArray& rec_arr = rec_blocks[b];
+        const double* praw = raw_arr.As<double>();
+        const double* prec = rec_arr.As<double>();
         const std::size_t comp = data_num_components(raw_arr);
         const std::size_t base = static_cast<std::size_t>(bases[b]);
+        const std::vector<double>* p_blk_measures =
+            b < raw_measures.size() ? &raw_measures[b] : nullptr;
 
         NDArray dst(DType::Float64, {ncells});
         double* pdst = dst.As<double>();
@@ -196,8 +202,8 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
             bool finite_pair = true;
             double sumsq = 0.0;
             for (std::size_t k = 0; k < comp; ++k) {
-                const double rv = detail::read_double(raw_arr, c * comp + k);
-                const double gv = detail::read_double(rec_arr, c * comp + k);
+                const double rv = praw[c * comp + k];
+                const double gv = prec[c * comp + k];
                 if (!std::isfinite(rv) || !std::isfinite(gv)) {
                     finite_pair = false;
                     break;
@@ -206,11 +212,10 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
                 sumsq += d * d;
             }
             double zz = std::nan("");
-            if (finite_pair) {
-                // The same primitive data_average's CellPointWeight::Measure
-                // just used for the recovery weighting, so the two agree by
-                // construction.
-                const double measure = std::fabs(detail::cell_measure(points, pdim, cb, c));
+            if (finite_pair && p_blk_measures && c < p_blk_measures->size()) {
+                // Reuses the unclamped `detail::cell_measure` values computed
+                // during `cell_to_point_array`'s Measure weighting pass.
+                const double measure = std::fabs((*p_blk_measures)[c]);
                 if (std::isfinite(measure))
                     zz = std::sqrt(measure * sumsq);
             }

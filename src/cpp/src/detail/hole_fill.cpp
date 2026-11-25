@@ -255,16 +255,25 @@ HoleFillPatch hole_fill(const HoleFillInput& rIn, std::int64_t Base) {
                 add_row(v, true);
         }
         const SparseCsr a = csr_from_triplets(nu, nu, std::move(trip));
+        std::vector<std::vector<double>> b_cols(3, std::vector<double>(nu));
+        std::vector<std::vector<double>> x_cols(3, std::vector<double>(nu));
+        std::array<const double*, 3> b_ptrs{};
+        std::array<double*, 3> x_ptrs{};
         for (std::size_t k = 0; k < 3; ++k) {
-            std::vector<double> b(nu), x(nu);
             for (std::size_t u = 0; u < nu; ++u) {
-                b[u] = rhs[u][k];
-                x[u] = p[n + u][k];
+                b_cols[k][u] = rhs[u][k];
+                x_cols[k][u] = p[n + u][k];
             }
-            csr_pcg(a, b.data(), x.data(), 1e-13, 0);
-            for (std::size_t u = 0; u < nu; ++u)
-                p[n + u][k] = x[u];
+            b_ptrs[k] = b_cols[k].data();
+            x_ptrs[k] = x_cols[k].data();
         }
+        CsrIc0 precond;
+        precond.Build(a);
+        CsrPcgWorkspace ws;
+        csr_ic0_pcg_block(a, precond, 3, b_ptrs.data(), x_ptrs.data(), ws, 1e-13, 0);
+        for (std::size_t k = 0; k < 3; ++k)
+            for (std::size_t u = 0; u < nu; ++u)
+                p[n + u][k] = x_cols[k][u];
     }
     HoleFillPatch out;
     out.mPoints.assign(p.begin() + static_cast<std::ptrdiff_t>(n), p.end());
