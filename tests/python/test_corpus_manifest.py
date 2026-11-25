@@ -54,3 +54,29 @@ def test_documented_directories_point_at_an_existing_readme():
     for row in _rows():
         if row["readme"] is not None:
             assert (REPO / row["readme"]).is_file()
+
+
+def test_every_row_names_producer_licence_and_source():
+    for row in _rows():
+        for field in ("producer", "licence", "source"):
+            val = row.get(field)
+            assert (
+                isinstance(val, str) and val.strip()
+            ), f"{row['path']} is missing non-empty {field!r}"
+
+
+def test_unregistered_fixture_directory_fails():
+    import pytest
+
+    with pytest.raises(ValueError, match="DIRECTORY_METADATA"):
+        gen.metadata_for("tests/python/meshes/__unregistered__/mesh.vtk")
+
+
+def test_citation_cff_covers_every_third_party_directory():
+    citation = (REPO / "CITATION.cff").read_text(encoding="utf-8")
+    missing = [
+        prefix for prefix in gen.third_party_directories() if prefix not in citation
+    ]
+    assert (
+        missing == []
+    ), f"Third-party fixture directories missing from CITATION.cff: {missing}"

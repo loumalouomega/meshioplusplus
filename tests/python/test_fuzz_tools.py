@@ -91,6 +91,9 @@ def test_oss_fuzz_build_publishes_registry_targets(tmp_path, list_fails, fuzz_sh
     build.mkdir()
     scripts = {
         "meshioplusplus_fuzz_read": "#!/bin/sh\nexit 0\n",
+        "meshioplusplus_fuzz_mesh_cad_surface": "#!/bin/sh\nexit 0\n",
+        "meshioplusplus_fuzz_triangulate_polygon_2d": "#!/bin/sh\nexit 0\n",
+        "meshioplusplus_fuzz_adapt_volume": "#!/bin/sh\nexit 0\n",
         "meshioplusplus_fuzz_replay": (
             "#!/bin/sh\nexit 1\n"
             if list_fails
@@ -110,6 +113,9 @@ def test_oss_fuzz_build_publishes_registry_targets(tmp_path, list_fails, fuzz_sh
     (fuzz / "dicts/vtu.dict").write_text('"VTKFile"\n')
     (fuzz / "not_fuzzed.txt").write_text("elmer\ncgns\n")
     (fuzz / "oss-fuzz").mkdir()
+    op_reg = source / "meshioplusplus/tests/fuzz/regressions/op_mesh_cad_surface"
+    op_reg.mkdir(parents=True)
+    (op_reg / "case0").write_bytes(b"op-seed")
     shutil.copyfile(
         REPO / "tools/fuzz/oss-fuzz/package_seeds.py",
         fuzz / "oss-fuzz/package_seeds.py",
@@ -137,12 +143,18 @@ def test_oss_fuzz_build_publishes_registry_targets(tmp_path, list_fails, fuzz_sh
             assert (output / f"meshioplusplus_fuzz_read_{fmt}").exists()
         for fmt in ("elmer", "cgns"):
             assert not (output / f"meshioplusplus_fuzz_read_{fmt}").exists()
+        for op in ("mesh_cad_surface", "triangulate_polygon_2d", "adapt_volume"):
+            assert (output / f"meshioplusplus_fuzz_{op}").exists()
         assert (output / "meshioplusplus_fuzz_read_vtu.dict").exists()
         assert not (output / "meshioplusplus_fuzz_read_no_dictionary.dict").exists()
         with zipfile.ZipFile(
             output / "meshioplusplus_fuzz_read_vtu_seed_corpus.zip"
         ) as archive:
             assert archive.read("seed.vtu") == b"positive"
+        with zipfile.ZipFile(
+            output / "meshioplusplus_fuzz_mesh_cad_surface_seed_corpus.zip"
+        ) as archive:
+            assert archive.read("case0") == b"op-seed"
 
 
 @pytest.mark.parametrize("libraries", [False, True])

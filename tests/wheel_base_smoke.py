@@ -39,6 +39,9 @@ else:
 
 cmake_dir = mp.get_cmake_dir()
 assert os.path.isfile(os.path.join(cmake_dir, "meshioplusplusConfig.cmake")), cmake_dir
+assert os.path.isfile(
+    os.path.join(os.path.dirname(mp.__file__), "py.typed")
+), "py.typed marker missing from wheel"
 
 # --- CutCells (cut_level_set, cut_quadrature): every platform's wheel ------------
 assert mp.cut_has_cutcells(), "the wheel was built without CutCells"

@@ -1,15 +1,19 @@
+from __future__ import annotations
+
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
+from typing import Any
 
 
-def is_buffer(obj, mode):
+def is_buffer(obj: object, mode: str) -> bool:
     return ("r" in mode and hasattr(obj, "read")) or (
         "w" in mode and hasattr(obj, "write")
     )
 
 
 @contextmanager
-def open_file(path_or_buf, mode="r", **kwargs):
+def open_file(path_or_buf: Any, mode: str = "r", **kwargs: Any) -> Iterator[Any]:
     if is_buffer(path_or_buf, mode):
         yield path_or_buf
     else:
@@ -22,40 +26,40 @@ def open_file(path_or_buf, mode="r", **kwargs):
 _Z88_FILENAMES = ("z88i1.txt", "z88structure.txt", "z88o2.txt", "z88o3.txt")
 
 
-def is_z88_filename(path) -> bool:
+def is_z88_filename(path: Any) -> bool:
     """Whether ``path``'s basename is one of Z88's fixed file names."""
     try:
         name = os.path.basename(os.fspath(path))
     except TypeError:
         return False
-    return name.lower() in _Z88_FILENAMES
+    return str(name).lower() in _Z88_FILENAMES
 
 
-def is_d3plot_filename(path) -> bool:
+def is_d3plot_filename(path: Any) -> bool:
     """Whether ``path``'s basename is ``d3plot`` or ``d3part``, LS-DYNA's state
     databases."""
     try:
         name = os.path.basename(os.fspath(path))
     except TypeError:
         return False
-    return name.lower() in ("d3plot", "d3part")
+    return str(name).lower() in ("d3plot", "d3part")
 
 
-def is_binout_filename(path) -> bool:
+def is_binout_filename(path: Any) -> bool:
     """Whether ``path``'s basename is an LS-DYNA binout's: ``binout``, or an
     MPP run's ``binout0000``..."""
     try:
-        name = os.path.basename(os.fspath(path)).lower()
+        name = str(os.path.basename(os.fspath(path))).lower()
     except TypeError:
         return False
     return name.startswith("binout") and (name[6:] == "" or name[6:].isdigit())
 
 
-def is_d3plot_member(path) -> bool:
+def is_d3plot_member(path: Any) -> bool:
     """Whether ``path`` is a numbered member (``d3plot01``... or ``d3part01``...)
     of a d3plot family whose base file sits beside it."""
     try:
-        text = os.fspath(path)
+        text = str(os.fspath(path))
     except TypeError:
         return False
     name = os.path.basename(text)
@@ -71,11 +75,11 @@ def is_d3plot_member(path) -> bool:
     return os.path.isfile(os.path.join(os.path.dirname(text), name[:6]))
 
 
-def is_radioss_anim_filename(path) -> bool:
+def is_radioss_anim_filename(path: Any) -> bool:
     """Whether ``path``'s basename is an OpenRadioss animation file's: a stem,
     then ``A`` and three or more digits (``crashA001``)."""
     try:
-        name = os.path.basename(os.fspath(path))
+        name = str(os.path.basename(os.fspath(path)))
     except TypeError:
         return False
     k = len(name)
@@ -84,11 +88,11 @@ def is_radioss_anim_filename(path) -> bool:
     return len(name) - k >= 3 and k >= 2 and name[k - 1] == "A"
 
 
-def is_radioss_th_filename(path) -> bool:
+def is_radioss_th_filename(path: Any) -> bool:
     """Whether ``path``'s basename is an OpenRadioss time-history file's: a
     stem, then ``T`` and two digits (``crashT01``), no extension."""
     try:
-        name = os.path.basename(os.fspath(path))
+        name = str(os.path.basename(os.fspath(path)))
     except TypeError:
         return False
     return (

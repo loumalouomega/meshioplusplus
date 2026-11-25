@@ -222,3 +222,11 @@ profile = "black"
 # src/paraview/ holds the ParaView bundle builder, not a `paraview` package:
 # the plugin's `paraview` is ParaView's own, a third-party module.
 known_third_party = ["paraview"]
+
+[tool.mypy]
+python_version = "3.10"
+mypy_path = "src/python"
+explicit_package_bases = true
+warn_unused_configs = true
+ignore_missing_imports = true
+

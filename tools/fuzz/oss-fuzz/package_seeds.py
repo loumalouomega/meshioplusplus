@@ -7,13 +7,17 @@ import zipfile
 
 def package(source, output, generated=None):
     source, output = pathlib.Path(source), pathlib.Path(output)
-    for target in sorted(output.glob("meshioplusplus_fuzz_read_*")):
+    for target in sorted(output.glob("meshioplusplus_fuzz_*")):
         if target.suffix or not target.is_file():
             continue
-        fmt = target.name[len("meshioplusplus_fuzz_read_") :]
-        files = sorted((source / fmt).glob("*"))
+        if target.name.startswith("meshioplusplus_fuzz_read_"):
+            seed_dir = target.name[len("meshioplusplus_fuzz_read_") :]
+        else:
+            op = target.name[len("meshioplusplus_fuzz_") :]
+            seed_dir = f"op_{op}"
+        files = sorted((source / seed_dir).glob("*"))
         if generated is not None:
-            files += sorted((pathlib.Path(generated) / fmt).glob("*"))
+            files += sorted((pathlib.Path(generated) / seed_dir).glob("*"))
         files = [p for p in files if p.is_file() and 0 < p.stat().st_size <= 262144]
         if not files:
             continue
