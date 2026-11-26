@@ -53,6 +53,7 @@
 // Project includes
 #include "meshioplusplus/operations/data_calc.hpp"
 #include "meshioplusplus/cell_type.hpp"
+#include "../detail/math_utils.hpp"
 #include "meshioplusplus/operations/gradient.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "../detail/cell_centroids.hpp"
@@ -1043,35 +1044,10 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
             if (n.mType == CalcNodeType::Inv) {
                 // adj(A) / det(A), as tensor_invariants' inverse: a zero or
                 // non-finite determinant is NaN, there being no warning channel.
-                const double det =
-                    detail::det3({m[0], m[1], m[2]}, {m[3], m[4], m[5]}, {m[6], m[7], m[8]});
                 double inv[9];
-                if (!std::isfinite(det) || det == 0.0) {
-                    for (double& v : inv)
-                        v = std::numeric_limits<double>::quiet_NaN();
-                } else {
-                    inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;
-                    inv[1] = (m[2] * m[7] - m[1] * m[8]) / det;
-                    inv[2] = (m[1] * m[5] - m[2] * m[4]) / det;
-                    inv[3] = (m[5] * m[6] - m[3] * m[8]) / det;
-                    inv[4] = (m[0] * m[8] - m[2] * m[6]) / det;
-                    inv[5] = (m[2] * m[3] - m[0] * m[5]) / det;
-                    inv[6] = (m[3] * m[7] - m[4] * m[6]) / det;
-                    inv[7] = (m[1] * m[6] - m[0] * m[7]) / det;
-                    inv[8] = (m[0] * m[4] - m[1] * m[3]) / det;
-                }
-                if (w == 6) {
-                    pOut[0] = inv[0];
-                    pOut[1] = inv[4];
-                    pOut[2] = inv[8];
-                    pOut[3] = inv[1];
-                    pOut[4] = inv[5];
-                    pOut[5] = inv[2];
-                    return 6;
-                }
-                for (int k = 0; k < 9; ++k)
-                    pOut[k] = inv[k];
-                return 9;
+                detail::MathUtils::Invert3x3(m, inv);
+                detail::MathUtils::PackTensor3x3(inv, w, pOut);
+                return w == 6 ? 6 : 9;
             }
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j)

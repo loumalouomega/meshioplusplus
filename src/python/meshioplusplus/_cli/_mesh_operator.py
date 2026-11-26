@@ -47,9 +47,8 @@ def mesh_operator_cmd(args):
     }
     if args.json:
         emit_json(info)
-        return 0
+        return
     print(
         f"wrote the {args.kind} operator ({shape[0]} x {shape[1]}, "
         f"{info['nnz']} entries) to {args.outfile}"
     )
-    return 0

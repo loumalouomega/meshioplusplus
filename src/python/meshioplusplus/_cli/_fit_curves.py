@@ -61,7 +61,7 @@ def fit_curves_cmd(args):
         write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json(r)
-        return 0
+        return
     print(
         f"{r['num_lines']} line(s), {r['num_arcs']} arc(s), {r['num_circles']} circle(s); "
         f"max residual {r['max_residual']:.6g} (tolerance {r['tolerance']:.6g})"
@@ -79,4 +79,3 @@ def fit_curves_cmd(args):
         )
     for w in r["warnings"]:
         print(f"warning: {w}")
-    return 0

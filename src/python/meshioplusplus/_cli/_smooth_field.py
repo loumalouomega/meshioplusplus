@@ -44,9 +44,8 @@ def smooth_field_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     print(
         f"smoothed '{args.array}' on the scale {args.length} "
         f"({report['iterations']} iteration(s))"
     )
-    return 0

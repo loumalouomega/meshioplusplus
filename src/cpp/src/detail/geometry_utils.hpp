@@ -33,7 +33,9 @@
  */
 
 // System includes
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -126,6 +128,57 @@ struct GeometryUtils {
                 in = !in;
         }
         return in;
+    }
+
+    /**
+     * @brief The six dihedral angles of a tetrahedron `(rA, rB, rC, rD)` in
+     * degrees, in the fixed edge order `(0,1), (0,2), (0,3), (1,2), (1,3),
+     * (2,3)`. When `GuardZero` is true, a degenerate face pair (`den <= 0`)
+     * yields `0.0`.
+     */
+    static std::array<double, 6> TetDihedralAnglesDeg(const Vec3& rA, const Vec3& rB,
+                                                      const Vec3& rC, const Vec3& rD,
+                                                      bool GuardZero = true) {
+        const Vec3 p[4] = {rA, rB, rC, rD};
+        constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
+                                     {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+        constexpr double kRadToDeg = 180.0 / MathUtils::kPi;
+        std::array<double, 6> out{};
+        for (std::size_t e = 0; e < 6; ++e) {
+            const Vec3& a = p[kEdge[e][0]];
+            const Vec3 ab = vec3_sub(p[kEdge[e][1]], a);
+            const Vec3 n1 = vec3_cross(ab, vec3_sub(p[kEdge[e][2]], a));
+            const Vec3 n2 = vec3_cross(ab, vec3_sub(p[kEdge[e][3]], a));
+            const double den = std::sqrt(vec3_norm_sq(n1) * vec3_norm_sq(n2));
+            if (GuardZero && !(den > 0.0)) {
+                out[e] = 0.0;
+            } else {
+                out[e] = std::acos(std::clamp(vec3_dot(n1, n2) / den, -1.0, 1.0)) * kRadToDeg;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * @brief Sorted, deduplicated 1-ring vertex neighbours for a triangle
+     * patch `rTris` over `NumPts` vertices.
+     */
+    static std::vector<std::vector<std::size_t>> TriangleVertexRings(
+        const std::vector<std::array<std::size_t, 3>>& rTris, std::size_t NumPts) {
+        std::vector<std::vector<std::size_t>> nb(NumPts);
+        for (const auto& t : rTris) {
+            for (int k = 0; k < 3; ++k) {
+                nb[t[static_cast<std::size_t>(k)]].push_back(
+                    t[static_cast<std::size_t>((k + 1) % 3)]);
+                nb[t[static_cast<std::size_t>((k + 1) % 3)]].push_back(
+                    t[static_cast<std::size_t>(k)]);
+            }
+        }
+        for (auto& v : nb) {
+            std::sort(v.begin(), v.end());
+            v.erase(std::unique(v.begin(), v.end()), v.end());
+        }
+        return nb;
     }
 
     ///@}

@@ -33,6 +33,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -541,8 +542,8 @@ void write_ugrid_nc(const std::string& rPath, const Mesh& rMesh) {
         int mId;
         ~Closer() { nc_close(mId); }
     } closer{ncid};
-    const char* conv = "CF-1.8 UGRID-1.0";
-    ug_check(nc_put_att_text(ncid, NC_GLOBAL, "Conventions", std::strlen(conv), conv),
+    constexpr std::string_view conv = "CF-1.8 UGRID-1.0";
+    ug_check(nc_put_att_text(ncid, NC_GLOBAL, "Conventions", conv.size(), conv.data()),
              "Conventions", true);
     const std::size_t nn = rMesh.NumPoints();
     int node_dim = -1, face_dim = -1, max_dim = -1, edge_dim = -1, two_dim = -1;

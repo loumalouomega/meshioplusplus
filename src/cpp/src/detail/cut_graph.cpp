@@ -45,17 +45,7 @@ CgEdge cg_edge(std::size_t A, std::size_t B) {
 // Per vertex its neighbours, ascending (indices up to the largest one used).
 std::vector<std::vector<std::size_t>> cg_neighbours(const std::vector<PatchTri>& rTris,
                                                     std::size_t NumPts) {
-    std::vector<std::vector<std::size_t>> nb(NumPts);
-    for (const PatchTri& t : rTris)
-        for (int k = 0; k < 3; ++k) {
-            nb[t[static_cast<std::size_t>(k)]].push_back(t[static_cast<std::size_t>((k + 1) % 3)]);
-            nb[t[static_cast<std::size_t>((k + 1) % 3)]].push_back(t[static_cast<std::size_t>(k)]);
-        }
-    for (auto& v : nb) {
-        std::sort(v.begin(), v.end());
-        v.erase(std::unique(v.begin(), v.end()), v.end());
-    }
-    return nb;
+    return GeometryUtils::TriangleVertexRings(rTris, NumPts);
 }
 
 std::size_t cg_num_points(const std::vector<PatchTri>& rTris) {

@@ -87,8 +87,8 @@ jobs:
             echo "::notice title=SonarCloud not rerun::ci run $TRIGGER_RUN kept no coverage reports"
             echo "scan=false" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice title=No coverage::no coverage-reports artifact on master yet"
-            echo "scan=true" >> "$GITHUB_OUTPUT"
+            echo "::error title=Missing coverage::no coverage-reports artifact found on master"
+            exit 1
           fi
       - name: Download the coverage reports
         if: ${{ env.SONAR_TOKEN != '' && steps.coverage.outputs.run_id != '' }}

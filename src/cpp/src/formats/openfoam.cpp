@@ -2980,10 +2980,22 @@ public:
         try {
             const std::string gz = detail::gzip_compress(mBuffer.view(), "OpenFOAM");
             mFile.write(gz.data(), static_cast<std::streamsize>(gz.size()));
-            if (!mFile)
-                log::error("OpenFOAM: failed writing {}", mTarget);
+            if (!mFile) {
+                try {
+                    log::error("OpenFOAM: failed writing {}", mTarget);
+                } catch (...) {
+                }
+            }
         } catch (const std::exception& rErr) {
-            log::error("OpenFOAM: failed writing {}: {}", mTarget, rErr.what());
+            try {
+                log::error("OpenFOAM: failed writing {}: {}", mTarget, rErr.what());
+            } catch (...) {
+            }
+        } catch (...) {
+            try {
+                log::error("OpenFOAM: failed writing {}", mTarget);
+            } catch (...) {
+            }
         }
     }
 

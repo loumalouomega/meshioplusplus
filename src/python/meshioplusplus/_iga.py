@@ -115,7 +115,10 @@ def _check_patch(patch, what):
             _fail(f"{what} knot vector is too short")
         if not np.all(np.isfinite(k)) or np.any(k[1:] < k[:-1]):
             _fail(f"{what} knot vector is not finite and non-decreasing")
-        counts.append(len(k) - p - 1)
+        count = len(k) - p - 1
+        if k[p] >= k[count]:
+            _fail(f"{what} knot vector in direction {d} has zero active span length")
+        counts.append(count)
     n = 1
     for c in counts:
         n *= c

@@ -62,6 +62,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "../detail/append_series.hpp"
 #include "../detail/chunked_parse.hpp"
 #include "../detail/row_writer.hpp"
 #include "../detail/text_cursor.hpp"
@@ -396,8 +397,9 @@ bool gmsh_is_kept_section(const std::string& rName) {
 
 /// `field_data` entries that are not physical groups (their payload is not a `(tag, dim)` pair).
 bool gmsh_is_private_field(const std::string& rName) {
-    return rName.compare(0, std::strlen(kGmshSectionPrefix), kGmshSectionPrefix) == 0 ||
-           rName.compare(0, 29, "gmsh:element_node_components:") == 0;
+    constexpr std::string_view kSecPrefix = kGmshSectionPrefix;
+    constexpr std::string_view kElemNodeCompPrefix = "gmsh:element_node_components:";
+    return rName.starts_with(kSecPrefix) || rName.starts_with(kElemNodeCompPrefix);
 }
 
 /// A section's body, line by line to its `$End` line, as the bytes a writer puts back.
@@ -3022,7 +3024,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags" ||
-            name.compare(0, std::strlen(kGmshElementNodePrefix), kGmshElementNodePrefix) == 0)
+            name.starts_with(std::string_view(kGmshElementNodePrefix)))
             continue;
         write_data(os, "ElementData", name, rMesh, binary);
     }
@@ -3378,7 +3380,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags" ||
-            name.compare(0, std::strlen(kGmshElementNodePrefix), kGmshElementNodePrefix) == 0)
+            name.starts_with(std::string_view(kGmshElementNodePrefix)))
             continue;
         write_data(os, "ElementData", name, rMesh, binary);
     }
@@ -3597,36 +3599,8 @@ void GmshSeriesWriter::Write(double Time, const Mesh& rMesh) {
         else
             write_gmsh22(rPath, rMesh, s.mBinary);
     };
-    if (s.mSteps == 0) {
-        write(s.mPath);
-        s.mPoints = rMesh.NumPoints();
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
-    } else {
-        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
-        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
-            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
-        if (!same)
-            throw WriteError("Gmsh series: step " + std::to_string(s.mSteps) +
-                             "'s points or cells differ from the first step's; a file holds one "
-                             "mesh -- write one file per step with '{step}'");
-        // A later step adds only its data sections: the whole file is written beside the
-        // series file and they are taken from it.
-        const std::string scratch = s.mPath + ".step.tmp";
-        write(scratch);
-        std::string bytes;
-        {
-            auto in = detail::make_classic_ifstream(scratch, std::ios::binary);
-            bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-        std::remove(scratch.c_str());
-        const std::string sections = gmsh_data_sections(bytes);
-        auto out = detail::make_classic_ofstream(s.mPath, std::ios::binary | std::ios::app);
-        if (!out)
-            throw WriteError("Could not open file for writing: " + s.mPath);
-        out.write(sections.data(), static_cast<std::streamsize>(sections.size()));
-    }
-    ++s.mSteps;
+    detail::append_series_write_step(s.mPath, rMesh, s.mSteps, s.mPoints, s.mBlockCells,
+                                     "Gmsh series", write, gmsh_data_sections);
 }
 
 std::size_t GmshSeriesWriter::NumSteps() const noexcept {

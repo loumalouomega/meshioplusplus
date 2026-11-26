@@ -1,18 +1,22 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401
 from .._helpers import register_format
-from .._series_writer import CoreSeriesWriter
-from .._shims import time_values_shim
-from ._marc import read as _py_read
-from ._marc import read_t19 as _py_read_t19
+from .._shims import (
+    plain_shims,
+    series_read_shim,
+    series_writer_class,
+    time_values_shim,
+    write_shim,
+)
+from ._marc import read as _py_read  # noqa: F401
+from ._marc import read_t19 as _py_read_t19  # noqa: F401
 from ._marc import time_values as _py_time_values  # noqa: F401
-from ._marc import write as _py_write
-from ._t19 import SeriesWriter as _PySeriesWriter
-from ._t19 import write as _py_write_t19
+from ._marc import write as _py_write  # noqa: F401
+from ._t19 import SeriesWriter as _PySeriesWriter  # noqa: F401
+from ._t19 import write as _py_write_t19  # noqa: F401
 
-
-def read(filename):
+read, write = plain_shims(
+    __name__,
+    "marc",
     """Read an MSC Marc input deck (``.dat``).
 
     ``COORDINATES`` and ``CONNECTIVITY`` of the model definition make the mesh,
@@ -24,51 +28,7 @@ def read(filename):
     ``.dat`` reader is tried next. The C++ core reads the whole format; the
     Python reader is the fallback for buffers and for anything the C++ path
     raises on.
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.marc_read(str(filename))
-        except Exception as exc:
-            if not core_declined(exc, "marc", "read", filename):
-                raise
-    return _py_read(filename)
-
-
-def read_t19(filename, points_only=False, arrays=None, time_step=0):
-    """Read one increment of an MSC Marc formatted post file (``.t19``).
-
-    The mesh and sets are as in the input deck. ``time_step`` picks the
-    increment (negative counts from the end); its time (a frequency or buckling
-    factor in a modal, harmonic or buckling analysis) is
-    ``field_data["meshio:time"]``, with ``marc:increment`` and
-    ``marc:subincrement``. Nodal vectors are point data named as the file names
-    them (``Displacement``, ``Reaction Force`` ...); element post codes are cell
-    data per integration point, ``(cells, points * components)`` flattened
-    point-major with ``field_data["marc:layout:<name>"]``, a stress or strain
-    tensor's six codes combined into one ``xx yy zz xy yz zx`` array.
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.marc_t19_read(
-                str(filename),
-                points_only=points_only,
-                arrays=arrays,
-                time_step=time_step,
-            )
-        except Exception as exc:
-            if not core_declined(exc, "marc_t19", "read", filename):
-                raise
-    return _py_read_t19(
-        filename, points_only=points_only, arrays=arrays, time_step=time_step
-    )
-
-
-time_values = time_values_shim(
-    __name__, "marc_t19", """The time of every increment of a ``.t19`` post file."""
-)
-
-
-def write(filename, mesh):
+    """,
     """Write an MSC Marc input deck (``.dat``, ``EXTENDED`` format).
 
     The parameter section (``TITLE``, ``SIZING``, one ``ELEMENTS`` line per
@@ -80,18 +40,35 @@ def write(filename, mesh):
     positive and unique. ``.dat`` is Tecplot's for a write by extension, so name
     the format: ``meshioplusplus.write("job.dat", mesh, file_format="marc")``.
     Both engines write the same bytes.
-    """
-    if not is_buffer(filename, "w"):
-        try:
-            _core.marc_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "marc", "write", filename):
-                raise
-    return _py_write(filename, mesh)
+    """,
+)
 
+read_t19 = series_read_shim(
+    __name__,
+    "marc_t19",
+    """Read one increment of an MSC Marc formatted post file (``.t19``).
 
-def write_t19(filename, mesh):
+    The mesh and sets are as in the input deck. ``time_step`` picks the
+    increment (negative counts from the end); its time (a frequency or buckling
+    factor in a modal, harmonic or buckling analysis) is
+    ``field_data["meshio:time"]``, with ``marc:increment`` and
+    ``marc:subincrement``. Nodal vectors are point data named as the file names
+    them (``Displacement``, ``Reaction Force`` ...); element post codes are cell
+    data per integration point, ``(cells, points * components)`` flattened
+    point-major with ``field_data["marc:layout:<name>"]``, a stress or strain
+    tensor's six codes combined into one ``xx yy zz xy yz zx`` array.
+    """,
+    name="read_t19",
+    py_attr="_py_read_t19",
+)
+
+time_values = time_values_shim(
+    __name__, "marc_t19", """The time of every increment of a ``.t19`` post file."""
+)
+
+write_t19 = write_shim(
+    __name__,
+    "marc_t19",
     """Write an MSC Marc formatted post file (``.t19``) with one increment: the
     model (nodes, elements with a Marc type, node and element sets), the mesh's
     point arrays of 1, 2, 3, 6 or 9 components as nodal results and its cell
@@ -100,18 +77,15 @@ def write_t19(filename, mesh):
     six consecutive codes), at ``field_data["meshio:time"]``. Both engines write
     the same bytes; the file is read back by meshio++'s own reader and has not
     been opened in Mentat.
-    """
-    if not is_buffer(filename, "w"):
-        try:
-            _core.marc_t19_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "marc_t19", "write", filename):
-                raise
-    return _py_write_t19(filename, mesh)
+    """,
+    name="write_t19",
+    py_attr="_py_write_t19",
+)
 
-
-class SeriesWriter(CoreSeriesWriter):
+SeriesWriter = series_writer_class(
+    __name__,
+    "marc_t19",
+    "MarcT19SeriesWriter",
     """Write a time series into one post file, an increment per mesh;
     ``write_sequence(path, steps, file_format="marc_t19")`` uses it. Every mesh
     must have the first one's points, cells and arrays.
@@ -119,19 +93,8 @@ class SeriesWriter(CoreSeriesWriter):
     >>> with meshioplusplus.marc.SeriesWriter("job.t19") as w:
     ...     for time, mesh in steps:
     ...         w.write(time, mesh)
-    """
-
-    def __init__(self, filename):
-        self._core = self._py = None
-        if not is_buffer(filename, "w"):
-            try:
-                self._core = _core.MarcT19SeriesWriter(str(filename))
-            except Exception as exc:
-                if not core_declined(exc, "marc_t19", "write", filename):
-                    raise
-        if self._core is None:
-            self._py = _PySeriesWriter(filename)
-
+    """,
+)
 
 register_format("marc", [".dat"], read, {"marc": write})
 register_format("marc_t19", [".t19"], read_t19, {"marc_t19": write_t19})

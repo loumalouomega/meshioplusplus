@@ -1,16 +1,14 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401
 from .._helpers import register_format
-from .._series_writer import CoreSeriesWriter
-from .._shims import time_values_shim
-from ._op2 import read as _py_read
+from .._shims import series_shims
+from ._op2 import read as _py_read  # noqa: F401
 from ._op2 import time_values as _py_time_values  # noqa: F401
-from ._write import SeriesWriter as _PySeriesWriter
-from ._write import write as _py_write
+from ._write import SeriesWriter as _PySeriesWriter  # noqa: F401
+from ._write import write as _py_write  # noqa: F401
 
-
-def read(filename, points_only=False, arrays=None, time_step=0):
+read, write, time_values, SeriesWriter = series_shims(
+    __name__,
+    "nastran_op2",
     """Read one step of a Nastran OP2 result file (MSC or NX, 32- or 64-bit).
 
     GEOM1 GRIDs are the points, GEOM2 elements the cells (``nastran:eid``,
@@ -22,29 +20,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     is a step; ``time_step`` picks one (negative from the end) and its
     frequency, time or eigenvalue is ``field_data["meshio:time"]``. Other
     tables are skipped with a warning naming them.
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.nastran_op2_read(
-                str(filename),
-                points_only=points_only,
-                arrays=arrays,
-                time_step=time_step,
-            )
-        except Exception as exc:
-            if not core_declined(exc, "nastran_op2", "read", filename):
-                raise
-    return _py_read(
-        filename, points_only=points_only, arrays=arrays, time_step=time_step
-    )
-
-
-time_values = time_values_shim(
-    __name__, "nastran_op2", """The time, frequency or eigenvalue of every step."""
-)
-
-
-def write(filename, mesh):
+    """,
     """Write a mesh as a one-step Nastran OP2 result file.
 
     The inverse of :func:`read` for the core of the format: 32-bit
@@ -58,19 +34,10 @@ def write(filename, mesh):
     ``STRAIN:<M>`` cell data of shells, solids and rods. The step is
     ``nastran:subcase``, ``nastran:analysis``, ``nastran:mode`` and
     ``meshio:time`` of the field data. Other arrays are dropped with a warning.
-    """
-    if not is_buffer(filename, "w"):
-        try:
-            _core.nastran_op2_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "nastran_op2", "write", filename):
-                raise
-    return _py_write(filename, mesh)
-
-
-class SeriesWriter(CoreSeriesWriter):
-    """Write a time series into one OP2 file: the model once, and every
+    """,
+    """The time, frequency or eigenvalue of every step.""",
+    core_writer="NastranOp2SeriesWriter",
+    writer_doc="""Write a time series into one OP2 file: the model once, and every
     table's block per step, which ``read`` gives back by ``time_step``. The
     file is assembled when the writer closes. A step's time is the argument,
     not its ``meshio:time``; its subcase, analysis and mode come from its
@@ -84,19 +51,8 @@ class SeriesWriter(CoreSeriesWriter):
 
     The C++ core writes the file; the Python twin, which writes the same bytes,
     when the core declines to open it.
-    """
-
-    def __init__(self, filename):
-        self._core = self._py = None
-        if not is_buffer(filename, "w"):
-            try:
-                self._core = _core.NastranOp2SeriesWriter(str(filename))
-            except Exception as exc:
-                if not core_declined(exc, "nastran_op2", "write", filename):
-                    raise
-        if self._core is None:
-            self._py = _PySeriesWriter(filename)
-
+    """,
+)
 
 register_format("nastran_op2", [".op2"], read, {"nastran_op2": write})
 

@@ -60,6 +60,7 @@
 #include "../detail/typed_view.hpp"
 #include "../detail/fortran_number.hpp"
 #include "../detail/text_utils.hpp"
+#include "../detail/append_series.hpp"
 
 namespace meshioplusplus {
 
@@ -2262,37 +2263,13 @@ void UnvSeriesWriter::Write(double Time, const Mesh& rMesh) {
                              ? static_cast<int>(unv_field_int(rMesh, "unv:analysis", 0))
                              : 4;
     const UnvInfo info;
-    if (s.mSteps == 0) {
-        // The first step is the file: the mesh and its results.
-        unv_write_impl(s.mPath, rMesh, info, s.mCodeAster, s.mNodeDataset, &Time, &step, &analysis);
-        s.mPoints = rMesh.NumPoints();
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
-    } else {
-        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
-        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
-            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
-        if (!same)
-            throw WriteError("UNV series: step " + std::to_string(s.mSteps) +
-                             "'s points or cells differ from the first step's; a file holds one "
-                             "mesh -- write one file per step with '{step}'");
-        // A later step adds only its results datasets: the whole file is written beside the
-        // series file and its results are taken from it.
-        const std::string scratch = s.mPath + ".step.tmp";
-        unv_write_impl(scratch, rMesh, info, s.mCodeAster, s.mNodeDataset, &Time, &step, &analysis);
-        std::string text;
-        {
-            auto in = detail::make_classic_ifstream(scratch, std::ios::binary);
-            text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-        std::remove(scratch.c_str());
-        const std::string results = unv_results_text(text);
-        auto out = detail::make_classic_ofstream(s.mPath, std::ios::binary | std::ios::app);
-        if (!out)
-            throw WriteError("Could not open file for writing: " + s.mPath);
-        out.write(results.data(), static_cast<std::streamsize>(results.size()));
-    }
-    ++s.mSteps;
+    detail::append_series_write_step(
+        s.mPath, rMesh, s.mSteps, s.mPoints, s.mBlockCells, "UNV series",
+        [&](const std::string& rTarget) {
+            unv_write_impl(rTarget, rMesh, info, s.mCodeAster, s.mNodeDataset, &Time, &step,
+                           &analysis);
+        },
+        unv_results_text);
 }
 
 std::size_t UnvSeriesWriter::NumSteps() const noexcept {

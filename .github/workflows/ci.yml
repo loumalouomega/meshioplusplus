@@ -334,11 +334,15 @@ jobs:
   # races that determinism hashes can miss. Advisory until the first green run.
   # --------------------------------------------------------------------------
   cpp-tsan:
-    name: C++ tests (TSan, THREADS)
+    name: C++ tests (TSan, ${{ matrix.backend }})
     needs: [lint]
     runs-on: ubuntu-24.04
     continue-on-error: true
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [THREADS, TBB]
     env:
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
@@ -346,7 +350,7 @@ jobs:
       - name: Set up ccache
         uses: hendrikmuhs/ccache-action@e91f31892a1d1b8c44424b1a94c0b7f52d337168 # v1.2
         with:
-          key: cpp-tsan-threads
+          key: cpp-tsan-${{ matrix.backend }}
           max-size: 300M
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -357,7 +361,9 @@ jobs:
         run: |
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
-          sudo apt-get install -y clang zlib1g-dev pkg-config ninja-build
+          extra=""
+          if [ "${{ matrix.backend }}" = "TBB" ]; then extra="libtbb-dev"; fi
+          sudo apt-get install -y clang zlib1g-dev pkg-config ninja-build $extra
       - name: Configure
         env:
           CC: clang
@@ -368,7 +374,7 @@ jobs:
           -DMESHIOPLUSPLUS_SANITIZE=thread
           -DMESHIOPLUSPLUS_BUILD_TESTS=ON
           -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
-          -DMESHIOPLUSPLUS_PARALLEL_BACKEND=THREADS
+          -DMESHIOPLUSPLUS_PARALLEL_BACKEND=${{ matrix.backend }}
           -DMESHIOPLUSPLUS_WITH_HDF5=OFF
           -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
           -DMESHIOPLUSPLUS_WITH_OCCT=OFF
@@ -770,6 +776,8 @@ jobs:
           key: cpp-install-${{ matrix.shared }}-${{ matrix.default_backend }}-${{ matrix.cli }}
           max-size: 300M
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Install dependencies
         run: |
           # packages.microsoft.com (azure-cli / MS-prod) ships preinstalled on
@@ -781,13 +789,18 @@ jobs:
           # letting an unused third-party source take the whole step down.
           sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
           sudo apt-get update
-          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev ninja-build
+          extra=""
+          if [ "${{ matrix.shared }}" = "ON" ] && [ "${{ matrix.default_backend }}" = "MESHIO" ]; then
+            extra="abigail-tools"
+          fi
+          sudo apt-get install -y libhdf5-dev libnetcdf-dev zlib1g-dev ninja-build $extra
       # MESHIOPLUSPLUS_BUILD_CLI on one leg: the CLI links the in-tree core
       # object library, not the new variants, so this pins that enabling the
       # install does not disturb (or get disturbed by) it.
       - name: Configure
         run: >-
           cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
           -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
           -DMESHIOPLUSPLUS_BUILD_C_API=ON
           -DMESHIOPLUSPLUS_INSTALL_CPP=ON
@@ -893,6 +906,39 @@ jobs:
           #     a version bump that forgets them turns this step red.
           grep -qF "find_package(meshioplusplus $ver EXACT CONFIG REQUIRED COMPONENTS CXX)" doc/cpp_api.md
           grep -qF "find_package(meshioplusplus $ver EXACT CONFIG REQUIRED COMPONENTS CXX)" README.md
+      - name: C API ABI diff against last release tag (roadmap 3.13.1)
+        if: matrix.shared == 'ON' && matrix.default_backend == 'MESHIO'
+        run: |
+          set -eu
+          base_tag=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          if [ -z "$base_tag" ]; then
+            echo "No previous v* release tag found; skipping abidiff."
+            exit 0
+          fi
+          head_so=$(readlink -f inst/lib/libmeshioplusplus.so)
+          head_major=$(awk '/^#define MIO_VERSION_MAJOR / {print $3}' bindings/c/include/meshioplusplus/meshioplusplus.h)
+          git worktree add --detach /tmp/abi-base "$base_tag"
+          trap 'git worktree remove --force /tmp/abi-base 2>/dev/null || true' EXIT
+          base_major=$(awk '/^#define MIO_VERSION_MAJOR / {print $3}' /tmp/abi-base/bindings/c/include/meshioplusplus/meshioplusplus.h)
+          cmake -S /tmp/abi-base -B /tmp/abi-base-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_BUILD_C_API=ON \
+            -DBUILD_SHARED_LIBS=ON \
+            -DMESHIOPLUSPLUS_MESH_BACKEND=MESHIO
+          cmake --build /tmp/abi-base-build --target meshioplusplus_c
+          base_so=$(readlink -f /tmp/abi-base-build/libmeshioplusplus.so)
+          set +e
+          abidiff --no-added-syms \
+            --headers-dir1 /tmp/abi-base/bindings/c/include \
+            --headers-dir2 bindings/c/include \
+            "$base_so" "$head_so"
+          rc=$?
+          set -e
+          if [ $((rc & 8)) -ne 0 ] && [ "$head_major" = "$base_major" ]; then
+            echo "::error::Incompatible C API ABI change vs $base_tag without MIO_VERSION_MAJOR bump (abidiff exit $rc)"
+            exit 1
+          fi
       # The backend link guard, which no CMake consumer can exercise: the macro
       # always arrives via INTERFACE_COMPILE_DEFINITIONS, and main.cpp #errors
       # without it. Only a hand-rolled compile reaches the state the guard is
@@ -1627,7 +1673,14 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       SU2_TECIO_COMMIT: bc15466602a687d6fb796d5df7a12ce3fde0949a
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@e91f31892a1d1b8c44424b1a94c0b7f52d337168 # v1.2
+        with:
+          key: optional-readers
+          max-size: 300M
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           lfs: false

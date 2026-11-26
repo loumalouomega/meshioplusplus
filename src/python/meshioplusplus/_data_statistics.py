@@ -11,6 +11,8 @@ public structs are unchanged, so no binding or ABI moves). See
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 from ._data_average import _cell_measures, _cell_node_lists
@@ -67,7 +69,7 @@ def _stats(x, w=None, quantiles=(), bins=0, ddof=0):
         out["sum"].append(float(v.sum()))
         out["mean"].append(mean)
         out["variance"].append(var)
-        out["std"].append(float(np.sqrt(var)) if var == var else float("nan"))
+        out["std"].append(float(np.sqrt(var)) if not math.isnan(var) else float("nan"))
         out["min"].append(float(v.min()))
         out["max"].append(float(v.max()))
         for q in out.get("quantiles", {}):

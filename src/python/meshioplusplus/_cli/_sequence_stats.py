@@ -74,12 +74,11 @@ def sequence_stats_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"output": args.outfile, **report})
-        return 0
+        return
     print(
         f"{', '.join(split_csv(args.stats))} of {len(report['arrays'])} array(s) over "
         f"{report['num_steps']} step(s), t = {report['first_time']} to {report['last_time']}"
     )
-    return 0
 
 
 def add_derivative_args(parser):
@@ -115,6 +114,5 @@ def sequence_derivative_cmd(args):
     written = write_sequence(args.outfile, steps)
     if args.json:
         emit_json({"output": args.outfile, "num_steps": len(written), "files": written})
-        return 0
+        return
     print(f"wrote the time derivative of '{args.array}' for {len(written)} step(s)")
-    return 0

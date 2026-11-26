@@ -70,7 +70,6 @@ def align_datums_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json({"matrix": matrix.tolist()})
-        return 0
+        return
     for row in matrix:
         print(" ".join(f"{v:.17g}" for v in row))
-    return 0

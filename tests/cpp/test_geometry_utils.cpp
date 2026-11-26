@@ -136,3 +136,25 @@ TEST(GeometryUtils, PointInPolygon2D) {
     EXPECT_TRUE(GeometryUtils::PointInPolygon2D(ru, rv, 0.5, 0.5));
     EXPECT_FALSE(GeometryUtils::PointInPolygon2D(tu, tv, 1.5, 1.5));
 }
+
+TEST(GeometryUtils, TetDihedralAnglesDegAndTriangleVertexRings) {
+    // Regular tetrahedron: every dihedral angle is acos(1/3) ~= 70.528779 deg.
+    const auto ang =
+        GeometryUtils::TetDihedralAnglesDeg({1, 1, 1}, {1, -1, -1}, {-1, 1, -1}, {-1, -1, 1});
+    const double want = std::acos(1.0 / 3.0) * (180.0 / meshioplusplus::detail::MathUtils::kPi);
+    for (double a : ang)
+        EXPECT_NEAR(a, want, 1e-12);
+    // Degenerate tet with GuardZero=true returns 0.
+    const auto deg =
+        GeometryUtils::TetDihedralAnglesDeg({0, 0, 0}, {1, 0, 0}, {2, 0, 0}, {3, 0, 0}, true);
+    for (double a : deg)
+        EXPECT_EQ(a, 0.0);
+
+    const std::vector<std::array<std::size_t, 3>> tris = {{0, 1, 2}, {0, 2, 3}};
+    const auto rings = GeometryUtils::TriangleVertexRings(tris, 4);
+    ASSERT_EQ(rings.size(), 4u);
+    EXPECT_EQ(rings[0], (std::vector<std::size_t>{1, 2, 3}));
+    EXPECT_EQ(rings[1], (std::vector<std::size_t>{0, 2}));
+    EXPECT_EQ(rings[2], (std::vector<std::size_t>{0, 1, 3}));
+    EXPECT_EQ(rings[3], (std::vector<std::size_t>{0, 2}));
+}

@@ -1222,7 +1222,10 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
         std::string out;
         for (const auto cb : rMesh.CellRange()) {
             const std::string type(cb.Type());
-            const LsdFamily family = *lsd_type_family(type);
+            const auto fam_opt = lsd_type_family(type);
+            if (!fam_opt)
+                throw WriteError("LS-DYNA writer: unsupported cell type '" + type + "'");
+            const LsdFamily family = *fam_opt;
             const LsdType ltype = lsd_type_of(type);
             const bool two_line = ltype == LsdType::Tetra10;
             const detail::Int64View conn(cb.Conn());

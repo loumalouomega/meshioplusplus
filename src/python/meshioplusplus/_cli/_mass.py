@@ -63,7 +63,7 @@ def mass_cmd(args):
     )
     if args.json:
         emit_json(report)
-        return 0
+        return
     print(f"<meshio++ mass properties: {report['kind']}>")
     _print_entry(report["total"], report["kind"])
     for entry in report["regions"]:
@@ -71,4 +71,3 @@ def mass_cmd(args):
         _print_entry(entry, report["kind"], indent="    ")
     for w in report["warnings"]:
         print(f"  warning: {w}")
-    return 0

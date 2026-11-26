@@ -802,7 +802,7 @@ AdvReject AdvRemesher::LinkCondition(std::int64_t A, std::int64_t B) {
         rEdges.clear();
         rTris.clear();
         for (const std::int64_t t : mStore.mVertexTets[static_cast<std::size_t>(V)]) {
-            std::int64_t o[3];
+            std::int64_t o[3] = {0, 0, 0};
             int k = 0;
             bool has_other = false;
             for (const std::int64_t c : mStore.mTets[static_cast<std::size_t>(t)]) {
@@ -1563,7 +1563,7 @@ void AdvRemesher::CommitBoundaryCollapse(std::int64_t A, std::int64_t B) {
         mStore.mBoundary.erase(k);
         if (k[0] == B || k[1] == B || k[2] == B)
             continue;
-        std::int64_t o[2];
+        std::int64_t o[2] = {0, 0};
         int i = 0;
         for (const std::int64_t x : k)
             if (x != A)

@@ -1,16 +1,14 @@
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401
 from .._helpers import register_format
-from .._series_writer import CoreSeriesWriter
-from .._shims import time_values_shim
-from ._th import SeriesWriter as _PySeriesWriter
-from ._th import read as _py_read
+from .._shims import series_shims
+from ._th import SeriesWriter as _PySeriesWriter  # noqa: F401
+from ._th import read as _py_read  # noqa: F401
 from ._th import time_values as _py_time_values  # noqa: F401
-from ._th import write as _py_write
+from ._th import write as _py_write  # noqa: F401
 
-
-def read(filename, points_only=False, arrays=None, time_step=0):
+read, write, time_values, SeriesWriter = series_shims(
+    __name__,
+    "radioss_th",
     """Read one output of an OpenRadioss / Radioss time-history file
     (``<run>T01``...).
 
@@ -20,27 +18,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     (``radioss_th:part:<id>:IE``...) and, per TH group,
     ``radioss_th:<kind>:<id>`` (entities x variables) with its ``:ids`` and
     ``:variables`` (the variable codes).
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.radioss_th_read(
-                str(filename),
-                points_only=points_only,
-                arrays=arrays,
-                time_step=time_step,
-            )
-        except Exception as exc:
-            if not core_declined(exc, "radioss_th", "read", filename):
-                raise
-    return _py_read(filename, points_only, arrays, time_step)
-
-
-time_values = time_values_shim(
-    __name__, "radioss_th", """The time of every complete output."""
-)
-
-
-def write(filename, mesh):
+    """,
     """Write a mesh's ``radioss_th:*`` field data as a one-output
     OpenRadioss / Radioss time-history file (``<run>T01``).
 
@@ -54,19 +32,10 @@ def write(filename, mesh):
     (the version OpenRadioss writes).
     Points, cells and other field data are not stored (the latter is dropped
     with a warning).
-    """
-    if not is_buffer(filename, "w"):
-        try:
-            _core.radioss_th_write(str(filename), mesh)
-            return
-        except Exception as exc:
-            if not core_declined(exc, "radioss_th", "write", filename):
-                raise
-    return _py_write(filename, mesh)
-
-
-class SeriesWriter(CoreSeriesWriter):
-    """Write a time series into one time-history file: the descriptions with
+    """,
+    """The time of every complete output.""",
+    core_writer="RadiossThSeriesWriter",
+    writer_doc="""Write a time series into one time-history file: the descriptions with
     the first step, then one output per step, which ``read`` gives back by
     ``time_step``. Every step must have the first step's variables (the same
     names, ids and codes); a step's time is the argument, not its
@@ -79,19 +48,8 @@ class SeriesWriter(CoreSeriesWriter):
 
     The C++ core writes the file; the Python twin, which writes the same bytes,
     when the core declines to open it.
-    """
-
-    def __init__(self, filename):
-        self._core = self._py = None
-        if not is_buffer(filename, "w"):
-            try:
-                self._core = _core.RadiossThSeriesWriter(str(filename))
-            except Exception as exc:
-                if not core_declined(exc, "radioss_th", "write", filename):
-                    raise
-        if self._core is None:
-            self._py = _PySeriesWriter(filename)
-
+    """,
+)
 
 # Found by its file name (a stem, then T and two digits) or its title record,
 # never an extension.

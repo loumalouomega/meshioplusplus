@@ -45167,6 +45167,65 @@ void register_occt();
 #endif
 #endif
 // ===== end src/cpp/src/detail/always_inline.hpp =====
+// ===== begin src/cpp/src/detail/append_series.hpp =====
+/**
+ * @file detail/append_series.hpp
+ * @brief Shared step-append helper for single-mesh series writers that write
+ * step 0 in full and append only data sections extracted from a scratch write
+ * for subsequent steps (Gmsh, UNV; roadmap 6.4).
+ *
+ * Core-private (not installed).
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdio>
+#include <ios>
+#include <iterator>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+template <class WriteFn, class ExtractFn>
+void append_series_write_step(const std::string& rPath, const Mesh& rMesh, std::size_t& rSteps,
+                              std::size_t& rPoints, std::vector<std::size_t>& rBlockCells,
+                              const char* pSeriesLabel, WriteFn&& rWriteFull,
+                              ExtractFn&& rExtractData) {
+    if (rSteps == 0) {
+        rWriteFull(rPath);
+        rPoints = rMesh.NumPoints();
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
+            rBlockCells.push_back(rMesh.Cells(b).NumCells());
+    } else {
+        bool same = rMesh.NumPoints() == rPoints && rMesh.NumCellBlocks() == rBlockCells.size();
+        for (std::size_t b = 0; same && b < rBlockCells.size(); ++b)
+            same = rMesh.Cells(b).NumCells() == rBlockCells[b];
+        if (!same)
+            throw WriteError(std::string(pSeriesLabel) + ": step " + std::to_string(rSteps) +
+                             "'s points or cells differ from the first step's; a file holds one "
+                             "mesh -- write one file per step with '{step}'");
+        const std::string scratch = rPath + ".step.tmp";
+        rWriteFull(scratch);
+        std::string bytes;
+        {
+            auto in = make_classic_ifstream(scratch, std::ios::binary);
+            bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        }
+        std::remove(scratch.c_str());
+        const std::string extra = rExtractData(bytes);
+        auto out = make_classic_ofstream(rPath, std::ios::binary | std::ios::app);
+        if (!out)
+            throw WriteError("Could not open file for writing: " + rPath);
+        out.write(extra.data(), static_cast<std::streamsize>(extra.size()));
+    }
+    ++rSteps;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/append_series.hpp =====
 // ===== begin src/cpp/src/detail/linear_octree.hpp =====
 /**
  * @file detail/linear_octree.hpp
@@ -54265,6 +54324,53 @@ struct MathUtils {
         return x;
     }
 
+    /**
+     * @brief Exact cofactor/adjugate inverse `adj(M) / det(M)` of a row-major
+     * 3x3 matrix `pM`, written to `pInv` (which must not alias `pM`).
+     *
+     * Writes `NaN` to all 9 entries when `det(M)` is zero or non-finite.
+     * Matches `data_calc`'s `inv` and `tensor_invariants`' inverse operation
+     * for operation.
+     */
+    MIO_ALWAYS_INLINE static void Invert3x3(const double* pM, double* pInv) {
+        const double det =
+            det3({pM[0], pM[1], pM[2]}, {pM[3], pM[4], pM[5]}, {pM[6], pM[7], pM[8]});
+        if (!std::isfinite(det) || det == 0.0) {
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            for (int k = 0; k < 9; ++k)
+                pInv[k] = nan;
+            return;
+        }
+        pInv[0] = (pM[4] * pM[8] - pM[5] * pM[7]) / det;
+        pInv[1] = (pM[2] * pM[7] - pM[1] * pM[8]) / det;
+        pInv[2] = (pM[1] * pM[5] - pM[2] * pM[4]) / det;
+        pInv[3] = (pM[5] * pM[6] - pM[3] * pM[8]) / det;
+        pInv[4] = (pM[0] * pM[8] - pM[2] * pM[6]) / det;
+        pInv[5] = (pM[2] * pM[3] - pM[0] * pM[5]) / det;
+        pInv[6] = (pM[3] * pM[7] - pM[4] * pM[6]) / det;
+        pInv[7] = (pM[1] * pM[6] - pM[0] * pM[7]) / det;
+        pInv[8] = (pM[0] * pM[4] - pM[1] * pM[3]) / det;
+    }
+
+    /**
+     * @brief Packs a row-major 3x3 tensor `pM` into `pOut`: 6-component
+     * symmetric Voigt order (`xx yy zz xy yz zx`) when `Ncomp == 6`, or all 9
+     * entries when `Ncomp == 9`.
+     */
+    MIO_ALWAYS_INLINE static void PackTensor3x3(const double* pM, std::size_t Ncomp, double* pOut) {
+        if (Ncomp == 6) {
+            pOut[0] = pM[0];
+            pOut[1] = pM[4];
+            pOut[2] = pM[8];
+            pOut[3] = pM[1];
+            pOut[4] = pM[5];
+            pOut[5] = pM[2];
+        } else {
+            for (int k = 0; k < 9; ++k)
+                pOut[k] = pM[k];
+        }
+    }
+
     ///@}
 
     ///@name Order statistics
@@ -54327,7 +54433,9 @@ struct MathUtils {
  */
 
 // System includes
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -54419,6 +54527,57 @@ struct GeometryUtils {
                 in = !in;
         }
         return in;
+    }
+
+    /**
+     * @brief The six dihedral angles of a tetrahedron `(rA, rB, rC, rD)` in
+     * degrees, in the fixed edge order `(0,1), (0,2), (0,3), (1,2), (1,3),
+     * (2,3)`. When `GuardZero` is true, a degenerate face pair (`den <= 0`)
+     * yields `0.0`.
+     */
+    static std::array<double, 6> TetDihedralAnglesDeg(const Vec3& rA, const Vec3& rB,
+                                                      const Vec3& rC, const Vec3& rD,
+                                                      bool GuardZero = true) {
+        const Vec3 p[4] = {rA, rB, rC, rD};
+        constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
+                                     {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
+        constexpr double kRadToDeg = 180.0 / MathUtils::kPi;
+        std::array<double, 6> out{};
+        for (std::size_t e = 0; e < 6; ++e) {
+            const Vec3& a = p[kEdge[e][0]];
+            const Vec3 ab = vec3_sub(p[kEdge[e][1]], a);
+            const Vec3 n1 = vec3_cross(ab, vec3_sub(p[kEdge[e][2]], a));
+            const Vec3 n2 = vec3_cross(ab, vec3_sub(p[kEdge[e][3]], a));
+            const double den = std::sqrt(vec3_norm_sq(n1) * vec3_norm_sq(n2));
+            if (GuardZero && !(den > 0.0)) {
+                out[e] = 0.0;
+            } else {
+                out[e] = std::acos(std::clamp(vec3_dot(n1, n2) / den, -1.0, 1.0)) * kRadToDeg;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * @brief Sorted, deduplicated 1-ring vertex neighbours for a triangle
+     * patch `rTris` over `NumPts` vertices.
+     */
+    static std::vector<std::vector<std::size_t>> TriangleVertexRings(
+        const std::vector<std::array<std::size_t, 3>>& rTris, std::size_t NumPts) {
+        std::vector<std::vector<std::size_t>> nb(NumPts);
+        for (const auto& t : rTris) {
+            for (int k = 0; k < 3; ++k) {
+                nb[t[static_cast<std::size_t>(k)]].push_back(
+                    t[static_cast<std::size_t>((k + 1) % 3)]);
+                nb[t[static_cast<std::size_t>((k + 1) % 3)]].push_back(
+                    t[static_cast<std::size_t>(k)]);
+            }
+        }
+        for (auto& v : nb) {
+            std::sort(v.begin(), v.end());
+            v.erase(std::unique(v.begin(), v.end()), v.end());
+        }
+        return nb;
     }
 
     ///@}
@@ -80954,8 +81113,6 @@ namespace {
 
 using BccoPoint = std::array<std::int64_t, 3>;
 
-constexpr double kBccoRadToDeg = 57.29577951308232087680;
-
 std::uint64_t bcco_key(const BccoPoint& rP) {
     return linoct_key(rP[0], rP[1], rP[2]);
 }
@@ -81017,21 +81174,8 @@ void bcco_emit(std::vector<BccoTet>& rOut, const BccoPoint& rP0, BccVertexType T
 
 std::array<double, 6> tet_dihedral_angles(const Vec3& rA, const Vec3& rB, const Vec3& rC,
                                           const Vec3& rD) {
-    const Vec3 p[4] = {rA, rB, rC, rD};
-    // The edge (i, j) has the opposite edge (k, l); its dihedral angle is the
-    // angle between the normals of faces (i, j, k) and (i, j, l).
-    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
-                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
-    std::array<double, 6> out{};
-    for (std::size_t e = 0; e < 6; ++e) {
-        const Vec3& a = p[kEdge[e][0]];
-        const Vec3& b = p[kEdge[e][1]];
-        const Vec3 ab = vec3_sub(b, a);
-        const Vec3 n1 = vec3_cross(ab, vec3_sub(p[kEdge[e][2]], a));
-        const Vec3 n2 = vec3_cross(ab, vec3_sub(p[kEdge[e][3]], a));
-        const double c = vec3_dot(n1, n2) / std::sqrt(vec3_norm_sq(n1) * vec3_norm_sq(n2));
-        out[e] = std::acos(std::clamp(c, -1.0, 1.0)) * kBccoRadToDeg;
-    }
+    std::array<double, 6> out =
+        GeometryUtils::TetDihedralAnglesDeg(rA, rB, rC, rD, /*GuardZero=*/false);
     std::sort(out.begin(), out.end());
     return out;
 }
@@ -90716,17 +90860,7 @@ CgEdge cg_edge(std::size_t A, std::size_t B) {
 // Per vertex its neighbours, ascending (indices up to the largest one used).
 std::vector<std::vector<std::size_t>> cg_neighbours(const std::vector<PatchTri>& rTris,
                                                     std::size_t NumPts) {
-    std::vector<std::vector<std::size_t>> nb(NumPts);
-    for (const PatchTri& t : rTris)
-        for (int k = 0; k < 3; ++k) {
-            nb[t[static_cast<std::size_t>(k)]].push_back(t[static_cast<std::size_t>((k + 1) % 3)]);
-            nb[t[static_cast<std::size_t>((k + 1) % 3)]].push_back(t[static_cast<std::size_t>(k)]);
-        }
-    for (auto& v : nb) {
-        std::sort(v.begin(), v.end());
-        v.erase(std::unique(v.begin(), v.end()), v.end());
-    }
-    return nb;
+    return GeometryUtils::TriangleVertexRings(rTris, NumPts);
 }
 
 std::size_t cg_num_points(const std::vector<PatchTri>& rTris) {
@@ -126424,18 +126558,8 @@ double sv_median(std::vector<double> rV) {
 }  // namespace
 
 double patch_noise_sigma(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
-    std::vector<std::vector<std::size_t>> ring(rPts.size());
-    for (const PatchTri& t : rTris)
-        for (int k = 0; k < 3; ++k) {
-            ring[t[static_cast<std::size_t>(k)]].push_back(
-                t[static_cast<std::size_t>((k + 1) % 3)]);
-            ring[t[static_cast<std::size_t>((k + 1) % 3)]].push_back(
-                t[static_cast<std::size_t>(k)]);
-        }
-    for (auto& r : ring) {
-        std::sort(r.begin(), r.end());
-        r.erase(std::unique(r.begin(), r.end()), r.end());
-    }
+    std::vector<std::vector<std::size_t>> ring =
+        GeometryUtils::TriangleVertexRings(rTris, rPts.size());
     bool ok = true;
     std::vector<std::uint8_t> boundary(rPts.size(), 0);
     for (const auto& loop : param_boundary_loops(rTris, ok))
@@ -127264,8 +127388,6 @@ std::int64_t tet_flip_pass_32(std::vector<double>& rXyz, std::vector<TetFlipTet>
 // topological moves compare the worst new tet with the worst old one, and the
 // worst-cell smoothing accepts a step only when its vertex's star improves.
 
-constexpr double kTetFlipRadToDeg = 57.295779513082320876798;
-
 // The least dihedral angle of a tet, in degrees, whatever its orientation; 0
 // for a degenerate tet. The shared kernel (detail/fem_kernels.hpp), moved
 // there verbatim so adapt_volume measures exactly what this operation does.
@@ -127742,21 +127864,7 @@ std::int64_t tet_flip_pass_multi_face(std::vector<double>& rXyz, std::vector<Tet
 // The six dihedral angles of a tet in a fixed edge order, in degrees.
 std::array<double, 6> tet_flip_dihedrals(const Vec3& rA, const Vec3& rB, const Vec3& rC,
                                          const Vec3& rD) {
-    const Vec3 p[4] = {rA, rB, rC, rD};
-    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
-                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
-    std::array<double, 6> out{};
-    for (std::size_t e = 0; e < 6; ++e) {
-        const Vec3& a = p[kEdge[e][0]];
-        const Vec3 ab = detail::vec3_sub(p[kEdge[e][1]], a);
-        const Vec3 n1 = detail::vec3_cross(ab, detail::vec3_sub(p[kEdge[e][2]], a));
-        const Vec3 n2 = detail::vec3_cross(ab, detail::vec3_sub(p[kEdge[e][3]], a));
-        const double den = std::sqrt(detail::vec3_dot(n1, n1) * detail::vec3_dot(n2, n2));
-        out[e] = den > 0.0 ? std::acos(std::clamp(detail::vec3_dot(n1, n2) / den, -1.0, 1.0)) *
-                                 kTetFlipRadToDeg
-                           : 0.0;
-    }
-    return out;
+    return detail::GeometryUtils::TetDihedralAnglesDeg(rA, rB, rC, rD, /*GuardZero=*/true);
 }
 
 // Worst-cell smoothing (Freitag and Ollivier-Gooch 1997): a non-smooth ascent
@@ -144414,6 +144522,8 @@ void cgns_add_zone_fields(Mesh& rMesh, std::vector<CgnsZoneFields>& rZones) {
                 tmpl = &z.mPoint.at(name);
                 break;
             }
+        if (!tmpl)
+            throw ReadError("CGNS: point data array '" + name + "' missing from all zones");
         std::size_t total = 0, cols = detail::cols(*tmpl);
         for (const auto& z : rZones)
             total += z.mPoints;
@@ -166435,8 +166545,9 @@ bool gmsh_is_kept_section(const std::string& rName) {
 
 /// `field_data` entries that are not physical groups (their payload is not a `(tag, dim)` pair).
 bool gmsh_is_private_field(const std::string& rName) {
-    return rName.compare(0, std::strlen(kGmshSectionPrefix), kGmshSectionPrefix) == 0 ||
-           rName.compare(0, 29, "gmsh:element_node_components:") == 0;
+    constexpr std::string_view kSecPrefix = kGmshSectionPrefix;
+    constexpr std::string_view kElemNodeCompPrefix = "gmsh:element_node_components:";
+    return rName.starts_with(kSecPrefix) || rName.starts_with(kElemNodeCompPrefix);
 }
 
 /// A section's body, line by line to its `$End` line, as the bytes a writer puts back.
@@ -169061,7 +169172,7 @@ void write_gmsh22(const std::string& rPath, const Mesh& rMesh, bool binary, cons
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags" ||
-            name.compare(0, std::strlen(kGmshElementNodePrefix), kGmshElementNodePrefix) == 0)
+            name.starts_with(std::string_view(kGmshElementNodePrefix)))
             continue;
         write_data(os, "ElementData", name, rMesh, binary);
     }
@@ -169417,7 +169528,7 @@ void write_gmsh41(const std::string& rPath, const Mesh& rMeshIn, bool binary,
 
     for (const auto& name : rMesh.CellDataNames()) {
         if (name == "gmsh:physical" || name == "gmsh:geometrical" || name == "cell_tags" ||
-            name.compare(0, std::strlen(kGmshElementNodePrefix), kGmshElementNodePrefix) == 0)
+            name.starts_with(std::string_view(kGmshElementNodePrefix)))
             continue;
         write_data(os, "ElementData", name, rMesh, binary);
     }
@@ -169636,36 +169747,8 @@ void GmshSeriesWriter::Write(double Time, const Mesh& rMesh) {
         else
             write_gmsh22(rPath, rMesh, s.mBinary);
     };
-    if (s.mSteps == 0) {
-        write(s.mPath);
-        s.mPoints = rMesh.NumPoints();
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
-    } else {
-        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
-        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
-            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
-        if (!same)
-            throw WriteError("Gmsh series: step " + std::to_string(s.mSteps) +
-                             "'s points or cells differ from the first step's; a file holds one "
-                             "mesh -- write one file per step with '{step}'");
-        // A later step adds only its data sections: the whole file is written beside the
-        // series file and they are taken from it.
-        const std::string scratch = s.mPath + ".step.tmp";
-        write(scratch);
-        std::string bytes;
-        {
-            auto in = detail::make_classic_ifstream(scratch, std::ios::binary);
-            bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-        std::remove(scratch.c_str());
-        const std::string sections = gmsh_data_sections(bytes);
-        auto out = detail::make_classic_ofstream(s.mPath, std::ios::binary | std::ios::app);
-        if (!out)
-            throw WriteError("Could not open file for writing: " + s.mPath);
-        out.write(sections.data(), static_cast<std::streamsize>(sections.size()));
-    }
-    ++s.mSteps;
+    detail::append_series_write_step(s.mPath, rMesh, s.mSteps, s.mPoints, s.mBlockCells,
+                                     "Gmsh series", write, gmsh_data_sections);
 }
 
 std::size_t GmshSeriesWriter::NumSteps() const noexcept {
@@ -173699,7 +173782,10 @@ void write_lsdyna(const std::string& rPath, const Mesh& rMesh) {
         std::string out;
         for (const auto cb : rMesh.CellRange()) {
             const std::string type(cb.Type());
-            const LsdFamily family = *lsd_type_family(type);
+            const auto fam_opt = lsd_type_family(type);
+            if (!fam_opt)
+                throw WriteError("LS-DYNA writer: unsupported cell type '" + type + "'");
+            const LsdFamily family = *fam_opt;
             const LsdType ltype = lsd_type_of(type);
             const bool two_line = ltype == LsdType::Tetra10;
             const detail::Int64View conn(cb.Conn());
@@ -207733,10 +207819,22 @@ public:
         try {
             const std::string gz = detail::gzip_compress(mBuffer.view(), "OpenFOAM");
             mFile.write(gz.data(), static_cast<std::streamsize>(gz.size()));
-            if (!mFile)
-                log::error("OpenFOAM: failed writing {}", mTarget);
+            if (!mFile) {
+                try {
+                    log::error("OpenFOAM: failed writing {}", mTarget);
+                } catch (...) {
+                }
+            }
         } catch (const std::exception& rErr) {
-            log::error("OpenFOAM: failed writing {}: {}", mTarget, rErr.what());
+            try {
+                log::error("OpenFOAM: failed writing {}: {}", mTarget, rErr.what());
+            } catch (...) {
+            }
+        } catch (...) {
+            try {
+                log::error("OpenFOAM: failed writing {}", mTarget);
+            } catch (...) {
+            }
         }
     }
 
@@ -226907,6 +227005,7 @@ void write_ugrid(const std::string& rPath, const Mesh& rMesh) {
 #include <map>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Project includes
@@ -227407,8 +227506,8 @@ void write_ugrid_nc(const std::string& rPath, const Mesh& rMesh) {
         int mId;
         ~Closer() { nc_close(mId); }
     } closer{ncid};
-    const char* conv = "CF-1.8 UGRID-1.0";
-    ug_check(nc_put_att_text(ncid, NC_GLOBAL, "Conventions", std::strlen(conv), conv),
+    constexpr std::string_view conv = "CF-1.8 UGRID-1.0";
+    ug_check(nc_put_att_text(ncid, NC_GLOBAL, "Conventions", conv.size(), conv.data()),
              "Conventions", true);
     const std::size_t nn = rMesh.NumPoints();
     int node_dim = -1, face_dim = -1, max_dim = -1, edge_dim = -1, two_dim = -1;
@@ -229760,37 +229859,13 @@ void UnvSeriesWriter::Write(double Time, const Mesh& rMesh) {
                              ? static_cast<int>(unv_field_int(rMesh, "unv:analysis", 0))
                              : 4;
     const UnvInfo info;
-    if (s.mSteps == 0) {
-        // The first step is the file: the mesh and its results.
-        unv_write_impl(s.mPath, rMesh, info, s.mCodeAster, s.mNodeDataset, &Time, &step, &analysis);
-        s.mPoints = rMesh.NumPoints();
-        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b)
-            s.mBlockCells.push_back(rMesh.Cells(b).NumCells());
-    } else {
-        bool same = rMesh.NumPoints() == s.mPoints && rMesh.NumCellBlocks() == s.mBlockCells.size();
-        for (std::size_t b = 0; same && b < s.mBlockCells.size(); ++b)
-            same = rMesh.Cells(b).NumCells() == s.mBlockCells[b];
-        if (!same)
-            throw WriteError("UNV series: step " + std::to_string(s.mSteps) +
-                             "'s points or cells differ from the first step's; a file holds one "
-                             "mesh -- write one file per step with '{step}'");
-        // A later step adds only its results datasets: the whole file is written beside the
-        // series file and its results are taken from it.
-        const std::string scratch = s.mPath + ".step.tmp";
-        unv_write_impl(scratch, rMesh, info, s.mCodeAster, s.mNodeDataset, &Time, &step, &analysis);
-        std::string text;
-        {
-            auto in = detail::make_classic_ifstream(scratch, std::ios::binary);
-            text.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
-        }
-        std::remove(scratch.c_str());
-        const std::string results = unv_results_text(text);
-        auto out = detail::make_classic_ofstream(s.mPath, std::ios::binary | std::ios::app);
-        if (!out)
-            throw WriteError("Could not open file for writing: " + s.mPath);
-        out.write(results.data(), static_cast<std::streamsize>(results.size()));
-    }
-    ++s.mSteps;
+    detail::append_series_write_step(
+        s.mPath, rMesh, s.mSteps, s.mPoints, s.mBlockCells, "UNV series",
+        [&](const std::string& rTarget) {
+            unv_write_impl(rTarget, rMesh, info, s.mCodeAster, s.mNodeDataset, &Time, &step,
+                           &analysis);
+        },
+        unv_results_text);
 }
 
 std::size_t UnvSeriesWriter::NumSteps() const noexcept {
@@ -242934,7 +243009,7 @@ AdvReject AdvRemesher::LinkCondition(std::int64_t A, std::int64_t B) {
         rEdges.clear();
         rTris.clear();
         for (const std::int64_t t : mStore.mVertexTets[static_cast<std::size_t>(V)]) {
-            std::int64_t o[3];
+            std::int64_t o[3] = {0, 0, 0};
             int k = 0;
             bool has_other = false;
             for (const std::int64_t c : mStore.mTets[static_cast<std::size_t>(t)]) {
@@ -243695,7 +243770,7 @@ void AdvRemesher::CommitBoundaryCollapse(std::int64_t A, std::int64_t B) {
         mStore.mBoundary.erase(k);
         if (k[0] == B || k[1] == B || k[2] == B)
             continue;
-        std::int64_t o[2];
+        std::int64_t o[2] = {0, 0};
         int i = 0;
         for (const std::int64_t x : k)
             if (x != A)
@@ -253657,35 +253732,10 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
             if (n.mType == CalcNodeType::Inv) {
                 // adj(A) / det(A), as tensor_invariants' inverse: a zero or
                 // non-finite determinant is NaN, there being no warning channel.
-                const double det =
-                    detail::det3({m[0], m[1], m[2]}, {m[3], m[4], m[5]}, {m[6], m[7], m[8]});
                 double inv[9];
-                if (!std::isfinite(det) || det == 0.0) {
-                    for (double& v : inv)
-                        v = std::numeric_limits<double>::quiet_NaN();
-                } else {
-                    inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;
-                    inv[1] = (m[2] * m[7] - m[1] * m[8]) / det;
-                    inv[2] = (m[1] * m[5] - m[2] * m[4]) / det;
-                    inv[3] = (m[5] * m[6] - m[3] * m[8]) / det;
-                    inv[4] = (m[0] * m[8] - m[2] * m[6]) / det;
-                    inv[5] = (m[2] * m[3] - m[0] * m[5]) / det;
-                    inv[6] = (m[3] * m[7] - m[4] * m[6]) / det;
-                    inv[7] = (m[1] * m[6] - m[0] * m[7]) / det;
-                    inv[8] = (m[0] * m[4] - m[1] * m[3]) / det;
-                }
-                if (w == 6) {
-                    pOut[0] = inv[0];
-                    pOut[1] = inv[4];
-                    pOut[2] = inv[8];
-                    pOut[3] = inv[1];
-                    pOut[4] = inv[5];
-                    pOut[5] = inv[2];
-                    return 6;
-                }
-                for (int k = 0; k < 9; ++k)
-                    pOut[k] = inv[k];
-                return 9;
+                detail::MathUtils::Invert3x3(m, inv);
+                detail::MathUtils::PackTensor3x3(inv, w, pOut);
+                return w == 6 ? 6 : 9;
             }
             for (int i = 0; i < 3; ++i)
                 for (int j = 0; j < 3; ++j)
@@ -266251,6 +266301,9 @@ IgaShape iga_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
             if (!std::isfinite(k[i]) || (i && k[i] < k[i - 1]))
                 iga_fail(rWhat + " knot vector is not finite and non-decreasing");
         sh.mCounts[d] = k.size() - static_cast<std::size_t>(p) - 1;
+        if (k[static_cast<std::size_t>(p)] >= k[sh.mCounts[d]])
+            iga_fail(rWhat + " knot vector in direction " + std::to_string(d) +
+                     " has zero active span length");
         sh.mNumPoints *= sh.mCounts[d];
     }
     const NDArray& cps = rP.mControlPoints;
@@ -267007,6 +267060,9 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         std::size_t spans = 0;
         for (std::size_t s = static_cast<std::size_t>(patch.mDegrees[d]); s < sh.mCounts[d]; ++s)
             spans += k[s] < k[s + 1] ? 1 : 0;
+        if (spans == 0)
+            iga_fail("closest_point knot vector in direction " + std::to_string(d) +
+                     " has zero active span length");
         const std::size_t cap = dim == 1 ? 4096 : 64;
         std::size_t per = static_cast<std::size_t>(patch.mDegrees[d]) + 1;
         per = std::max<std::size_t>(1, std::min(per, cap > spans ? (cap - 1) / spans : 1));
@@ -311028,6 +311084,7 @@ SelectResult select_region(const Mesh& rMesh, const SelectOptions& rOpt) {
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -311035,6 +311092,7 @@ SelectResult select_region(const Mesh& rMesh, const SelectOptions& rOpt) {
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -312187,17 +312245,31 @@ public:
     SeqReadAhead& operator=(const SeqReadAhead&) = delete;
     ~SeqReadAhead() {
         // A pending read is waited for, not abandoned: it holds references.
-        if (mNext.valid())
-            mNext.wait();
+        if (mWorker.joinable())
+            mWorker.join();
     }
     Mesh Read(std::size_t Index) {
-        Mesh mesh = mNext.valid() && mNextIndex == Index
-                        ? mNext.get()
-                        : sequence_read_step(mEntries, Index, mFormat, mOptions);
+        Mesh mesh;
+        if (mNext.valid() && mNextIndex == Index) {
+            if (mWorker.joinable())
+                mWorker.join();
+            mesh = mNext.get();
+        } else {
+            if (mWorker.joinable())
+                mWorker.join();
+            mNext = {};
+            mesh = sequence_read_step(mEntries, Index, mFormat, mOptions);
+        }
         if (mEnabled && Index + 1 < mEntries.size()) {
             mNextIndex = Index + 1;
-            mNext = std::async(std::launch::async, [this, Index] {
-                return sequence_read_step(mEntries, Index + 1, mFormat, mOptions);
+            std::promise<Mesh> prom;
+            mNext = prom.get_future();
+            mWorker = std::thread([this, Index, p = std::move(prom)]() mutable {
+                try {
+                    p.set_value(sequence_read_step(mEntries, Index + 1, mFormat, mOptions));
+                } catch (...) {
+                    p.set_exception(std::current_exception());
+                }
             });
         }
         return mesh;
@@ -312208,6 +312280,7 @@ private:
     const std::string& mFormat;
     const ReadOptions& mOptions;
     bool mEnabled;
+    std::thread mWorker;
     std::future<Mesh> mNext;
     std::size_t mNextIndex = 0;
 };
@@ -317195,7 +317268,9 @@ NDArray tinv_deviatoric(const NDArray& rSrc, std::size_t Ncomp) {
 /// `xx yy zz xy yz zx`, symmetric; a 9-component row is not symmetrised).
 /// Returns false when any component is non-finite.
 bool tinv_read_matrix(const NDArray& rArray, std::size_t Ncomp, std::size_t r, double* pM) {
-    double t[9];
+    if (Ncomp != 6 && Ncomp != 9)
+        return false;
+    double t[9] = {};
     for (std::size_t k = 0; k < Ncomp; ++k) {
         t[k] = detail::read_double(rArray, r * Ncomp + k);
         if (!std::isfinite(t[k]))
@@ -317295,35 +317370,15 @@ NDArray tinv_inverse(const NDArray& rSrc, std::size_t Ncomp) {
     double* out = dst.As<double>();
     parallel_for(nrows, [&](std::size_t r) {
         double m[9];
-        double inv[9];
-        const double nan = std::numeric_limits<double>::quiet_NaN();
-        const double det = tinv_read_matrix(rSrc, Ncomp, r, m) ? tinv_det(m) : nan;
-        if (!std::isfinite(det) || det == 0.0) {
+        if (!tinv_read_matrix(rSrc, Ncomp, r, m)) {
+            const double nan = std::numeric_limits<double>::quiet_NaN();
             for (std::size_t k = 0; k < Ncomp; ++k)
                 out[r * Ncomp + k] = nan;
             return;
         }
-        // The adjugate (the transposed cofactor matrix), row by row.
-        inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;
-        inv[1] = (m[2] * m[7] - m[1] * m[8]) / det;
-        inv[2] = (m[1] * m[5] - m[2] * m[4]) / det;
-        inv[3] = (m[5] * m[6] - m[3] * m[8]) / det;
-        inv[4] = (m[0] * m[8] - m[2] * m[6]) / det;
-        inv[5] = (m[2] * m[3] - m[0] * m[5]) / det;
-        inv[6] = (m[3] * m[7] - m[4] * m[6]) / det;
-        inv[7] = (m[1] * m[6] - m[0] * m[7]) / det;
-        inv[8] = (m[0] * m[4] - m[1] * m[3]) / det;
-        if (Ncomp == 6) {
-            out[r * 6 + 0] = inv[0];
-            out[r * 6 + 1] = inv[4];
-            out[r * 6 + 2] = inv[8];
-            out[r * 6 + 3] = inv[1];
-            out[r * 6 + 4] = inv[5];
-            out[r * 6 + 5] = inv[2];
-        } else {
-            for (int k = 0; k < 9; ++k)
-                out[r * 9 + k] = inv[k];
-        }
+        double inv[9];
+        detail::MathUtils::Invert3x3(m, inv);
+        detail::MathUtils::PackTensor3x3(inv, Ncomp, out + r * Ncomp);
     });
     return dst;
 }

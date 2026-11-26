@@ -27,6 +27,7 @@
 
 // Project includes
 #include "tet_flips.hpp"
+#include "geometry_utils.hpp"
 
 // Project includes (private, not installed)
 #include "../operations/smooth_odt.hpp"
@@ -173,8 +174,6 @@ std::int64_t tet_flip_pass_32(std::vector<double>& rXyz, std::vector<TetFlipTet>
 // the mesh never drops: the relocation pass is guarded vertex by vertex, the
 // topological moves compare the worst new tet with the worst old one, and the
 // worst-cell smoothing accepts a step only when its vertex's star improves.
-
-constexpr double kTetFlipRadToDeg = 57.295779513082320876798;
 
 // The least dihedral angle of a tet, in degrees, whatever its orientation; 0
 // for a degenerate tet. The shared kernel (detail/fem_kernels.hpp), moved
@@ -652,21 +651,7 @@ std::int64_t tet_flip_pass_multi_face(std::vector<double>& rXyz, std::vector<Tet
 // The six dihedral angles of a tet in a fixed edge order, in degrees.
 std::array<double, 6> tet_flip_dihedrals(const Vec3& rA, const Vec3& rB, const Vec3& rC,
                                          const Vec3& rD) {
-    const Vec3 p[4] = {rA, rB, rC, rD};
-    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
-                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
-    std::array<double, 6> out{};
-    for (std::size_t e = 0; e < 6; ++e) {
-        const Vec3& a = p[kEdge[e][0]];
-        const Vec3 ab = detail::vec3_sub(p[kEdge[e][1]], a);
-        const Vec3 n1 = detail::vec3_cross(ab, detail::vec3_sub(p[kEdge[e][2]], a));
-        const Vec3 n2 = detail::vec3_cross(ab, detail::vec3_sub(p[kEdge[e][3]], a));
-        const double den = std::sqrt(detail::vec3_dot(n1, n1) * detail::vec3_dot(n2, n2));
-        out[e] = den > 0.0 ? std::acos(std::clamp(detail::vec3_dot(n1, n2) / den, -1.0, 1.0)) *
-                                 kTetFlipRadToDeg
-                           : 0.0;
-    }
-    return out;
+    return detail::GeometryUtils::TetDihedralAnglesDeg(rA, rB, rC, rD, /*GuardZero=*/true);
 }
 
 // Worst-cell smoothing (Freitag and Ollivier-Gooch 1997): a non-smooth ascent

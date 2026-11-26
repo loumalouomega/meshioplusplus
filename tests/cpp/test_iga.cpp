@@ -698,6 +698,14 @@ TEST(Iga, ClosestPointRefusesWhatItCannotDo) {
     EXPECT_THROW(meshioplusplus::iga_closest_point(in, 0, p3), std::invalid_argument);
     EXPECT_THROW(meshioplusplus::iga_closest_point(in, 0, doubles({1, 2}, {std::nan(""), 0.0})),
                  std::invalid_argument);
+    NurbsPatch degen;
+    degen.mDegrees = {1};
+    degen.mKnots = {{0.0, 0.0, 0.0, 0.0}};
+    degen.mControlPoints = doubles({2, 2}, {0.0, 0.0, 1.0, 0.0});
+    degen.mWeights = doubles({2}, {1.0, 1.0});
+    EXPECT_THROW(
+        meshioplusplus::iga_closest_point(one_patch(degen), 0, doubles({1, 2}, {0.5, 0.0})),
+        std::invalid_argument);
 }
 
 TEST(Iga, ErrorsAreInvalidArguments) {

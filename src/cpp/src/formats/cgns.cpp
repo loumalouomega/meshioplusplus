@@ -587,6 +587,8 @@ void cgns_add_zone_fields(Mesh& rMesh, std::vector<CgnsZoneFields>& rZones) {
                 tmpl = &z.mPoint.at(name);
                 break;
             }
+        if (!tmpl)
+            throw ReadError("CGNS: point data array '" + name + "' missing from all zones");
         std::size_t total = 0, cols = detail::cols(*tmpl);
         for (const auto& z : rZones)
             total += z.mPoints;

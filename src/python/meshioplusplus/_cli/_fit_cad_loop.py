@@ -34,12 +34,11 @@ def face_support_cmd(args):
         write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json(r)
-        return 0
+        return
     print(
         f"{r['num_measured']} measured, {r['num_partial']} partial, "
         f"{r['num_inferred']} inferred face(s)"
     )
-    return 0
 
 
 def add_iterate_args(parser):
@@ -85,12 +84,11 @@ def fit_cad_iterate_cmd(args):
     r.pop("skin")
     if args.json:
         emit_json(r)
-        return 0
+        return
     print(
         f"{len(r['rounds'])} round(s), best {r['best_round']} ({r['stop_reason']}); "
         f"target {'met' if r['target_met'] else 'not met'}"
     )
-    return 0
 
 
 def _relation(text):
@@ -131,13 +129,12 @@ def constrain_primitives_cmd(args):
     if args.json:
         r["unmet"] = [list(u) for u in r["unmet"]]
         emit_json(r)
-        return 0
+        return
     print(
         f"{r['num_constrained']} primitive(s) constrained in {r['num_groups']} "
         f"group(s); {len(r['relations'])} relation(s), {len(r['unmet'])} forced "
         "relation(s) unmet"
     )
-    return 0
 
 
 def add_profile_args(parser):
@@ -175,9 +172,8 @@ def profile_solid_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json(r)
-        return 0
+        return
     note = "" if r["valid"] else " (not a valid solid)"
     print(f"{r['num_faces']} face(s), volume {r['volume']!r}{note} [{r['provider']}]")
     for w in r["warnings"]:
         print(f"warning: {w}")
-    return 0

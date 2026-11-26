@@ -34,6 +34,5 @@ def locate_cmd(args):
                 "num_located": res["num_located"],
             }
         )
-        return 0
+        return
     print(f"{res['num_located']} of {len(xyz)} points lie inside the mesh")
-    return 0

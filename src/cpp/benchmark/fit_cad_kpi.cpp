@@ -32,10 +32,12 @@
 // options, so two runs differ only in it); `--tag` names the run in the CSV.
 
 // System includes
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -48,6 +50,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/log.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/operations/fit_cad.hpp"
 #include "meshioplusplus/operations/fit_primitives.hpp"
@@ -206,12 +209,41 @@ int main(int argc, char** argv) {
     }
     if (modes.empty())
         modes = {"legacy", "adaptive", "network", "auto"};
-    if (backends.empty())
+    if (backends.empty()) {
         backends = meshioplusplus::fit_cad_has_occt() ? std::vector<std::string>{"native", "occt"}
                                                       : std::vector<std::string>{"native"};
-    if (step_dir.empty())
-        step_dir = (std::filesystem::temp_directory_path() / "meshioplusplus_fit_cad_kpi").string();
-    std::filesystem::create_directories(step_dir);
+    } else {
+        for (const std::string& b : backends)
+            if (b != "native" && b != "occt")
+                throw std::invalid_argument("unknown --backends entry: " +
+                                            meshioplusplus::log::escape(b));
+    }
+    if (step_dir.empty()) {
+        std::error_code ec;
+        const std::filesystem::path base =
+            std::filesystem::temp_directory_path(ec);  // NOSONAR(cpp:S5443): private mkdtemp below
+#if !defined(_WIN32)
+        std::string pattern = (base / "meshioplusplus_fit_cad_kpi_XXXXXX").string();
+        if (mkdtemp(pattern.data()) == nullptr)
+            throw std::runtime_error("cannot create temporary directory for fit_cad_kpi");
+        step_dir = pattern;
+#else
+        static std::atomic<unsigned long> s_counter{0};
+        const auto stamp = static_cast<unsigned long long>(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+        for (int attempt = 0; attempt < 100 && step_dir.empty(); ++attempt) {
+            const std::filesystem::path dir =
+                base / ("meshioplusplus_fit_cad_kpi_" + std::to_string(stamp) + "_" +
+                        std::to_string(s_counter.fetch_add(1)));
+            if (std::filesystem::create_directory(dir, ec))
+                step_dir = dir.string();
+        }
+        if (step_dir.empty())
+            throw std::runtime_error("cannot create temporary directory for fit_cad_kpi");
+#endif
+    } else {
+        std::filesystem::create_directories(step_dir);
+    }
 
     // The fixtures.
     std::vector<KpiFixture> fixtures;
@@ -244,29 +276,33 @@ int main(int argc, char** argv) {
            "cad_to_mesh_p95,normal_max_deg,normal_p95_deg,max_g1_deg,step_round_trip,"
            "step_volume_ratio,seconds,num_extrusion,num_revolution,max_g1_away_deg,max_g1_ev_deg,"
            "num_coupled_regions\n";
+    const std::string safe_tag = meshioplusplus::log::escape(tag);
     for (const KpiFixture& f : fixtures)
         for (const std::string& backend : backends)
             for (const std::string& mode : modes) {
                 FitCadOptions o;
                 o.mTolerance = f.mTolerance;
                 o.mBackend = backend == "occt" ? FitCadBackend::Occt : FitCadBackend::Native;
+                const char* backend_name = o.mBackend == FitCadBackend::Occt ? "occt" : "native";
                 o.mFreeformMode = mode == "adaptive"  ? FitCadFreeformMode::Adaptive
                                   : mode == "network" ? FitCadFreeformMode::Network
                                   : mode == "auto"    ? FitCadFreeformMode::Auto
                                                       : FitCadFreeformMode::Legacy;
+                const char* mode_name = kpi_mode_name(o.mFreeformMode);
                 o.mValidationReport = true;
                 for (const auto& [k, v] : options)
                     if (!kpi_option(o, k, v))
                         throw std::invalid_argument("unknown --option " + k);
-                const std::string step = (std::filesystem::path(step_dir) /
-                                          (f.mName + "_" + backend + "_" + mode + ".step"))
-                                             .string();
+                const std::string step =
+                    (std::filesystem::path(step_dir) /
+                     (f.mName + "_" + backend_name + "_" + mode_name + ".step"))
+                        .string();
                 const auto t0 = std::chrono::steady_clock::now();
                 FitCadResult r;
                 try {
                     r = meshioplusplus::fit_cad(f.mMesh, step, o);
                 } catch (const std::exception& rErr) {
-                    std::cerr << f.mName << " " << backend << " " << mode
+                    std::cerr << f.mName << " " << backend_name << " " << mode_name
                               << ": failed: " << rErr.what() << "\n";
                     continue;
                 }
@@ -278,9 +314,9 @@ int main(int argc, char** argv) {
                     "%s,%s,%s,%s,%s,%d,%d,%d,%.6g,%.6g,%.6g,%lld,%lld,%lld,%lld,%lld,%lld,%lld,"
                     "%lld,%lld,%lld,%lld,%lld,%lld,%.6g,%.6g,%.6g,%.6g,%.4g,%.4g,%.4g,%d,%.6g,"
                     "%.3f,%lld,%lld,%.4g,%.4g,%lld\n",
-                    tag.c_str(), f.mSet.c_str(), f.mName.c_str(), backend.c_str(),
-                    kpi_mode_name(o.mFreeformMode), r.mValid ? 1 : 0, r.mClosed ? 1 : 0,
-                    r.mBrepChecked ? 1 : 0, r.mTolerance, r.mVolumeRatio, r.mFacetAreaFraction,
+                    safe_tag.c_str(), f.mSet.c_str(), f.mName.c_str(), backend_name, mode_name,
+                    r.mValid ? 1 : 0, r.mClosed ? 1 : 0, r.mBrepChecked ? 1 : 0, r.mTolerance,
+                    r.mVolumeRatio, r.mFacetAreaFraction,
                     static_cast<long long>(r.mCounts.mNumFaces),
                     static_cast<long long>(r.mCounts.mNumPlane),
                     static_cast<long long>(r.mCounts.mNumSphere),

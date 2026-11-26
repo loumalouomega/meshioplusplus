@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -31,6 +32,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -1218,17 +1220,31 @@ public:
     SeqReadAhead& operator=(const SeqReadAhead&) = delete;
     ~SeqReadAhead() {
         // A pending read is waited for, not abandoned: it holds references.
-        if (mNext.valid())
-            mNext.wait();
+        if (mWorker.joinable())
+            mWorker.join();
     }
     Mesh Read(std::size_t Index) {
-        Mesh mesh = mNext.valid() && mNextIndex == Index
-                        ? mNext.get()
-                        : sequence_read_step(mEntries, Index, mFormat, mOptions);
+        Mesh mesh;
+        if (mNext.valid() && mNextIndex == Index) {
+            if (mWorker.joinable())
+                mWorker.join();
+            mesh = mNext.get();
+        } else {
+            if (mWorker.joinable())
+                mWorker.join();
+            mNext = {};
+            mesh = sequence_read_step(mEntries, Index, mFormat, mOptions);
+        }
         if (mEnabled && Index + 1 < mEntries.size()) {
             mNextIndex = Index + 1;
-            mNext = std::async(std::launch::async, [this, Index] {
-                return sequence_read_step(mEntries, Index + 1, mFormat, mOptions);
+            std::promise<Mesh> prom;
+            mNext = prom.get_future();
+            mWorker = std::thread([this, Index, p = std::move(prom)]() mutable {
+                try {
+                    p.set_value(sequence_read_step(mEntries, Index + 1, mFormat, mOptions));
+                } catch (...) {
+                    p.set_exception(std::current_exception());
+                }
             });
         }
         return mesh;
@@ -1239,6 +1255,7 @@ private:
     const std::string& mFormat;
     const ReadOptions& mOptions;
     bool mEnabled;
+    std::thread mWorker;
     std::future<Mesh> mNext;
     std::size_t mNextIndex = 0;
 };

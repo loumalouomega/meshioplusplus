@@ -3,14 +3,15 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._series_writer import CoreSeriesWriter
-from .._shims import time_values_shim
-from ._abaqus_fil import read as _py_read
+from .._shims import dispatch_write, series_read_shim, time_values_shim
+from ._abaqus_fil import read as _py_read  # noqa: F401
 from ._abaqus_fil import time_values as _py_time_values  # noqa: F401
 from ._write import SeriesWriter as _PySeriesWriter
-from ._write import write as _py_write
+from ._write import write as _py_write  # noqa: F401
 
-
-def read(filename, points_only=False, arrays=None, time_step=0):
+read = series_read_shim(
+    __name__,
+    "abaqus_fil",
     """Read an Abaqus results file (``.fil``), binary or ASCII.
 
     Nodes (1901) and elements (1900/1990) become the mesh, with their labels as
@@ -20,17 +21,8 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     from the end), its total time is ``field_data["meshio:time"]``, and its
     nodal and element records become point and cell data named by their Abaqus
     identifier (``U``, ``RF``, ``S``, ``E``, ...).
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.abaqus_fil_read(str(filename), points_only, arrays, time_step)
-        except Exception as exc:
-            if not core_declined(exc, "abaqus_fil", "read", filename):
-                raise
-    return _py_read(
-        filename, points_only=points_only, arrays=arrays, time_step=time_step
-    )
-
+    """,
+)
 
 time_values = time_values_shim(
     __name__, "abaqus_fil", """The total time of every increment, in file order."""
@@ -55,17 +47,13 @@ def write(filename, mesh, binary=False, big_endian=False, marker_size=4):
     both marker sizes are read). Cells with no Abaqus element,
     side regions and other arrays are dropped with a warning.
     """
-    if not is_buffer(filename, "w"):
-        try:
-            _core.abaqus_fil_write(
-                str(filename), mesh, bool(binary), bool(big_endian), marker_size
-            )
-            return
-        except Exception as exc:
-            if not core_declined(exc, "abaqus_fil", "write", filename):
-                raise
-    return _py_write(
-        filename, mesh, binary=binary, big_endian=big_endian, marker_size=marker_size
+    return dispatch_write(
+        __name__,
+        "abaqus_fil",
+        filename,
+        mesh,
+        (bool(binary), bool(big_endian), marker_size),
+        dict(binary=binary, big_endian=big_endian, marker_size=marker_size),
     )
 
 

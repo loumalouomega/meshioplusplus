@@ -1057,6 +1057,18 @@ def test_closest_point_refuses_volumes_and_bad_points():
         mp.iga_closest_point(_arc_model(), [[0.0, 0.0]], patch=3)
     with pytest.raises(ValueError, match="'nurbs' model"):
         mp.iga_closest_point({"faces": [], "patches": []}, [[0.0, 0.0]])
+    degen = {
+        "patches": [
+            {
+                "degrees": [1],
+                "knots": [[0.0, 0.0, 0.0, 0.0]],
+                "control_points": [[0.0, 0.0], [1.0, 0.0]],
+                "weights": [1.0, 1.0],
+            }
+        ]
+    }
+    with pytest.raises(ValueError, match="zero active span"):
+        mp.iga_closest_point(degen, [[0.5, 0.0]])
 
 
 def test_closest_point_through_the_cli_and_the_mcp_tool(tmp_path, capsys):
