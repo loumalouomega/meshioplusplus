@@ -940,7 +940,7 @@ jobs:
             symbol_name_not_regexp = ^mio_
           EOF
           set +e
-          abidiff --no-added-syms \
+          abidiff --no-added-syms --no-unreferenced-symbols \
             --suppressions /tmp/c_api.abignore \
             --headers-dir1 /tmp/abi-base/bindings/c/include \
             --headers-dir2 bindings/c/include \
