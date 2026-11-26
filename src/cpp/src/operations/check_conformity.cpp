@@ -24,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -33,6 +34,7 @@
 #include "meshioplusplus/operations/check_conformity.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_edges.hpp"
+#include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/face_mesh.hpp"
@@ -46,6 +48,7 @@
 // Project includes (private, not installed)
 #include "../detail/bucket_build.hpp"
 #include "../detail/surface_rings.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 namespace {
@@ -105,6 +108,193 @@ void cc_cell_nodes(const TView& rBlock, std::size_t Row, std::vector<std::int64_
 // 3-D: the faces of the volume cells that only one cell uses.
 CcFacets cc_volume_facets(const Mesh& rMesh, std::vector<std::string>& rWarnings) {
     CcFacets out;
+    bool all_tabulated = true;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cc_block_dimension(cb) != 3)
+            continue;
+        if (cb.IsPolyhedron() || cb.IsRagged()) {
+            all_tabulated = false;
+            break;
+        }
+        const auto& faces = detail::cell_faces(cell_type_from_name(cb.Type()));
+        for (const auto& f : faces)
+            if (f.mNumCorners > 4) {
+                all_tabulated = false;
+                break;
+            }
+        if (!all_tabulated)
+            break;
+    }
+
+    if (all_tabulated) {
+        // Direct O(F) vertex-bucketed extraction by minimum face vertex id:
+        // skips orientation, interior face copies, and global face numbering.
+        const std::size_t npts = rMesh.NumPoints();
+        const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+        struct CcBlockInfo {
+            std::size_t mBlockIdx = 0;
+            std::size_t mNumCells = 0;
+            std::size_t mNpc = 0;
+            std::int64_t mBase = 0;
+            const std::vector<detail::CellFaceDef>* mpFaces = nullptr;
+            std::unique_ptr<detail::Int64View> mConn;
+        };
+        std::vector<CcBlockInfo> blocks;
+        std::size_t b = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const std::size_t block = b++;
+            if (cc_block_dimension(cb) != 3)
+                continue;
+            const auto& faces = detail::cell_faces(cell_type_from_name(cb.Type()));
+            if (faces.empty()) {
+                if (cb.NumCells() > 0)
+                    rWarnings.push_back("block " + std::to_string(block) + " ('" +
+                                        std::string(cb.Type()) +
+                                        "') has no known face topology and was not examined");
+                continue;
+            }
+            if (cb.NumCells() == 0)
+                continue;
+            blocks.push_back({block, cb.NumCells(), cb.NodesPerCell(), bases[block], &faces,
+                              std::make_unique<detail::Int64View>(cb.Conn())});
+        }
+        if (blocks.empty())
+            return out;
+
+        auto sort3 = [](std::int64_t& a, std::int64_t& b_, std::int64_t& c) {
+            if (a > b_)
+                std::swap(a, b_);
+            if (b_ > c)
+                std::swap(b_, c);
+            if (a > b_)
+                std::swap(a, b_);
+        };
+        auto sort4 = [](std::int64_t& a, std::int64_t& b_, std::int64_t& c, std::int64_t& d) {
+            if (a > b_)
+                std::swap(a, b_);
+            if (c > d)
+                std::swap(c, d);
+            if (a > c)
+                std::swap(a, c);
+            if (b_ > d)
+                std::swap(b_, d);
+            if (b_ > c)
+                std::swap(b_, c);
+        };
+
+        // Pass 1: validate indices and count faces per minimum vertex id.
+        std::vector<std::size_t> head(npts + 1, 0);
+        for (const CcBlockInfo& bi : blocks) {
+            const std::int64_t* pconn = bi.mConn->Data();
+            const std::size_t npc = bi.mNpc;
+            const auto& faces = *bi.mpFaces;
+            for (std::size_t c = 0; c < bi.mNumCells; ++c) {
+                const std::int64_t* row = pconn + c * npc;
+                for (const auto& f : faces) {
+                    std::int64_t lo = row[f.mNodes[0]];
+                    for (std::size_t k = 0; k < f.mNumCorners; ++k) {
+                        const std::int64_t v = row[f.mNodes[k]];
+                        if (v < 0 || static_cast<std::size_t>(v) >= npts)
+                            throw std::invalid_argument(
+                                std::string(kCcPrefix) +
+                                "a cell references a point the mesh does not have");
+                        if (v < lo)
+                            lo = v;
+                    }
+                    ++head[static_cast<std::size_t>(lo) + 1];
+                }
+            }
+        }
+        for (std::size_t i = 0; i < npts; ++i)
+            head[i + 1] += head[i];
+
+        struct CcSlot {
+            std::int64_t mK1, mK2, mK3;
+            std::int64_t mOwner;
+            std::uint32_t mBi;
+            std::uint32_t mRow;
+            std::uint8_t mFace;
+            std::uint8_t mNc;
+        };
+        std::vector<CcSlot> slots(head[npts]);
+        std::vector<std::size_t> cursor(head);
+        for (std::size_t bi_idx = 0; bi_idx < blocks.size(); ++bi_idx) {
+            const CcBlockInfo& bi = blocks[bi_idx];
+            const std::int64_t* pconn = bi.mConn->Data();
+            const std::size_t npc = bi.mNpc;
+            const auto& faces = *bi.mpFaces;
+            const std::size_t nf_cell = faces.size();
+            for (std::size_t c = 0; c < bi.mNumCells; ++c) {
+                const std::int64_t* row = pconn + c * npc;
+                const std::int64_t owner = bi.mBase + static_cast<std::int64_t>(c);
+                for (std::size_t fi = 0; fi < nf_cell; ++fi) {
+                    const auto& f = faces[fi];
+                    std::int64_t k0 = row[f.mNodes[0]];
+                    std::int64_t k1 = row[f.mNodes[1]];
+                    std::int64_t k2 = row[f.mNodes[2]];
+                    std::int64_t k3 = -1;
+                    if (f.mNumCorners == 3) {
+                        sort3(k0, k1, k2);
+                    } else {
+                        k3 = row[f.mNodes[3]];
+                        sort4(k0, k1, k2, k3);
+                    }
+                    const std::size_t dst = cursor[static_cast<std::size_t>(k0)]++;
+                    slots[dst] = {k1,
+                                  k2,
+                                  k3,
+                                  owner,
+                                  static_cast<std::uint32_t>(bi_idx),
+                                  static_cast<std::uint32_t>(c),
+                                  static_cast<std::uint8_t>(fi),
+                                  static_cast<std::uint8_t>(f.mNumCorners)};
+                }
+            }
+        }
+
+        // Pass 2: sort each tiny per-vertex bucket and emit single-use facets.
+        auto emit_boundary = [&](const CcSlot& rS) {
+            const CcBlockInfo& bi = blocks[rS.mBi];
+            const std::int64_t* row =
+                bi.mConn->Data() + static_cast<std::size_t>(rS.mRow) * bi.mNpc;
+            const auto& f = (*bi.mpFaces)[rS.mFace];
+            std::int64_t ring[4];
+            for (std::size_t k = 0; k < rS.mNc; ++k)
+                ring[k] = row[f.mNodes[k]];
+            out.Push(ring, rS.mNc, rS.mOwner);
+        };
+        for (std::size_t v = 0; v < npts; ++v) {
+            const std::size_t beg = head[v], end = head[v + 1];
+            if (beg == end)
+                continue;
+            if (end - beg == 1) {
+                emit_boundary(slots[beg]);
+                continue;
+            }
+            std::sort(slots.begin() + static_cast<std::ptrdiff_t>(beg),
+                      slots.begin() + static_cast<std::ptrdiff_t>(end),
+                      [](const CcSlot& rA, const CcSlot& rB) {
+                          if (rA.mK1 != rB.mK1)
+                              return rA.mK1 < rB.mK1;
+                          if (rA.mK2 != rB.mK2)
+                              return rA.mK2 < rB.mK2;
+                          return rA.mK3 < rB.mK3;
+                      });
+            for (std::size_t i = beg; i < end;) {
+                std::size_t j = i + 1;
+                while (j < end && slots[j].mK1 == slots[i].mK1 && slots[j].mK2 == slots[i].mK2 &&
+                       slots[j].mK3 == slots[i].mK3)
+                    ++j;
+                if (j - i == 1)
+                    emit_boundary(slots[i]);
+                else if (j - i >= 3)
+                    ++out.mNumNonManifold;
+                i = j;
+            }
+        }
+        return out;
+    }
+
     const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
     out.mNumNonManifold = gf.mNumNonManifold;
     for (std::size_t f = 0; f < gf.NumFaces(); ++f)
@@ -273,11 +463,11 @@ CcPlane cc_plane(const std::vector<double>& rXyz, const std::int64_t* pRing, std
 
 using CcUv = std::array<double, 2>;
 
-double cc_area(const std::vector<CcUv>& rPoly) {
+double cc_area(const CcUv* pPoly, std::size_t N) {
     double a = 0.0;
-    for (std::size_t i = 0, n = rPoly.size(); i < n; ++i) {
-        const CcUv& p = rPoly[i];
-        const CcUv& q = rPoly[(i + 1) % n];
+    for (std::size_t i = 0; i < N; ++i) {
+        const CcUv& p = pPoly[i];
+        const CcUv& q = pPoly[i + 1 < N ? i + 1 : 0];
         a += p[0] * q[1] - q[0] * p[1];
     }
     return 0.5 * a;
@@ -285,41 +475,67 @@ double cc_area(const std::vector<CcUv>& rPoly) {
 
 // The area of the intersection of two triangles, both counter-clockwise, by
 // clipping the first against the second's three edges (Sutherland and Hodgman).
+// Clipping a 3-vertex polygon against 3 half-planes produces at most 6 vertices
+// (capacity 8 on the stack, zero heap allocations).
 double cc_triangle_overlap(const std::array<CcUv, 3>& rA, const std::array<CcUv, 3>& rB) {
-    std::vector<CcUv> poly(rA.begin(), rA.end()), next;
-    for (std::size_t e = 0; e < 3 && !poly.empty(); ++e) {
+    const double a_umin = std::min({rA[0][0], rA[1][0], rA[2][0]});
+    const double a_umax = std::max({rA[0][0], rA[1][0], rA[2][0]});
+    const double b_umin = std::min({rB[0][0], rB[1][0], rB[2][0]});
+    const double b_umax = std::max({rB[0][0], rB[1][0], rB[2][0]});
+    if (a_umax <= b_umin || b_umax <= a_umin)
+        return 0.0;
+    const double a_vmin = std::min({rA[0][1], rA[1][1], rA[2][1]});
+    const double a_vmax = std::max({rA[0][1], rA[1][1], rA[2][1]});
+    const double b_vmin = std::min({rB[0][1], rB[1][1], rB[2][1]});
+    const double b_vmax = std::max({rB[0][1], rB[1][1], rB[2][1]});
+    if (a_vmax <= b_vmin || b_vmax <= a_vmin)
+        return 0.0;
+
+    std::array<CcUv, 8> poly{rA[0], rA[1], rA[2]};
+    std::array<CcUv, 8> next{};
+    std::size_t n_poly = 3;
+    for (std::size_t e = 0; e < 3 && n_poly > 0; ++e) {
         const CcUv& p = rB[e];
-        const CcUv& q = rB[(e + 1) % 3];
-        auto side = [&](const CcUv& rX) {
-            return (q[0] - p[0]) * (rX[1] - p[1]) - (q[1] - p[1]) * (rX[0] - p[0]);
-        };
-        next.clear();
-        for (std::size_t i = 0, n = poly.size(); i < n; ++i) {
+        const CcUv& q = rB[e + 1 < 3 ? e + 1 : 0];
+        const double ex = q[0] - p[0];
+        const double ey = q[1] - p[1];
+        auto side = [&](const CcUv& rX) { return ex * (rX[1] - p[1]) - ey * (rX[0] - p[0]); };
+        std::size_t n_next = 0;
+        for (std::size_t i = 0; i < n_poly; ++i) {
             const CcUv& a = poly[i];
-            const CcUv& b = poly[(i + 1) % n];
+            const CcUv& b = poly[i + 1 < n_poly ? i + 1 : 0];
             const double sa = side(a), sb = side(b);
             if (sa >= 0.0)
-                next.push_back(a);
+                next[n_next++] = a;
             if ((sa >= 0.0) != (sb >= 0.0)) {
                 const double t = sa / (sa - sb);
-                next.push_back({{a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])}});
+                next[n_next++] = {{a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])}};
             }
         }
-        poly.swap(next);
+        poly = next;
+        n_poly = n_next;
     }
-    return poly.size() < 3 ? 0.0 : std::abs(cc_area(poly));
+    return n_poly < 3 ? 0.0 : std::abs(cc_area(poly.data(), n_poly));
+}
+
+// Orient one fan triangle counter-clockwise; returns false if degenerate.
+bool cc_orient_tri(const CcUv& rP0, const CcUv& rP1, const CcUv& rP2, std::array<CcUv, 3>& rOut) {
+    rOut = {{rP0, rP1, rP2}};
+    const double a = (rOut[1][0] - rOut[0][0]) * (rOut[2][1] - rOut[0][1]) -
+                     (rOut[1][1] - rOut[0][1]) * (rOut[2][0] - rOut[0][0]);
+    if (a < 0.0)
+        std::swap(rOut[1], rOut[2]);
+    return a != 0.0;
 }
 
 // A ring as the counter-clockwise fan of triangles from its first corner.
-std::vector<std::array<CcUv, 3>> cc_fan(const std::vector<CcUv>& rRing) {
+std::vector<std::array<CcUv, 3>> cc_fan(const CcUv* pRing, std::size_t N) {
     std::vector<std::array<CcUv, 3>> fan;
-    for (std::size_t k = 1; k + 1 < rRing.size(); ++k) {
-        std::array<CcUv, 3> t{{rRing[0], rRing[k], rRing[k + 1]}};
-        const double a =
-            (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]);
-        if (a < 0.0)
-            std::swap(t[1], t[2]);
-        if (a != 0.0)
+    if (N >= 3)
+        fan.reserve(N - 2);
+    for (std::size_t k = 1; k + 1 < N; ++k) {
+        std::array<CcUv, 3> t;
+        if (cc_orient_tri(pRing[0], pRing[k], pRing[k + 1], t))
             fan.push_back(t);
     }
     return fan;
@@ -353,31 +569,115 @@ CcPair cc_classify_polygons(const std::vector<double>& rXyz, const std::int64_t*
         if (same)
             return CcPair::Unwelded;
     }
+    if (Nf == 3 && Ng == 3) {
+        std::size_t shared = 0;
+        std::int64_t s0 = -1, s1 = -1;
+        std::size_t f_rem = 3;
+        for (std::size_t i = 0; i < 3; ++i) {
+            if (pF[i] == pG[0] || pF[i] == pG[1] || pF[i] == pG[2]) {
+                if (shared == 0)
+                    s0 = pF[i];
+                else if (shared == 1)
+                    s1 = pF[i];
+                ++shared;
+            } else {
+                f_rem = i;
+            }
+        }
+        if (shared == 2 && f_rem < 3) {
+            std::size_t g_rem = 3;
+            for (std::size_t j = 0; j < 3; ++j)
+                if (pG[j] != s0 && pG[j] != s1) {
+                    g_rem = j;
+                    break;
+                }
+            if (g_rem < 3) {
+                const detail::Vec3 p0 = cc_point(rXyz, s0);
+                const detail::Vec3 e = detail::vec3_sub(cc_point(rXyz, s1), p0);
+                const double sf = detail::vec3_dot(
+                    detail::vec3_cross(e, detail::vec3_sub(cc_point(rXyz, pF[f_rem]), p0)),
+                    rPf.mNormal);
+                const double sg = detail::vec3_dot(
+                    detail::vec3_cross(e, detail::vec3_sub(cc_point(rXyz, pG[g_rem]), p0)),
+                    rPf.mNormal);
+                if (sf * sg <= 0.0)
+                    return CcPair::Apart;
+            }
+        }
+    }
     auto uv = [&](std::int64_t Id) {
         const detail::Vec3 d = detail::vec3_sub(cc_point(rXyz, Id), rPf.mCentre);
         return CcUv{{detail::vec3_dot(d, rPf.mU), detail::vec3_dot(d, rPf.mV)}};
     };
-    std::vector<CcUv> f(Nf), g(Ng);
-    for (std::size_t k = 0; k < Nf; ++k)
-        f[k] = uv(pF[k]);
-    for (std::size_t k = 0; k < Ng; ++k)
-        g[k] = uv(pG[k]);
+    constexpr std::size_t kCcStackRing = 8;
+    std::array<CcUv, kCcStackRing> f_stack{}, g_stack{};
+    std::vector<CcUv> f_heap, g_heap;
+    CcUv* pf = f_stack.data();
+    CcUv* pg = g_stack.data();
+    if (Nf > kCcStackRing) {
+        f_heap.resize(Nf);
+        pf = f_heap.data();
+    }
+    if (Ng > kCcStackRing) {
+        g_heap.resize(Ng);
+        pg = g_heap.data();
+    }
+    double f_umin = std::numeric_limits<double>::infinity();
+    double f_umax = -f_umin, f_vmin = f_umin, f_vmax = -f_umin;
+    for (std::size_t k = 0; k < Nf; ++k) {
+        const CcUv p = uv(pF[k]);
+        pf[k] = p;
+        f_umin = std::min(f_umin, p[0]);
+        f_umax = std::max(f_umax, p[0]);
+        f_vmin = std::min(f_vmin, p[1]);
+        f_vmax = std::max(f_vmax, p[1]);
+    }
+    double g_umin = std::numeric_limits<double>::infinity();
+    double g_umax = -g_umin, g_vmin = g_umin, g_vmax = -g_umin;
+    for (std::size_t k = 0; k < Ng; ++k) {
+        const CcUv p = uv(pG[k]);
+        pg[k] = p;
+        g_umin = std::min(g_umin, p[0]);
+        g_umax = std::max(g_umax, p[0]);
+        g_vmin = std::min(g_vmin, p[1]);
+        g_vmax = std::max(g_vmax, p[1]);
+    }
+    if (f_umax <= g_umin || g_umax <= f_umin || f_vmax <= g_vmin || g_vmax <= f_vmin)
+        return CcPair::Apart;
+
     // The facets overlap when their intersection is a strip wider than the
     // tolerance: its area beyond the tolerance times the smaller facet's
     // diameter. Facets that only share a boundary intersect in a segment.
     double area = 0.0;
-    const std::vector<std::array<CcUv, 3>> ff = cc_fan(f), gf = cc_fan(g);
-    for (const auto& a : ff)
-        for (const auto& b : gf)
-            area += cc_triangle_overlap(a, b);
-    auto diameter = [](const std::vector<CcUv>& rRing) {
+    if (Nf <= kCcStackRing && Ng <= kCcStackRing) {
+        std::array<std::array<CcUv, 3>, kCcStackRing - 2> ff{}, gf{};
+        std::size_t nff = 0, ngf = 0;
+        for (std::size_t k = 1; k + 1 < Nf; ++k)
+            if (cc_orient_tri(pf[0], pf[k], pf[k + 1], ff[nff]))
+                ++nff;
+        for (std::size_t k = 1; k + 1 < Ng; ++k)
+            if (cc_orient_tri(pg[0], pg[k], pg[k + 1], gf[ngf]))
+                ++ngf;
+        for (std::size_t a = 0; a < nff; ++a)
+            for (std::size_t b = 0; b < ngf; ++b)
+                area += cc_triangle_overlap(ff[a], gf[b]);
+    } else {
+        const std::vector<std::array<CcUv, 3>> ff = cc_fan(pf, Nf), gf = cc_fan(pg, Ng);
+        for (const auto& a : ff)
+            for (const auto& b : gf)
+                area += cc_triangle_overlap(a, b);
+    }
+    if (!(area > 0.0))
+        return CcPair::Apart;
+    auto diameter = [](const CcUv* pRing, std::size_t N) {
         double d = 0.0;
-        for (const CcUv& p : rRing)
-            for (const CcUv& q : rRing)
-                d = std::max(d, std::hypot(p[0] - q[0], p[1] - q[1]));
+        for (std::size_t i = 0; i < N; ++i)
+            for (std::size_t j = i + 1; j < N; ++j)
+                d = std::max(d, std::hypot(pRing[i][0] - pRing[j][0], pRing[i][1] - pRing[j][1]));
         return d;
     };
-    return area > Tol * std::min(diameter(f), diameter(g)) ? CcPair::Overlap : CcPair::Apart;
+    return area > Tol * std::min(diameter(pf, Nf), diameter(pg, Ng)) ? CcPair::Overlap
+                                                                     : CcPair::Apart;
 }
 
 CcPair cc_classify_segments(const std::vector<double>& rXyz, const std::int64_t* pF,
@@ -522,7 +822,7 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
             detail::BucketView bucket(nullptr, 0);
             if (!grid.Find(grid.KeyOf(x.data()), bucket))
                 return;
-            std::vector<std::int64_t> scratch;
+            static thread_local std::vector<std::int64_t> scratch;
             for (std::int64_t id : bucket) {
                 const std::size_t f = static_cast<std::size_t>(id);
                 const std::array<double, 6>& b = box[f];
@@ -555,22 +855,12 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
             });
         std::vector<std::int64_t> partial(nf, 0), unwelded(nf, 0);
         parallel_for(nf, [&](std::size_t f) {
-            std::vector<std::int64_t> near;
-            grid.ForEachInBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
-                              [&](const detail::BucketView& rIds) {
-                                  for (std::int64_t id : rIds)
-                                      if (static_cast<std::size_t>(id) > f)
-                                          near.push_back(id);
-                              });
-            std::sort(near.begin(), near.end());
-            near.erase(std::unique(near.begin(), near.end()), near.end());
             const std::array<double, 6>& bf = box[f];
-            for (std::int64_t id : near) {
-                const std::size_t g = static_cast<std::size_t>(id);
+            auto test_pair = [&](std::size_t g) {
                 const std::array<double, 6>& bg = box[g];
                 if (bf[0] > bg[3] || bg[0] > bf[3] || bf[1] > bg[4] || bg[1] > bf[4] ||
                     bf[2] > bg[5] || bg[2] > bf[5])
-                    continue;
+                    return;
                 const CcPair kind =
                     dim == 3
                         ? cc_classify_polygons(xyz, facets.Ring(f), facets.Corners(f), planes[f],
@@ -580,7 +870,26 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
                     ++partial[f];
                 else if (kind == CcPair::Unwelded)
                     ++unwelded[f];
+            };
+            if (box_lo[f] == box_hi[f]) {
+                detail::BucketView bucket(nullptr, 0);
+                if (grid.Find(box_lo[f], bucket))
+                    for (std::int64_t id : bucket)
+                        if (static_cast<std::size_t>(id) > f)
+                            test_pair(static_cast<std::size_t>(id));
+                return;
             }
+            static thread_local std::vector<std::int64_t> near;
+            near.clear();
+            grid.ForEachInBox(box_lo[f], box_hi[f], [&](const detail::BucketView& rIds) {
+                for (std::int64_t id : rIds)
+                    if (static_cast<std::size_t>(id) > f)
+                        near.push_back(id);
+            });
+            std::sort(near.begin(), near.end());
+            near.erase(std::unique(near.begin(), near.end()), near.end());
+            for (std::int64_t id : near)
+                test_pair(static_cast<std::size_t>(id));
         });
         for (std::size_t f = 0; f < nf; ++f) {
             result.mNumPartialOverlaps += partial[f];

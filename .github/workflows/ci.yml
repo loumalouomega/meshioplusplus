@@ -330,6 +330,59 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   # --------------------------------------------------------------------------
+  # ThreadSanitizer on the THREADS pool backend (roadmap 3.9.1): catches data
+  # races that determinism hashes can miss. Advisory until the first green run.
+  # --------------------------------------------------------------------------
+  cpp-tsan:
+    name: C++ tests (TSan, THREADS)
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    timeout-minutes: 90
+    env:
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - name: Set up ccache
+        uses: hendrikmuhs/ccache-action@e91f31892a1d1b8c44424b1a94c0b7f52d337168 # v1.2
+        with:
+          key: cpp-tsan-threads
+          max-size: 300M
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+      - name: Initialise submodules
+        uses: ./.github/actions/init-submodules
+      - name: Install Clang and Ninja
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev pkg-config ninja-build
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DMESHIOPLUSPLUS_SANITIZE=thread
+          -DMESHIOPLUSPLUS_BUILD_TESTS=ON
+          -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF
+          -DMESHIOPLUSPLUS_PARALLEL_BACKEND=THREADS
+          -DMESHIOPLUSPLUS_WITH_HDF5=OFF
+          -DMESHIOPLUSPLUS_WITH_NETCDF=OFF
+          -DMESHIOPLUSPLUS_WITH_OCCT=OFF
+      - name: Build
+        run: cmake --build build
+      - name: Run parallel & thread-sweep C++ tests under TSan
+        env:
+          MESHIOPLUSPLUS_NUM_THREADS: "4"
+          TSAN_OPTIONS: halt_on_error=1:suppressions=${{ github.workspace }}/tools/sanitizers/tsan.supp
+        run: >-
+          ./build/meshioplusplus_tests
+          --gtest_filter="Parallel*:LibraryLock*:SparseSolve*:Untangle*:Smooth*:Quality*:EstimateError*:Conformity*:ExtractSurface*:Clean*:Refine*:-ParallelThreads.ForkedChildRebuildsThePool"
+
+  # --------------------------------------------------------------------------
   # The C++ tests with the standard library's assertions on (roadmap 3.9.3): an
   # out-of-range operator[] or front() of an empty container aborts instead of
   # reading past the end. One leg per standard library.
@@ -677,11 +730,19 @@ jobs:
         run: |
           python3 tools/bench_instructions.py --check benchmark/instructions_S.csv \
             --jobs 4 --out instructions.csv --summary "$GITHUB_STEP_SUMMARY"
+      - name: Allocation and peak live memory check (advisory)
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: "4"
+        run: |
+          python3 tools/bench_allocs.py --check benchmark/allocs_S.csv \
+            --advisory --jobs 4 --out allocs.csv --summary "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: instructions
-          path: instructions.csv
+          path: |
+            instructions.csv
+            allocs.csv
 
   cpp-install:
     name: C++ API install (${{ matrix.name }})

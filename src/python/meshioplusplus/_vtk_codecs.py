@@ -7,10 +7,12 @@ when it can produce the requested codec; anything else (a custom
 request never silently degrades to a different codec.
 """
 
+from __future__ import annotations
+
 from . import _core
 
 # Python ``compression`` argument -> the core's codec token.
-CPP_CODECS = {
+CPP_CODECS: dict[str | None, str] = {
     None: "none",
     "zlib": "zlib",
     "lz4": "lz4",
@@ -19,7 +21,7 @@ CPP_CODECS = {
 }
 
 
-def cpp_codec_ok(compression, header_type):
+def cpp_codec_ok(compression: str | None, header_type: str | None) -> bool:
     """Whether the C++ writer can encode ``compression`` with ``header_type``."""
     if header_type is not None or compression not in CPP_CODECS:
         return False

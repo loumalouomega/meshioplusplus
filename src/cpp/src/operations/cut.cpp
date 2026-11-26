@@ -41,6 +41,7 @@
 #include <vector>
 
 // Project includes
+#include "meshioplusplus/detail/cell_subdivision.hpp"
 #include "meshioplusplus/detail/subset.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
@@ -299,21 +300,21 @@ void cut_node_weights(int Family, bool Quadratic, const std::array<double, 3>& r
     }
     if (Family == 2) {
         const double l[3] = {1.0 - rP[0] - rP[1], rP[0], rP[1]};
-        static constexpr int kE[3][2] = {{0, 1}, {1, 2}, {0, 2}};
+        const auto& edges = detail::cell_refine_edges(CellType::Triangle);
         rW.assign(6, 0.0);
         for (int i = 0; i < 3; ++i)
             rW[static_cast<std::size_t>(i)] = l[i] * (2.0 * l[i] - 1.0);
-        for (int e = 0; e < 3; ++e)
-            rW[static_cast<std::size_t>(3 + e)] = 4.0 * l[kE[e][0]] * l[kE[e][1]];
+        for (std::size_t e = 0; e < edges.size(); ++e)
+            rW[3 + e] = 4.0 * l[edges[e][0]] * l[edges[e][1]];
         return;
     }
     const double l[4] = {1.0 - rP[0] - rP[1] - rP[2], rP[0], rP[1], rP[2]};
-    static constexpr int kE[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
+    const auto& edges = detail::cell_refine_edges(CellType::Tetra);
     rW.assign(10, 0.0);
     for (int i = 0; i < 4; ++i)
         rW[static_cast<std::size_t>(i)] = l[i] * (2.0 * l[i] - 1.0);
-    for (int e = 0; e < 6; ++e)
-        rW[static_cast<std::size_t>(4 + e)] = 4.0 * l[kE[e][0]] * l[kE[e][1]];
+    for (std::size_t e = 0; e < edges.size(); ++e)
+        rW[4 + e] = 4.0 * l[edges[e][0]] * l[edges[e][1]];
 }
 
 /// The cells being cut, flattened: the top-dimensional blocks' cells.

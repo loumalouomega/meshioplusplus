@@ -221,19 +221,29 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
             for (std::size_t i = 0; i < 2 * nfree; ++i)
                 trip.push_back({i, i, 1e-10});
             const SparseCsr a = csr_from_triplets(2 * nfree, 2 * nfree, trip);
-            csr_pcg(a, rhs.data(), x.data(), 1e-12, 20 * nfree + 100);
+            csr_ic0_pcg(a, rhs.data(), x.data(), 1e-12, 20 * nfree + 100);
         } else {
             // Nothing pins the field: the smallest eigenvector, by inverse
             // iteration from a fixed start.
             for (std::size_t i = 0; i < 2 * nfree; ++i)
                 trip.push_back({i, i, 1e-8});
             const SparseCsr a = csr_from_triplets(2 * nfree, 2 * nfree, trip);
-            std::vector<double> v(2 * nfree, 0.0);
+            CsrLdlt ldlt;
+            const bool direct = ldlt.Factor(a);
+            CsrIc0 ic0;
+            CsrPcgWorkspace ws;
+            if (!direct)
+                ic0.Build(a);
+            std::vector<double> v(2 * nfree, 0.0), y(2 * nfree, 0.0), work;
             for (std::size_t i = 0; i < nfree; ++i)
                 v[2 * i] = 1.0;
             for (int it = 0; it < rOptions.mPowerIterations; ++it) {
-                std::vector<double> y(2 * nfree, 0.0);
-                csr_pcg(a, v.data(), y.data(), 1e-12, 20 * nfree + 100);
+                if (direct) {
+                    ldlt.Solve(v.data(), y.data(), work);
+                } else {
+                    std::fill(y.begin(), y.end(), 0.0);
+                    csr_ic0_pcg(a, ic0, v.data(), y.data(), ws, 1e-12, 20 * nfree + 100);
+                }
                 const double n = std::sqrt(sparse_dot(y.data(), y.data(), y.size()));
                 if (!(n > 0.0))
                     break;

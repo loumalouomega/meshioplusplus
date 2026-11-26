@@ -32,7 +32,9 @@
 
 // Project includes (private, not installed)
 #include "face_skin.hpp"
+#include "fem_kernels.hpp"
 #include "slot_runs.hpp"
+#include "typed_view.hpp"
 
 namespace meshioplusplus {
 namespace detail {
@@ -97,6 +99,7 @@ FmSlots fm_build_slots(const Mesh& rMesh, const std::vector<std::size_t>& rBlock
 
     const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
+    const std::size_t npts = rMesh.NumPoints();
     const std::vector<std::int64_t> bases = block_bases(rMesh);
 
     // ---- Phase 0: the compact cell space --------------------------------
@@ -125,15 +128,32 @@ FmSlots fm_build_slots(const Mesh& rMesh, const std::vector<std::size_t>& rBlock
     }
 
     // ---- Phase 1: face and ring-node counts per cell --------------------
-    // `cell_rings` is a gather, so running it twice is cheap; `orient_rings`
-    // (the BFS) runs only in phase 2. Counting first is what lets phase 2 write
-    // straight into pre-sized buffers instead of holding a per-cell vector pair
-    // for the whole mesh -- on a ten-million-cell case that is gigabytes. The
-    // node count is what lets phase 2 place each ring without a third pass.
+    // Tabulated 3D blocks have a fixed face count and corner-ring length per
+    // cell, so they fill counts directly without per-cell `cell_rings`.
+    // Polyhedron blocks still count via `cell_rings` so phase 2 writes straight
+    // into pre-sized buffers.
     std::vector<std::int64_t> n_cell_faces(n_cells, 0);
     std::vector<std::int64_t> n_cell_nodes(n_cells, 0);
     for (const FmBlockDesc& d : descs) {
         const auto cb = rMesh.Cells(d.mBlock);
+        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
+            const CellType ct = cell_type_from_name(cb.Type());
+            const std::vector<CellFaceDef>& faces = cell_faces(ct);
+            const int corners = cell_corner_count(ct);
+            if (faces.empty() || corners <= 0)
+                continue;
+            const auto nf = static_cast<std::int64_t>(faces.size());
+            std::int64_t nn = 0;
+            for (const CellFaceDef& f : faces)
+                nn += static_cast<std::int64_t>(f.mNumCorners);
+            std::fill(
+                n_cell_faces.begin() + static_cast<std::ptrdiff_t>(d.mFirstCell),
+                n_cell_faces.begin() + static_cast<std::ptrdiff_t>(d.mFirstCell + d.mNumCells), nf);
+            std::fill(
+                n_cell_nodes.begin() + static_cast<std::ptrdiff_t>(d.mFirstCell),
+                n_cell_nodes.begin() + static_cast<std::ptrdiff_t>(d.mFirstCell + d.mNumCells), nn);
+            continue;
+        }
         parallel_for(d.mNumCells, [&](std::size_t i) {
             static thread_local CellRings rings;
             static thread_local std::vector<Vec3> coords;
@@ -167,17 +187,94 @@ FmSlots fm_build_slots(const Mesh& rMesh, const std::vector<std::size_t>& rBlock
     std::vector<std::uint8_t> cell_flipped(n_cells, 0);
     std::vector<std::uint8_t> cell_unorientable(n_cells, 0);
 
+    const DoubleView pts_v(points);
+    const double* pxyz = pts_v.Data();
+    const auto read_pt = [&](std::int64_t Id) -> Vec3 {
+        if (Id < 0 || static_cast<std::size_t>(Id) >= npts)
+            return {0.0, 0.0, 0.0};
+        const double* p = pxyz + static_cast<std::size_t>(Id) * dim;
+        return {dim > 0 ? p[0] : 0.0, dim > 1 ? p[1] : 0.0, dim > 2 ? p[2] : 0.0};
+    };
+
     for (const FmBlockDesc& d : descs) {
         const auto cb = rMesh.Cells(d.mBlock);
+        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
+            const CellType ct = cell_type_from_name(cb.Type());
+            const std::vector<CellFaceDef>& faces = cell_faces(ct);
+            const int corners = cell_corner_count(ct);
+            if (faces.empty() || corners <= 0)
+                continue;
+            const Int64View conn_v(cb.Conn());
+            const std::int64_t* pconn = conn_v.Data();
+            const std::size_t npc = cb.NodesPerCell();
+            const std::size_t nf = faces.size();
+            const bool is_tet = (corners == 4 && nf == 4);
+
+            // Reference face rings for non-tet tabulated cells (used only to
+            // check the cell's signed volume sign; `cell_faces(ct)` is already
+            // consistently wound outward on the reference element).
+            CellRings ref_rings;
+            if (!is_tet) {
+                ref_rings.mNodes.resize(static_cast<std::size_t>(corners));
+                for (int k = 0; k < corners; ++k)
+                    ref_rings.mNodes[static_cast<std::size_t>(k)] = k;
+                ref_rings.mFaceStart.push_back(0);
+                for (const CellFaceDef& f : faces) {
+                    for (int k = 0; k < f.mNumCorners; ++k)
+                        ref_rings.mFaceNodes.push_back(f.mNodes[k]);
+                    ref_rings.mFaceStart.push_back(
+                        static_cast<std::uint32_t>(ref_rings.mFaceNodes.size()));
+                }
+            }
+
+            parallel_for(d.mNumCells, [&](std::size_t i) {
+                const std::size_t cell = d.mFirstCell + i;
+                const std::int64_t* row = pconn + i * npc;
+                bool flipped = false;
+                if (is_tet) {
+                    const Vec3 p0 = read_pt(row[0]);
+                    const Vec3 p1 = read_pt(row[1]);
+                    const Vec3 p2 = read_pt(row[2]);
+                    const Vec3 p3 = read_pt(row[3]);
+                    flipped = tet_volume6(p0, p1, p2, p3) < 0.0;
+                } else {
+                    static thread_local std::vector<Vec3> coords;
+                    coords.resize(static_cast<std::size_t>(corners));
+                    for (int k = 0; k < corners; ++k)
+                        coords[static_cast<std::size_t>(k)] = read_pt(row[k]);
+                    flipped = poly_measure(ref_rings, coords.data()).mVolume < 0.0;
+                }
+                if (flipped)
+                    cell_flipped[cell] = 1;
+
+                const std::size_t base = static_cast<std::size_t>(out.mCellFaceStart[cell]);
+                std::int64_t at = cell_node_start[cell];
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const CellFaceDef& fd = faces[f];
+                    const std::size_t n = static_cast<std::size_t>(fd.mNumCorners);
+                    out.mSlotSize[base + f] = static_cast<std::int64_t>(n);
+                    out.mSlotStart[base + f] = at;
+                    std::int64_t* dst = out.mSlotNodes.data() + at;
+                    if (!flipped) {
+                        for (std::size_t k = 0; k < n; ++k)
+                            dst[k] = row[fd.mNodes[k]];
+                    } else {
+                        for (std::size_t k = 0; k < n; ++k)
+                            dst[k] = row[fd.mNodes[n - 1 - k]];
+                    }
+                    at += static_cast<std::int64_t>(n);
+                }
+            });
+            continue;
+        }
         parallel_for(d.mNumCells, [&](std::size_t i) {
             static thread_local CellRings rings;
             static thread_local std::vector<Vec3> coords;
             const std::size_t cell = d.mFirstCell + i;
             if (!cell_rings(cb, i, points, dim, rings, coords))
                 return;
-            // Repair unconditionally: `cell_faces.hpp`'s rows are outward on the
-            // REFERENCE element, so an inverted hexahedron yields six inward
-            // normals and every one of its faces would be written misoriented.
+            // Repair unconditionally: a polyhedron's stored winding is
+            // unconstrained, so orient its faces outward before emitting.
             const RingOrientation ro = orient_rings(rings, coords.data());
             if (ro == RingOrientation::Repaired)
                 cell_flipped[cell] = 1;

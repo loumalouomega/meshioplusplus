@@ -85,3 +85,14 @@ TEST(BoundingBoxUtils, ExpandWidensOnlyWhereNeeded) {
     EXPECT_EQ(box.mMin, (Vec3{0, -2, 0}));
     EXPECT_EQ(box.mMax, (Vec3{1, 1, 3}));
 }
+
+TEST(BoundingBoxUtils, FromPointsOrEmptyPreservesInvertedEmptyAndFiniteBounds) {
+    const BoundingBox3 empty = BoundingBoxUtils::FromPointsOrEmpty({});
+    EXPECT_TRUE(std::isinf(empty.mMin[0]) && empty.mMin[0] > 0.0);
+    EXPECT_TRUE(std::isinf(empty.mMax[0]) && empty.mMax[0] < 0.0);
+
+    const std::vector<Vec3> pts{{1.0, -3.0, 2.0}, {-4.0, 5.0, 0.5}};
+    const BoundingBox3 box = BoundingBoxUtils::FromPointsOrEmpty(pts);
+    EXPECT_EQ(box.mMin, (Vec3{-4.0, -3.0, 0.5}));
+    EXPECT_EQ(box.mMax, (Vec3{1.0, 5.0, 2.0}));
+}

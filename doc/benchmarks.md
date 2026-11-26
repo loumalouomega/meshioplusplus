@@ -1496,6 +1496,46 @@ The gate sees instructions, not time: a change that trades instructions for memo
 
 **Re-recorded rows.** `octree_mesh_tet` (6,530,414,807 → 6,660,462,454, +2.0%) and `tetrahedralize_octree` (4,655,032,021 → 4,768,363,405, +2.4%) moved on purpose: the volume fix of `octree_mesh` ([octree_mesh](octree_mesh.md#the-tetrahedral-output)) is new work (collapse, cap, sliver and untangle passes, and a count of overlapping pairs) that every tetrahedral output now pays. The first version cost +6.5% and +7.8%; skipping the passes a mesh does not need, evaluating the optimiser's volume guard once per tetrahedron and sweep, and taking the longest edge from squared lengths brought it down without changing the output (the octree goldens pass unchanged). The rest is the passes' own scans and the sort behind the overlap count.
 
+### Allocation and peak-memory gate {#allocation-gate}
+
+Roadmap 5.28. `meshioplusplus_bench_ops_allocs` links a benchmark-only epoch-tagged `operator new`/`delete` counter (`src/cpp/benchmark/bench_allocs.{hpp,cpp}`, never linked into the library or into `meshioplusplus_bench_ops`, so `--instructions` carries zero overhead) and runs each tier S row on a SEQ build under `--allocs`, recording total heap allocation calls, total bytes allocated and peak live bytes per row. `tools/bench_allocs.py` records and checks `benchmark/allocs_S.csv`, flagging >10% jumps in peak live bytes or >20% jumps in allocation count; CI runs it in advisory mode beside the instruction-count gate in the `instructions` job:
+
+```sh
+python3 tools/bench_allocs.py --check benchmark/allocs_S.csv --advisory
+python3 tools/bench_allocs.py --record benchmark/allocs_S.csv
+```
+
+### Performance-tier pass (roadmap 5.23 to 5.28)
+
+Measured on the CI toolchain (`c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0`, `valgrind-3.22.0`, `-O3 -DNDEBUG -ffp-contract=off`, 2 vCPUs). All changes live in `.cpp` bodies and core-private `src/cpp/src/detail/` headers (`field_recovery.hpp`, `sparse_solve.{hpp,cpp}`, `face_mesh.cpp`, `data_ops.cpp`), so no installed header changed and C++ ABI 47 is unchanged.
+
+- **`smooth_volume` tet fast path (5.23):** `SmoothMeasure::Tet` in `smooth.cpp` dispatches `CellType::Tetra` to `detail::tet_volume6` instead of the 12-sub-tet face-centroid fan; digests stay bit-identical.
+- **Sparse linear solvers (5.24):** `detail/sparse_solve.{hpp,cpp}` adds `CsrPcgWorkspace`, multi-RHS `csr_pcg_block`, deterministic zero-fill `CsrIc0` (`csr_ic0_pcg`, `csr_ic0_pcg_block`) and a zero-dependency BFS-level-set Nested-Dissection direct `CsrLdlt` (`Factor`, `Solve`, 4-wide bit-identical `SolveBlock`). `eigenmodes` factors `(K + s M)` once with `CsrLdlt` (falling back to `CsrIc0` if fill exceeds budget) and eliminates `lap_mdot` chunk allocations; `param_lscm` solves directly with `CsrLdlt` (IC(0)-PCG fallback); `morph` uses `csr_ic0_pcg_block` and skips assembly on zero right-hand sides; `geodesic`, `smooth_field`, `cross_field`, `patch_network` and `hole_fill` reuse `CsrIc0`/`CsrPcgWorkspace`. `SparseSolve.LdltScalesTo100kSurfaceGrid` factors and solves a 320×320 (102,400-unknown) 2-D Laplacian in 0.56 s under 4 M nonzeros.
+- **`check_conformity` and `face_mesh` (5.25):** `check_conformity.cpp` moves `cc_triangle_overlap` and small rings onto fixed stack arrays, adds a 2-D `(u, v)` AABB reject and shared-edge opposite-side triangle reject, skips `diameter()` on zero overlap, reuses `box_lo`/`box_hi` and thread-local scratch, and extracts boundary facets for tabulated 3-D cells in O(F) by minimum vertex bucket; `detail/face_mesh.cpp` fast-paths tabulated 3-D blocks without per-cell `cell_rings`/`orient_rings`, also speeding up `feature_edges`, `agglomerate` and `tet_to_poly`. All digests stay bit-identical.
+- **`untangle` (5.26):** flat CSR `node_cells`/`node_corners` (active hex corners only, 4 of 8), hoisted `cell_faces`/`Int64View`/`DoubleView`, closed-form Escobar–Knupp analytic gradient using cofactors of `S`, inline full-precision Halley cube root for positive doubles, early-out line search with warm-started step length and deterministic greedy-coloured `parallel_for` sweeps.
+- **`estimate_error` and `cell_measure` (5.27):** core-private `detail/field_recovery.hpp` (`gradient_array`, `cell_to_point_array`, `point_to_cell_array`) fuses Zienkiewicz–Zhu recovery to one mesh clone and one cell-measure pass; `detail::cell_measure` reuses `thread_local` scratch and skips redundant `orient_rings` on tabulated cells, also accelerating `data_integrate`, `data_average` and `metric`. All digests stay bit-identical.
+
+| Row | Tier S instructions (before → after) | Ratio | Tier S wall SEQ (before → after) | Tier M wall SEQ (before → after) | Tier M wall OMP-2 | Tier S allocs (before → after) | Digest vs baseline |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `smooth_volume` | 942,181,221 → 176,103,884 | 0.1869 (5.35×) | 162.7 → 27.9 ms | 4.711 → 0.440 s | 0.228 s | 174 → 174 | identical |
+| `pipeline_smooth_surface` | 964,954,879 → 198,876,535 | 0.2061 (4.85×) | 163.9 → 30.5 ms | 5.039 → 0.532 s | 0.329 s | 251 → 251 | identical |
+| `eigenmodes` | 1,431,458,201 → 366,698,945 | 0.2562 (3.90×) | 419.0 → 58.9 ms | 3.538 → 0.362 s | 0.317 s | 15,303 → 745 | updated (direct LDLᵀ) |
+| `check_conformity` | 973,419,962 → 140,665,934 | 0.1445 (6.92×) | 444.3 → 43.3 ms | 2.510 → 0.478 s | 0.450 s | 506,589 → 142 | identical |
+| `untangle` | 703,808,369 → 217,744,230 | 0.3094 (3.23×) | 277.1 → 51.9 ms | 4.033 → 0.846 s | 0.547 s | 12,161 → 50 | updated (analytic + colour) |
+| `estimate_error` | 260,680,414 → 83,815,965 | 0.3215 (3.11×) | 47.2 → 15.0 ms | 0.773 → 0.255 s | 0.163 s | 248,963 → 62 | identical |
+| `morph` | 118,526,943 → 65,539,839 | 0.5530 (1.81×) | 34.7 → 17.6 ms | 0.624 → 0.253 s | 0.293 s | 180 → 159 | identical |
+| `parameterize` | 143,726,250 → 118,599,945 | 0.8252 (1.21×) | 27.3 → 24.8 ms | 0.382 → 0.188 s | 0.198 s | 34,022 → 35,264 | updated (direct LDLᵀ) |
+| `geodesic` | 29,627,149 → 27,610,797 | 0.9319 (1.07×) | 8.4 → 4.3 ms | 0.102 → 0.038 s | 0.038 s | 56 → 62 | updated (IC(0)-PCG) |
+| `fit_cad_network` | ~267 M → 267,280,874 | 1.00× | 94.2 → 51.7 ms | 1.536 → 1.093 s | 1.067 s | 46,247 → 46,325 | updated (IC(0)-PCG) |
+| `data_integrate` (bonus) | 100,045,914 → 27,003,738 | 0.2699 (3.70×) | — → 5.0 ms | — → 0.079 s | 0.040 s | — → 14 | identical |
+| `feature_edges` (bonus) | 91,373,581 → 24,890,123 | 0.2724 (3.67×) | — | — | — | — → 69 | identical |
+| `data_average` (bonus) | 3,758,590 → 1,840,761 | 0.4897 (2.04×) | 0.58 → 0.25 ms | 9.0 → 5.5 ms | 5.3 ms | 16 → 16 | identical |
+| `agglomerate` (bonus) | 137,661,102 → 71,640,012 | 0.5204 (1.92×) | — → 12.6 ms | — → 0.236 s | 0.218 s | — | identical |
+| `metric` (bonus) | 158,216,341 → 85,173,286 | 0.5383 (1.86×) | — | — | — | — → 39 | identical |
+| `tet_to_poly` (bonus) | 254,695,402 → 188,404,686 | 0.7397 (1.35×) | — → 37.0 ms | — → 0.575 s | 0.625 s | — | identical |
+
+Determinism check: every row above (36 tier S and M pairs) produced identical digests across SEQ-1, OpenMP-1, OpenMP-2 and OpenMP-4. The full 189-row `tools/bench_instructions.py --check` reported zero regressions above 1% and 24 faster rows, which are re-recorded in `benchmark/instructions_S.csv` beside the new `benchmark/allocs_S.csv`.
+
 ### CSR staging in `clean` and `merge`
 
 Roadmap 5.18's first slice. `clean` staged a polyhedron block as a vector per face inside a vector per cell plus a key vector per cell, and a polygon block as a vector per row; `merge` did the same for its output blocks. Both now count in parallel, take a prefix sum, and fill one flat node buffer with offsets (`CleanStaged` in `clean.cpp`, `BuiltBlock::pflat`/`prow`/`pcell`/`pnode` in `merge.cpp`), and `clean_later_duplicates` takes the keys as one buffer with starts and lengths. The blocks reach the mesh through the CSR `AddPolygonBlock` and `AddPolyhedronBlock`.

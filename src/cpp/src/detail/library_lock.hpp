@@ -41,25 +41,27 @@
  * from under it, the gid series callback, re-acquires the GIL itself).
  */
 
-#include <mutex>
+#include "thread_annotations.hpp"
 
 namespace meshioplusplus {
 namespace detail {
 
 /// The process-wide mutex; prefer `LibraryLock`. Recursive: see above.
-std::recursive_mutex& library_mutex();  // NOSONAR(cpp:S8462): entry points nest
+AnnotatedRecursiveMutex& library_mutex();  // NOSONAR(cpp:S8462): entry points nest
 
 /// How many `LibraryLock`s the calling thread holds (0 when none).
 int& library_lock_depth();
 
 /// RAII guard over `library_mutex()`.
+/// Recursive by design (entry points nest), so it does not declare Clang's
+/// non-reentrant `scoped_lockable` capability.
 class LibraryLock {
 public:
-    LibraryLock() {
+    LibraryLock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         library_mutex().lock();
         ++library_lock_depth();
     }
-    ~LibraryLock() {
+    ~LibraryLock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         --library_lock_depth();
         library_mutex().unlock();
     }
@@ -79,12 +81,12 @@ public:
  */
 class LibraryUnlock {
 public:
-    LibraryUnlock() : mDepth(library_lock_depth()) {
+    LibraryUnlock() MIO_NO_THREAD_SAFETY_ANALYSIS : mDepth(library_lock_depth()) {
         for (int i = 0; i < mDepth; ++i)
             library_mutex().unlock();
         library_lock_depth() = 0;
     }
-    ~LibraryUnlock() {
+    ~LibraryUnlock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         for (int i = 0; i < mDepth; ++i)
             library_mutex().lock();
         library_lock_depth() = mDepth;

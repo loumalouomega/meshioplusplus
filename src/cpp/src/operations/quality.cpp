@@ -43,6 +43,7 @@
 
 // Project includes (private, not installed)
 #include "../detail/fem_kernels.hpp"
+#include "../detail/math_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -283,25 +284,7 @@ void quality_quad(const std::vector<Vec3>& c, bool is2d, double eps, double* m) 
 // Solve the 3x3 system whose rows are a0,a1,a2 for x (Cramer). ok=false if singular.
 Vec3 quality_solve3(const Vec3& a0, const Vec3& a1, const Vec3& a2, const Vec3& b, double eps,
                     bool& rOk) {
-    auto det = [](const Vec3& r0, const Vec3& r1, const Vec3& r2) {
-        return r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
-               r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
-    };
-    const double d = det(a0, a1, a2);
-    if (std::fabs(d) < eps) {
-        rOk = false;
-        return {0.0, 0.0, 0.0};
-    }
-    rOk = true;
-    Vec3 x;
-    for (int k = 0; k < 3; ++k) {
-        Vec3 c0 = a0, c1 = a1, c2 = a2;
-        c0[k] = b[0];
-        c1[k] = b[1];
-        c2[k] = b[2];
-        x[k] = det(c0, c1, c2) / d;
-    }
-    return x;
+    return detail::MathUtils::Solve3(a0, a1, a2, b, eps, rOk);
 }
 
 void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {

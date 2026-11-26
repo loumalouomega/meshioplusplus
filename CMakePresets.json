@@ -1,0 +1,212 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "MESHIOPLUSPLUS_BUILD_PYTHON": "OFF"
+      }
+    },
+    {
+      "name": "dev",
+      "displayName": "Dev (STL backend, tests)",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "STL",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "tests-seq",
+      "displayName": "Tests (SEQ backend)",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "SEQ",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "tests-openmp",
+      "displayName": "Tests (OpenMP backend)",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "OPENMP",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "tests-threads",
+      "displayName": "Tests (THREADS pool backend)",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "THREADS",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "sanitize",
+      "displayName": "ASan + UBSan (Clang, SEQ, tests)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "SEQ",
+        "MESHIOPLUSPLUS_SANITIZE": "address;undefined",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "tsan",
+      "displayName": "TSan (Clang, THREADS pool, tests)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "THREADS",
+        "MESHIOPLUSPLUS_SANITIZE": "thread",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "fuzzers",
+      "displayName": "libFuzzer + ASan/UBSan (Clang, SEQ)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "SEQ",
+        "MESHIOPLUSPLUS_SANITIZE": "address;undefined",
+        "MESHIOPLUSPLUS_BUILD_FUZZERS": "ON"
+      }
+    },
+    {
+      "name": "coverage",
+      "displayName": "Coverage (gcov, SEQ, tests)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "SEQ",
+        "MESHIOPLUSPLUS_COVERAGE": "ON",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "lto",
+      "displayName": "Release with LTO (tests)",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_ENABLE_LTO": "ON",
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "OPENMP",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "bench",
+      "displayName": "Benchmarks (SEQ, Release)",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "SEQ",
+        "MESHIOPLUSPLUS_BUILD_BENCHMARKS": "ON"
+      }
+    },
+    {
+      "name": "cli",
+      "displayName": "Native CLI (Release)",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_BUILD_CLI": "ON"
+      }
+    },
+    {
+      "name": "c-api",
+      "displayName": "Installable C API + tests",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_BUILD_C_API": "ON",
+        "MESHIOPLUSPLUS_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "install-cpp",
+      "displayName": "Installable C++ library (MESHIO + NATIVE)",
+      "inherits": "base",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_INSTALL_CPP": "ON",
+        "MESHIOPLUSPLUS_INSTALL_CPP_BACKENDS": "MESHIO;NATIVE"
+      }
+    },
+    {
+      "name": "wasm",
+      "displayName": "WebAssembly (Emscripten)",
+      "inherits": "base",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "MESHIOPLUSPLUS_PARALLEL_BACKEND": "SEQ",
+        "MESHIOPLUSPLUS_WITH_HDF5": "OFF",
+        "MESHIOPLUSPLUS_WITH_NETCDF": "OFF",
+        "MESHIOPLUSPLUS_WITH_OCCT": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "tests-seq", "configurePreset": "tests-seq" },
+    { "name": "tests-openmp", "configurePreset": "tests-openmp" },
+    { "name": "tests-threads", "configurePreset": "tests-threads" },
+    { "name": "sanitize", "configurePreset": "sanitize" },
+    { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "fuzzers", "configurePreset": "fuzzers" },
+    { "name": "coverage", "configurePreset": "coverage" },
+    { "name": "lto", "configurePreset": "lto" },
+    { "name": "bench", "configurePreset": "bench" },
+    { "name": "cli", "configurePreset": "cli" },
+    { "name": "c-api", "configurePreset": "c-api" },
+    { "name": "install-cpp", "configurePreset": "install-cpp" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev",
+      "configurePreset": "dev",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "tests-seq",
+      "configurePreset": "tests-seq",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "tests-openmp",
+      "configurePreset": "tests-openmp",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "tests-threads",
+      "configurePreset": "tests-threads",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "sanitize",
+      "configurePreset": "sanitize",
+      "execution": { "jobs": 1 },
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "tsan",
+      "configurePreset": "tsan",
+      "execution": { "jobs": 1 },
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

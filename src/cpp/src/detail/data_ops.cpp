@@ -117,10 +117,11 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
     // reader happened to classify it as a named type or as a polyhedron.
     // (openfoam.cpp classifies by an (nfaces, nunique_points) signature, so a
     // slightly-degenerate hex genuinely lands in the other bucket.)
-    CellRings rings;
-    std::vector<Vec3> ring_coords;
+    static thread_local CellRings rings;
+    static thread_local std::vector<Vec3> ring_coords;
     if (cell_rings(rCell, Index, rPoints, PointDim, rings, ring_coords)) {
-        orient_rings(rings, ring_coords.data());
+        if (rCell.IsPolyhedron())
+            orient_rings(rings, ring_coords.data());
         const PolyMeasure m = poly_measure(rings, ring_coords.data());
         return std::fabs(m.mVolume);
     }
@@ -132,7 +133,8 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
     const int corners = cell_corner_count(ct);
     if (corners <= 0)
         return std::nan("");
-    std::vector<Vec3> coords;
+    static thread_local std::vector<Vec3> coords;
+    coords.clear();
     read_corner_coords(rPoints, PointDim, rCell.Conn(), Index * rCell.NodesPerCell(),
                        static_cast<std::size_t>(corners), coords);
     const int dim = cell_type_dimension(ct);

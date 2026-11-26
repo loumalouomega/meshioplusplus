@@ -57,8 +57,9 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/sequence.hpp"
 #include "../detail/nastran_write_common.hpp"
-#include "../detail/typed_view.hpp"
 #include "../detail/text_utils.hpp"
+#include "../detail/thread_annotations.hpp"
+#include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
 
@@ -4298,9 +4299,10 @@ struct Op2wCandidate {
 /// the reader's table: the stress code with von Mises first, so that it wins a tie.
 const std::vector<Op2wCandidate>& op2w_candidates(Op2Family Family, std::int32_t Etype,
                                                   bool Complex, bool Random) {
-    static std::mutex lock;
-    static std::map<std::tuple<int, std::int32_t, bool, bool>, std::vector<Op2wCandidate>> cache;
-    const std::lock_guard<std::mutex> guard(lock);
+    static detail::AnnotatedMutex lock;
+    static std::map<std::tuple<int, std::int32_t, bool, bool>, std::vector<Op2wCandidate>> cache
+        MIO_GUARDED_BY(lock);
+    const detail::AnnotatedLockGuard guard(lock);
     const auto key = std::make_tuple(static_cast<int>(Family), Etype, Complex, Random);
     auto it = cache.find(key);
     if (it != cache.end())

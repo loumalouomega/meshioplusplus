@@ -53,6 +53,7 @@
 #include "smooth_odt.hpp"
 #include "../detail/crease_edges.hpp"
 #include "../detail/facet_slots.hpp"
+#include "../detail/fem_kernels.hpp"
 #include "../detail/slot_runs.hpp"
 
 namespace meshioplusplus {
@@ -175,6 +176,7 @@ NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& r
 // How a cell's orientation can be checked. Cells with no signed measure at all
 // never enter the table, so `None` is not represented here.
 enum class SmoothMeasure : std::uint8_t {
+    Tet,         ///< tetrahedron: six times signed volume via detail::tet_volume6.
     PolyFan,     ///< polyhedron: the kernel's corner-average fan over the cell's own faces
     FaceFan,     ///< 3D volume cell: signed volume by the outward face fan.
     Shoelace2D,  ///< 2D cell in a 2D mesh: signed area.
@@ -253,7 +255,9 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
 
         SmoothMeasure measure;
         std::int32_t face_id = -1;
-        if (dim == 3 && detail::skin_supported(ct)) {
+        if (ct == CellType::Tetra) {
+            measure = SmoothMeasure::Tet;
+        } else if (dim == 3 && detail::skin_supported(ct)) {
             measure = SmoothMeasure::FaceFan;
             auto it = face_table_ids.find(static_cast<int>(ct));
             if (it == face_table_ids.end()) {
@@ -455,6 +459,8 @@ Vec3 smooth_cell_measure(std::size_t Cell, const SmoothCellTable& rTable,
     const std::int64_t off = rTable.mCornerOffset[Cell];
     const std::size_t ncorner = static_cast<std::size_t>(rTable.mCornerOffset[Cell + 1] - off);
     switch (rTable.mMeasure[Cell]) {
+        case SmoothMeasure::Tet:
+            return {detail::tet_volume6(rAt(0), rAt(1), rAt(2), rAt(3)), 0.0, 0.0};
         case SmoothMeasure::PolyFan:
             // Measured WITHOUT re-orienting: a polyhedron's stored winding is
             // arbitrary but fixed for the whole run, so the sign is consistent
@@ -491,6 +497,10 @@ bool smooth_cell_flips(std::size_t Cell, const SmoothCellTable& rTable,
     // Each case calls its measure directly, as smooth_cell_measure does, so
     // the reader inlines into the hot after-move evaluation.
     switch (rTable.mMeasure[Cell]) {
+        case SmoothMeasure::Tet:
+            if (rBefore[0] <= 0.0)
+                return false;  // already inverted/degenerate: no constraint
+            return detail::tet_volume6(after(0), after(1), after(2), after(3)) <= 0.0;
         case SmoothMeasure::PolyFan: {
             const double v0 = rBefore[0];
             if (v0 == 0.0)
@@ -1012,14 +1022,13 @@ SmoothMethod smooth_method_from_name(const std::string& rName) {
 
 // The measurable-cell table smooth_build_cell_table builds for a mesh made of
 // one tetra block with these rows, without building the mesh: every tet with
-// in-range corners, in order, measured by its outward face fan.
+// in-range corners, in order, measured by detail::tet_volume6.
 SmoothCellTable smooth_cell_table_from_tets(const std::vector<std::array<std::int64_t, 4>>& rTets,
                                             std::size_t n) {
     SmoothCellTable t;
     t.mCornerOffset.reserve(rTets.size() + 1);
     t.mCornerNodes.reserve(rTets.size() * 4);
     t.mCornerOffset.push_back(0);
-    t.mFaceTables.push_back(&detail::cell_faces(CellType::Tetra));
     for (const auto& tet : rTets) {
         bool ok = true;
         for (std::int64_t id : tet)
@@ -1027,8 +1036,8 @@ SmoothCellTable smooth_cell_table_from_tets(const std::vector<std::array<std::in
         if (!ok)
             continue;
         t.mCornerNodes.insert(t.mCornerNodes.end(), tet.begin(), tet.end());
-        t.mMeasure.push_back(SmoothMeasure::FaceFan);
-        t.mFaceTable.push_back(0);
+        t.mMeasure.push_back(SmoothMeasure::Tet);
+        t.mFaceTable.push_back(-1);
         t.mPolyStart.push_back(-1);
         t.mPolyNumFaces.push_back(0);
         t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));

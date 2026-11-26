@@ -108,7 +108,7 @@ def parse(data, fmt):
         )
     except ReadError as exc:
         raise ReadError(str(exc).replace("{fmt}", fmt)) from None
-    except (ValueError, UnicodeDecodeError, RecursionError) as exc:
+    except (ValueError, RecursionError) as exc:
         raise ReadError(f"meshio++: {fmt}: malformed JSON: {exc}") from None
     if _depth(value) > _MAX_DEPTH:
         raise ReadError(

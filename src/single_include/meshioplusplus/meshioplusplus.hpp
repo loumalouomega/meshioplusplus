@@ -45442,6 +45442,7 @@ std::array<double, 6> tet_dihedral_angles(const Vec3& rA, const Vec3& rB, const 
 
 // System includes
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 // Project includes
@@ -45456,6 +45457,12 @@ struct BoundingBox3 {
 
 /// Static axis-aligned bounding-box helpers.
 struct BoundingBoxUtils {
+    /// An empty box seeded with `[+inf, -inf]` on every axis.
+    static BoundingBox3 Empty() {
+        constexpr double inf = std::numeric_limits<double>::infinity();
+        return {{inf, inf, inf}, {-inf, -inf, -inf}};
+    }
+
     /// Widens `rBox` to hold `rQ`: `std::min(lo, q)`, `std::max(hi, q)` per axis.
     static void Expand(BoundingBox3& rBox, const Vec3& rQ) {
         for (std::size_t a = 0; a < 3; ++a) {
@@ -45474,6 +45481,19 @@ struct BoundingBoxUtils {
             return box;
         box.mMin = rPoints[0];
         box.mMax = rPoints[0];
+        for (const Vec3& r_q : rPoints)
+            Expand(box, r_q);
+        return box;
+    }
+
+    /**
+     * @brief The box of `rPoints`, seeded with `[+inf, -inf]`. Unlike
+     * `FromPoints`, an empty input stays inverted (`mMin[0] > mMax[0]`) and a
+     * NaN coordinate leaves the bound unchanged (exact match for infinity-seeded
+     * loops).
+     */
+    static BoundingBox3 FromPointsOrEmpty(const std::vector<Vec3>& rPoints) {
+        BoundingBox3 box = Empty();
         for (const Vec3& r_q : rPoints)
             Expand(box, r_q);
         return box;
@@ -53026,6 +53046,13 @@ inline constexpr int kHexCornerEdges[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {
                                               {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
 
 /**
+ * @brief Outward-wound triangular faces of a positively-oriented linear
+ * tetrahedron (meshio/VTK order), matching `detail::cell_faces(CellType::Tetra)`
+ * as a compile-time constant for hot inner loops.
+ */
+inline constexpr int kTetOutwardFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+
+/**
  * @brief Each corner of a linear wedge (meshio order) and its three edge
  * neighbours, in the order the wedge's scaled Jacobian reads them.
  */
@@ -53131,6 +53158,64 @@ inline double tet_amips(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Ve
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/fem_kernels.hpp =====
+// ===== begin src/cpp/src/detail/field_recovery.hpp =====
+/**
+ * @file detail/field_recovery.hpp
+ * @brief Array-level internal entry points for cell gradient and point/cell
+ * averaging (roadmap 5.27).
+ *
+ * Core-private (not installed; no ABI impact). Allows composite operations
+ * such as `estimate_error` (and point-located `gradient`) to run the recovery
+ * pipeline directly on arrays without cloning the whole `Mesh` at every stage
+ * and without recomputing per-cell measures.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+struct GradientArrayResult {
+    std::vector<NDArray> mBlocks;
+    std::int64_t mNumSkipped = 0;
+    std::int64_t mNumFallback = 0;
+};
+
+/**
+ * @brief Compute per-block cell gradient arrays without cloning @p rMesh.
+ *
+ * Runs the same validation and arithmetic as `gradient()` with
+ * `mLocation == DataLocation::Cell` (skipping the output-name collision check
+ * so internal callers need not fabricate a dummy key).
+ */
+GradientArrayResult gradient_array(const Mesh& rMesh, const GradientOptions& rOptions);
+
+/**
+ * @brief Average one per-block cell-data array to points without cloning @p rMesh.
+ *
+ * When @p pRawMeasures is non-null and `rOpts.weight == CellPointWeight::Measure`,
+ * populates `*pRawMeasures` with the raw `detail::cell_measure(...)` values
+ * before non-positive / non-finite fallback clamping so callers such as
+ * `estimate_error` can reuse them bit-for-bit.
+ */
+NDArray cell_to_point_array(const Mesh& rMesh, const std::vector<NDArray>& rBlocks,
+                            const std::string& rName, const DataAverageOptions& rOpts,
+                            std::vector<std::vector<double>>* pRawMeasures = nullptr);
+
+/**
+ * @brief Average one point-data array to per-block cell arrays without cloning @p rMesh.
+ */
+std::vector<NDArray> point_to_cell_array(const Mesh& rMesh, const NDArray& rSrc,
+                                         const std::string& rName, const DataAverageOptions& rOpts);
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/field_recovery.hpp =====
 // ===== begin src/cpp/src/detail/param_disc.hpp =====
 /**
  * @file detail/param_disc.hpp
@@ -54147,6 +54232,37 @@ struct MathUtils {
         pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
         pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
         return true;
+    }
+
+    /**
+     * @brief Solves the general (non-symmetric) 3x3 system with rows
+     * `rA0, rA1, rA2` and right-hand side `rB` by Cramer's rule.
+     *
+     * Sets `rOk = false` and returns `{0, 0, 0}` when `|det(A)| < Eps`.
+     * Matches `quality_solve3` operation for operation.
+     */
+    static Vec3 Solve3(const Vec3& rA0, const Vec3& rA1, const Vec3& rA2, const Vec3& rB,
+                       double Eps, bool& rOk) {
+        auto det = [](const Vec3& r0, const Vec3& r1, const Vec3& r2) {
+            return r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) -
+                   r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
+                   r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
+        };
+        const double d = det(rA0, rA1, rA2);
+        if (std::fabs(d) < Eps) {
+            rOk = false;
+            return {0.0, 0.0, 0.0};
+        }
+        rOk = true;
+        Vec3 x;
+        for (int k = 0; k < 3; ++k) {
+            Vec3 c0 = rA0, c1 = rA1, c2 = rA2;
+            c0[static_cast<std::size_t>(k)] = rB[0];
+            c1[static_cast<std::size_t>(k)] = rB[1];
+            c2[static_cast<std::size_t>(k)] = rB[2];
+            x[static_cast<std::size_t>(k)] = det(c0, c1, c2) / d;
+        }
+        return x;
     }
 
     ///@}
@@ -55542,6 +55658,119 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/layer_sweep.hpp =====
+// ===== begin src/cpp/src/detail/thread_annotations.hpp =====
+/**
+ * @file detail/thread_annotations.hpp
+ * @brief Clang `-Wthread-safety` capability macros and thin mutex/lock
+ * wrappers (roadmap 3.10.3).
+ *
+ * libstdc++'s `std::mutex` carries no Clang capability annotations, so raw
+ * `std::mutex` cannot be named in `MIO_GUARDED_BY(...)`. `AnnotatedMutex`,
+ * `AnnotatedRecursiveMutex`, `AnnotatedLockGuard`, and `AnnotatedUniqueLock`
+ * wrap the standard primitives with zero runtime overhead so Clang checks
+ * lock ownership on both libstdc++ and libc++ builds; on GCC and MSVC the
+ * macros expand to nothing.
+ *
+ * A **core-private** header (not installed): no API or ABI surface.
+ */
+
+// System includes
+#include <condition_variable>
+#include <mutex>
+
+#if defined(__clang__) && (!defined(SWIG))
+#define MIO_THREAD_ANNOTATION(x) __attribute__((x))
+#else
+#define MIO_THREAD_ANNOTATION(x)
+#endif
+
+#define MIO_CAPABILITY(x) MIO_THREAD_ANNOTATION(capability(x))
+#define MIO_SCOPED_CAPABILITY MIO_THREAD_ANNOTATION(scoped_lockable)
+#define MIO_GUARDED_BY(x) MIO_THREAD_ANNOTATION(guarded_by(x))
+#define MIO_PT_GUARDED_BY(x) MIO_THREAD_ANNOTATION(pt_guarded_by(x))
+#define MIO_REQUIRES(...) MIO_THREAD_ANNOTATION(requires_capability(__VA_ARGS__))
+#define MIO_ACQUIRE(...) MIO_THREAD_ANNOTATION(acquire_capability(__VA_ARGS__))
+#define MIO_RELEASE(...) MIO_THREAD_ANNOTATION(release_capability(__VA_ARGS__))
+#define MIO_TRY_ACQUIRE(...) MIO_THREAD_ANNOTATION(try_acquire_capability(__VA_ARGS__))
+#define MIO_EXCLUDES(...) MIO_THREAD_ANNOTATION(locks_excluded(__VA_ARGS__))
+#define MIO_RETURN_CAPABILITY(x) MIO_THREAD_ANNOTATION(lock_returned(x))
+#define MIO_NO_THREAD_SAFETY_ANALYSIS MIO_THREAD_ANNOTATION(no_thread_safety_analysis)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Zero-overhead `std::mutex` wrapper annotated as a Clang capability.
+class MIO_CAPABILITY("mutex") AnnotatedMutex {
+public:
+    AnnotatedMutex() = default;
+    AnnotatedMutex(const AnnotatedMutex&) = delete;
+    AnnotatedMutex& operator=(const AnnotatedMutex&) = delete;
+
+    void lock() MIO_ACQUIRE() { mMutex.lock(); }
+    bool try_lock() MIO_TRY_ACQUIRE(true) { return mMutex.try_lock(); }
+    void unlock() MIO_RELEASE() { mMutex.unlock(); }
+
+    std::mutex& Native() { return mMutex; }
+
+private:
+    std::mutex mMutex;
+};
+
+/// Zero-overhead `std::recursive_mutex` wrapper annotated as a Clang capability.
+class MIO_CAPABILITY("mutex") AnnotatedRecursiveMutex {
+public:
+    AnnotatedRecursiveMutex() = default;
+    AnnotatedRecursiveMutex(const AnnotatedRecursiveMutex&) = delete;
+    AnnotatedRecursiveMutex& operator=(const AnnotatedRecursiveMutex&) = delete;
+
+    void lock() MIO_ACQUIRE() { mMutex.lock(); }
+    bool try_lock() MIO_TRY_ACQUIRE(true) { return mMutex.try_lock(); }
+    void unlock() MIO_RELEASE() { mMutex.unlock(); }
+
+private:
+    std::recursive_mutex mMutex;  // NOSONAR(cpp:S8462): explicit recursive lock
+};
+
+/// RAII scoped lock for `AnnotatedMutex` / `AnnotatedRecursiveMutex`.
+template <class TMutex>
+class MIO_SCOPED_CAPABILITY AnnotatedLockGuard {
+public:
+    explicit AnnotatedLockGuard(TMutex& rMutex) MIO_ACQUIRE(rMutex) : mrMutex(rMutex) {
+        mrMutex.lock();
+    }
+    ~AnnotatedLockGuard() MIO_RELEASE() { mrMutex.unlock(); }
+    AnnotatedLockGuard(const AnnotatedLockGuard&) = delete;
+    AnnotatedLockGuard& operator=(const AnnotatedLockGuard&) = delete;
+
+private:
+    TMutex& mrMutex;
+};
+
+/// Movable-free unique lock over `AnnotatedMutex` supporting `condition_variable::wait`.
+class MIO_SCOPED_CAPABILITY AnnotatedUniqueLock {
+public:
+    explicit AnnotatedUniqueLock(AnnotatedMutex& rMutex) MIO_ACQUIRE(rMutex)
+        : mLock(rMutex.Native()) {}
+    ~AnnotatedUniqueLock() MIO_RELEASE() = default;
+
+    AnnotatedUniqueLock(const AnnotatedUniqueLock&) = delete;
+    AnnotatedUniqueLock& operator=(const AnnotatedUniqueLock&) = delete;
+
+    void lock() MIO_ACQUIRE() { mLock.lock(); }
+    void unlock() MIO_RELEASE() { mLock.unlock(); }
+
+    template <class TPred>
+    void Wait(std::condition_variable& rCv, TPred&& rPred) MIO_NO_THREAD_SAFETY_ANALYSIS {
+        rCv.wait(mLock, std::forward<TPred>(rPred));
+    }
+
+private:
+    std::unique_lock<std::mutex> mLock;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/thread_annotations.hpp =====
 // ===== begin src/cpp/src/detail/library_lock.hpp =====
 /**
  * @file detail/library_lock.hpp
@@ -55567,25 +55796,26 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
  * from under it, the gid series callback, re-acquires the GIL itself).
  */
 
-#include <mutex>
 
 namespace meshioplusplus {
 namespace detail {
 
 /// The process-wide mutex; prefer `LibraryLock`. Recursive: see above.
-std::recursive_mutex& library_mutex();  // NOSONAR(cpp:S8462): entry points nest
+AnnotatedRecursiveMutex& library_mutex();  // NOSONAR(cpp:S8462): entry points nest
 
 /// How many `LibraryLock`s the calling thread holds (0 when none).
 int& library_lock_depth();
 
 /// RAII guard over `library_mutex()`.
+/// Recursive by design (entry points nest), so it does not declare Clang's
+/// non-reentrant `scoped_lockable` capability.
 class LibraryLock {
 public:
-    LibraryLock() {
+    LibraryLock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         library_mutex().lock();
         ++library_lock_depth();
     }
-    ~LibraryLock() {
+    ~LibraryLock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         --library_lock_depth();
         library_mutex().unlock();
     }
@@ -55605,12 +55835,12 @@ public:
  */
 class LibraryUnlock {
 public:
-    LibraryUnlock() : mDepth(library_lock_depth()) {
+    LibraryUnlock() MIO_NO_THREAD_SAFETY_ANALYSIS : mDepth(library_lock_depth()) {
         for (int i = 0; i < mDepth; ++i)
             library_mutex().unlock();
         library_lock_depth() = 0;
     }
-    ~LibraryUnlock() {
+    ~LibraryUnlock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         for (int i = 0; i < mDepth; ++i)
             library_mutex().lock();
         library_lock_depth() = mDepth;
@@ -58984,18 +59214,20 @@ std::vector<SketchWorldPiece> sketch_world_pieces(const Mesh& rMesh, const char*
 // ===== begin src/cpp/src/detail/sparse_solve.hpp =====
 /**
  * @file detail/sparse_solve.hpp
- * @brief Sparse linear algebra for the skin-to-CAD fits: a compressed-row
- * matrix assembled from triplets, its product with a vector, and Jacobi-
- * preconditioned conjugate gradients (symmetric positive definite systems,
- * such as least-squares conformal maps) and BiCGSTAB (the non-symmetric
- * mean-value parametrisation).
+ * @brief Sparse linear algebra for the mesh operations and skin-to-CAD fits:
+ * a compressed-row matrix assembled from triplets, its product with a vector,
+ * Jacobi- and IC(0)-preconditioned conjugate gradients (with workspace reuse
+ * and multi-RHS block solves), BiCGSTAB for non-symmetric systems, and a
+ * zero-dependency RCM-ordered sparse direct LDL^T factorisation for repeated
+ * SPD solves on a fixed matrix (roadmap 5.24).
  *
  * A **core-private** header (the `lsq_fit.hpp` precedent): no installed header
  * names it, and it adds nothing to the API or the ABI. Every result is the
  * same on every backend and at every thread count: the rows of a product are
- * independent, and every dot product sums fixed chunks of `kSparseChunk`
- * entries in parallel and then the chunk sums serially in index order
- * (`parallel_reduce`), so no floating-point sum depends on the scheduling.
+ * independent, every dot product sums fixed chunks of `kSparseChunk` entries
+ * in parallel and then the chunk sums serially in index order
+ * (`parallel_reduce`), IC(0) and LDL^T factorisations run in deterministic order,
+ * and multi-RHS solves run independent columns without cross-column FP drift.
  * Iteration caps are fixed, there is no randomness, and triplets with the same
  * row and column are summed in the order they were given.
  */
@@ -59057,6 +59289,20 @@ struct SparseSolveReport {
     double mRelativeResidual = 0.0;
 };
 
+/// Reusable Jacobi preconditioner and scratch vectors for repeated `csr_pcg`
+/// solves on one fixed matrix (roadmap 5.24.1).
+struct CsrPcgWorkspace {
+    std::size_t mRows = 0;
+    std::vector<double> mMinv;
+    std::vector<double> mR;
+    std::vector<double> mZ;
+    std::vector<double> mP;
+    std::vector<double> mAp;
+
+    /// Cache the inverse diagonal and size the scratch buffers for @p rA.
+    void Prepare(const SparseCsr& rA);
+};
+
 /**
  * @brief Solve a symmetric positive definite system by conjugate gradients
  * with a Jacobi (diagonal) preconditioner.
@@ -59068,6 +59314,84 @@ struct SparseSolveReport {
  */
 SparseSolveReport csr_pcg(const SparseCsr& rA, const double* pB, double* pX,
                           double RelativeTolerance = 1e-12, std::size_t MaxIterations = 0);
+
+/// `csr_pcg` reusing @p rWorkspace (bit-identical to the allocating overload).
+SparseSolveReport csr_pcg(const SparseCsr& rA, const double* pB, double* pX,
+                          CsrPcgWorkspace& rWorkspace, double RelativeTolerance = 1e-12,
+                          std::size_t MaxIterations = 0);
+
+/// Multi-RHS Jacobi-PCG on one fixed matrix @p rA, streaming @p rA once per
+/// iteration across active columns (or running independent columns in parallel
+/// when `rA.mRows` is small). Bit-identical per column to `csr_pcg`.
+std::vector<SparseSolveReport> csr_pcg_block(const SparseCsr& rA, std::size_t NumRhs,
+                                             const double* const* ppB, double* const* ppX,
+                                             CsrPcgWorkspace& rWorkspace,
+                                             double RelativeTolerance = 1e-12,
+                                             std::size_t MaxIterations = 0);
+
+/// Zero-fill incomplete Cholesky `IC(0)` preconditioner for a symmetric
+/// positive definite CSR matrix (roadmap 5.24.2). Deterministic, no external
+/// dependency; retries with diagonal shift and falls back to Jacobi if the
+/// matrix is not SPD.
+struct CsrIc0 {
+    std::size_t mRows = 0;
+    std::vector<std::size_t> mLStart;
+    std::vector<std::size_t> mLCol;
+    std::vector<double> mLVal;
+    std::vector<double> mDiagInv;
+    std::vector<double> mJacobiInv;
+    bool mValid = false;
+
+    /// Build the IC(0) factor for @p rA. Returns true when IC(0) succeeded;
+    /// when false, `Apply` falls back to `mJacobiInv`.
+    bool Build(const SparseCsr& rA);
+
+    /// Apply `M^-1 r` into `pZ` (`pZ` must not alias `pR`).
+    void Apply(const double* pR, double* pZ) const;
+};
+
+/// Conjugate gradients preconditioned by @p rPrecond, reusing @p rWorkspace.
+SparseSolveReport csr_ic0_pcg(const SparseCsr& rA, const CsrIc0& rPrecond, const double* pB,
+                              double* pX, CsrPcgWorkspace& rWorkspace,
+                              double RelativeTolerance = 1e-12, std::size_t MaxIterations = 0);
+
+/// Convenience overload: builds `CsrIc0` once and solves.
+SparseSolveReport csr_ic0_pcg(const SparseCsr& rA, const double* pB, double* pX,
+                              double RelativeTolerance = 1e-12, std::size_t MaxIterations = 0);
+
+/// Multi-RHS IC(0)-preconditioned conjugate gradients on one fixed matrix @p rA.
+std::vector<SparseSolveReport> csr_ic0_pcg_block(const SparseCsr& rA, const CsrIc0& rPrecond,
+                                                 std::size_t NumRhs, const double* const* ppB,
+                                                 double* const* ppX, CsrPcgWorkspace& rWorkspace,
+                                                 double RelativeTolerance = 1e-12,
+                                                 std::size_t MaxIterations = 0);
+
+/// Cached sparse direct `P A P^T = L D L^T` factorisation with RCM fill-
+/// reducing ordering and Davis's up-looking sparse LDL^T (roadmap 5.24.2).
+/// Zero external dependency and deterministic across backends and thread counts.
+struct CsrLdlt {
+    std::size_t mRows = 0;
+    std::vector<std::size_t> mPerm;     ///< permuted index -> original index
+    std::vector<std::size_t> mInvPerm;  ///< original index -> permuted index
+    std::vector<std::size_t> mLp;       ///< column pointers of unit lower L (size n + 1)
+    std::vector<std::size_t> mLi;       ///< row indices of L (strictly > col)
+    std::vector<double> mLx;            ///< entries of L
+    std::vector<double> mDInv;          ///< inverse diagonal entries `1 / D[j]`
+    bool mValid = false;
+
+    /// Factor SPD @p rA once. Returns false if symbolic `nnz(L)` exceeds
+    /// @p MaxLNonzeros or a non-positive pivot is encountered.
+    bool Factor(const SparseCsr& rA, std::size_t MaxLNonzeros = 4000000);
+
+    /// Solve `A x = b` using the cached factorisation and caller scratch @p rWork.
+    void Solve(const double* pB, double* pX, std::vector<double>& rWork) const;
+
+    /// Solve `A x = b` using the cached factorisation.
+    void Solve(const double* pB, double* pX) const;
+
+    /// Solve `NumRhs` systems independently (parallel across RHS columns).
+    void SolveBlock(std::size_t NumRhs, const double* const* ppB, double* const* ppX) const;
+};
 
 /**
  * @brief Solve a general square system by Jacobi-preconditioned BiCGSTAB (van
@@ -89509,19 +89833,29 @@ CrossField cross_field(const std::vector<PatchVec>& rPts, const std::vector<Patc
             for (std::size_t i = 0; i < 2 * nfree; ++i)
                 trip.push_back({i, i, 1e-10});
             const SparseCsr a = csr_from_triplets(2 * nfree, 2 * nfree, trip);
-            csr_pcg(a, rhs.data(), x.data(), 1e-12, 20 * nfree + 100);
+            csr_ic0_pcg(a, rhs.data(), x.data(), 1e-12, 20 * nfree + 100);
         } else {
             // Nothing pins the field: the smallest eigenvector, by inverse
             // iteration from a fixed start.
             for (std::size_t i = 0; i < 2 * nfree; ++i)
                 trip.push_back({i, i, 1e-8});
             const SparseCsr a = csr_from_triplets(2 * nfree, 2 * nfree, trip);
-            std::vector<double> v(2 * nfree, 0.0);
+            CsrLdlt ldlt;
+            const bool direct = ldlt.Factor(a);
+            CsrIc0 ic0;
+            CsrPcgWorkspace ws;
+            if (!direct)
+                ic0.Build(a);
+            std::vector<double> v(2 * nfree, 0.0), y(2 * nfree, 0.0), work;
             for (std::size_t i = 0; i < nfree; ++i)
                 v[2 * i] = 1.0;
             for (int it = 0; it < rOptions.mPowerIterations; ++it) {
-                std::vector<double> y(2 * nfree, 0.0);
-                csr_pcg(a, v.data(), y.data(), 1e-12, 20 * nfree + 100);
+                if (direct) {
+                    ldlt.Solve(v.data(), y.data(), work);
+                } else {
+                    std::fill(y.begin(), y.end(), 0.0);
+                    csr_ic0_pcg(a, ic0, v.data(), y.data(), ws, 1e-12, 20 * nfree + 100);
+                }
                 const double n = std::sqrt(sparse_dot(y.data(), y.data(), y.size()));
                 if (!(n > 0.0))
                     break;
@@ -90807,10 +91141,11 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
     // reader happened to classify it as a named type or as a polyhedron.
     // (openfoam.cpp classifies by an (nfaces, nunique_points) signature, so a
     // slightly-degenerate hex genuinely lands in the other bucket.)
-    CellRings rings;
-    std::vector<Vec3> ring_coords;
+    static thread_local CellRings rings;
+    static thread_local std::vector<Vec3> ring_coords;
     if (cell_rings(rCell, Index, rPoints, PointDim, rings, ring_coords)) {
-        orient_rings(rings, ring_coords.data());
+        if (rCell.IsPolyhedron())
+            orient_rings(rings, ring_coords.data());
         const PolyMeasure m = poly_measure(rings, ring_coords.data());
         return std::fabs(m.mVolume);
     }
@@ -90822,7 +91157,8 @@ double cell_measure(const NDArray& rPoints, std::size_t PointDim, const Mesh::Ce
     const int corners = cell_corner_count(ct);
     if (corners <= 0)
         return std::nan("");
-    std::vector<Vec3> coords;
+    static thread_local std::vector<Vec3> coords;
+    coords.clear();
     read_corner_coords(rPoints, PointDim, rCell.Conn(), Index * rCell.NodesPerCell(),
                        static_cast<std::size_t>(corners), coords);
     const int dim = cell_type_dimension(ct);
@@ -92611,8 +92947,8 @@ namespace {
 /// `Split` for the chordal cap.
 template <class TSplit>
 void edgs_sized_stretch(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions, double L0,
-                        double L1, double Length, std::int64_t& rBudget, std::vector<double>& rEnds,
-                        TSplit&& rSplit) {
+                        double L1, double Length, std::int64_t& rBudget,
+                        std::vector<double>& /*rEnds*/, TSplit&& rSplit) {
     const double part = L1 - L0;
     const auto density = [&](double L) {
         const double hx = rOptions.mSize(rTrace.Point(rTrace.ParamAtLength(L)));
@@ -93902,6 +94238,7 @@ FmSlots fm_build_slots(const Mesh& rMesh, const std::vector<std::size_t>& rBlock
 
     const NDArray& points = rMesh.Points();
     const std::size_t dim = rMesh.PointDim();
+    const std::size_t npts = rMesh.NumPoints();
     const std::vector<std::int64_t> bases = block_bases(rMesh);
 
     // ---- Phase 0: the compact cell space --------------------------------
@@ -93930,15 +94267,32 @@ FmSlots fm_build_slots(const Mesh& rMesh, const std::vector<std::size_t>& rBlock
     }
 
     // ---- Phase 1: face and ring-node counts per cell --------------------
-    // `cell_rings` is a gather, so running it twice is cheap; `orient_rings`
-    // (the BFS) runs only in phase 2. Counting first is what lets phase 2 write
-    // straight into pre-sized buffers instead of holding a per-cell vector pair
-    // for the whole mesh -- on a ten-million-cell case that is gigabytes. The
-    // node count is what lets phase 2 place each ring without a third pass.
+    // Tabulated 3D blocks have a fixed face count and corner-ring length per
+    // cell, so they fill counts directly without per-cell `cell_rings`.
+    // Polyhedron blocks still count via `cell_rings` so phase 2 writes straight
+    // into pre-sized buffers.
     std::vector<std::int64_t> n_cell_faces(n_cells, 0);
     std::vector<std::int64_t> n_cell_nodes(n_cells, 0);
     for (const FmBlockDesc& d : descs) {
         const auto cb = rMesh.Cells(d.mBlock);
+        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
+            const CellType ct = cell_type_from_name(cb.Type());
+            const std::vector<CellFaceDef>& faces = cell_faces(ct);
+            const int corners = cell_corner_count(ct);
+            if (faces.empty() || corners <= 0)
+                continue;
+            const auto nf = static_cast<std::int64_t>(faces.size());
+            std::int64_t nn = 0;
+            for (const CellFaceDef& f : faces)
+                nn += static_cast<std::int64_t>(f.mNumCorners);
+            std::fill(
+                n_cell_faces.begin() + static_cast<std::ptrdiff_t>(d.mFirstCell),
+                n_cell_faces.begin() + static_cast<std::ptrdiff_t>(d.mFirstCell + d.mNumCells), nf);
+            std::fill(
+                n_cell_nodes.begin() + static_cast<std::ptrdiff_t>(d.mFirstCell),
+                n_cell_nodes.begin() + static_cast<std::ptrdiff_t>(d.mFirstCell + d.mNumCells), nn);
+            continue;
+        }
         parallel_for(d.mNumCells, [&](std::size_t i) {
             static thread_local CellRings rings;
             static thread_local std::vector<Vec3> coords;
@@ -93972,17 +94326,94 @@ FmSlots fm_build_slots(const Mesh& rMesh, const std::vector<std::size_t>& rBlock
     std::vector<std::uint8_t> cell_flipped(n_cells, 0);
     std::vector<std::uint8_t> cell_unorientable(n_cells, 0);
 
+    const DoubleView pts_v(points);
+    const double* pxyz = pts_v.Data();
+    const auto read_pt = [&](std::int64_t Id) -> Vec3 {
+        if (Id < 0 || static_cast<std::size_t>(Id) >= npts)
+            return {0.0, 0.0, 0.0};
+        const double* p = pxyz + static_cast<std::size_t>(Id) * dim;
+        return {dim > 0 ? p[0] : 0.0, dim > 1 ? p[1] : 0.0, dim > 2 ? p[2] : 0.0};
+    };
+
     for (const FmBlockDesc& d : descs) {
         const auto cb = rMesh.Cells(d.mBlock);
+        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
+            const CellType ct = cell_type_from_name(cb.Type());
+            const std::vector<CellFaceDef>& faces = cell_faces(ct);
+            const int corners = cell_corner_count(ct);
+            if (faces.empty() || corners <= 0)
+                continue;
+            const Int64View conn_v(cb.Conn());
+            const std::int64_t* pconn = conn_v.Data();
+            const std::size_t npc = cb.NodesPerCell();
+            const std::size_t nf = faces.size();
+            const bool is_tet = (corners == 4 && nf == 4);
+
+            // Reference face rings for non-tet tabulated cells (used only to
+            // check the cell's signed volume sign; `cell_faces(ct)` is already
+            // consistently wound outward on the reference element).
+            CellRings ref_rings;
+            if (!is_tet) {
+                ref_rings.mNodes.resize(static_cast<std::size_t>(corners));
+                for (int k = 0; k < corners; ++k)
+                    ref_rings.mNodes[static_cast<std::size_t>(k)] = k;
+                ref_rings.mFaceStart.push_back(0);
+                for (const CellFaceDef& f : faces) {
+                    for (int k = 0; k < f.mNumCorners; ++k)
+                        ref_rings.mFaceNodes.push_back(f.mNodes[k]);
+                    ref_rings.mFaceStart.push_back(
+                        static_cast<std::uint32_t>(ref_rings.mFaceNodes.size()));
+                }
+            }
+
+            parallel_for(d.mNumCells, [&](std::size_t i) {
+                const std::size_t cell = d.mFirstCell + i;
+                const std::int64_t* row = pconn + i * npc;
+                bool flipped = false;
+                if (is_tet) {
+                    const Vec3 p0 = read_pt(row[0]);
+                    const Vec3 p1 = read_pt(row[1]);
+                    const Vec3 p2 = read_pt(row[2]);
+                    const Vec3 p3 = read_pt(row[3]);
+                    flipped = tet_volume6(p0, p1, p2, p3) < 0.0;
+                } else {
+                    static thread_local std::vector<Vec3> coords;
+                    coords.resize(static_cast<std::size_t>(corners));
+                    for (int k = 0; k < corners; ++k)
+                        coords[static_cast<std::size_t>(k)] = read_pt(row[k]);
+                    flipped = poly_measure(ref_rings, coords.data()).mVolume < 0.0;
+                }
+                if (flipped)
+                    cell_flipped[cell] = 1;
+
+                const std::size_t base = static_cast<std::size_t>(out.mCellFaceStart[cell]);
+                std::int64_t at = cell_node_start[cell];
+                for (std::size_t f = 0; f < nf; ++f) {
+                    const CellFaceDef& fd = faces[f];
+                    const std::size_t n = static_cast<std::size_t>(fd.mNumCorners);
+                    out.mSlotSize[base + f] = static_cast<std::int64_t>(n);
+                    out.mSlotStart[base + f] = at;
+                    std::int64_t* dst = out.mSlotNodes.data() + at;
+                    if (!flipped) {
+                        for (std::size_t k = 0; k < n; ++k)
+                            dst[k] = row[fd.mNodes[k]];
+                    } else {
+                        for (std::size_t k = 0; k < n; ++k)
+                            dst[k] = row[fd.mNodes[n - 1 - k]];
+                    }
+                    at += static_cast<std::int64_t>(n);
+                }
+            });
+            continue;
+        }
         parallel_for(d.mNumCells, [&](std::size_t i) {
             static thread_local CellRings rings;
             static thread_local std::vector<Vec3> coords;
             const std::size_t cell = d.mFirstCell + i;
             if (!cell_rings(cb, i, points, dim, rings, coords))
                 return;
-            // Repair unconditionally: `cell_faces.hpp`'s rows are outward on the
-            // REFERENCE element, so an inverted hexahedron yields six inward
-            // normals and every one of its faces would be written misoriented.
+            // Repair unconditionally: a polyhedron's stored winding is
+            // unconstrained, so orient its faces outward before emitting.
             const RingOrientation ro = orient_rings(rings, coords.data());
             if (ro == RingOrientation::Repaired)
                 cell_flipped[cell] = 1;
@@ -97439,7 +97870,6 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
 
     const std::int64_t nx = rSpec.mDims[0];
     const std::int64_t ny = rSpec.mDims[1];
-    const std::int64_t nz = rSpec.mDims[2];
     const std::int64_t px = nx + 1;
     const std::int64_t py = ny + 1;
     const std::int64_t npoints = lattice_num_points(rSpec);
@@ -101604,16 +102034,25 @@ HoleFillPatch hole_fill(const HoleFillInput& rIn, std::int64_t Base) {
                 add_row(v, true);
         }
         const SparseCsr a = csr_from_triplets(nu, nu, std::move(trip));
+        std::vector<std::vector<double>> b_cols(3, std::vector<double>(nu));
+        std::vector<std::vector<double>> x_cols(3, std::vector<double>(nu));
+        std::array<const double*, 3> b_ptrs{};
+        std::array<double*, 3> x_ptrs{};
         for (std::size_t k = 0; k < 3; ++k) {
-            std::vector<double> b(nu), x(nu);
             for (std::size_t u = 0; u < nu; ++u) {
-                b[u] = rhs[u][k];
-                x[u] = p[n + u][k];
+                b_cols[k][u] = rhs[u][k];
+                x_cols[k][u] = p[n + u][k];
             }
-            csr_pcg(a, b.data(), x.data(), 1e-13, 0);
-            for (std::size_t u = 0; u < nu; ++u)
-                p[n + u][k] = x[u];
+            b_ptrs[k] = b_cols[k].data();
+            x_ptrs[k] = x_cols[k].data();
         }
+        CsrIc0 precond;
+        precond.Build(a);
+        CsrPcgWorkspace ws;
+        csr_ic0_pcg_block(a, precond, 3, b_ptrs.data(), x_ptrs.data(), ws, 1e-13, 0);
+        for (std::size_t k = 0; k < 3; ++k)
+            for (std::size_t u = 0; u < nu; ++u)
+                p[n + u][k] = x_cols[k][u];
     }
     HoleFillPatch out;
     out.mPoints.assign(p.begin() + static_cast<std::ptrdiff_t>(n), p.end());
@@ -103997,8 +104436,8 @@ namespace detail {
 // Recursive because entry points nest (library_lock.hpp): read_exodus(path,
 // opts) locks and calls read_exodus(path, info, opts), which locks again, and
 // the gid series callback runs Python that may read an HDF5 file.
-std::recursive_mutex& library_mutex() {  // NOSONAR(cpp:S8462): see above
-    static std::recursive_mutex sMutex;  // NOSONAR(cpp:S8462): see above
+AnnotatedRecursiveMutex& library_mutex() {  // NOSONAR(cpp:S8462): see above
+    static AnnotatedRecursiveMutex sMutex;  // NOSONAR(cpp:S8462): see above
     return sMutex;
 }
 
@@ -109644,9 +110083,27 @@ DiscParam param_lscm(const std::vector<PatchVec>& rPts, const std::vector<PatchT
     }
     const SparseCsr a = csr_from_triplets(m, m, std::move(ata));
     std::vector<double> x(m, 0.0);
-    const SparseSolveReport rep = csr_pcg(a, atb.data(), x.data(), 1e-12, 20 * m + 100);
-    if (!(rep.mRelativeResidual <= 1e-8))
-        return out;
+    bool solved = false;
+    CsrLdlt ldlt;
+    if (ldlt.Factor(a)) {
+        ldlt.Solve(atb.data(), x.data());
+        std::vector<double> ax(m, 0.0);
+        csr_multiply(a, x.data(), ax.data());
+        double r2 = 0.0, b2 = 0.0;
+        for (std::size_t i = 0; i < m; ++i) {
+            const double diff = atb[i] - ax[i];
+            r2 += diff * diff;
+            b2 += atb[i] * atb[i];
+        }
+        const double rel = b2 > 0.0 ? std::sqrt(r2 / b2) : std::sqrt(r2);
+        solved = std::isfinite(rel) && rel <= 1e-8;
+    }
+    if (!solved) {
+        std::fill(x.begin(), x.end(), 0.0);
+        const SparseSolveReport rep = csr_ic0_pcg(a, atb.data(), x.data(), 1e-12, 20 * m + 100);
+        if (!(rep.mRelativeResidual <= 1e-8))
+            return out;
+    }
     out.mU.assign(n, 0.0);
     out.mV.assign(n, 0.0);
     for (std::size_t i = 0; i < n; ++i)
@@ -111223,7 +111680,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             for (std::size_t i = 1; i + 1 < nu; ++i)
                 for (std::size_t c = 0; c < 3; ++c)
                     x[3 * ((i - 1) + mi * (j - 1)) + c] = s.mPoles[3 * (i + nu * j) + c];
-        const SparseSolveReport rep = csr_pcg(a, ne.mB.data(), x.data(), 1e-13, 20 * dim + 200);
+        const SparseSolveReport rep = csr_ic0_pcg(a, ne.mB.data(), x.data(), 1e-13, 20 * dim + 200);
         for (std::size_t j = 1; j + 1 < nv; ++j)
             for (std::size_t i = 1; i + 1 < nu; ++i)
                 for (std::size_t c = 0; c < 3; ++c)
@@ -111720,7 +112177,7 @@ PatchNetwork patch_network_fit(const std::vector<PatchVec>& rPts,
             for (std::size_t i = 0; i < np; ++i)
                 keep_ref[i] = out.mPatches[i].mRefinements;
             const SparseSolveReport rep =
-                csr_pcg(a, rhs.data(), x.data(), 1e-9, 20 * 3 * ncol + 200);
+                csr_ic0_pcg(a, rhs.data(), x.data(), 1e-9, 20 * 3 * ncol + 200);
             // Write the solution back: the chains, each patch's sides and
             // poles (its boundary rows through its map), its parameters.
             for (std::size_t c = 0; c < nc; ++c)
@@ -120234,6 +120691,7 @@ std::vector<SketchWorldPiece> sketch_world_pieces(const Mesh& rMesh, const char*
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -120257,13 +120715,13 @@ void sps_axpy(double A, const double* pX, double* pY, std::size_t N) {
     parallel_for(N, [&](std::size_t i) { pY[i] += A * pX[i]; }, kSpsGrain);
 }
 
-// The relative residual ||b - A x|| / ||b|| (0 for a zero b), into rR.
-double sps_residual(const SparseCsr& rA, const double* pB, const double* pX,
-                    std::vector<double>& rR, double BNorm) {
+// The relative residual ||b - A x|| / ||b|| (0 for a zero b), into pR.
+double sps_residual(const SparseCsr& rA, const double* pB, const double* pX, double* pR,
+                    double BNorm) {
     const std::size_t n = rA.mRows;
-    csr_multiply(rA, pX, rR.data());
-    parallel_for(n, [&](std::size_t i) { rR[i] = pB[i] - rR[i]; }, kSpsGrain);
-    const double rn = std::sqrt(sparse_dot(rR.data(), rR.data(), n));
+    csr_multiply(rA, pX, pR);
+    parallel_for(n, [&](std::size_t i) { pR[i] = pB[i] - pR[i]; }, kSpsGrain);
+    const double rn = std::sqrt(sparse_dot(pR, pR, n));
     return BNorm > 0.0 ? rn / BNorm : rn;
 }
 
@@ -120279,6 +120737,502 @@ void sps_check_square(const SparseCsr& rA, const char* pWho) {
     if (rA.mRows != rA.mCols)
         throw std::invalid_argument(std::string("meshio++: ") + pWho +
                                     ": the matrix is not square");
+}
+
+// Core preconditioned conjugate gradient body taking a preconditioner functor
+// `rApplyPrecond(const double* pR, double* pZ)` and caller-owned scratch.
+template <class TApply>
+SparseSolveReport sps_pcg_core(const SparseCsr& rA, const double* pB, double* pX,
+                               const TApply& rApplyPrecond, double* pR, double* pZ, double* pP,
+                               double* pAp, double RelativeTolerance, std::size_t MaxIterations) {
+    const std::size_t n = rA.mRows;
+    SparseSolveReport rep;
+    if (n == 0) {
+        rep.mConverged = true;
+        return rep;
+    }
+    if (MaxIterations == 0)
+        MaxIterations = 2 * n + 10;
+    const double bnorm = std::sqrt(sparse_dot(pB, pB, n));
+    rep.mRelativeResidual = sps_residual(rA, pB, pX, pR, bnorm);
+    if (bnorm == 0.0) {
+        // b = 0: the solution of an SPD system is x = 0.
+        std::fill(pX, pX + n, 0.0);
+        rep.mConverged = true;
+        rep.mRelativeResidual = 0.0;
+        return rep;
+    }
+    if (rep.mRelativeResidual <= RelativeTolerance) {
+        rep.mConverged = true;
+        return rep;
+    }
+    rApplyPrecond(pR, pZ);
+    std::copy(pZ, pZ + n, pP);
+    double rz = sparse_dot(pR, pZ, n);
+    for (std::size_t it = 1; it <= MaxIterations; ++it) {
+        csr_multiply(rA, pP, pAp);
+        const double pap = sparse_dot(pP, pAp, n);
+        if (!(pap > 0.0) || !std::isfinite(pap))
+            break;
+        const double alpha = rz / pap;
+        sps_axpy(alpha, pP, pX, n);
+        sps_axpy(-alpha, pAp, pR, n);
+        rep.mIterations = it;
+        rep.mRelativeResidual = std::sqrt(sparse_dot(pR, pR, n)) / bnorm;
+        if (rep.mRelativeResidual <= RelativeTolerance) {
+            rep.mConverged = true;
+            break;
+        }
+        rApplyPrecond(pR, pZ);
+        const double rz_new = sparse_dot(pR, pZ, n);
+        const double beta = rz_new / rz;
+        rz = rz_new;
+        parallel_for(n, [&](std::size_t i) { pP[i] = pZ[i] + beta * pP[i]; }, kSpsGrain);
+    }
+    // The recurrence's residual drifts from the true one; report the true one.
+    rep.mRelativeResidual = sps_residual(rA, pB, pX, pR, bnorm);
+    rep.mConverged = rep.mRelativeResidual <= 10.0 * RelativeTolerance;
+    return rep;
+}
+
+// Multi-RHS PCG streaming `rA` once per iteration across all active columns.
+// Every floating-point operation for each column is bit-identical to running
+// `sps_pcg_core` independently for that column.
+template <class TApply>
+std::vector<SparseSolveReport> sps_pcg_block_core(const SparseCsr& rA, std::size_t NumRhs,
+                                                  const double* const* ppB, double* const* ppX,
+                                                  const TApply& rApplyPrecond,
+                                                  double RelativeTolerance,
+                                                  std::size_t MaxIterations) {
+    const std::size_t n = rA.mRows;
+    std::vector<SparseSolveReport> reps(NumRhs);
+    if (NumRhs == 0)
+        return reps;
+    if (n == 0) {
+        for (SparseSolveReport& rep : reps)
+            rep.mConverged = true;
+        return reps;
+    }
+    if (MaxIterations == 0)
+        MaxIterations = 2 * n + 10;
+
+    // On threaded builds with small-to-medium n, running independent RHS
+    // columns in parallel gives full multi-core scaling with zero cross-column
+    // synchronization and identical arithmetic to the serial solver.
+    if (NumRhs > 1 && n <= kSpsGrain && parallel_workers() > 1) {
+        parallel_for(
+            NumRhs,
+            [&](std::size_t j) {
+                std::vector<double> r(n), z(n), p(n), ap(n);
+                reps[j] = sps_pcg_core(rA, ppB[j], ppX[j], rApplyPrecond, r.data(), z.data(),
+                                       p.data(), ap.data(), RelativeTolerance, MaxIterations);
+            },
+            std::size_t{1});
+        return reps;
+    }
+
+    // Stream `rA` once per iteration across all active columns.
+    std::vector<double> r_buf(NumRhs * n);
+    std::vector<double> z_buf(NumRhs * n);
+    std::vector<double> p_buf(NumRhs * n);
+    std::vector<double> ap_buf(NumRhs * n);
+    std::vector<double> bnorm(NumRhs, 0.0);
+    std::vector<double> rz(NumRhs, 0.0);
+    std::vector<std::size_t> active;
+    active.reserve(NumRhs);
+
+    for (std::size_t j = 0; j < NumRhs; ++j) {
+        double* pr = r_buf.data() + j * n;
+        double* pz = z_buf.data() + j * n;
+        double* pp = p_buf.data() + j * n;
+        bnorm[j] = std::sqrt(sparse_dot(ppB[j], ppB[j], n));
+        reps[j].mRelativeResidual = sps_residual(rA, ppB[j], ppX[j], pr, bnorm[j]);
+        if (bnorm[j] == 0.0) {
+            std::fill(ppX[j], ppX[j] + n, 0.0);
+            reps[j].mConverged = true;
+            reps[j].mRelativeResidual = 0.0;
+            continue;
+        }
+        if (reps[j].mRelativeResidual <= RelativeTolerance) {
+            reps[j].mConverged = true;
+            continue;
+        }
+        rApplyPrecond(pr, pz);
+        std::copy(pz, pz + n, pp);
+        rz[j] = sparse_dot(pr, pz, n);
+        active.push_back(j);
+    }
+
+    std::vector<std::size_t> next_active;
+    next_active.reserve(NumRhs);
+    std::vector<double> row_sums(NumRhs);
+    std::vector<const double*> p_ptrs(NumRhs);
+    std::vector<double*> ap_ptrs(NumRhs);
+
+    for (std::size_t it = 1; it <= MaxIterations && !active.empty(); ++it) {
+        const std::size_t ka = active.size();
+        for (std::size_t a = 0; a < ka; ++a) {
+            p_ptrs[a] = p_buf.data() + active[a] * n;
+            ap_ptrs[a] = ap_buf.data() + active[a] * n;
+        }
+        if (n <= kSpsGrain) {
+            for (std::size_t row = 0; row < n; ++row) {
+                for (std::size_t a = 0; a < ka; ++a)
+                    row_sums[a] = 0.0;
+                const std::size_t beg = rA.mStart[row], end = rA.mStart[row + 1];
+                for (std::size_t e = beg; e < end; ++e) {
+                    const std::size_t col = rA.mCol[e];
+                    const double val = rA.mValue[e];
+                    for (std::size_t a = 0; a < ka; ++a)
+                        row_sums[a] += val * p_ptrs[a][col];
+                }
+                for (std::size_t a = 0; a < ka; ++a)
+                    ap_ptrs[a][row] = row_sums[a];
+            }
+        } else {
+            parallel_for(
+                n,
+                [&](std::size_t row) {
+                    static thread_local std::vector<double> s;
+                    s.assign(ka, 0.0);
+                    const std::size_t beg = rA.mStart[row], end = rA.mStart[row + 1];
+                    for (std::size_t e = beg; e < end; ++e) {
+                        const std::size_t col = rA.mCol[e];
+                        const double val = rA.mValue[e];
+                        for (std::size_t a = 0; a < ka; ++a)
+                            s[a] += val * p_ptrs[a][col];
+                    }
+                    for (std::size_t a = 0; a < ka; ++a)
+                        ap_ptrs[a][row] = s[a];
+                },
+                kSpsGrain);
+        }
+
+        next_active.clear();
+        for (std::size_t a = 0; a < ka; ++a) {
+            const std::size_t j = active[a];
+            double* pr = r_buf.data() + j * n;
+            double* pz = z_buf.data() + j * n;
+            double* pp = p_buf.data() + j * n;
+            const double* pap = ap_ptrs[a];
+            const double pap_dot = sparse_dot(pp, pap, n);
+            if (!(pap_dot > 0.0) || !std::isfinite(pap_dot))
+                continue;
+            const double alpha = rz[j] / pap_dot;
+            sps_axpy(alpha, pp, ppX[j], n);
+            sps_axpy(-alpha, pap, pr, n);
+            reps[j].mIterations = it;
+            reps[j].mRelativeResidual = std::sqrt(sparse_dot(pr, pr, n)) / bnorm[j];
+            if (reps[j].mRelativeResidual <= RelativeTolerance) {
+                reps[j].mConverged = true;
+                continue;
+            }
+            rApplyPrecond(pr, pz);
+            const double rz_new = sparse_dot(pr, pz, n);
+            const double beta = rz_new / rz[j];
+            rz[j] = rz_new;
+            parallel_for(n, [&](std::size_t i) { pp[i] = pz[i] + beta * pp[i]; }, kSpsGrain);
+            next_active.push_back(j);
+        }
+        active.swap(next_active);
+    }
+
+    for (std::size_t j = 0; j < NumRhs; ++j) {
+        if (bnorm[j] == 0.0 || reps[j].mIterations == 0)
+            continue;
+        double* pr = r_buf.data() + j * n;
+        reps[j].mRelativeResidual = sps_residual(rA, ppB[j], ppX[j], pr, bnorm[j]);
+        reps[j].mConverged = reps[j].mRelativeResidual <= 10.0 * RelativeTolerance;
+    }
+    return reps;
+}
+
+// Deterministic BFS-level-set Nested Dissection ordering on the symmetrised
+// adjacency graph of `rA`, for O(n log n) fill on 2-D meshes (and reduced fill
+// on 3-D meshes) in `CsrLdlt`.
+void sps_nd_order(const SparseCsr& rA, std::vector<std::size_t>& rPerm,
+                  std::vector<std::size_t>& rInvPerm) {
+    const std::size_t n = rA.mRows;
+    rPerm.clear();
+    rPerm.reserve(n);
+    rInvPerm.assign(n, 0);
+    if (n == 0)
+        return;
+
+    // Build symmetrised loopless adjacency list (CSR).
+    std::vector<std::size_t> adj_start(n + 1, 0);
+    for (std::size_t r = 0; r < n; ++r) {
+        for (std::size_t k = rA.mStart[r]; k < rA.mStart[r + 1]; ++k) {
+            const std::size_t c = rA.mCol[k];
+            if (c != r) {
+                ++adj_start[r + 1];
+                ++adj_start[c + 1];
+            }
+        }
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        adj_start[i + 1] += adj_start[i];
+    std::vector<std::size_t> adj_col(adj_start[n]);
+    {
+        std::vector<std::size_t> cur = adj_start;
+        for (std::size_t r = 0; r < n; ++r) {
+            for (std::size_t k = rA.mStart[r]; k < rA.mStart[r + 1]; ++k) {
+                const std::size_t c = rA.mCol[k];
+                if (c != r) {
+                    adj_col[cur[r]++] = c;
+                    adj_col[cur[c]++] = r;
+                }
+            }
+        }
+    }
+    // Deduplicate each row in place so adjacency is clean and compact.
+    std::vector<std::size_t> sym_start(n + 1, 0);
+    std::size_t write = 0;
+    for (std::size_t r = 0; r < n; ++r) {
+        auto beg = adj_col.begin() + static_cast<std::ptrdiff_t>(adj_start[r]);
+        auto end = adj_col.begin() + static_cast<std::ptrdiff_t>(adj_start[r + 1]);
+        std::sort(beg, end);
+        end = std::unique(beg, end);
+        for (auto it = beg; it != end; ++it)
+            adj_col[write++] = *it;
+        sym_start[r + 1] = write;
+    }
+    adj_col.resize(write);
+
+    std::vector<std::uint32_t> sub_tag(n, 0);
+    std::vector<std::uint32_t> vis_tag(n, 0);
+    std::vector<std::int32_t> lvl(n, -1);
+    std::vector<std::size_t> deg(n, 0);
+    std::vector<std::size_t> bfs;
+    bfs.reserve(n);
+    std::uint32_t cur_sub = 0;
+    std::uint32_t cur_vis = 0;
+
+    constexpr std::size_t kMinSplit = 32;
+    constexpr int kMaxDepth = 48;
+
+    const auto next_sub = [&]() -> std::uint32_t {
+        if (++cur_sub == 0) {
+            std::fill(sub_tag.begin(), sub_tag.end(), 0);
+            cur_sub = 1;
+        }
+        return cur_sub;
+    };
+    const auto next_vis = [&]() -> std::uint32_t {
+        if (++cur_vis == 0) {
+            std::fill(vis_tag.begin(), vis_tag.end(), 0);
+            cur_vis = 1;
+        }
+        return cur_vis;
+    };
+
+    // Order a small leaf component by local RCM so its bandwidth stays tight.
+    const auto order_leaf = [&](const std::vector<std::size_t>& rComp) {
+        if (rComp.size() <= 4) {
+            rPerm.insert(rPerm.end(), rComp.begin(), rComp.end());
+            return;
+        }
+        const std::uint32_t stag = next_sub();
+        for (std::size_t u : rComp)
+            sub_tag[u] = stag;
+        std::size_t seed = rComp.front();
+        std::size_t min_d = n + 1;
+        for (std::size_t u : rComp) {
+            std::size_t d = 0;
+            for (std::size_t k = sym_start[u]; k < sym_start[u + 1]; ++k)
+                if (sub_tag[adj_col[k]] == stag)
+                    ++d;
+            deg[u] = d;
+            if (d < min_d || (d == min_d && u < seed)) {
+                min_d = d;
+                seed = u;
+            }
+        }
+        const std::uint32_t vtag = next_vis();
+        bfs.clear();
+        std::vector<std::size_t> nbrs;
+        for (std::size_t start_u : rComp) {
+            if (vis_tag[start_u] == vtag)
+                continue;
+            const std::size_t s = vis_tag[seed] != vtag ? seed : start_u;
+            const std::size_t comp_beg = bfs.size();
+            vis_tag[s] = vtag;
+            bfs.push_back(s);
+            for (std::size_t h = comp_beg; h < bfs.size(); ++h) {
+                const std::size_t u = bfs[h];
+                nbrs.clear();
+                for (std::size_t k = sym_start[u]; k < sym_start[u + 1]; ++k) {
+                    const std::size_t v = adj_col[k];
+                    if (sub_tag[v] == stag && vis_tag[v] != vtag) {
+                        vis_tag[v] = vtag;
+                        nbrs.push_back(v);
+                    }
+                }
+                std::sort(nbrs.begin(), nbrs.end(), [&](std::size_t a, std::size_t b) {
+                    return deg[a] != deg[b] ? deg[a] < deg[b] : a < b;
+                });
+                for (std::size_t v : nbrs)
+                    bfs.push_back(v);
+            }
+            for (std::size_t idx = bfs.size(); idx-- > comp_beg;)
+                rPerm.push_back(bfs[idx]);
+        }
+    };
+
+    const auto recurse = [&](auto&& rSelf, std::vector<std::size_t> rNodes, int Depth) -> void {
+        if (rNodes.size() <= kMinSplit || Depth >= kMaxDepth) {
+            order_leaf(rNodes);
+            return;
+        }
+        const std::uint32_t stag = next_sub();
+        for (std::size_t u : rNodes)
+            sub_tag[u] = stag;
+
+        // Split into connected components within `rNodes`.
+        const std::uint32_t cvis = next_vis();
+        std::vector<std::vector<std::size_t>> comps;
+        for (std::size_t root : rNodes) {
+            if (vis_tag[root] == cvis)
+                continue;
+            std::vector<std::size_t> comp;
+            vis_tag[root] = cvis;
+            comp.push_back(root);
+            for (std::size_t h = 0; h < comp.size(); ++h) {
+                const std::size_t u = comp[h];
+                for (std::size_t k = sym_start[u]; k < sym_start[u + 1]; ++k) {
+                    const std::size_t v = adj_col[k];
+                    if (sub_tag[v] == stag && vis_tag[v] != cvis) {
+                        vis_tag[v] = cvis;
+                        comp.push_back(v);
+                    }
+                }
+            }
+            comps.push_back(std::move(comp));
+        }
+
+        if (comps.size() > 1) {
+            rNodes.clear();
+            rNodes.shrink_to_fit();
+            for (auto& comp : comps)
+                rSelf(rSelf, std::move(comp), Depth);
+            return;
+        }
+
+        // Single connected component: bisect via pseudo-peripheral BFS level set.
+        std::size_t seed = rNodes.front();
+        std::size_t min_d = n + 1;
+        for (std::size_t u : rNodes) {
+            std::size_t d = 0;
+            for (std::size_t k = sym_start[u]; k < sym_start[u + 1]; ++k)
+                if (sub_tag[adj_col[k]] == stag)
+                    ++d;
+            deg[u] = d;
+            if (d < min_d || (d == min_d && u < seed)) {
+                min_d = d;
+                seed = u;
+            }
+        }
+        for (int pass = 0; pass < 2; ++pass) {
+            const std::uint32_t vtag = next_vis();
+            bfs.clear();
+            vis_tag[seed] = vtag;
+            lvl[seed] = 0;
+            bfs.push_back(seed);
+            std::size_t far = seed;
+            std::int32_t max_l = 0;
+            for (std::size_t h = 0; h < bfs.size(); ++h) {
+                const std::size_t u = bfs[h];
+                const std::int32_t lu = lvl[u];
+                if (lu > max_l ||
+                    (lu == max_l && (deg[u] < deg[far] || (deg[u] == deg[far] && u < far)))) {
+                    max_l = lu;
+                    far = u;
+                }
+                for (std::size_t k = sym_start[u]; k < sym_start[u + 1]; ++k) {
+                    const std::size_t v = adj_col[k];
+                    if (sub_tag[v] == stag && vis_tag[v] != vtag) {
+                        vis_tag[v] = vtag;
+                        lvl[v] = lu + 1;
+                        bfs.push_back(v);
+                    }
+                }
+            }
+            seed = far;
+        }
+
+        // Final BFS from `seed` to get level structure.
+        const std::uint32_t vtag = next_vis();
+        bfs.clear();
+        vis_tag[seed] = vtag;
+        lvl[seed] = 0;
+        bfs.push_back(seed);
+        std::int32_t max_lvl = 0;
+        for (std::size_t h = 0; h < bfs.size(); ++h) {
+            const std::size_t u = bfs[h];
+            const std::int32_t lu = lvl[u];
+            if (lu > max_lvl)
+                max_lvl = lu;
+            for (std::size_t k = sym_start[u]; k < sym_start[u + 1]; ++k) {
+                const std::size_t v = adj_col[k];
+                if (sub_tag[v] == stag && vis_tag[v] != vtag) {
+                    vis_tag[v] = vtag;
+                    lvl[v] = lu + 1;
+                    bfs.push_back(v);
+                }
+            }
+        }
+        if (max_lvl < 2) {
+            order_leaf(rNodes);
+            return;
+        }
+        std::int32_t mid = lvl[bfs[bfs.size() / 2]];
+        if (mid == 0)
+            mid = 1;
+        if (mid == max_lvl)
+            mid = max_lvl - 1;
+
+        std::vector<std::size_t> part_a, part_b, sep;
+        part_a.reserve(bfs.size() / 2);
+        part_b.reserve(bfs.size() / 2);
+        for (std::size_t u : rNodes) {
+            const std::int32_t lu = lvl[u];
+            if (lu < mid) {
+                part_a.push_back(u);
+            } else if (lu > mid) {
+                part_b.push_back(u);
+            } else {
+                bool touches_b = false;
+                for (std::size_t k = sym_start[u]; k < sym_start[u + 1]; ++k) {
+                    const std::size_t v = adj_col[k];
+                    if (sub_tag[v] == stag && lvl[v] > mid) {
+                        touches_b = true;
+                        break;
+                    }
+                }
+                if (touches_b)
+                    sep.push_back(u);
+                else
+                    part_a.push_back(u);
+            }
+        }
+        if (part_a.empty() || part_b.empty()) {
+            order_leaf(rNodes);
+            return;
+        }
+        rNodes.clear();
+        rNodes.shrink_to_fit();
+        rSelf(rSelf, std::move(part_a), Depth + 1);
+        rSelf(rSelf, std::move(part_b), Depth + 1);
+        rPerm.insert(rPerm.end(), sep.begin(), sep.end());
+    };
+
+    std::vector<std::size_t> all(n);
+    for (std::size_t i = 0; i < n; ++i)
+        all[i] = i;
+    recurse(recurse, std::move(all), 0);
+
+    for (std::size_t i = 0; i < n; ++i)
+        rInvPerm[rPerm[i]] = i;
 }
 
 }  // namespace
@@ -120352,59 +121306,490 @@ double sparse_dot(const double* pA, const double* pB, std::size_t N) {
     return parallel_reduce(N, kSparseChunk, 0.0, chunk, [](double L, double R) { return L + R; });
 }
 
+void CsrPcgWorkspace::Prepare(const SparseCsr& rA) {
+    sps_check_square(rA, "CsrPcgWorkspace::Prepare");
+    const std::size_t n = rA.mRows;
+    mRows = n;
+    mMinv = sps_jacobi(rA);
+    mR.resize(n);
+    mZ.resize(n);
+    mP.resize(n);
+    mAp.resize(n);
+}
+
+SparseSolveReport csr_pcg(const SparseCsr& rA, const double* pB, double* pX,
+                          CsrPcgWorkspace& rWorkspace, double RelativeTolerance,
+                          std::size_t MaxIterations) {
+    sps_check_square(rA, "csr_pcg");
+    const std::size_t n = rA.mRows;
+    if (rWorkspace.mRows != n || rWorkspace.mMinv.size() != n)
+        rWorkspace.Prepare(rA);
+    const double* minv = rWorkspace.mMinv.data();
+    return sps_pcg_core(
+        rA, pB, pX,
+        [minv, n](const double* pR, double* pZ) {
+            parallel_for(n, [&](std::size_t i) { pZ[i] = minv[i] * pR[i]; }, kSpsGrain);
+        },
+        rWorkspace.mR.data(), rWorkspace.mZ.data(), rWorkspace.mP.data(), rWorkspace.mAp.data(),
+        RelativeTolerance, MaxIterations);
+}
+
 SparseSolveReport csr_pcg(const SparseCsr& rA, const double* pB, double* pX,
                           double RelativeTolerance, std::size_t MaxIterations) {
     sps_check_square(rA, "csr_pcg");
+    if (rA.mRows == 0) {
+        SparseSolveReport rep;
+        rep.mConverged = true;
+        return rep;
+    }
+    CsrPcgWorkspace ws;
+    ws.Prepare(rA);
+    return csr_pcg(rA, pB, pX, ws, RelativeTolerance, MaxIterations);
+}
+
+std::vector<SparseSolveReport> csr_pcg_block(const SparseCsr& rA, std::size_t NumRhs,
+                                             const double* const* ppB, double* const* ppX,
+                                             CsrPcgWorkspace& rWorkspace, double RelativeTolerance,
+                                             std::size_t MaxIterations) {
+    sps_check_square(rA, "csr_pcg_block");
+    if (NumRhs == 0)
+        return {};
+    if (NumRhs == 1)
+        return {csr_pcg(rA, ppB[0], ppX[0], rWorkspace, RelativeTolerance, MaxIterations)};
     const std::size_t n = rA.mRows;
-    SparseSolveReport rep;
+    if (rWorkspace.mRows != n || rWorkspace.mMinv.size() != n)
+        rWorkspace.Prepare(rA);
+    const double* minv = rWorkspace.mMinv.data();
+    return sps_pcg_block_core(
+        rA, NumRhs, ppB, ppX,
+        [minv, n](const double* pR, double* pZ) {
+            parallel_for(n, [&](std::size_t i) { pZ[i] = minv[i] * pR[i]; }, kSpsGrain);
+        },
+        RelativeTolerance, MaxIterations);
+}
+
+bool CsrIc0::Build(const SparseCsr& rA) {
+    sps_check_square(rA, "CsrIc0::Build");
+    const std::size_t n = rA.mRows;
+    mRows = n;
+    mJacobiInv = sps_jacobi(rA);
+    mLStart.assign(n + 1, 0);
+    mLCol.clear();
+    mLVal.clear();
+    mDiagInv.assign(n, 1.0);
+    mValid = false;
     if (n == 0) {
-        rep.mConverged = true;
-        return rep;
+        mValid = true;
+        return true;
     }
-    if (MaxIterations == 0)
-        MaxIterations = 2 * n + 10;
-    const std::vector<double> minv = sps_jacobi(rA);
-    const double bnorm = std::sqrt(sparse_dot(pB, pB, n));
-    std::vector<double> r(n), z(n), p(n), ap(n);
-    rep.mRelativeResidual = sps_residual(rA, pB, pX, r, bnorm);
-    if (bnorm == 0.0) {
-        // b = 0: the solution of an SPD system is x = 0.
-        std::fill(pX, pX + n, 0.0);
-        rep.mConverged = true;
-        rep.mRelativeResidual = 0.0;
-        return rep;
-    }
-    if (rep.mRelativeResidual <= RelativeTolerance) {
-        rep.mConverged = true;
-        return rep;
-    }
-    parallel_for(n, [&](std::size_t i) { z[i] = minv[i] * r[i]; }, kSpsGrain);
-    p = z;
-    double rz = sparse_dot(r.data(), z.data(), n);
-    for (std::size_t it = 1; it <= MaxIterations; ++it) {
-        csr_multiply(rA, p.data(), ap.data());
-        const double pap = sparse_dot(p.data(), ap.data(), n);
-        if (!(pap > 0.0) || !std::isfinite(pap))
-            break;
-        const double alpha = rz / pap;
-        sps_axpy(alpha, p.data(), pX, n);
-        sps_axpy(-alpha, ap.data(), r.data(), n);
-        rep.mIterations = it;
-        rep.mRelativeResidual = std::sqrt(sparse_dot(r.data(), r.data(), n)) / bnorm;
-        if (rep.mRelativeResidual <= RelativeTolerance) {
-            rep.mConverged = true;
-            break;
+
+    // Extract lower triangle (j <= i) with the diagonal always placed last in
+    // each row.
+    std::vector<double> a_lower;
+    mLCol.reserve(rA.NumNonzeros() / 2 + n);
+    a_lower.reserve(rA.NumNonzeros() / 2 + n);
+    for (std::size_t i = 0; i < n; ++i) {
+        double diag = 0.0;
+        for (std::size_t k = rA.mStart[i]; k < rA.mStart[i + 1]; ++k) {
+            const std::size_t col = rA.mCol[k];
+            if (col < i) {
+                mLCol.push_back(col);
+                a_lower.push_back(rA.mValue[k]);
+            } else if (col == i) {
+                diag = rA.mValue[k];
+            }
         }
-        parallel_for(n, [&](std::size_t i) { z[i] = minv[i] * r[i]; }, kSpsGrain);
-        const double rz_new = sparse_dot(r.data(), z.data(), n);
-        const double beta = rz_new / rz;
-        rz = rz_new;
-        parallel_for(n, [&](std::size_t i) { p[i] = z[i] + beta * p[i]; }, kSpsGrain);
+        mLCol.push_back(i);
+        a_lower.push_back(diag);
+        mLStart[i + 1] = mLCol.size();
     }
-    // The recurrence's residual drifts from the true one; report the true one.
-    rep.mRelativeResidual = sps_residual(rA, pB, pX, r, bnorm);
-    rep.mConverged = rep.mRelativeResidual <= 10.0 * RelativeTolerance;
-    return rep;
+
+    mLVal.resize(a_lower.size());
+    std::vector<double> work(n, 0.0);
+    const double shifts[] = {0.0, 1e-3, 1e-2, 1e-1, 1.0};
+    for (const double alpha : shifts) {
+        std::copy(a_lower.begin(), a_lower.end(), mLVal.begin());
+        bool ok = true;
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t beg = mLStart[i];
+            const std::size_t end = mLStart[i + 1] - 1;  // diagonal slot
+            for (std::size_t p = beg; p < end; ++p)
+                work[mLCol[p]] = mLVal[p];
+            double diag = mLVal[end] * (1.0 + alpha);
+            for (std::size_t p = beg; p < end; ++p) {
+                const std::size_t j = mLCol[p];
+                double s = work[j];
+                const std::size_t j_beg = mLStart[j];
+                const std::size_t j_end = mLStart[j + 1] - 1;
+                for (std::size_t q = j_beg; q < j_end; ++q)
+                    s -= mLVal[q] * work[mLCol[q]];
+                const double lij = s * mDiagInv[j];
+                mLVal[p] = lij;
+                work[j] = lij;
+                diag -= lij * lij;
+            }
+            for (std::size_t p = beg; p < end; ++p)
+                work[mLCol[p]] = 0.0;
+            if (!(diag > 0.0) || !std::isfinite(diag)) {
+                ok = false;
+                break;
+            }
+            const double lii = std::sqrt(diag);
+            mLVal[end] = lii;
+            mDiagInv[i] = 1.0 / lii;
+        }
+        if (ok) {
+            mValid = true;
+            return true;
+        }
+    }
+    mValid = false;
+    return false;
+}
+
+void CsrIc0::Apply(const double* pR, double* pZ) const {
+    const std::size_t n = mRows;
+    if (!mValid) {
+        const double* minv = mJacobiInv.data();
+        parallel_for(n, [&](std::size_t i) { pZ[i] = minv[i] * pR[i]; }, kSpsGrain);
+        return;
+    }
+    // Forward solve: L y = r (into pZ).
+    for (std::size_t i = 0; i < n; ++i) {
+        double s = pR[i];
+        const std::size_t beg = mLStart[i];
+        const std::size_t end = mLStart[i + 1] - 1;
+        for (std::size_t k = beg; k < end; ++k)
+            s -= mLVal[k] * pZ[mLCol[k]];
+        pZ[i] = s * mDiagInv[i];
+    }
+    // Backward solve: L^T z = y (in-place on pZ, using row-oriented L as
+    // column-oriented L^T).
+    for (std::size_t i = n; i-- > 0;) {
+        const double zi = pZ[i] * mDiagInv[i];
+        pZ[i] = zi;
+        const std::size_t beg = mLStart[i];
+        const std::size_t end = mLStart[i + 1] - 1;
+        for (std::size_t k = beg; k < end; ++k)
+            pZ[mLCol[k]] -= mLVal[k] * zi;
+    }
+}
+
+SparseSolveReport csr_ic0_pcg(const SparseCsr& rA, const CsrIc0& rPrecond, const double* pB,
+                              double* pX, CsrPcgWorkspace& rWorkspace, double RelativeTolerance,
+                              std::size_t MaxIterations) {
+    sps_check_square(rA, "csr_ic0_pcg");
+    const std::size_t n = rA.mRows;
+    if (rWorkspace.mR.size() != n) {
+        rWorkspace.mRows = n;
+        rWorkspace.mR.resize(n);
+        rWorkspace.mZ.resize(n);
+        rWorkspace.mP.resize(n);
+        rWorkspace.mAp.resize(n);
+    }
+    return sps_pcg_core(
+        rA, pB, pX, [&](const double* pR, double* pZ) { rPrecond.Apply(pR, pZ); },
+        rWorkspace.mR.data(), rWorkspace.mZ.data(), rWorkspace.mP.data(), rWorkspace.mAp.data(),
+        RelativeTolerance, MaxIterations);
+}
+
+SparseSolveReport csr_ic0_pcg(const SparseCsr& rA, const double* pB, double* pX,
+                              double RelativeTolerance, std::size_t MaxIterations) {
+    sps_check_square(rA, "csr_ic0_pcg");
+    if (rA.mRows == 0) {
+        SparseSolveReport rep;
+        rep.mConverged = true;
+        return rep;
+    }
+    CsrIc0 precond;
+    precond.Build(rA);
+    CsrPcgWorkspace ws;
+    return csr_ic0_pcg(rA, precond, pB, pX, ws, RelativeTolerance, MaxIterations);
+}
+
+std::vector<SparseSolveReport> csr_ic0_pcg_block(const SparseCsr& rA, const CsrIc0& rPrecond,
+                                                 std::size_t NumRhs, const double* const* ppB,
+                                                 double* const* ppX, CsrPcgWorkspace& rWorkspace,
+                                                 double RelativeTolerance,
+                                                 std::size_t MaxIterations) {
+    sps_check_square(rA, "csr_ic0_pcg_block");
+    if (NumRhs == 0)
+        return {};
+    if (NumRhs == 1)
+        return {csr_ic0_pcg(rA, rPrecond, ppB[0], ppX[0], rWorkspace, RelativeTolerance,
+                            MaxIterations)};
+    return sps_pcg_block_core(
+        rA, NumRhs, ppB, ppX, [&](const double* pR, double* pZ) { rPrecond.Apply(pR, pZ); },
+        RelativeTolerance, MaxIterations);
+}
+
+bool CsrLdlt::Factor(const SparseCsr& rA, std::size_t MaxLNonzeros) {
+    sps_check_square(rA, "CsrLdlt::Factor");
+    const std::size_t n = rA.mRows;
+    mRows = n;
+    mValid = false;
+    mLp.clear();
+    mLi.clear();
+    mLx.clear();
+    mDInv.clear();
+    if (n == 0) {
+        mPerm.clear();
+        mInvPerm.clear();
+        mLp.assign(1, 0);
+        mValid = true;
+        return true;
+    }
+
+    sps_nd_order(rA, mPerm, mInvPerm);
+
+    // Build upper triangle of P A P^T in column-compressed format (row <= col).
+    std::vector<std::size_t> u_start(n + 1, 0);
+    for (std::size_t r = 0; r < n; ++r) {
+        const std::size_t pr = mInvPerm[r];
+        for (std::size_t k = rA.mStart[r]; k < rA.mStart[r + 1]; ++k) {
+            const std::size_t pc = mInvPerm[rA.mCol[k]];
+            if (pr <= pc)
+                ++u_start[pc + 1];
+        }
+    }
+    for (std::size_t c = 0; c < n; ++c)
+        u_start[c + 1] += u_start[c];
+    std::vector<std::size_t> u_row(u_start[n]);
+    std::vector<double> u_val(u_start[n]);
+    {
+        std::vector<std::size_t> cursor = u_start;
+        for (std::size_t r = 0; r < n; ++r) {
+            const std::size_t pr = mInvPerm[r];
+            for (std::size_t k = rA.mStart[r]; k < rA.mStart[r + 1]; ++k) {
+                const std::size_t pc = mInvPerm[rA.mCol[k]];
+                if (pr <= pc) {
+                    const std::size_t dst = cursor[pc]++;
+                    u_row[dst] = pr;
+                    u_val[dst] = rA.mValue[k];
+                }
+            }
+        }
+    }
+
+    // Symbolic analysis: elimination tree and column counts of L (Davis's LDL).
+    std::vector<std::size_t> parent(n, n);
+    std::vector<std::size_t> flag(n, n);
+    std::vector<std::size_t> lnz(n, 0);
+    for (std::size_t k = 0; k < n; ++k) {
+        parent[k] = n;
+        flag[k] = k;
+        lnz[k] = 0;
+        for (std::size_t p = u_start[k]; p < u_start[k + 1]; ++p) {
+            std::size_t i = u_row[p];
+            if (i < k) {
+                for (; flag[i] != k; i = parent[i]) {
+                    if (parent[i] == n)
+                        parent[i] = k;
+                    ++lnz[i];
+                    flag[i] = k;
+                }
+            }
+        }
+    }
+
+    mLp.assign(n + 1, 0);
+    for (std::size_t k = 0; k < n; ++k)
+        mLp[k + 1] = mLp[k] + lnz[k];
+    if (mLp[n] > MaxLNonzeros) {
+        mLp.clear();
+        return false;
+    }
+
+    // Numeric up-looking LDL^T factorisation.
+    mLi.resize(mLp[n]);
+    mLx.resize(mLp[n]);
+    mDInv.resize(n);
+    std::vector<double> y(n, 0.0);
+    std::vector<std::size_t> pattern(n, 0);
+    std::fill(flag.begin(), flag.end(), n);
+    std::fill(lnz.begin(), lnz.end(), 0);
+
+    for (std::size_t k = 0; k < n; ++k) {
+        y[k] = 0.0;
+        std::size_t top = n;
+        flag[k] = k;
+        lnz[k] = 0;
+        for (std::size_t p = u_start[k]; p < u_start[k + 1]; ++p) {
+            std::size_t i = u_row[p];
+            if (i <= k) {
+                y[i] += u_val[p];
+                std::size_t len = 0;
+                for (; flag[i] != k; i = parent[i]) {
+                    pattern[len++] = i;
+                    flag[i] = k;
+                }
+                while (len > 0)
+                    pattern[--top] = pattern[--len];
+            }
+        }
+        double d = y[k];
+        y[k] = 0.0;
+        for (; top < n; ++top) {
+            const std::size_t i = pattern[top];
+            const double yi = y[i];
+            y[i] = 0.0;
+            const std::size_t p2 = mLp[i] + lnz[i];
+            for (std::size_t p = mLp[i]; p < p2; ++p)
+                y[mLi[p]] -= mLx[p] * yi;
+            const double l_ki = yi * mDInv[i];
+            d -= l_ki * yi;
+            mLi[p2] = k;
+            mLx[p2] = l_ki;
+            ++lnz[i];
+        }
+        if (!(d > 0.0) || !std::isfinite(d)) {
+            mLp.clear();
+            mLi.clear();
+            mLx.clear();
+            mDInv.clear();
+            return false;
+        }
+        mDInv[k] = 1.0 / d;
+    }
+    mValid = true;
+    return true;
+}
+
+void CsrLdlt::Solve(const double* pB, double* pX, std::vector<double>& rWork) const {
+    const std::size_t n = mRows;
+    if (n == 0)
+        return;
+    rWork.resize(n);
+    double* w = rWork.data();
+    const std::size_t* perm = mPerm.data();
+    const std::size_t* lp = mLp.data();
+    const std::size_t* li = mLi.data();
+    const double* lx = mLx.data();
+    const double* dinv = mDInv.data();
+    for (std::size_t i = 0; i < n; ++i)
+        w[i] = pB[perm[i]];
+    // Forward solve: L w = P b (unit lower, column-oriented).
+    for (std::size_t j = 0; j < n; ++j) {
+        const double wj = w[j];
+        const std::size_t beg = lp[j], end = lp[j + 1];
+        for (std::size_t p = beg; p < end; ++p)
+            w[li[p]] -= lx[p] * wj;
+    }
+    // Diagonal solve: D w = w.
+    for (std::size_t j = 0; j < n; ++j)
+        w[j] *= dinv[j];
+    // Backward solve: L^T w = w.
+    for (std::size_t j = n; j-- > 0;) {
+        double wj = w[j];
+        const std::size_t beg = lp[j], end = lp[j + 1];
+        for (std::size_t p = beg; p < end; ++p)
+            wj -= lx[p] * w[li[p]];
+        w[j] = wj;
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        pX[perm[i]] = w[i];
+}
+
+void CsrLdlt::Solve(const double* pB, double* pX) const {
+    std::vector<double> work;
+    Solve(pB, pX, work);
+}
+
+void CsrLdlt::SolveBlock(std::size_t NumRhs, const double* const* ppB, double* const* ppX) const {
+    const std::size_t n = mRows;
+    if (NumRhs == 0 || n == 0)
+        return;
+    if (NumRhs == 1) {
+        Solve(ppB[0], ppX[0]);
+        return;
+    }
+    const std::size_t* perm = mPerm.data();
+    const std::size_t* lp = mLp.data();
+    const std::size_t* li = mLi.data();
+    const double* lx = mLx.data();
+    const double* dinv = mDInv.data();
+
+    // Process up to 4 right-hand sides per chunk so each L nonzero is loaded
+    // once per 4 columns while keeping every column bit-identical to `Solve`.
+    const std::size_t num_chunks = (NumRhs + 3) / 4;
+    parallel_for(
+        num_chunks,
+        [&](std::size_t chunk) {
+            const std::size_t c0 = chunk * 4;
+            const std::size_t cnt = std::min<std::size_t>(4, NumRhs - c0);
+            static thread_local std::vector<double> work;
+            if (cnt == 4) {
+                work.resize(4 * n);
+                double* w = work.data();
+                const double* b0 = ppB[c0 + 0];
+                const double* b1 = ppB[c0 + 1];
+                const double* b2 = ppB[c0 + 2];
+                const double* b3 = ppB[c0 + 3];
+                for (std::size_t i = 0; i < n; ++i) {
+                    const std::size_t pi = perm[i];
+                    w[4 * i + 0] = b0[pi];
+                    w[4 * i + 1] = b1[pi];
+                    w[4 * i + 2] = b2[pi];
+                    w[4 * i + 3] = b3[pi];
+                }
+                for (std::size_t j = 0; j < n; ++j) {
+                    const double w0 = w[4 * j + 0];
+                    const double w1 = w[4 * j + 1];
+                    const double w2 = w[4 * j + 2];
+                    const double w3 = w[4 * j + 3];
+                    const std::size_t beg = lp[j], end = lp[j + 1];
+                    for (std::size_t p = beg; p < end; ++p) {
+                        const std::size_t r4 = 4 * li[p];
+                        const double lxp = lx[p];
+                        w[r4 + 0] -= lxp * w0;
+                        w[r4 + 1] -= lxp * w1;
+                        w[r4 + 2] -= lxp * w2;
+                        w[r4 + 3] -= lxp * w3;
+                    }
+                }
+                for (std::size_t j = 0; j < n; ++j) {
+                    const double di = dinv[j];
+                    w[4 * j + 0] *= di;
+                    w[4 * j + 1] *= di;
+                    w[4 * j + 2] *= di;
+                    w[4 * j + 3] *= di;
+                }
+                for (std::size_t j = n; j-- > 0;) {
+                    double w0 = w[4 * j + 0];
+                    double w1 = w[4 * j + 1];
+                    double w2 = w[4 * j + 2];
+                    double w3 = w[4 * j + 3];
+                    const std::size_t beg = lp[j], end = lp[j + 1];
+                    for (std::size_t p = beg; p < end; ++p) {
+                        const std::size_t r4 = 4 * li[p];
+                        const double lxp = lx[p];
+                        w0 -= lxp * w[r4 + 0];
+                        w1 -= lxp * w[r4 + 1];
+                        w2 -= lxp * w[r4 + 2];
+                        w3 -= lxp * w[r4 + 3];
+                    }
+                    w[4 * j + 0] = w0;
+                    w[4 * j + 1] = w1;
+                    w[4 * j + 2] = w2;
+                    w[4 * j + 3] = w3;
+                }
+                double* x0 = ppX[c0 + 0];
+                double* x1 = ppX[c0 + 1];
+                double* x2 = ppX[c0 + 2];
+                double* x3 = ppX[c0 + 3];
+                for (std::size_t i = 0; i < n; ++i) {
+                    const std::size_t pi = perm[i];
+                    x0[pi] = w[4 * i + 0];
+                    x1[pi] = w[4 * i + 1];
+                    x2[pi] = w[4 * i + 2];
+                    x3[pi] = w[4 * i + 3];
+                }
+            } else {
+                for (std::size_t k = 0; k < cnt; ++k)
+                    Solve(ppB[c0 + k], ppX[c0 + k], work);
+            }
+        },
+        std::size_t{1});
 }
 
 SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX,
@@ -120421,7 +121806,7 @@ SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX
     const std::vector<double> minv = sps_jacobi(rA);
     const double bnorm = std::sqrt(sparse_dot(pB, pB, n));
     std::vector<double> r(n), r0(n), p(n, 0.0), v(n, 0.0), s(n), t(n), ph(n), sh(n);
-    rep.mRelativeResidual = sps_residual(rA, pB, pX, r, bnorm);
+    rep.mRelativeResidual = sps_residual(rA, pB, pX, r.data(), bnorm);
     if (rep.mRelativeResidual <= RelativeTolerance) {
         rep.mConverged = true;
         return rep;
@@ -120468,10 +121853,10 @@ SparseSolveReport csr_bicgstab(const SparseCsr& rA, const double* pB, double* pX
             break;
     }
     std::vector<double> tmp(n);
-    double res = sps_residual(rA, pB, pX, tmp, bnorm);
+    double res = sps_residual(rA, pB, pX, tmp.data(), bnorm);
     if (best_res < res) {
         std::copy(best.begin(), best.end(), pX);
-        res = sps_residual(rA, pB, pX, tmp, bnorm);
+        res = best_res;
     }
     rep.mRelativeResidual = res;
     rep.mConverged = res <= 10.0 * RelativeTolerance;
@@ -133435,8 +134820,12 @@ std::int64_t fil_word_int(const FilWord& rWord, bool Swap) {
     switch (rWord.mTag) {
         case 'I':
             return static_cast<std::int64_t>(rWord.mRaw);
-        case 'D':
-            return static_cast<std::int64_t>(std::bit_cast<double>(rWord.mRaw));
+        case 'D': {
+            const double d = std::bit_cast<double>(rWord.mRaw);
+            if (!std::isfinite(d) || d < -9223372036854775808.0 || d >= 9223372036854775808.0)
+                throw ReadError("Abaqus .fil: floating-point word out of integer range");
+            return static_cast<std::int64_t>(d);
+        }
         case 'A': {
             char s[9] = {};
             std::memcpy(s, &rWord.mRaw, 8);
@@ -201184,9 +202573,10 @@ struct Op2wCandidate {
 /// the reader's table: the stress code with von Mises first, so that it wins a tie.
 const std::vector<Op2wCandidate>& op2w_candidates(Op2Family Family, std::int32_t Etype,
                                                   bool Complex, bool Random) {
-    static std::mutex lock;
-    static std::map<std::tuple<int, std::int32_t, bool, bool>, std::vector<Op2wCandidate>> cache;
-    const std::lock_guard<std::mutex> guard(lock);
+    static detail::AnnotatedMutex lock;
+    static std::map<std::tuple<int, std::int32_t, bool, bool>, std::vector<Op2wCandidate>> cache
+        MIO_GUARDED_BY(lock);
+    const detail::AnnotatedLockGuard guard(lock);
     const auto key = std::make_tuple(static_cast<int>(Family), Etype, Complex, Random);
     auto it = cache.find(key);
     if (it != cache.end())
@@ -245248,6 +246638,7 @@ CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -245315,6 +246706,193 @@ void cc_cell_nodes(const TView& rBlock, std::size_t Row, std::vector<std::int64_
 // 3-D: the faces of the volume cells that only one cell uses.
 CcFacets cc_volume_facets(const Mesh& rMesh, std::vector<std::string>& rWarnings) {
     CcFacets out;
+    bool all_tabulated = true;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cc_block_dimension(cb) != 3)
+            continue;
+        if (cb.IsPolyhedron() || cb.IsRagged()) {
+            all_tabulated = false;
+            break;
+        }
+        const auto& faces = detail::cell_faces(cell_type_from_name(cb.Type()));
+        for (const auto& f : faces)
+            if (f.mNumCorners > 4) {
+                all_tabulated = false;
+                break;
+            }
+        if (!all_tabulated)
+            break;
+    }
+
+    if (all_tabulated) {
+        // Direct O(F) vertex-bucketed extraction by minimum face vertex id:
+        // skips orientation, interior face copies, and global face numbering.
+        const std::size_t npts = rMesh.NumPoints();
+        const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+        struct CcBlockInfo {
+            std::size_t mBlockIdx = 0;
+            std::size_t mNumCells = 0;
+            std::size_t mNpc = 0;
+            std::int64_t mBase = 0;
+            const std::vector<detail::CellFaceDef>* mpFaces = nullptr;
+            std::unique_ptr<detail::Int64View> mConn;
+        };
+        std::vector<CcBlockInfo> blocks;
+        std::size_t b = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            const std::size_t block = b++;
+            if (cc_block_dimension(cb) != 3)
+                continue;
+            const auto& faces = detail::cell_faces(cell_type_from_name(cb.Type()));
+            if (faces.empty()) {
+                if (cb.NumCells() > 0)
+                    rWarnings.push_back("block " + std::to_string(block) + " ('" +
+                                        std::string(cb.Type()) +
+                                        "') has no known face topology and was not examined");
+                continue;
+            }
+            if (cb.NumCells() == 0)
+                continue;
+            blocks.push_back({block, cb.NumCells(), cb.NodesPerCell(), bases[block], &faces,
+                              std::make_unique<detail::Int64View>(cb.Conn())});
+        }
+        if (blocks.empty())
+            return out;
+
+        auto sort3 = [](std::int64_t& a, std::int64_t& b_, std::int64_t& c) {
+            if (a > b_)
+                std::swap(a, b_);
+            if (b_ > c)
+                std::swap(b_, c);
+            if (a > b_)
+                std::swap(a, b_);
+        };
+        auto sort4 = [](std::int64_t& a, std::int64_t& b_, std::int64_t& c, std::int64_t& d) {
+            if (a > b_)
+                std::swap(a, b_);
+            if (c > d)
+                std::swap(c, d);
+            if (a > c)
+                std::swap(a, c);
+            if (b_ > d)
+                std::swap(b_, d);
+            if (b_ > c)
+                std::swap(b_, c);
+        };
+
+        // Pass 1: validate indices and count faces per minimum vertex id.
+        std::vector<std::size_t> head(npts + 1, 0);
+        for (const CcBlockInfo& bi : blocks) {
+            const std::int64_t* pconn = bi.mConn->Data();
+            const std::size_t npc = bi.mNpc;
+            const auto& faces = *bi.mpFaces;
+            for (std::size_t c = 0; c < bi.mNumCells; ++c) {
+                const std::int64_t* row = pconn + c * npc;
+                for (const auto& f : faces) {
+                    std::int64_t lo = row[f.mNodes[0]];
+                    for (std::size_t k = 0; k < f.mNumCorners; ++k) {
+                        const std::int64_t v = row[f.mNodes[k]];
+                        if (v < 0 || static_cast<std::size_t>(v) >= npts)
+                            throw std::invalid_argument(
+                                std::string(kCcPrefix) +
+                                "a cell references a point the mesh does not have");
+                        if (v < lo)
+                            lo = v;
+                    }
+                    ++head[static_cast<std::size_t>(lo) + 1];
+                }
+            }
+        }
+        for (std::size_t i = 0; i < npts; ++i)
+            head[i + 1] += head[i];
+
+        struct CcSlot {
+            std::int64_t mK1, mK2, mK3;
+            std::int64_t mOwner;
+            std::uint32_t mBi;
+            std::uint32_t mRow;
+            std::uint8_t mFace;
+            std::uint8_t mNc;
+        };
+        std::vector<CcSlot> slots(head[npts]);
+        std::vector<std::size_t> cursor(head);
+        for (std::size_t bi_idx = 0; bi_idx < blocks.size(); ++bi_idx) {
+            const CcBlockInfo& bi = blocks[bi_idx];
+            const std::int64_t* pconn = bi.mConn->Data();
+            const std::size_t npc = bi.mNpc;
+            const auto& faces = *bi.mpFaces;
+            const std::size_t nf_cell = faces.size();
+            for (std::size_t c = 0; c < bi.mNumCells; ++c) {
+                const std::int64_t* row = pconn + c * npc;
+                const std::int64_t owner = bi.mBase + static_cast<std::int64_t>(c);
+                for (std::size_t fi = 0; fi < nf_cell; ++fi) {
+                    const auto& f = faces[fi];
+                    std::int64_t k0 = row[f.mNodes[0]];
+                    std::int64_t k1 = row[f.mNodes[1]];
+                    std::int64_t k2 = row[f.mNodes[2]];
+                    std::int64_t k3 = -1;
+                    if (f.mNumCorners == 3) {
+                        sort3(k0, k1, k2);
+                    } else {
+                        k3 = row[f.mNodes[3]];
+                        sort4(k0, k1, k2, k3);
+                    }
+                    const std::size_t dst = cursor[static_cast<std::size_t>(k0)]++;
+                    slots[dst] = {k1,
+                                  k2,
+                                  k3,
+                                  owner,
+                                  static_cast<std::uint32_t>(bi_idx),
+                                  static_cast<std::uint32_t>(c),
+                                  static_cast<std::uint8_t>(fi),
+                                  static_cast<std::uint8_t>(f.mNumCorners)};
+                }
+            }
+        }
+
+        // Pass 2: sort each tiny per-vertex bucket and emit single-use facets.
+        auto emit_boundary = [&](const CcSlot& rS) {
+            const CcBlockInfo& bi = blocks[rS.mBi];
+            const std::int64_t* row =
+                bi.mConn->Data() + static_cast<std::size_t>(rS.mRow) * bi.mNpc;
+            const auto& f = (*bi.mpFaces)[rS.mFace];
+            std::int64_t ring[4];
+            for (std::size_t k = 0; k < rS.mNc; ++k)
+                ring[k] = row[f.mNodes[k]];
+            out.Push(ring, rS.mNc, rS.mOwner);
+        };
+        for (std::size_t v = 0; v < npts; ++v) {
+            const std::size_t beg = head[v], end = head[v + 1];
+            if (beg == end)
+                continue;
+            if (end - beg == 1) {
+                emit_boundary(slots[beg]);
+                continue;
+            }
+            std::sort(slots.begin() + static_cast<std::ptrdiff_t>(beg),
+                      slots.begin() + static_cast<std::ptrdiff_t>(end),
+                      [](const CcSlot& rA, const CcSlot& rB) {
+                          if (rA.mK1 != rB.mK1)
+                              return rA.mK1 < rB.mK1;
+                          if (rA.mK2 != rB.mK2)
+                              return rA.mK2 < rB.mK2;
+                          return rA.mK3 < rB.mK3;
+                      });
+            for (std::size_t i = beg; i < end;) {
+                std::size_t j = i + 1;
+                while (j < end && slots[j].mK1 == slots[i].mK1 && slots[j].mK2 == slots[i].mK2 &&
+                       slots[j].mK3 == slots[i].mK3)
+                    ++j;
+                if (j - i == 1)
+                    emit_boundary(slots[i]);
+                else if (j - i >= 3)
+                    ++out.mNumNonManifold;
+                i = j;
+            }
+        }
+        return out;
+    }
+
     const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
     out.mNumNonManifold = gf.mNumNonManifold;
     for (std::size_t f = 0; f < gf.NumFaces(); ++f)
@@ -245483,11 +247061,11 @@ CcPlane cc_plane(const std::vector<double>& rXyz, const std::int64_t* pRing, std
 
 using CcUv = std::array<double, 2>;
 
-double cc_area(const std::vector<CcUv>& rPoly) {
+double cc_area(const CcUv* pPoly, std::size_t N) {
     double a = 0.0;
-    for (std::size_t i = 0, n = rPoly.size(); i < n; ++i) {
-        const CcUv& p = rPoly[i];
-        const CcUv& q = rPoly[(i + 1) % n];
+    for (std::size_t i = 0; i < N; ++i) {
+        const CcUv& p = pPoly[i];
+        const CcUv& q = pPoly[i + 1 < N ? i + 1 : 0];
         a += p[0] * q[1] - q[0] * p[1];
     }
     return 0.5 * a;
@@ -245495,41 +247073,67 @@ double cc_area(const std::vector<CcUv>& rPoly) {
 
 // The area of the intersection of two triangles, both counter-clockwise, by
 // clipping the first against the second's three edges (Sutherland and Hodgman).
+// Clipping a 3-vertex polygon against 3 half-planes produces at most 6 vertices
+// (capacity 8 on the stack, zero heap allocations).
 double cc_triangle_overlap(const std::array<CcUv, 3>& rA, const std::array<CcUv, 3>& rB) {
-    std::vector<CcUv> poly(rA.begin(), rA.end()), next;
-    for (std::size_t e = 0; e < 3 && !poly.empty(); ++e) {
+    const double a_umin = std::min({rA[0][0], rA[1][0], rA[2][0]});
+    const double a_umax = std::max({rA[0][0], rA[1][0], rA[2][0]});
+    const double b_umin = std::min({rB[0][0], rB[1][0], rB[2][0]});
+    const double b_umax = std::max({rB[0][0], rB[1][0], rB[2][0]});
+    if (a_umax <= b_umin || b_umax <= a_umin)
+        return 0.0;
+    const double a_vmin = std::min({rA[0][1], rA[1][1], rA[2][1]});
+    const double a_vmax = std::max({rA[0][1], rA[1][1], rA[2][1]});
+    const double b_vmin = std::min({rB[0][1], rB[1][1], rB[2][1]});
+    const double b_vmax = std::max({rB[0][1], rB[1][1], rB[2][1]});
+    if (a_vmax <= b_vmin || b_vmax <= a_vmin)
+        return 0.0;
+
+    std::array<CcUv, 8> poly{rA[0], rA[1], rA[2]};
+    std::array<CcUv, 8> next{};
+    std::size_t n_poly = 3;
+    for (std::size_t e = 0; e < 3 && n_poly > 0; ++e) {
         const CcUv& p = rB[e];
-        const CcUv& q = rB[(e + 1) % 3];
-        auto side = [&](const CcUv& rX) {
-            return (q[0] - p[0]) * (rX[1] - p[1]) - (q[1] - p[1]) * (rX[0] - p[0]);
-        };
-        next.clear();
-        for (std::size_t i = 0, n = poly.size(); i < n; ++i) {
+        const CcUv& q = rB[e + 1 < 3 ? e + 1 : 0];
+        const double ex = q[0] - p[0];
+        const double ey = q[1] - p[1];
+        auto side = [&](const CcUv& rX) { return ex * (rX[1] - p[1]) - ey * (rX[0] - p[0]); };
+        std::size_t n_next = 0;
+        for (std::size_t i = 0; i < n_poly; ++i) {
             const CcUv& a = poly[i];
-            const CcUv& b = poly[(i + 1) % n];
+            const CcUv& b = poly[i + 1 < n_poly ? i + 1 : 0];
             const double sa = side(a), sb = side(b);
             if (sa >= 0.0)
-                next.push_back(a);
+                next[n_next++] = a;
             if ((sa >= 0.0) != (sb >= 0.0)) {
                 const double t = sa / (sa - sb);
-                next.push_back({{a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])}});
+                next[n_next++] = {{a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])}};
             }
         }
-        poly.swap(next);
+        poly = next;
+        n_poly = n_next;
     }
-    return poly.size() < 3 ? 0.0 : std::abs(cc_area(poly));
+    return n_poly < 3 ? 0.0 : std::abs(cc_area(poly.data(), n_poly));
+}
+
+// Orient one fan triangle counter-clockwise; returns false if degenerate.
+bool cc_orient_tri(const CcUv& rP0, const CcUv& rP1, const CcUv& rP2, std::array<CcUv, 3>& rOut) {
+    rOut = {{rP0, rP1, rP2}};
+    const double a = (rOut[1][0] - rOut[0][0]) * (rOut[2][1] - rOut[0][1]) -
+                     (rOut[1][1] - rOut[0][1]) * (rOut[2][0] - rOut[0][0]);
+    if (a < 0.0)
+        std::swap(rOut[1], rOut[2]);
+    return a != 0.0;
 }
 
 // A ring as the counter-clockwise fan of triangles from its first corner.
-std::vector<std::array<CcUv, 3>> cc_fan(const std::vector<CcUv>& rRing) {
+std::vector<std::array<CcUv, 3>> cc_fan(const CcUv* pRing, std::size_t N) {
     std::vector<std::array<CcUv, 3>> fan;
-    for (std::size_t k = 1; k + 1 < rRing.size(); ++k) {
-        std::array<CcUv, 3> t{{rRing[0], rRing[k], rRing[k + 1]}};
-        const double a =
-            (t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]);
-        if (a < 0.0)
-            std::swap(t[1], t[2]);
-        if (a != 0.0)
+    if (N >= 3)
+        fan.reserve(N - 2);
+    for (std::size_t k = 1; k + 1 < N; ++k) {
+        std::array<CcUv, 3> t;
+        if (cc_orient_tri(pRing[0], pRing[k], pRing[k + 1], t))
             fan.push_back(t);
     }
     return fan;
@@ -245563,31 +247167,115 @@ CcPair cc_classify_polygons(const std::vector<double>& rXyz, const std::int64_t*
         if (same)
             return CcPair::Unwelded;
     }
+    if (Nf == 3 && Ng == 3) {
+        std::size_t shared = 0;
+        std::int64_t s0 = -1, s1 = -1;
+        std::size_t f_rem = 3;
+        for (std::size_t i = 0; i < 3; ++i) {
+            if (pF[i] == pG[0] || pF[i] == pG[1] || pF[i] == pG[2]) {
+                if (shared == 0)
+                    s0 = pF[i];
+                else if (shared == 1)
+                    s1 = pF[i];
+                ++shared;
+            } else {
+                f_rem = i;
+            }
+        }
+        if (shared == 2 && f_rem < 3) {
+            std::size_t g_rem = 3;
+            for (std::size_t j = 0; j < 3; ++j)
+                if (pG[j] != s0 && pG[j] != s1) {
+                    g_rem = j;
+                    break;
+                }
+            if (g_rem < 3) {
+                const detail::Vec3 p0 = cc_point(rXyz, s0);
+                const detail::Vec3 e = detail::vec3_sub(cc_point(rXyz, s1), p0);
+                const double sf = detail::vec3_dot(
+                    detail::vec3_cross(e, detail::vec3_sub(cc_point(rXyz, pF[f_rem]), p0)),
+                    rPf.mNormal);
+                const double sg = detail::vec3_dot(
+                    detail::vec3_cross(e, detail::vec3_sub(cc_point(rXyz, pG[g_rem]), p0)),
+                    rPf.mNormal);
+                if (sf * sg <= 0.0)
+                    return CcPair::Apart;
+            }
+        }
+    }
     auto uv = [&](std::int64_t Id) {
         const detail::Vec3 d = detail::vec3_sub(cc_point(rXyz, Id), rPf.mCentre);
         return CcUv{{detail::vec3_dot(d, rPf.mU), detail::vec3_dot(d, rPf.mV)}};
     };
-    std::vector<CcUv> f(Nf), g(Ng);
-    for (std::size_t k = 0; k < Nf; ++k)
-        f[k] = uv(pF[k]);
-    for (std::size_t k = 0; k < Ng; ++k)
-        g[k] = uv(pG[k]);
+    constexpr std::size_t kCcStackRing = 8;
+    std::array<CcUv, kCcStackRing> f_stack{}, g_stack{};
+    std::vector<CcUv> f_heap, g_heap;
+    CcUv* pf = f_stack.data();
+    CcUv* pg = g_stack.data();
+    if (Nf > kCcStackRing) {
+        f_heap.resize(Nf);
+        pf = f_heap.data();
+    }
+    if (Ng > kCcStackRing) {
+        g_heap.resize(Ng);
+        pg = g_heap.data();
+    }
+    double f_umin = std::numeric_limits<double>::infinity();
+    double f_umax = -f_umin, f_vmin = f_umin, f_vmax = -f_umin;
+    for (std::size_t k = 0; k < Nf; ++k) {
+        const CcUv p = uv(pF[k]);
+        pf[k] = p;
+        f_umin = std::min(f_umin, p[0]);
+        f_umax = std::max(f_umax, p[0]);
+        f_vmin = std::min(f_vmin, p[1]);
+        f_vmax = std::max(f_vmax, p[1]);
+    }
+    double g_umin = std::numeric_limits<double>::infinity();
+    double g_umax = -g_umin, g_vmin = g_umin, g_vmax = -g_umin;
+    for (std::size_t k = 0; k < Ng; ++k) {
+        const CcUv p = uv(pG[k]);
+        pg[k] = p;
+        g_umin = std::min(g_umin, p[0]);
+        g_umax = std::max(g_umax, p[0]);
+        g_vmin = std::min(g_vmin, p[1]);
+        g_vmax = std::max(g_vmax, p[1]);
+    }
+    if (f_umax <= g_umin || g_umax <= f_umin || f_vmax <= g_vmin || g_vmax <= f_vmin)
+        return CcPair::Apart;
+
     // The facets overlap when their intersection is a strip wider than the
     // tolerance: its area beyond the tolerance times the smaller facet's
     // diameter. Facets that only share a boundary intersect in a segment.
     double area = 0.0;
-    const std::vector<std::array<CcUv, 3>> ff = cc_fan(f), gf = cc_fan(g);
-    for (const auto& a : ff)
-        for (const auto& b : gf)
-            area += cc_triangle_overlap(a, b);
-    auto diameter = [](const std::vector<CcUv>& rRing) {
+    if (Nf <= kCcStackRing && Ng <= kCcStackRing) {
+        std::array<std::array<CcUv, 3>, kCcStackRing - 2> ff{}, gf{};
+        std::size_t nff = 0, ngf = 0;
+        for (std::size_t k = 1; k + 1 < Nf; ++k)
+            if (cc_orient_tri(pf[0], pf[k], pf[k + 1], ff[nff]))
+                ++nff;
+        for (std::size_t k = 1; k + 1 < Ng; ++k)
+            if (cc_orient_tri(pg[0], pg[k], pg[k + 1], gf[ngf]))
+                ++ngf;
+        for (std::size_t a = 0; a < nff; ++a)
+            for (std::size_t b = 0; b < ngf; ++b)
+                area += cc_triangle_overlap(ff[a], gf[b]);
+    } else {
+        const std::vector<std::array<CcUv, 3>> ff = cc_fan(pf, Nf), gf = cc_fan(pg, Ng);
+        for (const auto& a : ff)
+            for (const auto& b : gf)
+                area += cc_triangle_overlap(a, b);
+    }
+    if (!(area > 0.0))
+        return CcPair::Apart;
+    auto diameter = [](const CcUv* pRing, std::size_t N) {
         double d = 0.0;
-        for (const CcUv& p : rRing)
-            for (const CcUv& q : rRing)
-                d = std::max(d, std::hypot(p[0] - q[0], p[1] - q[1]));
+        for (std::size_t i = 0; i < N; ++i)
+            for (std::size_t j = i + 1; j < N; ++j)
+                d = std::max(d, std::hypot(pRing[i][0] - pRing[j][0], pRing[i][1] - pRing[j][1]));
         return d;
     };
-    return area > Tol * std::min(diameter(f), diameter(g)) ? CcPair::Overlap : CcPair::Apart;
+    return area > Tol * std::min(diameter(pf, Nf), diameter(pg, Ng)) ? CcPair::Overlap
+                                                                     : CcPair::Apart;
 }
 
 CcPair cc_classify_segments(const std::vector<double>& rXyz, const std::int64_t* pF,
@@ -245732,7 +247420,7 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
             detail::BucketView bucket(nullptr, 0);
             if (!grid.Find(grid.KeyOf(x.data()), bucket))
                 return;
-            std::vector<std::int64_t> scratch;
+            static thread_local std::vector<std::int64_t> scratch;
             for (std::int64_t id : bucket) {
                 const std::size_t f = static_cast<std::size_t>(id);
                 const std::array<double, 6>& b = box[f];
@@ -245765,22 +247453,12 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
             });
         std::vector<std::int64_t> partial(nf, 0), unwelded(nf, 0);
         parallel_for(nf, [&](std::size_t f) {
-            std::vector<std::int64_t> near;
-            grid.ForEachInBox(grid.KeyOf(box[f].data()), grid.KeyOf(box[f].data() + 3),
-                              [&](const detail::BucketView& rIds) {
-                                  for (std::int64_t id : rIds)
-                                      if (static_cast<std::size_t>(id) > f)
-                                          near.push_back(id);
-                              });
-            std::sort(near.begin(), near.end());
-            near.erase(std::unique(near.begin(), near.end()), near.end());
             const std::array<double, 6>& bf = box[f];
-            for (std::int64_t id : near) {
-                const std::size_t g = static_cast<std::size_t>(id);
+            auto test_pair = [&](std::size_t g) {
                 const std::array<double, 6>& bg = box[g];
                 if (bf[0] > bg[3] || bg[0] > bf[3] || bf[1] > bg[4] || bg[1] > bf[4] ||
                     bf[2] > bg[5] || bg[2] > bf[5])
-                    continue;
+                    return;
                 const CcPair kind =
                     dim == 3
                         ? cc_classify_polygons(xyz, facets.Ring(f), facets.Corners(f), planes[f],
@@ -245790,7 +247468,26 @@ ConformityResult check_conformity(const Mesh& rMesh, const ConformityOptions& rO
                     ++partial[f];
                 else if (kind == CcPair::Unwelded)
                     ++unwelded[f];
+            };
+            if (box_lo[f] == box_hi[f]) {
+                detail::BucketView bucket(nullptr, 0);
+                if (grid.Find(box_lo[f], bucket))
+                    for (std::int64_t id : bucket)
+                        if (static_cast<std::size_t>(id) > f)
+                            test_pair(static_cast<std::size_t>(id));
+                return;
             }
+            static thread_local std::vector<std::int64_t> near;
+            near.clear();
+            grid.ForEachInBox(box_lo[f], box_hi[f], [&](const detail::BucketView& rIds) {
+                for (std::int64_t id : rIds)
+                    if (static_cast<std::size_t>(id) > f)
+                        near.push_back(id);
+            });
+            std::sort(near.begin(), near.end());
+            near.erase(std::unique(near.begin(), near.end()), near.end());
+            for (std::int64_t id : near)
+                test_pair(static_cast<std::size_t>(id));
         });
         for (std::size_t f = 0; f < nf; ++f) {
             result.mNumPartialOverlaps += partial[f];
@@ -247196,10 +248893,6 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
     const double eps_abs = 1e-9 * scale;
     const double eps_abs2 = eps_abs * eps_abs;
 
-    // The outward-wound tetra face table (detail/cell_faces.hpp's own rows),
-    // valid for a positively-oriented tetra.
-    static constexpr int kFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
-
     // Scratch reused across the calls of a thread (the clip runs once per
     // candidate pair): only the allocations go, every value is computed as
     // before.
@@ -247212,11 +248905,11 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
     auto& uniq = tScratch.mUniq;
     auto& order = tScratch.mOrder;
     tris.clear();
-    for (const auto& f : kFaces)
+    for (const auto& f : detail::kTetOutwardFaces)
         tris.push_back({src[static_cast<std::size_t>(f[0])], src[static_cast<std::size_t>(f[1])],
                         src[static_cast<std::size_t>(f[2])]});
 
-    for (const auto& f : kFaces) {
+    for (const auto& f : detail::kTetOutwardFaces) {
         if (tris.empty())
             break;
         const detail::Vec3& p0 = tgt[static_cast<std::size_t>(f[0])];
@@ -249751,21 +251444,21 @@ void cut_node_weights(int Family, bool Quadratic, const std::array<double, 3>& r
     }
     if (Family == 2) {
         const double l[3] = {1.0 - rP[0] - rP[1], rP[0], rP[1]};
-        static constexpr int kE[3][2] = {{0, 1}, {1, 2}, {0, 2}};
+        const auto& edges = detail::cell_refine_edges(CellType::Triangle);
         rW.assign(6, 0.0);
         for (int i = 0; i < 3; ++i)
             rW[static_cast<std::size_t>(i)] = l[i] * (2.0 * l[i] - 1.0);
-        for (int e = 0; e < 3; ++e)
-            rW[static_cast<std::size_t>(3 + e)] = 4.0 * l[kE[e][0]] * l[kE[e][1]];
+        for (std::size_t e = 0; e < edges.size(); ++e)
+            rW[3 + e] = 4.0 * l[edges[e][0]] * l[edges[e][1]];
         return;
     }
     const double l[4] = {1.0 - rP[0] - rP[1] - rP[2], rP[0], rP[1], rP[2]};
-    static constexpr int kE[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
+    const auto& edges = detail::cell_refine_edges(CellType::Tetra);
     rW.assign(10, 0.0);
     for (int i = 0; i < 4; ++i)
         rW[static_cast<std::size_t>(i)] = l[i] * (2.0 * l[i] - 1.0);
-    for (int e = 0; e < 6; ++e)
-        rW[static_cast<std::size_t>(4 + e)] = 4.0 * l[kE[e][0]] * l[kE[e][1]];
+    for (std::size_t e = 0; e < edges.size(); ++e)
+        rW[4 + e] = 4.0 * l[edges[e][0]] * l[edges[e][1]];
 }
 
 /// The cells being cut, flattened: the top-dimensional blocks' cells.
@@ -250665,79 +252358,15 @@ CellPointWeight cell_point_weight_from_name(const std::string& rName) {
                                 "' (expected 'uniform' or 'measure')");
 }
 
-Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
-    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Point, rOpts);
-    for (const std::string& n : names)
-        davg_check_target(rMesh, DataLocation::Cell, davg_target_name(n, rOpts), rOpts);
+namespace {
 
-    Mesh out = detail::clone_mesh(rMesh);
+std::vector<std::vector<double>> davg_build_weights(
+    const Mesh& rMesh, const DataAverageOptions& rOpts,
+    std::vector<std::vector<double>>* pRawMeasures) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
-    if (nblocks == 0)
-        return out;
-
-    for (const std::string& name : names) {
-        const NDArray& src = rMesh.PointData(name);
-        const std::size_t ncomp = data_num_components(src);
-        const std::size_t npoints = rMesh.NumPoints();
-
-        // One output array per cell block — the uniform API requires exactly
-        // NumCellBlocks() of them.
-        std::vector<NDArray> blocks;
-        blocks.reserve(nblocks);
-        for (std::size_t b = 0; b < nblocks; ++b) {
-            const auto cb = rMesh.Cells(b);
-            const std::size_t nc = cb.NumCells();
-            NDArray dst(DType::Float64, davg_shape(nc, ncomp));
-            double* pdst = dst.As<double>();
-
-            // Pure gather: each cell reads only its own nodes, so this is safe
-            // to run in parallel and is genuine per-element compute.
-            parallel_for(nc, [&](std::size_t c) {
-                static thread_local std::vector<std::int64_t> nodes;
-                davg_cell_nodes(cb, c, nodes);
-                for (std::size_t k = 0; k < ncomp; ++k) {
-                    double sum = 0.0;
-                    std::int64_t count = 0;
-                    for (std::int64_t node : nodes) {
-                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
-                            continue;
-                        const double v =
-                            detail::read_double(src, static_cast<std::size_t>(node) * ncomp + k);
-                        if (std::isfinite(v)) {
-                            sum += v;
-                            ++count;
-                        }
-                    }
-                    pdst[c * ncomp + k] =
-                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
-                }
-            });
-
-            // The NaN policy is applied serially afterwards so that a `Fail`
-            // throw is deterministic rather than racing between threads.
-            for (std::size_t i = 0; i < nc * ncomp; ++i)
-                pdst[i] =
-                    davg_apply_nan_policy(pdst[i], rOpts, "cell", name, i / (ncomp ? ncomp : 1));
-            blocks.push_back(std::move(dst));
-        }
-        out.AddCellData(davg_target_name(name, rOpts), std::move(blocks));
-    }
-    return out;
-}
-
-Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
-    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Cell, rOpts);
-    for (const std::string& n : names)
-        davg_check_target(rMesh, DataLocation::Point, davg_target_name(n, rOpts), rOpts);
-
-    Mesh out = detail::clone_mesh(rMesh);
-    const std::size_t npoints = rMesh.NumPoints();
-    const std::size_t nblocks = rMesh.NumCellBlocks();
-    if (npoints == 0 || nblocks == 0)
-        return out;
-
-    // Per-cell weights, computed once and reused by every array.
     std::vector<std::vector<double>> weights(nblocks);
+    if (pRawMeasures)
+        pRawMeasures->resize(nblocks);
     bool warned_measure = false;
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
@@ -250749,6 +252378,8 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
         std::vector<double>& w = weights[b];
         parallel_for(cb.NumCells(),
                      [&](std::size_t c) { w[c] = detail::cell_measure(points, pdim, cb, c); });
+        if (pRawMeasures)
+            (*pRawMeasures)[b] = w;
         for (double& v : w) {
             if (!std::isfinite(v) || v <= 0.0) {
                 v = 1.0;
@@ -250761,104 +252392,269 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
             }
         }
     }
+    return weights;
+}
+
+template <class TBlockGetter>
+NDArray davg_cell_to_point_impl(const Mesh& rMesh, std::size_t NumSrcBlocks,
+                                const TBlockGetter& rGetBlock, const std::string& rName,
+                                const DataAverageOptions& rOpts,
+                                const std::vector<std::vector<double>>& rWeights,
+                                std::unique_ptr<DavgIncidence>& rIncidence,
+                                std::vector<double>& rCellWeight,
+                                std::vector<std::size_t>& rCellBlockBase) {
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (NumSrcBlocks != nblocks)
+        throw std::invalid_argument("meshio++: data_average: cell_data '" + rName + "' has " +
+                                    std::to_string(NumSrcBlocks) + " block(s) but the mesh has " +
+                                    std::to_string(nblocks) + " cell block(s)");
+
+    const std::size_t ncomp = data_num_components(rGetBlock(0));
+    for (std::size_t b = 0; b < nblocks; ++b)
+        if (data_num_components(rGetBlock(b)) != ncomp)
+            throw std::invalid_argument("meshio++: data_average: cell_data '" + rName +
+                                        "' has inconsistent component counts across blocks");
+    NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
+    double* pdst = dst.As<double>();
+    if (detail::slot_runs_impl::workers() <= 1) {
+        // One worker (a SEQ build, or one thread): the plain scatter, which
+        // adds the same terms in the same order as the gather below and is
+        // cheaper than building the incidence table first.
+        std::vector<double> sum(npoints * ncomp, 0.0);
+        std::vector<double> wsum(npoints * ncomp, 0.0);
+        std::vector<std::int64_t> nodes;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const auto cb = rMesh.Cells(b);
+            const detail::DoubleView src(rGetBlock(b));
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                davg_cell_nodes(cb, c, nodes);
+                const double w = rWeights[b][c];
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    const double v = src[c * ncomp + k];
+                    if (!std::isfinite(v))
+                        continue;
+                    for (std::int64_t node : nodes) {
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const std::size_t idx = static_cast<std::size_t>(node) * ncomp + k;
+                        sum[idx] += w * v;
+                        wsum[idx] += w;
+                    }
+                }
+            }
+        }
+        for (std::size_t i = 0; i < npoints * ncomp; ++i)
+            pdst[i] = wsum[i] > 0.0 ? sum[i] / wsum[i] : std::nan("");
+        for (std::size_t i = 0; i < npoints * ncomp; ++i)
+            pdst[i] =
+                davg_apply_nan_policy(pdst[i], rOpts, "point", rName, i / (ncomp ? ncomp : 1));
+        return dst;
+    }
+    if (!rIncidence) {
+        std::vector<std::size_t> block_base(nblocks + 1, 0);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            block_base[b + 1] = block_base[b] + rMesh.Cells(b).NumCells();
+        rIncidence = std::make_unique<DavgIncidence>(davg_incidence(rMesh, block_base, npoints));
+        rCellWeight.resize(block_base[nblocks]);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            std::copy(rWeights[b].begin(), rWeights[b].end(),
+                      rCellWeight.begin() + static_cast<std::ptrdiff_t>(block_base[b]));
+        rCellBlockBase = std::move(block_base);
+    }
+    // The cell values as doubles, block-major (read_double's conversion).
+    std::vector<double> values(rCellWeight.size() * ncomp);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const detail::DoubleView src(rGetBlock(b));
+        const std::size_t n = (rCellBlockBase[b + 1] - rCellBlockBase[b]) * ncomp;
+        double* to = values.data() + rCellBlockBase[b] * ncomp;
+        parallel_for_bw(n, [&](std::size_t i) { to[i] = src[i]; });
+    }
+
+    // --- accumulation, gathered per point: each point adds its incident
+    // --- cells' weighted values in (block, cell, node) order -- the order
+    // --- the serial scatter added them in (FP add is not associative) --
+    // --- so the sums are bit-identical on every backend and thread count.
+    const DavgIncidence& inc = *rIncidence;
+    parallel_for(npoints, [&](std::size_t pnt) {
+        for (std::size_t k = 0; k < ncomp; ++k) {
+            double sum = 0.0;
+            double wsum = 0.0;
+            for (std::uint64_t j = inc.mStart[pnt]; j < inc.mStart[pnt + 1]; ++j) {
+                const std::uint64_t gc = inc.mCellOf[j];
+                const double v = values[gc * ncomp + k];
+                if (!std::isfinite(v))
+                    continue;
+                const double w = rCellWeight[gc];
+                sum += w * v;
+                wsum += w;
+            }
+            pdst[pnt * ncomp + k] = wsum > 0.0 ? sum / wsum : std::nan("");
+        }
+    });
+    for (std::size_t i = 0; i < npoints * ncomp; ++i)
+        pdst[i] = davg_apply_nan_policy(pdst[i], rOpts, "point", rName, i / (ncomp ? ncomp : 1));
+    return dst;
+}
+
+}  // namespace
+
+namespace detail {
+
+std::vector<NDArray> point_to_cell_array(const Mesh& rMesh, const NDArray& rSrc,
+                                         const std::string& rName,
+                                         const DataAverageOptions& rOpts) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<NDArray> blocks;
+    if (nblocks == 0)
+        return blocks;
+    const std::size_t ncomp = data_num_components(rSrc);
+    const std::size_t npoints = rMesh.NumPoints();
+    const detail::DoubleView src_v(rSrc);
+    const double* psrc = src_v.Data();
+    blocks.reserve(nblocks);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t nc = cb.NumCells();
+        NDArray dst(DType::Float64, davg_shape(nc, ncomp));
+        double* pdst = dst.As<double>();
+
+        // Pure gather: each cell reads only its own nodes, so this is safe
+        // to run in parallel and is genuine per-element compute.
+        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
+            const detail::Int64View conn_v(cb.Conn());
+            const std::int64_t* pconn = conn_v.Data();
+            const std::size_t npc = cb.NodesPerCell();
+            parallel_for(nc, [&](std::size_t c) {
+                const std::int64_t* row = pconn + c * npc;
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    std::int64_t count = 0;
+                    for (std::size_t j = 0; j < npc; ++j) {
+                        const std::int64_t node = row[j];
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const double v = psrc[static_cast<std::size_t>(node) * ncomp + k];
+                        if (std::isfinite(v)) {
+                            sum += v;
+                            ++count;
+                        }
+                    }
+                    pdst[c * ncomp + k] =
+                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
+                }
+            });
+        } else if (cb.IsRagged() && !cb.IsPolyhedron()) {
+            parallel_for(nc, [&](std::size_t c) {
+                const std::int64_t* row = cb.Row(c);
+                const std::size_t nr = cb.RowSize(c);
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    std::int64_t count = 0;
+                    for (std::size_t j = 0; j < nr; ++j) {
+                        const std::int64_t node = row[j];
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const double v = psrc[static_cast<std::size_t>(node) * ncomp + k];
+                        if (std::isfinite(v)) {
+                            sum += v;
+                            ++count;
+                        }
+                    }
+                    pdst[c * ncomp + k] =
+                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
+                }
+            });
+        } else {
+            parallel_for(nc, [&](std::size_t c) {
+                static thread_local std::vector<std::int64_t> nodes;
+                davg_cell_nodes(cb, c, nodes);
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    std::int64_t count = 0;
+                    for (std::int64_t node : nodes) {
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const double v = psrc[static_cast<std::size_t>(node) * ncomp + k];
+                        if (std::isfinite(v)) {
+                            sum += v;
+                            ++count;
+                        }
+                    }
+                    pdst[c * ncomp + k] =
+                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
+                }
+            });
+        }
+
+        // The NaN policy is applied serially afterwards so that a `Fail`
+        // throw is deterministic rather than racing between threads.
+        for (std::size_t i = 0; i < nc * ncomp; ++i)
+            pdst[i] = davg_apply_nan_policy(pdst[i], rOpts, "cell", rName, i / (ncomp ? ncomp : 1));
+        blocks.push_back(std::move(dst));
+    }
+    return blocks;
+}
+
+NDArray cell_to_point_array(const Mesh& rMesh, const std::vector<NDArray>& rBlocks,
+                            const std::string& rName, const DataAverageOptions& rOpts,
+                            std::vector<std::vector<double>>* pRawMeasures) {
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (npoints == 0 || nblocks == 0) {
+        if (pRawMeasures)
+            pRawMeasures->clear();
+        return NDArray(DType::Float64, {0});
+    }
+    const std::vector<std::vector<double>> weights = davg_build_weights(rMesh, rOpts, pRawMeasures);
+    std::unique_ptr<DavgIncidence> incidence;
+    std::vector<double> cell_weight;
+    std::vector<std::size_t> cell_block_base;
+    return davg_cell_to_point_impl(
+        rMesh, rBlocks.size(), [&](std::size_t b) -> const NDArray& { return rBlocks[b]; }, rName,
+        rOpts, weights, incidence, cell_weight, cell_block_base);
+}
+
+}  // namespace detail
+
+Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
+    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Point, rOpts);
+    for (const std::string& n : names)
+        davg_check_target(rMesh, DataLocation::Cell, davg_target_name(n, rOpts), rOpts);
+
+    Mesh out = detail::clone_mesh(rMesh);
+    if (rMesh.NumCellBlocks() == 0)
+        return out;
+
+    for (const std::string& name : names) {
+        std::vector<NDArray> blocks =
+            detail::point_to_cell_array(rMesh, rMesh.PointData(name), name, rOpts);
+        out.AddCellData(davg_target_name(name, rOpts), std::move(blocks));
+    }
+    return out;
+}
+
+Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
+    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Cell, rOpts);
+    for (const std::string& n : names)
+        davg_check_target(rMesh, DataLocation::Point, davg_target_name(n, rOpts), rOpts);
+
+    Mesh out = detail::clone_mesh(rMesh);
+    if (rMesh.NumPoints() == 0 || rMesh.NumCellBlocks() == 0)
+        return out;
+
+    // Per-cell weights, computed once and reused by every array.
+    const std::vector<std::vector<double>> weights = davg_build_weights(rMesh, rOpts, nullptr);
 
     // Built on first use and shared by every array.
     std::unique_ptr<DavgIncidence> incidence;
     std::vector<double> cell_weight;
     std::vector<std::size_t> cell_block_base;
     for (const std::string& name : names) {
-        if (rMesh.CellDataNumBlocks(name) != nblocks)
-            throw std::invalid_argument("meshio++: data_average: cell_data '" + name + "' has " +
-                                        std::to_string(rMesh.CellDataNumBlocks(name)) +
-                                        " block(s) but the mesh has " + std::to_string(nblocks) +
-                                        " cell block(s)");
-
-        const std::size_t ncomp = data_num_components(rMesh.CellData(name, 0));
-        for (std::size_t b = 0; b < nblocks; ++b)
-            if (data_num_components(rMesh.CellData(name, b)) != ncomp)
-                throw std::invalid_argument("meshio++: data_average: cell_data '" + name +
-                                            "' has inconsistent component counts across blocks");
-        NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
-        double* pdst = dst.As<double>();
-        if (detail::slot_runs_impl::workers() <= 1) {
-            // One worker (a SEQ build, or one thread): the plain scatter, which
-            // adds the same terms in the same order as the gather below and is
-            // cheaper than building the incidence table first.
-            std::vector<double> sum(npoints * ncomp, 0.0);
-            std::vector<double> wsum(npoints * ncomp, 0.0);
-            std::vector<std::int64_t> nodes;
-            for (std::size_t b = 0; b < nblocks; ++b) {
-                const auto cb = rMesh.Cells(b);
-                const detail::DoubleView src(rMesh.CellData(name, b));
-                for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                    davg_cell_nodes(cb, c, nodes);
-                    const double w = weights[b][c];
-                    for (std::size_t k = 0; k < ncomp; ++k) {
-                        const double v = src[c * ncomp + k];
-                        if (!std::isfinite(v))
-                            continue;
-                        for (std::int64_t node : nodes) {
-                            if (node < 0 || static_cast<std::size_t>(node) >= npoints)
-                                continue;
-                            const std::size_t idx = static_cast<std::size_t>(node) * ncomp + k;
-                            sum[idx] += w * v;
-                            wsum[idx] += w;
-                        }
-                    }
-                }
-            }
-            for (std::size_t i = 0; i < npoints * ncomp; ++i)
-                pdst[i] = wsum[i] > 0.0 ? sum[i] / wsum[i] : std::nan("");
-            for (std::size_t i = 0; i < npoints * ncomp; ++i)
-                pdst[i] =
-                    davg_apply_nan_policy(pdst[i], rOpts, "point", name, i / (ncomp ? ncomp : 1));
-            out.AddPointData(davg_target_name(name, rOpts), std::move(dst));
-            continue;
-        }
-        if (!incidence) {
-            std::vector<std::size_t> block_base(nblocks + 1, 0);
-            for (std::size_t b = 0; b < nblocks; ++b)
-                block_base[b + 1] = block_base[b] + rMesh.Cells(b).NumCells();
-            incidence = std::make_unique<DavgIncidence>(davg_incidence(rMesh, block_base, npoints));
-            cell_weight.resize(block_base[nblocks]);
-            for (std::size_t b = 0; b < nblocks; ++b)
-                std::copy(weights[b].begin(), weights[b].end(),
-                          cell_weight.begin() + static_cast<std::ptrdiff_t>(block_base[b]));
-            cell_block_base = std::move(block_base);
-        }
-        // The cell values as doubles, block-major (read_double's conversion).
-        std::vector<double> values(cell_weight.size() * ncomp);
-        for (std::size_t b = 0; b < nblocks; ++b) {
-            const detail::DoubleView src(rMesh.CellData(name, b));
-            const std::size_t n = (cell_block_base[b + 1] - cell_block_base[b]) * ncomp;
-            double* to = values.data() + cell_block_base[b] * ncomp;
-            parallel_for_bw(n, [&](std::size_t i) { to[i] = src[i]; });
-        }
-
-        // --- accumulation, gathered per point: each point adds its incident
-        // --- cells' weighted values in (block, cell, node) order -- the order
-        // --- the serial scatter added them in (FP add is not associative) --
-        // --- so the sums are bit-identical on every backend and thread count.
-        const DavgIncidence& inc = *incidence;
-        parallel_for(npoints, [&](std::size_t pnt) {
-            for (std::size_t k = 0; k < ncomp; ++k) {
-                double sum = 0.0;
-                double wsum = 0.0;
-                for (std::uint64_t j = inc.mStart[pnt]; j < inc.mStart[pnt + 1]; ++j) {
-                    const std::uint64_t gc = inc.mCellOf[j];
-                    const double v = values[gc * ncomp + k];
-                    if (!std::isfinite(v))
-                        continue;
-                    const double w = cell_weight[gc];
-                    sum += w * v;
-                    wsum += w;
-                }
-                pdst[pnt * ncomp + k] = wsum > 0.0 ? sum / wsum : std::nan("");
-            }
-        });
-        for (std::size_t i = 0; i < npoints * ncomp; ++i)
-            pdst[i] = davg_apply_nan_policy(pdst[i], rOpts, "point", name, i / (ncomp ? ncomp : 1));
-
+        NDArray dst = davg_cell_to_point_impl(
+            rMesh, rMesh.CellDataNumBlocks(name),
+            [&](std::size_t b) -> const NDArray& { return rMesh.CellData(name, b); }, name, rOpts,
+            weights, incidence, cell_weight, cell_block_base);
         out.AddPointData(davg_target_name(name, rOpts), std::move(dst));
     }
     return out;
@@ -255862,20 +257658,20 @@ double lap_hash(std::uint64_t Row, std::uint64_t Col) {
 /// `sum a_i M_i b_i`, the M-inner product (M diagonal), in fixed chunks.
 double lap_mdot(const LapColumn& rA, const LapColumn& rB, const std::vector<double>& rMass) {
     const std::size_t n = rA.size();
-    const std::size_t chunks = (n + detail::kSparseChunk - 1) / detail::kSparseChunk;
-    std::vector<double> part(chunks, 0.0);
-    parallel_for(chunks, [&](std::size_t c) {
-        const std::size_t lo = c * detail::kSparseChunk;
-        const std::size_t hi = std::min(n, lo + detail::kSparseChunk);
+    const auto chunk = [&](std::size_t lo, std::size_t hi) {
         double s = 0.0;
         for (std::size_t i = lo; i < hi; ++i)
             s += rA[i] * rMass[i] * rB[i];
-        part[c] = s;
-    });
-    double s = 0.0;
-    for (const double v : part)
-        s += v;
-    return s;
+        return s;
+    };
+    if (n <= (std::size_t{1} << 15)) {
+        double s = 0.0;
+        for (std::size_t b = 0; b < n; b += detail::kSparseChunk)
+            s += chunk(b, std::min(n, b + detail::kSparseChunk));
+        return s;
+    }
+    return parallel_reduce(n, detail::kSparseChunk, 0.0, chunk,
+                           [](double L, double R) { return L + R; });
 }
 
 /// Eigen-decomposition of a symmetric P x P matrix (row-major) by cyclic
@@ -255977,31 +257773,50 @@ EigenmodeResult laplacian_eigenmodes(const Mesh& rMesh, const EigenmodeOptions& 
     result.mNumDegenerate = fem.mNumDegenerate;
     const std::int64_t cap = rOptions.mMaxIterations > 0 ? rOptions.mMaxIterations : 300;
     std::vector<LapColumn> y(p, LapColumn(n)), ky(p, LapColumn(n));
-    std::vector<double> rhs(n);
-    // Inexact inverse iteration: each solve only as accurate as the block
-    // already is (Rayleigh-Ritz then judges the pairs exactly), tightening
-    // as the residual falls.
+    std::vector<LapColumn> rhs_cols(p, LapColumn(n));
+    std::vector<const double*> rhs_ptrs(p);
+    std::vector<double*> y_ptrs(p);
+    for (std::size_t j = 0; j < p; ++j) {
+        rhs_ptrs[j] = rhs_cols[j].data();
+        y_ptrs[j] = y[j].data();
+    }
+    // Factor (K + s M) once with sparse LDL^T; fall back to IC(0)-preconditioned
+    // block PCG when symbolic fill exceeds the budget (very large surfaces).
+    detail::CsrLdlt ldlt;
+    const bool direct = ldlt.Factor(shifted);
+    detail::CsrIc0 ic0;
+    detail::CsrPcgWorkspace pcg_ws;
+    if (!direct)
+        ic0.Build(shifted);
+
+    std::vector<double> kp(p * p), w, v, kx(n);
+    std::vector<std::size_t> order(p);
     double solve_tol = 1e-4;
     for (std::int64_t it = 1; it <= cap; ++it) {
-        // y_j = (K + s M)^-1 M x_j, warm-started from x_j / (theta_j + s).
+        // y_j = (K + s M)^-1 M x_j.
         for (std::size_t j = 0; j < p; ++j) {
-            for (std::size_t r = 0; r < n; ++r) {
-                rhs[r] = mass[r] * x[j][r];
-                y[j][r] = std::isfinite(theta[j]) ? x[j][r] / (theta[j] + shift) : 0.0;
+            for (std::size_t r = 0; r < n; ++r)
+                rhs_cols[j][r] = mass[r] * x[j][r];
+            if (!direct) {
+                const double inv_s = std::isfinite(theta[j]) ? 1.0 / (theta[j] + shift) : 0.0;
+                for (std::size_t r = 0; r < n; ++r)
+                    y[j][r] = inv_s != 0.0 ? x[j][r] * inv_s : 0.0;
             }
-            detail::csr_pcg(shifted, rhs.data(), y[j].data(), solve_tol, 20 * n + 100);
+        }
+        if (direct) {
+            ldlt.SolveBlock(p, rhs_ptrs.data(), y_ptrs.data());
+        } else {
+            detail::csr_ic0_pcg_block(shifted, ic0, p, rhs_ptrs.data(), y_ptrs.data(), pcg_ws,
+                                      solve_tol, 20 * n + 100);
         }
         lap_orthonormalise(y, mass, seed);
         // Rayleigh-Ritz: the projected stiffness in the M-orthonormal basis.
         for (std::size_t j = 0; j < p; ++j)
             detail::csr_multiply(stiffness, y[j].data(), ky[j].data());
-        std::vector<double> kp(p * p);
         for (std::size_t i = 0; i < p; ++i)
             for (std::size_t j = i; j < p; ++j)
                 kp[i * p + j] = kp[j * p + i] = detail::sparse_dot(y[i].data(), ky[j].data(), n);
-        std::vector<double> w, v;
         lap_jacobi(kp, p, w, v);
-        std::vector<std::size_t> order(p);
         std::iota(order.begin(), order.end(), std::size_t{0});
         std::stable_sort(order.begin(), order.end(),
                          [&](std::size_t A, std::size_t B) { return w[A] < w[B]; });
@@ -256017,7 +257832,6 @@ EigenmodeResult laplacian_eigenmodes(const Mesh& rMesh, const EigenmodeOptions& 
         }
         // The wanted pairs' residuals |K x - theta M x|_{M^-1} / (theta + s).
         double worst = 0.0;
-        std::vector<double> kx(n);
         for (std::size_t j = 0; j < k; ++j) {
             detail::csr_multiply(stiffness, x[j].data(), kx.data());
             double s = 0.0;
@@ -256071,6 +257885,8 @@ EigenmodeResult laplacian_eigenmodes(const Mesh& rMesh, const EigenmodeOptions& 
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -256157,42 +257973,41 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
                                         "replace it)");
     }
 
-    // --- recovery: gradient -> cell_data_to_point_data -> point_data_to_cell_data ---
-    // The recovery operator IS this existing averaging round trip -- reused,
-    // not reimplemented, exactly as gradient(mLocation=Point) itself composes
-    // cell_data_to_point_data. Every intermediate mesh below is private working
-    // state (see the file comment); only `out`, built from a fresh clone of
-    // rMesh further down, is ever returned.
+    // --- recovery: gradient -> cell_to_point -> point_to_cell (zero mesh clones) ---
+    // The recovery operator IS the same averaging round trip as composing the
+    // public operations, driven through their core-private array-level helpers
+    // (roadmap 5.27) so `rMesh` is cloned once (for `out`) and each cell's
+    // measure is computed once.
     GradientOptions grad_opts;
     grad_opts.mArrayName = rOptions.mArrayName;
     grad_opts.mLocation = DataLocation::Cell;
     grad_opts.mOutputName = kErrRawName;
     grad_opts.mOverwrite = true;
-    const GradientResult raw = gradient(rMesh, grad_opts);
+    const detail::GradientArrayResult raw = detail::gradient_array(rMesh, grad_opts);
 
-    DataAverageOptions to_point;
-    to_point.names = {kErrRawName};
-    to_point.weight = CellPointWeight::Measure;
-    to_point.overwrite = true;
-    const Mesh recovered_pt = cell_data_to_point_data(raw.mMesh, to_point);
-
-    DataAverageOptions to_cell;
-    to_cell.names = {kErrRawName};
-    to_cell.suffix = kErrRecSuffix;
-    to_cell.overwrite = true;
-    const Mesh recovered = point_data_to_cell_data(recovered_pt, to_cell);
-    const std::string rec_name = std::string(kErrRawName) + kErrRecSuffix;
-
-    // --- per-cell indicator ----------------------------------------------------
     const std::size_t nblocks = rMesh.NumCellBlocks();
     Mesh out = detail::clone_mesh(rMesh);
     if (nblocks == 0)
         return ErrorResult{std::move(out), 0.0, 0, 0};
 
+    DataAverageOptions to_point;
+    to_point.names = {kErrRawName};
+    to_point.weight = CellPointWeight::Measure;
+    to_point.overwrite = true;
+    std::vector<std::vector<double>> raw_measures;
+    const NDArray recovered_pt =
+        detail::cell_to_point_array(rMesh, raw.mBlocks, kErrRawName, to_point, &raw_measures);
+
+    DataAverageOptions to_cell;
+    to_cell.names = {kErrRawName};
+    to_cell.suffix = kErrRecSuffix;
+    to_cell.overwrite = true;
+    const std::vector<NDArray> rec_blocks =
+        detail::point_to_cell_array(rMesh, recovered_pt, kErrRawName, to_cell);
+
+    // --- per-cell indicator ----------------------------------------------------
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
     const std::size_t total = static_cast<std::size_t>(detail::total_cells(bases));
-    const NDArray& points = rMesh.Points();
-    const std::size_t pdim = rMesh.PointDim();
 
     // A flat, block-major buffer of every cell's indicator (NaN where
     // unevaluable), used both as the per-block cell_data source and as the
@@ -256207,10 +258022,14 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
         const std::size_t ncells = cb.NumCells();
-        const NDArray& raw_arr = recovered.CellData(kErrRawName, b);
-        const NDArray& rec_arr = recovered.CellData(rec_name, b);
+        const NDArray& raw_arr = raw.mBlocks[b];
+        const NDArray& rec_arr = rec_blocks[b];
+        const double* praw = raw_arr.As<double>();
+        const double* prec = rec_arr.As<double>();
         const std::size_t comp = data_num_components(raw_arr);
         const std::size_t base = static_cast<std::size_t>(bases[b]);
+        const std::vector<double>* p_blk_measures =
+            b < raw_measures.size() ? &raw_measures[b] : nullptr;
 
         NDArray dst(DType::Float64, {ncells});
         double* pdst = dst.As<double>();
@@ -256223,8 +258042,8 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
             bool finite_pair = true;
             double sumsq = 0.0;
             for (std::size_t k = 0; k < comp; ++k) {
-                const double rv = detail::read_double(raw_arr, c * comp + k);
-                const double gv = detail::read_double(rec_arr, c * comp + k);
+                const double rv = praw[c * comp + k];
+                const double gv = prec[c * comp + k];
                 if (!std::isfinite(rv) || !std::isfinite(gv)) {
                     finite_pair = false;
                     break;
@@ -256233,11 +258052,10 @@ ErrorResult estimate_error(const Mesh& rMesh, const ErrorOptions& rOptions) {
                 sumsq += d * d;
             }
             double zz = std::nan("");
-            if (finite_pair) {
-                // The same primitive data_average's CellPointWeight::Measure
-                // just used for the recovery weighting, so the two agree by
-                // construction.
-                const double measure = std::fabs(detail::cell_measure(points, pdim, cb, c));
+            if (finite_pair && p_blk_measures && c < p_blk_measures->size()) {
+                // Reuses the unclamped `detail::cell_measure` values computed
+                // during `cell_to_point_array`'s Measure weighting pass.
+                const double measure = std::fabs((*p_blk_measures)[c]);
                 if (std::isfinite(measure))
                     zz = std::sqrt(measure * sumsq);
             }
@@ -262505,7 +264323,7 @@ GeodesicResult geodesic_distance(const Mesh& rMesh, const GeodesicOptions& rOpti
         }
         const detail::SparseCsr a = detail::csr_from_triplets(n, n, std::move(poisson));
         const detail::SparseSolveReport r =
-            detail::csr_pcg(a, rhs.data(), phi.data(), rOptions.mTolerance, cap);
+            detail::csr_ic0_pcg(a, rhs.data(), phi.data(), rOptions.mTolerance, cap);
         result.mPoissonIterations = static_cast<std::int64_t>(r.mIterations);
         result.mConverged = result.mConverged && r.mConverged;
     }
@@ -263101,7 +264919,9 @@ GradientMethod gradient_method_from_name(const std::string& rName) {
                                 "' (expected 'green-gauss' or 'least-squares')");
 }
 
-GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
+namespace detail {
+
+GradientArrayResult gradient_array(const Mesh& rMesh, const GradientOptions& rOptions) {
     // --- validation, all before any work ------------------------------------
     if (rOptions.mArrayName.empty())
         throw std::invalid_argument(std::string(kGradPrefix) + "an array name is required");
@@ -263150,18 +264970,6 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             std::to_string(field_comp) +
             " components; every operator but the gradient needs a vector field of 2 or 3");
 
-    const std::string out_name = rOptions.mOutputName.empty()
-                                     ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
-                                     : rOptions.mOutputName;
-    if (!rOptions.mOverwrite) {
-        const bool taken = rOptions.mLocation == DataLocation::Point ? rMesh.HasPointData(out_name)
-                                                                     : rMesh.HasCellData(out_name);
-        if (taken)
-            throw std::invalid_argument(
-                std::string(kGradPrefix) + "'" + out_name + "' already exists in " +
-                data_location_name(rOptions.mLocation) + " (pass overwrite=true to replace it)");
-    }
-
     // The field components actually differentiated: one when a component was
     // selected, all of them otherwise.
     const std::size_t work_comp = rOptions.mComponent.has_value() ? 1 : field_comp;
@@ -263169,13 +264977,9 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         rOptions.mComponent.has_value() ? static_cast<std::size_t>(*rOptions.mComponent) : 0;
     const std::size_t out_comp = grad_out_components(rOptions.mOperator, work_comp);
 
-    // Geometry, connectivity, regions, property sets and every existing array
-    // ride through untouched. No warn_regions_dropped here -- unlike every
-    // restructuring operation, this one does not renumber anything.
-    Mesh out = detail::clone_mesh(rMesh);
     const std::size_t nblocks = rMesh.NumCellBlocks();
     if (nblocks == 0)
-        return GradientResult{std::move(out), 0, 0};
+        return GradientArrayResult{{}, 0, 0};
 
     const int dim = grad_mesh_dimension(rMesh);
     if (dim <= 0)
@@ -263397,24 +265201,66 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         blocks.push_back(std::move(dst));
     }
 
-    out.AddCellData(out_name, std::move(blocks));
+    return GradientArrayResult{std::move(blocks), skipped, fallback};
+}
 
+}  // namespace detail
+
+GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
+    // Check name collision before allocating gradient work buffers, keeping
+    // the exact error ordering for invalid inputs.
+    if (!rOptions.mArrayName.empty() && rOptions.mLocation != DataLocation::Field &&
+        rMesh.HasPointData(rOptions.mArrayName)) {
+        const NDArray& field = rMesh.PointData(rOptions.mArrayName);
+        const std::size_t field_comp = data_num_components(field);
+        const bool valid_shape = field_comp > 0 && detail::rows(field) == rMesh.NumPoints();
+        const bool valid_comp =
+            !rOptions.mComponent.has_value() ||
+            (rOptions.mOperator == GradientOperator::Gradient && *rOptions.mComponent >= 0 &&
+             static_cast<std::size_t>(*rOptions.mComponent) < field_comp);
+        const bool valid_op =
+            rOptions.mOperator == GradientOperator::Gradient || field_comp == 2 || field_comp == 3;
+        if (valid_shape && valid_comp && valid_op && !rOptions.mOverwrite) {
+            const std::string out_name =
+                rOptions.mOutputName.empty()
+                    ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
+                    : rOptions.mOutputName;
+            const bool taken = rOptions.mLocation == DataLocation::Point
+                                   ? rMesh.HasPointData(out_name)
+                                   : rMesh.HasCellData(out_name);
+            if (taken)
+                throw std::invalid_argument(std::string(kGradPrefix) + "'" + out_name +
+                                            "' already exists in " +
+                                            data_location_name(rOptions.mLocation) +
+                                            " (pass overwrite=true to replace it)");
+        }
+    }
+
+    detail::GradientArrayResult arr = detail::gradient_array(rMesh, rOptions);
+
+    // Geometry, connectivity, regions, property sets and every existing array
+    // ride through untouched. No warn_regions_dropped here -- unlike every
+    // restructuring operation, this one does not renumber anything.
+    Mesh out = detail::clone_mesh(rMesh);
+    if (rMesh.NumCellBlocks() == 0)
+        return GradientResult{std::move(out), 0, 0};
+
+    const std::string out_name = rOptions.mOutputName.empty()
+                                     ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
+                                     : rOptions.mOutputName;
     if (rOptions.mLocation == DataLocation::Point) {
-        // Compose the existing averaging rather than reimplementing a scatter:
-        // its accumulation is already deliberately serial, so the point values
-        // stay reproducible. All contributing cell values are equal for a linear
-        // field, so the result is exact to within rounding -- but summing n
-        // copies of g and dividing by n is not bit-exact in IEEE, which is why
-        // the point-located tests use a tolerance.
         DataAverageOptions avg;
         avg.names = {out_name};
         avg.weight = CellPointWeight::Uniform;
         avg.overwrite = true;
-        Mesh with_points = cell_data_to_point_data(out, avg);
-        out = data_drop(with_points, DataLocation::Cell, {out_name});
+        NDArray pt = detail::cell_to_point_array(rMesh, arr.mBlocks, out_name, avg);
+        if (rMesh.NumPoints() > 0)
+            out.AddPointData(out_name, std::move(pt));
+    } else {
+        out.AddCellData(out_name, std::move(arr.mBlocks));
     }
 
-    return GradientResult{std::move(out), skipped, fallback};
+    return GradientResult{std::move(out), arr.mNumSkipped, arr.mNumFallback};
 }
 
 }  // namespace meshioplusplus
@@ -278486,20 +280332,39 @@ MorphResult morph(const Mesh& rMesh, const MorphOptions& rOptions) {
             }
         }
         if (num_free > 0) {
-            const detail::SparseCsr a =
-                detail::csr_from_triplets(num_free, num_free, std::move(kff));
-            std::vector<double> b(num_free), u(num_free);
-            for (std::size_t c = 0; c < dim && c < 3; ++c) {
-                for (std::size_t r = 0; r < num_free; ++r)
-                    b[r] = rhs[r][c];
-                std::fill(u.begin(), u.end(), 0.0);
-                const detail::SparseSolveReport rep =
-                    detail::csr_pcg(a, b.data(), u.data(), rOptions.mTolerance, cap);
-                result.mIterations += static_cast<std::int64_t>(rep.mIterations);
-                result.mConverged = result.mConverged && rep.mConverged;
-                for (std::size_t i = 0; i < n; ++i)
-                    if (!fixed[i])
-                        xyz[i][c] += u[static_cast<std::size_t>(slot[i])];
+            const std::size_t ncols = dim < 3 ? dim : 3;
+            bool any_rhs = false;
+            for (std::size_t r = 0; r < num_free && !any_rhs; ++r)
+                for (std::size_t c = 0; c < ncols; ++c)
+                    if (rhs[r][c] != 0.0) {
+                        any_rhs = true;
+                        break;
+                    }
+            if (any_rhs) {
+                const detail::SparseCsr a =
+                    detail::csr_from_triplets(num_free, num_free, std::move(kff));
+                std::vector<std::vector<double>> b_cols(ncols, std::vector<double>(num_free));
+                std::vector<std::vector<double>> u_cols(ncols, std::vector<double>(num_free, 0.0));
+                std::vector<const double*> b_ptrs(ncols);
+                std::vector<double*> u_ptrs(ncols);
+                for (std::size_t c = 0; c < ncols; ++c) {
+                    for (std::size_t r = 0; r < num_free; ++r)
+                        b_cols[c][r] = rhs[r][c];
+                    b_ptrs[c] = b_cols[c].data();
+                    u_ptrs[c] = u_cols[c].data();
+                }
+                detail::CsrIc0 precond;
+                precond.Build(a);
+                detail::CsrPcgWorkspace ws;
+                const std::vector<detail::SparseSolveReport> reps = detail::csr_ic0_pcg_block(
+                    a, precond, ncols, b_ptrs.data(), u_ptrs.data(), ws, rOptions.mTolerance, cap);
+                for (std::size_t c = 0; c < ncols; ++c) {
+                    result.mIterations += static_cast<std::int64_t>(reps[c].mIterations);
+                    result.mConverged = result.mConverged && reps[c].mConverged;
+                    for (std::size_t i = 0; i < n; ++i)
+                        if (!fixed[i])
+                            xyz[i][c] += u_cols[c][static_cast<std::size_t>(slot[i])];
+                }
             }
         }
         for (std::size_t i = 0; i < n; ++i)
@@ -282738,8 +284603,6 @@ namespace detail {
 
 namespace {
 
-constexpr int kOctmoFace[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
-
 // The smallest and the largest dihedral angle of a tetrahedron, from one
 // tet_dihedral_angles call (its angles are ascending); -1 and 181 for one
 // that is not positive.
@@ -282814,9 +284677,11 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
     // The faces used once (the mesh's boundary: the skin, and the box with
     // keep_outside), and the skin's surface graph.
     std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> faces;
+    const auto& tet_faces = cell_faces(CellType::Tetra);
     for (std::size_t n = 0; n < tets.size(); ++n)
-        for (const auto& f : kOctmoFace) {
-            std::array<std::int64_t, 3> k{tets[n][f[0]], tets[n][f[1]], tets[n][f[2]]};
+        for (const auto& f : tet_faces) {
+            std::array<std::int64_t, 3> k{tets[n][f.mNodes[0]], tets[n][f.mNodes[1]],
+                                          tets[n][f.mNodes[2]]};
             std::sort(k.begin(), k.end());
             faces.emplace_back(k, rTets.mMaterial[kept[n]]);
         }
@@ -283080,9 +284945,6 @@ namespace meshioplusplus {
 namespace detail {
 
 namespace {
-
-// The tetrahedron's facets (detail/cell_faces), each outward.
-constexpr int kOctmtFacet[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
 
 NDArray octmt_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride) {
     NDArray a = Stride == 1 ? NDArray::Uninit(DType::Int64, {rIds.size()})
@@ -283429,12 +285291,13 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
         triangles.clear();
         incident.clear();
         std::vector<std::pair<std::array<Index, 3>, std::size_t>> faces;
+        const auto& tet_faces = cell_faces(CellType::Tetra);
         for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
             if (rTets.mMaterial[t] <= 0)
                 continue;
-            for (const auto& f : kOctmtFacet) {
-                std::array<Index, 3> key{rTets.mTets[t][f[0]], rTets.mTets[t][f[1]],
-                                         rTets.mTets[t][f[2]]};
+            for (const auto& f : tet_faces) {
+                std::array<Index, 3> key{rTets.mTets[t][f.mNodes[0]], rTets.mTets[t][f.mNodes[1]],
+                                         rTets.mTets[t][f.mNodes[2]]};
                 std::sort(key.begin(), key.end());
                 faces.emplace_back(key, t);
             }
@@ -283839,10 +285702,12 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
             break;
         // The tetrahedra of every face, by sorted node triplet.
         std::map<std::array<Index, 3>, std::vector<std::size_t>> faces_of;
+        const auto& tet_faces = cell_faces(CellType::Tetra);
         for (std::size_t t = 0; t < rTets.mTets.size(); ++t)
-            for (const auto& facet : kOctmtFacet) {
-                std::array<Index, 3> key{rTets.mTets[t][facet[0]], rTets.mTets[t][facet[1]],
-                                         rTets.mTets[t][facet[2]]};
+            for (const auto& facet : tet_faces) {
+                std::array<Index, 3> key{rTets.mTets[t][facet.mNodes[0]],
+                                         rTets.mTets[t][facet.mNodes[1]],
+                                         rTets.mTets[t][facet.mNodes[2]]};
                 std::sort(key.begin(), key.end());
                 faces_of[key].push_back(t);
             }
@@ -284201,11 +286066,12 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> faces;
     const std::int64_t* cp = m.Cells(0).Conn().As<std::int64_t>();
     faces.reserve(kept.size() * 4);
+    const auto& tet_faces = cell_faces(CellType::Tetra);
     for (std::size_t n = 0; n < kept.size(); ++n)
         for (std::int64_t f = 0; f < 4; ++f) {
-            std::array<std::int64_t, 3> key{cp[n * 4 + kOctmtFacet[f][0]],
-                                            cp[n * 4 + kOctmtFacet[f][1]],
-                                            cp[n * 4 + kOctmtFacet[f][2]]};
+            const auto& fn = tet_faces[static_cast<std::size_t>(f)].mNodes;
+            std::array<std::int64_t, 3> key{cp[n * 4 + fn[0]], cp[n * 4 + fn[1]],
+                                            cp[n * 4 + fn[2]]};
             std::sort(key.begin(), key.end());
             faces.emplace_back(key, static_cast<std::int64_t>(n) * 4 + f);
         }
@@ -284253,8 +286119,8 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
             if (inside_uses == 1) {
                 const auto n = static_cast<std::size_t>(last / 4);
                 const auto f = static_cast<std::size_t>(last % 4);
-                skin_faces.push_back({cp[n * 4 + kOctmtFacet[f][0]], cp[n * 4 + kOctmtFacet[f][1]],
-                                      cp[n * 4 + kOctmtFacet[f][2]]});
+                const auto& fn = tet_faces[f].mNodes;
+                skin_faces.push_back({cp[n * 4 + fn[0]], cp[n * 4 + fn[1]], cp[n * 4 + fn[2]]});
             }
             i = j;
         }
@@ -294911,25 +296777,7 @@ void quality_quad(const std::vector<Vec3>& c, bool is2d, double eps, double* m) 
 // Solve the 3x3 system whose rows are a0,a1,a2 for x (Cramer). ok=false if singular.
 Vec3 quality_solve3(const Vec3& a0, const Vec3& a1, const Vec3& a2, const Vec3& b, double eps,
                     bool& rOk) {
-    auto det = [](const Vec3& r0, const Vec3& r1, const Vec3& r2) {
-        return r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
-               r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
-    };
-    const double d = det(a0, a1, a2);
-    if (std::fabs(d) < eps) {
-        rOk = false;
-        return {0.0, 0.0, 0.0};
-    }
-    rOk = true;
-    Vec3 x;
-    for (int k = 0; k < 3; ++k) {
-        Vec3 c0 = a0, c1 = a1, c2 = a2;
-        c0[k] = b[0];
-        c1[k] = b[1];
-        c2[k] = b[2];
-        x[k] = det(c0, c1, c2) / d;
-    }
-    return x;
+    return detail::MathUtils::Solve3(a0, a1, a2, b, eps, rOk);
 }
 
 void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {
@@ -311350,6 +313198,7 @@ NDArray smooth_write_coords(const NDArray& rPoints, const std::vector<double>& r
 // How a cell's orientation can be checked. Cells with no signed measure at all
 // never enter the table, so `None` is not represented here.
 enum class SmoothMeasure : std::uint8_t {
+    Tet,         ///< tetrahedron: six times signed volume via detail::tet_volume6.
     PolyFan,     ///< polyhedron: the kernel's corner-average fan over the cell's own faces
     FaceFan,     ///< 3D volume cell: signed volume by the outward face fan.
     Shoelace2D,  ///< 2D cell in a 2D mesh: signed area.
@@ -311428,7 +313277,9 @@ SmoothCellTable smooth_build_cell_table(const Mesh& rMesh, std::size_t n, bool i
 
         SmoothMeasure measure;
         std::int32_t face_id = -1;
-        if (dim == 3 && detail::skin_supported(ct)) {
+        if (ct == CellType::Tetra) {
+            measure = SmoothMeasure::Tet;
+        } else if (dim == 3 && detail::skin_supported(ct)) {
             measure = SmoothMeasure::FaceFan;
             auto it = face_table_ids.find(static_cast<int>(ct));
             if (it == face_table_ids.end()) {
@@ -311630,6 +313481,8 @@ Vec3 smooth_cell_measure(std::size_t Cell, const SmoothCellTable& rTable,
     const std::int64_t off = rTable.mCornerOffset[Cell];
     const std::size_t ncorner = static_cast<std::size_t>(rTable.mCornerOffset[Cell + 1] - off);
     switch (rTable.mMeasure[Cell]) {
+        case SmoothMeasure::Tet:
+            return {detail::tet_volume6(rAt(0), rAt(1), rAt(2), rAt(3)), 0.0, 0.0};
         case SmoothMeasure::PolyFan:
             // Measured WITHOUT re-orienting: a polyhedron's stored winding is
             // arbitrary but fixed for the whole run, so the sign is consistent
@@ -311666,6 +313519,10 @@ bool smooth_cell_flips(std::size_t Cell, const SmoothCellTable& rTable,
     // Each case calls its measure directly, as smooth_cell_measure does, so
     // the reader inlines into the hot after-move evaluation.
     switch (rTable.mMeasure[Cell]) {
+        case SmoothMeasure::Tet:
+            if (rBefore[0] <= 0.0)
+                return false;  // already inverted/degenerate: no constraint
+            return detail::tet_volume6(after(0), after(1), after(2), after(3)) <= 0.0;
         case SmoothMeasure::PolyFan: {
             const double v0 = rBefore[0];
             if (v0 == 0.0)
@@ -312187,14 +314044,13 @@ SmoothMethod smooth_method_from_name(const std::string& rName) {
 
 // The measurable-cell table smooth_build_cell_table builds for a mesh made of
 // one tetra block with these rows, without building the mesh: every tet with
-// in-range corners, in order, measured by its outward face fan.
+// in-range corners, in order, measured by detail::tet_volume6.
 SmoothCellTable smooth_cell_table_from_tets(const std::vector<std::array<std::int64_t, 4>>& rTets,
                                             std::size_t n) {
     SmoothCellTable t;
     t.mCornerOffset.reserve(rTets.size() + 1);
     t.mCornerNodes.reserve(rTets.size() * 4);
     t.mCornerOffset.push_back(0);
-    t.mFaceTables.push_back(&detail::cell_faces(CellType::Tetra));
     for (const auto& tet : rTets) {
         bool ok = true;
         for (std::int64_t id : tet)
@@ -312202,8 +314058,8 @@ SmoothCellTable smooth_cell_table_from_tets(const std::vector<std::array<std::in
         if (!ok)
             continue;
         t.mCornerNodes.insert(t.mCornerNodes.end(), tet.begin(), tet.end());
-        t.mMeasure.push_back(SmoothMeasure::FaceFan);
-        t.mFaceTable.push_back(0);
+        t.mMeasure.push_back(SmoothMeasure::Tet);
+        t.mFaceTable.push_back(-1);
         t.mPolyStart.push_back(-1);
         t.mPolyNumFaces.push_back(0);
         t.mCornerOffset.push_back(static_cast<std::int64_t>(t.mCornerNodes.size()));
@@ -312595,22 +314451,32 @@ SmoothFieldResult smooth_field(const Mesh& rMesh, const SmoothFieldOptions& rOpt
 
     NDArray out(DType::Float64, field.Shape());
     double* po = out.As<double>();
-    std::vector<double> rhs(n), x(n);
     SmoothFieldResult result;
     const std::size_t cap =
         rOptions.mMaxIterations > 0 ? static_cast<std::size_t>(rOptions.mMaxIterations) : n + 100;
+    std::vector<std::vector<double>> rhs_cols(comps, std::vector<double>(n));
+    std::vector<std::vector<double>> x_cols(comps, std::vector<double>(n));
+    std::vector<const double*> rhs_ptrs(comps);
+    std::vector<double*> x_ptrs(comps);
     for (std::size_t c = 0; c < comps; ++c) {
         for (std::size_t i = 0; i < n; ++i) {
             const double f = detail::read_double(field, i * comps + c);
-            rhs[i] = (mass[i] > 0.0 ? mass[i] : 1.0) * f;
-            x[i] = f;
+            rhs_cols[c][i] = (mass[i] > 0.0 ? mass[i] : 1.0) * f;
+            x_cols[c][i] = f;
         }
-        const detail::SparseSolveReport report =
-            detail::csr_pcg(a, rhs.data(), x.data(), rOptions.mTolerance, cap);
-        result.mIterations += static_cast<std::int64_t>(report.mIterations);
-        result.mConverged = result.mConverged && report.mConverged;
+        rhs_ptrs[c] = rhs_cols[c].data();
+        x_ptrs[c] = x_cols[c].data();
+    }
+    detail::CsrIc0 precond;
+    precond.Build(a);
+    detail::CsrPcgWorkspace ws;
+    const std::vector<detail::SparseSolveReport> reps = detail::csr_ic0_pcg_block(
+        a, precond, comps, rhs_ptrs.data(), x_ptrs.data(), ws, rOptions.mTolerance, cap);
+    for (std::size_t c = 0; c < comps; ++c) {
+        result.mIterations += static_cast<std::int64_t>(reps[c].mIterations);
+        result.mConverged = result.mConverged && reps[c].mConverged;
         for (std::size_t i = 0; i < n; ++i)
-            po[i * comps + c] = x[i];
+            po[i * comps + c] = x_cols[c][i];
     }
     result.mNumDegenerate = fem.mNumDegenerate;
     result.mMesh = detail::clone_mesh(rMesh);
@@ -319574,6 +321440,7 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -319581,6 +321448,8 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
 #include <vector>
 
 // Project includes
+
+// Project includes (private, not installed)
 
 namespace meshioplusplus {
 
@@ -319596,52 +321465,121 @@ struct UtgCorner {
     bool mTet;
 };
 
+/// One corner incident to a vertex, with the 4-bit mask of local slots (0..3)
+/// where that vertex appears in `UtgCorner::mNodes`.
+struct UtgNodeCorner {
+    std::uint32_t mCorner;
+    std::uint8_t mMask;
+};
+
 // Knupp's hexahedron corners: corner c, then its three edge neighbours.
 constexpr int kUtgHexCorner[8][4] = {{0, 1, 3, 4}, {1, 2, 0, 5}, {2, 3, 1, 6}, {3, 0, 2, 7},
                                      {4, 7, 5, 0}, {5, 4, 6, 1}, {6, 5, 7, 2}, {7, 6, 4, 3}};
 
 // The inverse of the regular tetrahedron's edge matrix (columns: its three
 // edges from corner 0, unit length), row-major.
-const double kUtgTetWinv[3][3] = {{1.0, -0.57735026918962573, -0.40824829046386302},
-                                  {0.0, 1.1547005383792515, -0.40824829046386302},
-                                  {0.0, 0.0, 1.2247448713915890}};
+constexpr double kUtgTetWinv[3][3] = {{1.0, -0.57735026918962573, -0.40824829046386302},
+                                      {0.0, 1.1547005383792515, -0.40824829046386302},
+                                      {0.0, 0.0, 1.2247448713915890}};
+
+// Derivative weights alpha_m[c] such that dS_{r,c}/d(x_{n_m})_i = delta_{r,i} * inv_unit *
+// alpha_m[c]: rows 1..3 are rows 0..2 of W^-1, row 0 is their negated sum.
+constexpr double kUtgTetAlpha[4][3] = {
+    {-(kUtgTetWinv[0][0] + kUtgTetWinv[1][0] + kUtgTetWinv[2][0]),
+     -(kUtgTetWinv[0][1] + kUtgTetWinv[1][1] + kUtgTetWinv[2][1]),
+     -(kUtgTetWinv[0][2] + kUtgTetWinv[1][2] + kUtgTetWinv[2][2])},
+    {kUtgTetWinv[0][0], kUtgTetWinv[0][1], kUtgTetWinv[0][2]},
+    {kUtgTetWinv[1][0], kUtgTetWinv[1][1], kUtgTetWinv[1][2]},
+    {kUtgTetWinv[2][0], kUtgTetWinv[2][1], kUtgTetWinv[2][2]},
+};
+
+constexpr double kUtgHexAlpha[4][3] = {
+    {-1.0, -1.0, -1.0}, {1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
 
 struct UtgMeasure {
     double mDet;    ///< det S
     double mFrob2;  ///< |S|_F^2
 };
 
-UtgMeasure utg_measure(const std::vector<Vec3>& rX, const UtgCorner& rC, double InvScale) {
+inline void utg_shape_matrix(const std::vector<Vec3>& rX, const UtgCorner& rC, double InvScale,
+                             double rS[3][3]) {
     const Vec3& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
-    double a[3][3];  // columns: the three edges, scaled
-    for (int k = 0; k < 3; ++k) {
-        const Vec3& p = rX[static_cast<std::size_t>(rC.mNodes[k + 1])];
-        for (int r = 0; r < 3; ++r)
-            a[r][k] = (p[r] - p0[r]) * InvScale;
-    }
-    double s[3][3];
+    const Vec3& p1 = rX[static_cast<std::size_t>(rC.mNodes[1])];
+    const Vec3& p2 = rX[static_cast<std::size_t>(rC.mNodes[2])];
+    const Vec3& p3 = rX[static_cast<std::size_t>(rC.mNodes[3])];
+    const double a00 = (p1[0] - p0[0]) * InvScale;
+    const double a10 = (p1[1] - p0[1]) * InvScale;
+    const double a20 = (p1[2] - p0[2]) * InvScale;
+    const double a01 = (p2[0] - p0[0]) * InvScale;
+    const double a11 = (p2[1] - p0[1]) * InvScale;
+    const double a21 = (p2[2] - p0[2]) * InvScale;
+    const double a02 = (p3[0] - p0[0]) * InvScale;
+    const double a12 = (p3[1] - p0[1]) * InvScale;
+    const double a22 = (p3[2] - p0[2]) * InvScale;
     if (rC.mTet) {
-        for (int r = 0; r < 3; ++r)
-            for (int c = 0; c < 3; ++c) {
-                double v = 0.0;
-                for (int k = 0; k < 3; ++k)
-                    v += a[r][k] * kUtgTetWinv[k][c];
-                s[r][c] = v;
-            }
+        // W^-1 is upper triangular (w10 = w20 = w21 = 0).
+        rS[0][0] = a00;
+        rS[1][0] = a10;
+        rS[2][0] = a20;
+        rS[0][1] = a00 * kUtgTetWinv[0][1] + a01 * kUtgTetWinv[1][1];
+        rS[1][1] = a10 * kUtgTetWinv[0][1] + a11 * kUtgTetWinv[1][1];
+        rS[2][1] = a20 * kUtgTetWinv[0][1] + a21 * kUtgTetWinv[1][1];
+        rS[0][2] = a00 * kUtgTetWinv[0][2] + a01 * kUtgTetWinv[1][2] + a02 * kUtgTetWinv[2][2];
+        rS[1][2] = a10 * kUtgTetWinv[0][2] + a11 * kUtgTetWinv[1][2] + a12 * kUtgTetWinv[2][2];
+        rS[2][2] = a20 * kUtgTetWinv[0][2] + a21 * kUtgTetWinv[1][2] + a22 * kUtgTetWinv[2][2];
     } else {
-        for (int r = 0; r < 3; ++r)
-            for (int c = 0; c < 3; ++c)
-                s[r][c] = a[r][c];
+        rS[0][0] = a00;
+        rS[0][1] = a01;
+        rS[0][2] = a02;
+        rS[1][0] = a10;
+        rS[1][1] = a11;
+        rS[1][2] = a12;
+        rS[2][0] = a20;
+        rS[2][1] = a21;
+        rS[2][2] = a22;
     }
+}
+
+inline UtgMeasure utg_measure(const std::vector<Vec3>& rX, const UtgCorner& rC, double InvScale) {
+    double s[3][3];
+    utg_shape_matrix(rX, rC, InvScale, s);
     UtgMeasure m{};
     m.mDet = s[0][0] * (s[1][1] * s[2][2] - s[1][2] * s[2][1]) -
              s[0][1] * (s[1][0] * s[2][2] - s[1][2] * s[2][0]) +
              s[0][2] * (s[1][0] * s[2][1] - s[1][1] * s[2][0]);
-    m.mFrob2 = 0.0;
-    for (int r = 0; r < 3; ++r)
-        for (int c = 0; c < 3; ++c)
-            m.mFrob2 += s[r][c] * s[r][c];
+    m.mFrob2 = s[0][0] * s[0][0] + s[0][1] * s[0][1] + s[0][2] * s[0][2] + s[1][0] * s[1][0] +
+               s[1][1] * s[1][1] + s[1][2] * s[1][2] + s[2][0] * s[2][0] + s[2][1] * s[2][1] +
+               s[2][2] * s[2][2];
     return m;
+}
+
+// det(kUtgTetWinv) = 1.0 * (2/sqrt(3)) * sqrt(3/2) = sqrt(2).
+constexpr double kUtgTetDetWinv = kUtgTetWinv[0][0] * kUtgTetWinv[1][1] * kUtgTetWinv[2][2];
+
+inline double utg_det(const std::vector<Vec3>& rX, const UtgCorner& rC, double InvScale3) {
+    const Vec3& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
+    const Vec3& p1 = rX[static_cast<std::size_t>(rC.mNodes[1])];
+    const Vec3& p2 = rX[static_cast<std::size_t>(rC.mNodes[2])];
+    const Vec3& p3 = rX[static_cast<std::size_t>(rC.mNodes[3])];
+    const double e00 = p1[0] - p0[0], e10 = p1[1] - p0[1], e20 = p1[2] - p0[2];
+    const double e01 = p2[0] - p0[0], e11 = p2[1] - p0[1], e21 = p2[2] - p0[2];
+    const double e02 = p3[0] - p0[0], e12 = p3[1] - p0[1], e22 = p3[2] - p0[2];
+    const double det_a = e00 * (e11 * e22 - e12 * e21) - e01 * (e10 * e22 - e12 * e20) +
+                         e02 * (e10 * e21 - e11 * e20);
+    return det_a * (rC.mTet ? InvScale3 * kUtgTetDetWinv : InvScale3);
+}
+
+inline bool utg_corner_positive(const std::vector<Vec3>& rX, const UtgCorner& rC) {
+    const Vec3& p0 = rX[static_cast<std::size_t>(rC.mNodes[0])];
+    const Vec3& p1 = rX[static_cast<std::size_t>(rC.mNodes[1])];
+    const Vec3& p2 = rX[static_cast<std::size_t>(rC.mNodes[2])];
+    const Vec3& p3 = rX[static_cast<std::size_t>(rC.mNodes[3])];
+    const double e00 = p1[0] - p0[0], e10 = p1[1] - p0[1], e20 = p1[2] - p0[2];
+    const double e01 = p2[0] - p0[0], e11 = p2[1] - p0[1], e21 = p2[2] - p0[2];
+    const double e02 = p3[0] - p0[0], e12 = p3[1] - p0[1], e22 = p3[2] - p0[2];
+    const double det_a = e00 * (e11 * e22 - e12 * e21) - e01 * (e10 * e22 - e12 * e20) +
+                         e02 * (e10 * e21 - e11 * e20);
+    return det_a > 0.0;
 }
 
 /// The corner's scaled Jacobian: det of the edges over their lengths' product.
@@ -319662,11 +321600,79 @@ double utg_scaled_jacobian(const std::vector<Vec3>& rX, const UtgCorner& rC) {
     return det / len;
 }
 
-double utg_term(const UtgMeasure& rM, double Delta) {
+// Fast full-precision cube root for strictly positive normal IEEE-754 doubles:
+// bit-level initial guess (<= 3.2% error) + 2 cubic-convergent Halley steps
+// (< 1 ULP, 53-bit exact) without glibc frexp/ldexp/scalbn overhead.
+inline double utg_cbrt_pos(double X) {
+    if (X < 1e-300 || !std::isfinite(X))
+        return std::cbrt(X);
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &X, sizeof bits);
+    bits = bits / 3 + 0x2a9f7893e6b00000ull;
+    double y = 0.0;
+    std::memcpy(&y, &bits, sizeof y);
+    double y3 = y * y * y;
+    y *= (y3 + 2.0 * X) / (2.0 * y3 + X);
+    y3 = y * y * y;
+    y *= (y3 + 2.0 * X) / (2.0 * y3 + X);
+    return y;
+}
+
+inline double utg_term(const UtgMeasure& rM, double Delta) {
     const double h = 0.5 * (rM.mDet + std::sqrt(rM.mDet * rM.mDet + 4.0 * Delta * Delta));
     if (!(h > 0.0))
         return std::numeric_limits<double>::infinity();
-    return rM.mFrob2 / (3.0 * std::cbrt(h * h));
+    const double h13 = utg_cbrt_pos(h);
+    return rM.mFrob2 / (3.0 * h13 * h13);
+}
+
+/// Closed-form Escobar-Knupp term and analytic gradient with respect to the
+/// corner slots selected by `SlotMask`: `f = |S|_F^2 / (3 h^{2/3})`,
+/// `d f / d S = (2 / (3 h^{2/3})) S - (2 f / (3 r)) cof(S)` with
+/// `r = sqrt(det^2 + 4 delta^2)` and `h = (det + r) / 2`.
+bool utg_term_and_grad(const std::vector<Vec3>& rX, const UtgCorner& rC, double InvScale,
+                       double Delta, std::uint8_t SlotMask, double& rF, Vec3& rGrad) {
+    double s[3][3];
+    utg_shape_matrix(rX, rC, InvScale, s);
+    const double c00 = s[1][1] * s[2][2] - s[1][2] * s[2][1];
+    const double c01 = s[1][2] * s[2][0] - s[1][0] * s[2][2];
+    const double c02 = s[1][0] * s[2][1] - s[1][1] * s[2][0];
+    const double det = s[0][0] * c00 + s[0][1] * c01 + s[0][2] * c02;
+    const double r = std::sqrt(det * det + 4.0 * Delta * Delta);
+    const double h = 0.5 * (det + r);
+    if (!(h > 0.0) || !(r > 0.0))
+        return false;
+    const double frob2 = s[0][0] * s[0][0] + s[0][1] * s[0][1] + s[0][2] * s[0][2] +
+                         s[1][0] * s[1][0] + s[1][1] * s[1][1] + s[1][2] * s[1][2] +
+                         s[2][0] * s[2][0] + s[2][1] * s[2][1] + s[2][2] * s[2][2];
+    const double h13 = utg_cbrt_pos(h);
+    const double inv_3h23 = 1.0 / (3.0 * h13 * h13);
+    const double f = frob2 * inv_3h23;
+    if (!std::isfinite(f))
+        return false;
+    rF += f;
+
+    const double cof[3][3] = {
+        {c00, c01, c02},
+        {s[0][2] * s[2][1] - s[0][1] * s[2][2], s[0][0] * s[2][2] - s[0][2] * s[2][0],
+         s[0][1] * s[2][0] - s[0][0] * s[2][1]},
+        {s[0][1] * s[1][2] - s[0][2] * s[1][1], s[0][2] * s[1][0] - s[0][0] * s[1][2],
+         s[0][0] * s[1][1] - s[0][1] * s[1][0]},
+    };
+    const double cs = 2.0 * inv_3h23 * InvScale;
+    const double cd = (2.0 * f / (3.0 * r)) * InvScale;
+    const auto& alpha = rC.mTet ? kUtgTetAlpha : kUtgHexAlpha;
+    for (int m = 0; m < 4; ++m) {
+        if ((SlotMask & (1u << m)) == 0)
+            continue;
+        const double* w = alpha[m];
+        for (int row = 0; row < 3; ++row) {
+            const double sw = s[row][0] * w[0] + s[row][1] * w[1] + s[row][2] * w[2];
+            const double cw = cof[row][0] * w[0] + cof[row][1] * w[1] + cof[row][2] * w[2];
+            rGrad[static_cast<std::size_t>(row)] += cs * sw - cd * cw;
+        }
+    }
+    return true;
 }
 
 }  // namespace
@@ -319684,36 +321690,49 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
     // Cells, their corners, and the nodes no measure covers.
     std::vector<UtgCorner> corners;
     std::vector<std::int64_t> cell_first;  // per measured cell, its first corner
-    std::vector<std::vector<std::int64_t>> node_cells(n);
+    std::vector<std::size_t> cell_node_deg(n, 0);
+    std::vector<std::pair<std::int64_t, std::int64_t>> node_cell_pairs;
     std::vector<char> pinned(n, 0);
     std::vector<std::array<std::int64_t, 4>> face_keys;
+
     for (const auto cb : rMesh.CellRange()) {
         const std::string& type = cb.Type();
         const bool tet = type == "tetra", hex = type == "hexahedron";
-        const int d = cb.IsRagged() ? (cb.IsPolyhedron() ? 3 : 2)
-                                    : cell_type_dimension(cell_type_from_name(type));
+        const CellType ct = cb.IsRagged() ? CellType::Custom : cell_type_from_name(type);
+        const int d = cb.IsRagged() ? (cb.IsPolyhedron() ? 3 : 2) : cell_type_dimension(ct);
         if (d < 3)
             continue;
-        const std::size_t npc = cb.IsRagged() ? 0 : cb.NodesPerCell();
-        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-            if (!tet && !hex) {
-                // Not measured: its nodes stay where they are.
-                if (cb.IsRagged()) {
+        const std::size_t nc = cb.NumCells();
+        if (!tet && !hex) {
+            // Not measured: its nodes stay where they are.
+            if (cb.IsRagged()) {
+                for (std::size_t c = 0; c < nc; ++c)
                     for (std::size_t f = 0; f < cb.NumFaces(c); ++f) {
                         const auto face = cb.Face(c, f);
                         for (std::size_t k = 0; k < face.second; ++k)
                             pinned[static_cast<std::size_t>(face.first[k])] = 1;
                     }
-                } else {
+            } else {
+                const detail::Int64View conn_v(cb.Conn());
+                const std::size_t npc = cb.NodesPerCell();
+                for (std::size_t c = 0; c < nc; ++c)
                     for (std::size_t k = 0; k < npc; ++k)
-                        pinned[static_cast<std::size_t>(detail::read_int(cb.Conn(), c * npc + k))] =
-                            1;
-                }
-                continue;
+                        pinned[static_cast<std::size_t>(conn_v[c * npc + k])] = 1;
             }
-            std::array<std::int64_t, 8> v{};
-            for (std::size_t k = 0; k < npc; ++k)
-                v[k] = detail::read_int(cb.Conn(), c * npc + k);
+            continue;
+        }
+        const detail::Int64View conn_v(cb.Conn());
+        const std::int64_t* pconn = conn_v.Data();
+        const std::size_t npc = cb.NodesPerCell();
+        const std::vector<detail::CellFaceDef>& faces = detail::cell_faces(ct);
+        corners.reserve(corners.size() + nc * (tet ? 1 : 8));
+        cell_first.reserve(cell_first.size() + nc + 1);
+        node_cell_pairs.reserve(node_cell_pairs.size() + nc * npc);
+        if (rOptions.mFixBoundary)
+            face_keys.reserve(face_keys.size() + nc * faces.size());
+
+        for (std::size_t c = 0; c < nc; ++c) {
+            const std::int64_t* v = pconn + c * npc;
             const auto id = static_cast<std::int64_t>(cell_first.size());
             cell_first.push_back(static_cast<std::int64_t>(corners.size()));
             if (tet) {
@@ -319725,14 +321744,18 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
                           v[static_cast<std::size_t>(row[2])], v[static_cast<std::size_t>(row[3])]},
                          false});
             }
-            for (std::size_t k = 0; k < npc; ++k)
-                node_cells[static_cast<std::size_t>(v[k])].push_back(id);
-            for (const auto& f : detail::cell_faces(cell_type_from_name(type))) {
-                std::array<std::int64_t, 4> key{-1, -1, -1, -1};
-                for (std::size_t k = 0; k < f.mNumCorners; ++k)
-                    key[k] = v[f.mNodes[k]];
-                std::sort(key.begin(), key.begin() + f.mNumCorners);
-                face_keys.push_back(key);
+            for (std::size_t k = 0; k < npc; ++k) {
+                ++cell_node_deg[static_cast<std::size_t>(v[k])];
+                node_cell_pairs.push_back({v[k], id});
+            }
+            if (rOptions.mFixBoundary) {
+                for (const auto& f : faces) {
+                    std::array<std::int64_t, 4> key{-1, -1, -1, -1};
+                    for (std::size_t k = 0; k < f.mNumCorners; ++k)
+                        key[k] = v[f.mNodes[k]];
+                    std::sort(key.begin(), key.begin() + f.mNumCorners);
+                    face_keys.push_back(key);
+                }
             }
         }
     }
@@ -319740,10 +321763,73 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
     const std::size_t num_cells = cell_first.size() - 1;
     if (num_cells == 0)
         throw std::invalid_argument("untangle: the mesh has no tetrahedron or hexahedron");
-    for (auto& cells : node_cells) {
-        std::sort(cells.begin(), cells.end());
-        cells.erase(std::unique(cells.begin(), cells.end()), cells.end());
+
+    // Flat CSR: node -> unique incident measured cells.
+    std::vector<std::size_t> node_cell_start(n + 1, 0);
+    for (std::size_t i = 0; i < n; ++i)
+        node_cell_start[i + 1] = node_cell_start[i] + cell_node_deg[i];
+    std::vector<std::int64_t> node_cell_ids(node_cell_start[n]);
+    {
+        std::vector<std::size_t> cursor = node_cell_start;
+        for (const auto& pair : node_cell_pairs)
+            node_cell_ids[cursor[static_cast<std::size_t>(pair.first)]++] = pair.second;
+        std::vector<std::pair<std::int64_t, std::int64_t>>().swap(node_cell_pairs);
+        std::vector<std::size_t> new_start(n + 1, 0);
+        std::size_t out_pos = 0;
+        for (std::size_t i = 0; i < n; ++i) {
+            const std::size_t lo = node_cell_start[i], hi = node_cell_start[i + 1];
+            new_start[i] = out_pos;
+            for (std::size_t j = lo; j < hi; ++j) {
+                if (j == lo || node_cell_ids[j] != node_cell_ids[j - 1])
+                    node_cell_ids[out_pos++] = node_cell_ids[j];
+            }
+        }
+        new_start[n] = out_pos;
+        node_cell_ids.resize(out_pos);
+        node_cell_start.swap(new_start);
     }
+
+    // Flat CSR: node -> only the corners that actually contain that node
+    // (for a hexahedron, 4 of its 8 corners instead of all 8).
+    std::vector<std::size_t> node_corner_start(n + 1, 0);
+    for (const UtgCorner& c : corners) {
+        for (int m = 0; m < 4; ++m) {
+            bool dup = false;
+            for (int prev = 0; prev < m; ++prev)
+                if (c.mNodes[static_cast<std::size_t>(prev)] ==
+                    c.mNodes[static_cast<std::size_t>(m)])
+                    dup = true;
+            if (!dup)
+                ++node_corner_start[static_cast<std::size_t>(
+                                        c.mNodes[static_cast<std::size_t>(m)]) +
+                                    1];
+        }
+    }
+    for (std::size_t i = 0; i < n; ++i)
+        node_corner_start[i + 1] += node_corner_start[i];
+    std::vector<UtgNodeCorner> node_corners(node_corner_start[n]);
+    {
+        std::vector<std::size_t> cursor = node_corner_start;
+        for (std::size_t ci = 0; ci < corners.size(); ++ci) {
+            const UtgCorner& c = corners[ci];
+            for (int m = 0; m < 4; ++m) {
+                const std::int64_t nid = c.mNodes[static_cast<std::size_t>(m)];
+                bool dup = false;
+                for (int prev = 0; prev < m; ++prev)
+                    if (c.mNodes[static_cast<std::size_t>(prev)] == nid)
+                        dup = true;
+                if (dup)
+                    continue;
+                std::uint8_t mask = 0;
+                for (int k = m; k < 4; ++k)
+                    if (c.mNodes[static_cast<std::size_t>(k)] == nid)
+                        mask = static_cast<std::uint8_t>(mask | (1u << k));
+                node_corners[cursor[static_cast<std::size_t>(nid)]++] = {
+                    static_cast<std::uint32_t>(ci), mask};
+            }
+        }
+    }
+
     if (rOptions.mFixBoundary) {
         std::sort(face_keys.begin(), face_keys.end());
         for (std::size_t i = 0; i < face_keys.size();) {
@@ -319758,20 +321844,26 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
         }
     }
     for (std::size_t i = 0; i < n; ++i)
-        if ((!rOptions.mFrozen.empty() && rOptions.mFrozen[i]) || node_cells[i].empty())
+        if ((!rOptions.mFrozen.empty() && rOptions.mFrozen[i]) ||
+            node_cell_start[i] == node_cell_start[i + 1])
             pinned[i] = 1;
 
     std::vector<Vec3> x(n, Vec3{0.0, 0.0, 0.0});
-    for (std::size_t i = 0; i < n; ++i)
-        for (std::size_t k = 0; k < dim && k < 3; ++k)
-            x[i][k] = detail::read_double(rMesh.Points(), i * dim + k);
+    {
+        const detail::DoubleView pts_v(rMesh.Points());
+        const double* ppts = pts_v.Data();
+        const std::size_t pcols = dim < 3 ? dim : 3;
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < pcols; ++k)
+                x[i][k] = ppts[i * dim + k];
+    }
     // The length unit: the mean edge of the corners.
     double edge_sum = 0.0;
     std::size_t edge_count = 0;
     for (const UtgCorner& c : corners)
         for (int k = 1; k < 4; ++k) {
             const Vec3& a = x[static_cast<std::size_t>(c.mNodes[0])];
-            const Vec3& b = x[static_cast<std::size_t>(c.mNodes[k])];
+            const Vec3& b = x[static_cast<std::size_t>(c.mNodes[static_cast<std::size_t>(k)])];
             edge_sum += std::sqrt((a[0] - b[0]) * (a[0] - b[0]) + (a[1] - b[1]) * (a[1] - b[1]) +
                                   (a[2] - b[2]) * (a[2] - b[2]));
             ++edge_count;
@@ -319780,52 +321872,163 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
     if (!(unit > 0.0))
         throw std::invalid_argument("untangle: every edge has zero length");
     const double inv_unit = 1.0 / unit;
+    const double inv_unit3 = inv_unit * inv_unit * inv_unit;
 
     const auto cell_inverted = [&](std::size_t Cell) {
         for (auto c = cell_first[Cell]; c < cell_first[Cell + 1]; ++c)
-            if (!(utg_measure(x, corners[static_cast<std::size_t>(c)], inv_unit).mDet > 0.0))
+            if (!utg_corner_positive(x, corners[static_cast<std::size_t>(c)]))
                 return true;
         return false;
     };
     const auto count_and_quality = [&](std::int64_t& rInverted, double& rMinQ) {
-        rInverted = 0;
-        rMinQ = std::numeric_limits<double>::infinity();
-        for (std::size_t cell = 0; cell < num_cells; ++cell) {
-            if (cell_inverted(cell))
-                ++rInverted;
-            for (auto c = cell_first[cell]; c < cell_first[cell + 1]; ++c)
-                rMinQ =
-                    std::min(rMinQ, utg_scaled_jacobian(x, corners[static_cast<std::size_t>(c)]));
-        }
+        struct UtgCq {
+            std::int64_t mInv = 0;
+            double mMinQ = std::numeric_limits<double>::infinity();
+        };
+        const UtgCq res = parallel_reduce(
+            num_cells, std::size_t{1024}, UtgCq{},
+            [&](std::size_t lo, std::size_t hi) {
+                UtgCq part;
+                for (std::size_t cell = lo; cell < hi; ++cell) {
+                    if (cell_inverted(cell))
+                        ++part.mInv;
+                    for (auto c = cell_first[cell]; c < cell_first[cell + 1]; ++c)
+                        part.mMinQ =
+                            std::min(part.mMinQ,
+                                     utg_scaled_jacobian(x, corners[static_cast<std::size_t>(c)]));
+                }
+                return part;
+            },
+            [](const UtgCq& rA, const UtgCq& rB) {
+                return UtgCq{rA.mInv + rB.mInv, std::min(rA.mMinQ, rB.mMinQ)};
+            });
+        rInverted = res.mInv;
+        rMinQ = res.mMinQ;
     };
     UntangleResult result;
     count_and_quality(result.mNumInvertedBefore, result.mMinQualityBefore);
 
-    // Each node's objective: the terms of every corner of its cells.
-    const auto node_objective = [&](std::size_t V, double Delta) {
+    // Every utg_term is non-negative, so backtracking against `Limit` (`f0`)
+    // can exit as soon as the partial sum reaches or exceeds `Limit`.
+    const auto node_objective_below = [&](std::size_t V, double Delta, double Limit) {
         double f = 0.0;
-        for (const std::int64_t cell : node_cells[V])
-            for (auto c = cell_first[static_cast<std::size_t>(cell)];
-                 c < cell_first[static_cast<std::size_t>(cell) + 1]; ++c)
-                f +=
-                    utg_term(utg_measure(x, corners[static_cast<std::size_t>(c)], inv_unit), Delta);
-        return f;
+        for (std::size_t i = node_corner_start[V]; i < node_corner_start[V + 1]; ++i) {
+            f += utg_term(utg_measure(x, corners[node_corners[i].mCorner], inv_unit), Delta);
+            if (!(f < Limit))
+                return false;
+        }
+        return f < Limit;
     };
-    // The nodes of each cell, for the rings.
-    const auto cell_nodes = [&](std::size_t Cell, std::vector<std::int64_t>& rOut) {
-        rOut.clear();
-        for (auto c = cell_first[Cell]; c < cell_first[Cell + 1]; ++c)
-            for (const std::int64_t v : corners[static_cast<std::size_t>(c)].mNodes)
-                rOut.push_back(v);
+    // Simultaneous objective and closed-form analytic gradient at vertex V.
+    const auto node_obj_and_grad = [&](std::size_t V, double Delta, double& rF, Vec3& rG) {
+        rF = 0.0;
+        rG = {0.0, 0.0, 0.0};
+        for (std::size_t i = node_corner_start[V]; i < node_corner_start[V + 1]; ++i) {
+            const UtgNodeCorner nc = node_corners[i];
+            if (!utg_term_and_grad(x, corners[nc.mCorner], inv_unit, Delta, nc.mMask, rF, rG))
+                return false;
+        }
+        return std::isfinite(rF) && std::isfinite(rG[0]) && std::isfinite(rG[1]) &&
+               std::isfinite(rG[2]);
+    };
+    // Up to 4 steepest-descent + backtracking steps for one vertex, warm-
+    // starting the trial step length from the previous accepted step.
+    const auto move_vertex = [&](std::size_t V, double Delta) -> std::uint8_t {
+        std::uint8_t moves = 0;
+        double max_step = 0.5 * unit;
+        for (int step = 0; step < 4; ++step) {
+            double f0 = 0.0;
+            Vec3 g{0.0, 0.0, 0.0};
+            if (!node_obj_and_grad(V, Delta, f0, g))
+                break;
+            const double gn = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
+            if (!(gn > 0.0))
+                break;
+            const Vec3 keep = x[V];
+            double step_len = max_step;
+            bool moved = false;
+            for (int tries = 0; tries < 30; ++tries, step_len *= 0.5) {
+                const double alpha = step_len / gn;
+                for (std::size_t k = 0; k < 3; ++k)
+                    x[V][k] = keep[k] - alpha * g[k];
+                if (node_objective_below(V, Delta, f0)) {
+                    moved = true;
+                    max_step = std::min(0.5 * unit, 2.0 * step_len);
+                    break;
+                }
+            }
+            if (!moved) {
+                x[V] = keep;
+                break;
+            }
+            ++moves;
+        }
+        return moves;
+    };
+
+    // Deterministic greedy graph colouring of unpinned vertices (built lazily
+    // on the first active sweep). Two vertices conflict iff they share a corner,
+    // so every vertex within one colour batch updates `x[v]` independently.
+    bool colored = false;
+    std::vector<std::size_t> color_start;
+    std::vector<std::size_t> color_nodes;
+    const auto ensure_colored = [&]() {
+        if (colored)
+            return;
+        colored = true;
+        std::vector<std::int32_t> color(n, -1);
+        std::vector<std::size_t> stamp;
+        std::size_t num_colors = 0;
+        for (std::size_t v = 0; v < n; ++v) {
+            if (pinned[v])
+                continue;
+            const std::size_t mark = v + 1;
+            for (std::size_t i = node_corner_start[v]; i < node_corner_start[v + 1]; ++i) {
+                const UtgCorner& c = corners[node_corners[i].mCorner];
+                for (const std::int64_t nid : c.mNodes) {
+                    const auto u = static_cast<std::size_t>(nid);
+                    if (u < v && color[u] >= 0) {
+                        const auto col = static_cast<std::size_t>(color[u]);
+                        if (col >= stamp.size())
+                            stamp.resize(col + 1, 0);
+                        stamp[col] = mark;
+                    }
+                }
+            }
+            std::size_t chosen = 0;
+            while (chosen < stamp.size() && stamp[chosen] == mark)
+                ++chosen;
+            color[v] = static_cast<std::int32_t>(chosen);
+            if (chosen + 1 > num_colors)
+                num_colors = chosen + 1;
+        }
+        color_start.assign(num_colors + 1, 0);
+        for (std::size_t v = 0; v < n; ++v)
+            if (color[v] >= 0)
+                ++color_start[static_cast<std::size_t>(color[v]) + 1];
+        for (std::size_t c = 0; c < num_colors; ++c)
+            color_start[c + 1] += color_start[c];
+        color_nodes.resize(color_start[num_colors]);
+        std::vector<std::size_t> cursor = color_start;
+        for (std::size_t v = 0; v < n; ++v)
+            if (color[v] >= 0)
+                color_nodes[cursor[static_cast<std::size_t>(color[v])]++] = v;
     };
 
     double previous_total = std::numeric_limits<double>::infinity();
-    std::vector<std::int64_t> nodes;
+    std::vector<std::size_t> batch;
+    std::vector<std::uint8_t> batch_moves;
     for (std::int64_t sweep = 1; sweep <= rOptions.mMaxSweeps; ++sweep) {
         // delta from the most negative corner (Escobar et al.'s rule).
-        double min_det = std::numeric_limits<double>::infinity();
-        for (const UtgCorner& c : corners)
-            min_det = std::min(min_det, utg_measure(x, c, inv_unit).mDet);
+        const double min_det = parallel_reduce(
+            corners.size(), std::size_t{4096}, std::numeric_limits<double>::infinity(),
+            [&](std::size_t lo, std::size_t hi) {
+                double best = std::numeric_limits<double>::infinity();
+                for (std::size_t i = lo; i < hi; ++i)
+                    best = std::min(best, utg_det(x, corners[i], inv_unit3));
+                return best;
+            },
+            [](double a, double b) { return std::min(a, b); });
         const double eps = 1e-3;
         const double delta = min_det < eps ? std::sqrt(eps * (eps - min_det)) : 0.0;
         // Which nodes move this sweep.
@@ -319834,79 +322037,71 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
             std::fill(active.begin(), active.end(), 1);
         } else {
             for (std::size_t cell = 0; cell < num_cells; ++cell)
-                if (cell_inverted(cell)) {
-                    cell_nodes(cell, nodes);
-                    for (const std::int64_t v : nodes)
-                        active[static_cast<std::size_t>(v)] = 1;
-                }
+                if (cell_inverted(cell))
+                    for (auto c = cell_first[cell]; c < cell_first[cell + 1]; ++c)
+                        for (const std::int64_t v : corners[static_cast<std::size_t>(c)].mNodes)
+                            active[static_cast<std::size_t>(v)] = 1;
             for (std::int64_t ring = 0; ring < rOptions.mRings; ++ring) {
                 std::vector<char> grown = active;
                 for (std::size_t v = 0; v < n; ++v)
                     if (active[v])
-                        for (const std::int64_t cell : node_cells[v]) {
-                            cell_nodes(static_cast<std::size_t>(cell), nodes);
-                            for (const std::int64_t q : nodes)
-                                grown[static_cast<std::size_t>(q)] = 1;
+                        for (std::size_t ci = node_cell_start[v]; ci < node_cell_start[v + 1];
+                             ++ci) {
+                            const auto cell = static_cast<std::size_t>(node_cell_ids[ci]);
+                            for (auto c = cell_first[cell]; c < cell_first[cell + 1]; ++c)
+                                for (const std::int64_t q :
+                                     corners[static_cast<std::size_t>(c)].mNodes)
+                                    grown[static_cast<std::size_t>(q)] = 1;
                         }
                 active.swap(grown);
             }
         }
         bool any = false;
         for (std::size_t v = 0; v < n; ++v)
-            any = any || (active[v] && !pinned[v]);
+            if (active[v] && !pinned[v]) {
+                any = true;
+                break;
+            }
         if (!any)
             break;
         result.mSweeps = sweep;
-        for (std::size_t v = 0; v < n; ++v) {
-            if (!active[v] || pinned[v])
-                continue;
-            const double h = 1e-6 * unit;
-            for (int step = 0; step < 4; ++step) {
-                const double f0 = node_objective(v, delta);
-                Vec3 g{0.0, 0.0, 0.0};
-                bool finite = std::isfinite(f0);
-                for (std::size_t k = 0; k < 3 && finite; ++k) {
-                    const double keep = x[v][k];
-                    x[v][k] = keep + h;
-                    const double fp = node_objective(v, delta);
-                    x[v][k] = keep - h;
-                    const double fm = node_objective(v, delta);
-                    x[v][k] = keep;
-                    g[k] = (fp - fm) / (2.0 * h);
-                    finite = std::isfinite(g[k]);
-                }
-                const double gn = std::sqrt(g[0] * g[0] + g[1] * g[1] + g[2] * g[2]);
-                if (!finite || !(gn > 0.0))
-                    break;
-                // Backtracking from a step of half the length unit.
-                const Vec3 keep = x[v];
-                double alpha = 0.5 * unit / gn;
-                bool moved = false;
-                for (int tries = 0; tries < 30; ++tries, alpha *= 0.5) {
-                    for (std::size_t k = 0; k < 3; ++k)
-                        x[v][k] = keep[k] - alpha * g[k];
-                    if (node_objective(v, delta) < f0) {
-                        moved = true;
-                        break;
-                    }
-                }
-                if (!moved) {
-                    x[v] = keep;
-                    break;
-                }
-                ++result.mMoves;
+        ensure_colored();
+        const std::size_t num_colors = color_start.empty() ? 0 : color_start.size() - 1;
+        for (std::size_t col = 0; col < num_colors; ++col) {
+            batch.clear();
+            for (std::size_t idx = color_start[col]; idx < color_start[col + 1]; ++idx) {
+                const std::size_t v = color_nodes[idx];
+                if (active[v])
+                    batch.push_back(v);
             }
+            if (batch.empty())
+                continue;
+            batch_moves.assign(batch.size(), 0);
+            parallel_for(
+                batch.size(),
+                [&](std::size_t bi) { batch_moves[bi] = move_vertex(batch[bi], delta); },
+                std::size_t{16});
+            for (std::uint8_t mv : batch_moves)
+                result.mMoves += mv;
         }
-        std::int64_t inverted = 0;
-        for (std::size_t cell = 0; cell < num_cells && inverted == 0; ++cell)
-            if (cell_inverted(cell))
-                ++inverted;
-        if (inverted == 0) {
+        bool any_inverted = false;
+        for (std::size_t cell = 0; cell < num_cells; ++cell)
+            if (cell_inverted(cell)) {
+                any_inverted = true;
+                break;
+            }
+        if (!any_inverted) {
             if (!rOptions.mSmooth)
                 break;
-            double total = 0.0;
-            for (const UtgCorner& c : corners)
-                total += utg_term(utg_measure(x, c, inv_unit), 0.0);
+            const double total = parallel_reduce(
+                corners.size(), std::size_t{4096}, 0.0,
+                [&](std::size_t lo, std::size_t hi) {
+                    double s = 0.0;
+                    for (std::size_t i = lo; i < hi; ++i)
+                        s += utg_term(utg_measure(x, corners[i], inv_unit), 0.0);
+                    return s;
+                },
+                [](double a, double b) { return a + b; });
             if (std::isfinite(previous_total) &&
                 previous_total - total <= 1e-6 * std::abs(previous_total))
                 break;
@@ -319917,9 +322112,10 @@ UntangleResult untangle(const Mesh& rMesh, const UntangleOptions& rOptions) {
 
     NDArray pts(DType::Float64, {n, dim});
     double* pp = pts.As<double>();
+    const detail::DoubleView orig_pts(rMesh.Points());
     for (std::size_t i = 0; i < n; ++i)
         for (std::size_t k = 0; k < dim; ++k)
-            pp[i * dim + k] = k < 3 ? x[i][k] : detail::read_double(rMesh.Points(), i * dim + k);
+            pp[i * dim + k] = k < 3 ? x[i][k] : orig_pts[i * dim + k];
     result.mMesh = detail::clone_mesh(rMesh);
     result.mMesh.AssignPoints(std::move(pts));
     return result;
@@ -320585,12 +322781,12 @@ public:
     /// Runs `rJob` on the caller and up to `Helpers` workers; false, running
     /// nothing, when another thread's job holds the pool.
     bool TryRun(PthrJob& rJob, unsigned Helpers) {
-        std::unique_lock<std::mutex> submit(mSubmit, std::try_to_lock);
+        std::unique_lock<std::mutex> submit(mSubmit.Native(), std::try_to_lock);
         if (!submit.owns_lock())
             return false;
         Helpers = Grow(Helpers);
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            detail::AnnotatedLockGuard lock(mMutex);
             mpJob = &rJob;
             mWanted = Helpers;
             mJoined = 0;
@@ -320601,10 +322797,10 @@ public:
         ++tPthrDepth;
         rJob.Work();
         --tPthrDepth;
-        std::unique_lock<std::mutex> lock(mMutex);
+        detail::AnnotatedUniqueLock lock(mMutex);
         // Every chunk is claimed; wait for the workers still inside one, and
         // close the job to the ones that have not joined yet.
-        mDone.wait(lock, [&] { return mRunning == 0; });
+        lock.Wait(mDone, [&]() MIO_REQUIRES(mMutex) { return mRunning == 0; });
         mpJob = nullptr;
         mWanted = 0;
         return true;
@@ -320626,9 +322822,9 @@ private:
     void Loop() {
         tPthrDepth = 1;
         std::uint64_t seen = 0;
-        std::unique_lock<std::mutex> lock(mMutex);
+        detail::AnnotatedUniqueLock lock(mMutex);
         for (;;) {
-            mWake.wait(lock, [&] { return mGeneration != seen; });
+            lock.Wait(mWake, [&]() MIO_REQUIRES(mMutex) { return mGeneration != seen; });
             seen = mGeneration;
             if (!mpJob || mJoined >= mWanted)
                 continue;
@@ -320643,29 +322839,29 @@ private:
         }
     }
 
-    std::mutex mSubmit;  ///< held by the one caller whose job runs
-    std::mutex mMutex;   ///< guards everything below
+    detail::AnnotatedMutex mSubmit;  ///< held by the one caller whose job runs
+    detail::AnnotatedMutex mMutex;   ///< guards everything below
     std::condition_variable mWake;
     std::condition_variable mDone;
-    PthrJob* mpJob = nullptr;
-    std::uint64_t mGeneration = 0;
-    unsigned mWanted = 0;   ///< workers the current job may take
-    unsigned mJoined = 0;   ///< workers that took it
-    unsigned mRunning = 0;  ///< workers inside it now
+    PthrJob* mpJob MIO_GUARDED_BY(mMutex) = nullptr;
+    std::uint64_t mGeneration MIO_GUARDED_BY(mMutex) = 0;
+    unsigned mWanted MIO_GUARDED_BY(mMutex) = 0;   ///< workers the current job may take
+    unsigned mJoined MIO_GUARDED_BY(mMutex) = 0;   ///< workers that took it
+    unsigned mRunning MIO_GUARDED_BY(mMutex) = 0;  ///< workers inside it now
     std::vector<std::thread> mThreads;
 };
 
-std::mutex gPthrCreate;
+detail::AnnotatedMutex gPthrCreate;
 std::atomic<PthrPool*> gPthrPool{nullptr};
 
 #if !defined(_WIN32)
-void pthr_atfork_prepare() {
+void pthr_atfork_prepare() MIO_NO_THREAD_SAFETY_ANALYSIS {
     gPthrCreate.lock();
 }
-void pthr_atfork_parent() {
+void pthr_atfork_parent() MIO_NO_THREAD_SAFETY_ANALYSIS {
     gPthrCreate.unlock();
 }
-void pthr_atfork_child() {
+void pthr_atfork_child() MIO_NO_THREAD_SAFETY_ANALYSIS {
     // The forking thread is the child's only thread and holds gPthrCreate;
     // the pool's workers did not survive, so it is abandoned (not freed: its
     // mutexes may be held by threads that no longer exist).
@@ -320685,7 +322881,7 @@ PthrPool& pthr_pool() {
         pthread_atfork(pthr_atfork_prepare, pthr_atfork_parent, pthr_atfork_child);
 #endif
     });
-    std::lock_guard<std::mutex> lock(gPthrCreate);
+    detail::AnnotatedLockGuard lock(gPthrCreate);
     p = gPthrPool.load(std::memory_order_acquire);
     if (!p) {
         p = new PthrPool();  // never deleted: see the file comment
@@ -320793,21 +322989,24 @@ struct ProviderSlot {
 };
 
 struct ProvidersState {
-    std::mutex mMutex;
-    ProviderSlot<CadKernelProvider> mCad;
-    ProviderSlot<TetMesherProvider> mTet;
-    ProviderSlot<RemesherProvider> mRemesher;
+    detail::AnnotatedMutex mMutex;
+    ProviderSlot<CadKernelProvider> mCad MIO_GUARDED_BY(mMutex);
+    ProviderSlot<TetMesherProvider> mTet MIO_GUARDED_BY(mMutex);
+    ProviderSlot<RemesherProvider> mRemesher MIO_GUARDED_BY(mMutex);
     /// The named tetrahedral meshers (roadmap 7.7.2), by name; replaced ones
     /// stay in `mTet.mRetained`.
-    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed;
+    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed
+        MIO_GUARDED_BY(mMutex);
     /// The quad remeshers (roadmap 7.7.3), by name, and every one ever added.
-    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad;
-    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained;
+    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad MIO_GUARDED_BY(mMutex);
+    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained MIO_GUARDED_BY(mMutex);
     /// The profile-solid providers (roadmap 7.7.4), by name, and every one ever added.
-    std::map<std::string, std::shared_ptr<const ProfileSolidProvider>> mProfile;
-    std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained;
-    bool mProfileBuiltinDone = false;
-    bool mExternalDone = false;
+    std::map<std::string, std::shared_ptr<const ProfileSolidProvider>> mProfile
+        MIO_GUARDED_BY(mMutex);
+    std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained
+        MIO_GUARDED_BY(mMutex);
+    bool mProfileBuiltinDone MIO_GUARDED_BY(mMutex) = false;
+    bool mExternalDone MIO_GUARDED_BY(mMutex) = false;
 };
 
 ProvidersState& providers_state() {
@@ -320825,7 +323024,7 @@ template <class T>
 void slot_register(ProviderSlot<T> ProvidersState::*pSlot, T Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const T>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && (r_state.*pSlot).mCurrent)
         return;
     (r_state.*pSlot).Set(std::move(p_new));
@@ -320834,7 +323033,7 @@ void slot_register(ProviderSlot<T> ProvidersState::*pSlot, T Provider) {
 template <class T>
 void slot_unregister(ProviderSlot<T> ProvidersState::*pSlot) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     (r_state.*pSlot).mBuiltinDone = true;
     (r_state.*pSlot).mCurrent.reset();
 }
@@ -320843,7 +323042,7 @@ template <class T>
 std::shared_ptr<const T> slot_get(ProviderSlot<T> ProvidersState::*pSlot) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     return (r_state.*pSlot).mCurrent;
 }
 
@@ -320872,7 +323071,7 @@ std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept {
 void add_tet_mesher(TetMesherProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const TetMesherProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mTetNamed.count(p_new->mName))
         return;
     r_state.mTet.mRetained.push_back(p_new);
@@ -320881,14 +323080,14 @@ void add_tet_mesher(TetMesherProvider Provider) {
 
 void remove_tet_mesher(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mTetNamed.erase(rName);
 }
 
 std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     // The default answers to its own name first, so a plugin's mesher that is
     // the default is the one `backend=<its name>` runs.
     if (r_state.mTet.mCurrent && r_state.mTet.mCurrent->mName == rName)
@@ -320900,7 +323099,7 @@ std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) no
 void add_quad_remesher(QuadRemesherProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mQuad.count(p_new->mName))
         return;
     r_state.mQuadRetained.push_back(p_new);
@@ -320909,14 +323108,14 @@ void add_quad_remesher(QuadRemesherProvider Provider) {
 
 void remove_quad_remesher(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mQuad.erase(rName);
 }
 
 std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     const auto it = r_state.mQuad.find(rName);
     return it == r_state.mQuad.end() ? nullptr : it->second;
 }
@@ -320924,7 +323123,7 @@ std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rNa
 void add_profile_solid_provider(ProfileSolidProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const ProfileSolidProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mProfile.count(p_new->mName))
         return;
     r_state.mProfileRetained.push_back(p_new);
@@ -320933,7 +323132,7 @@ void add_profile_solid_provider(ProfileSolidProvider Provider) {
 
 void remove_profile_solid_provider(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mProfile.erase(rName);
 }
 
@@ -320941,7 +323140,7 @@ std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
     const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (rName.empty())
         return r_state.mProfile.empty() ? nullptr : r_state.mProfile.begin()->second;
     const auto it = r_state.mProfile.find(rName);
@@ -320951,7 +323150,7 @@ std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
 std::vector<std::string> profile_solid_provider_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     for (const auto& r_entry : r_state.mProfile)
         names.push_back(r_entry.first);
@@ -320961,7 +323160,7 @@ std::vector<std::string> profile_solid_provider_names() {
 std::vector<std::string> quad_remesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     for (const auto& r_entry : r_state.mQuad)
         names.push_back(r_entry.first);
@@ -320971,7 +323170,7 @@ std::vector<std::string> quad_remesher_names() {
 std::vector<std::string> tet_mesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     if (r_state.mTet.mCurrent)
         names.push_back(r_state.mTet.mCurrent->mName);
@@ -320999,11 +323198,12 @@ namespace {
 /// dlopen runs) does not wait on itself; the flag makes that nested call return
 /// at once. Allocated and never freed, like providers_state(), so a provider
 /// query during static destruction still finds it.
-std::recursive_mutex& plugin_scan_mutex() {                 // NOSONAR(cpp:S8462): see above
-    static auto* const s_mutex = new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474)
+detail::AnnotatedRecursiveMutex& plugin_scan_mutex() {  // NOSONAR(cpp:S8462): see above
+    static auto* const s_mutex =
+        new detail::AnnotatedRecursiveMutex;  // NOSONAR(cpp:S8462,cpp:S8474)
     return *s_mutex;
 }
-bool g_plugins_scan_started = false;           // guarded by the scan mutex
+bool g_plugins_scan_started MIO_GUARDED_BY(plugin_scan_mutex()) = false;
 std::atomic<bool> g_plugins_scan_done{false};  // the lock-free fast path
 
 using PluginAbiFn = int (*)();
@@ -321102,7 +323302,7 @@ int load_plugins(const std::string& rPaths) noexcept {
 
 static void register_compiled_in_providers() noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     // A slot's builtin goes in once, and never over a provider already there.
     const auto install = [](auto& rSlot, auto&& Make) {
         if (rSlot.mBuiltinDone)
@@ -321177,7 +323377,7 @@ void register_builtin_providers() noexcept {
     if (g_plugins_scan_done.load())
         return;
     // Recursive on purpose: re-entered by a plugin, see plugin_scan_mutex().
-    const std::lock_guard scan_lock(plugin_scan_mutex());  // NOSONAR(cpp:S8462)
+    const detail::AnnotatedLockGuard scan_lock(plugin_scan_mutex());  // NOSONAR(cpp:S8462)
     if (g_plugins_scan_started)
         return;  // done meanwhile, or this thread's own plugin is asking
     g_plugins_scan_started = true;
@@ -321521,11 +323721,11 @@ constexpr bool kRegistryZlib = false;
  * many extensions to one format, stays its own.
  */
 struct RegistryRow {
-    const char* mName;
-    ReadFn mRead;
-    WriteFn mWrite;
-    ReadExFn mReadEx;
-    MetadataFn mMetadata;
+    const char* mName = nullptr;
+    ReadFn mRead = nullptr;
+    WriteFn mWrite = nullptr;
+    ReadExFn mReadEx = nullptr;
+    MetadataFn mMetadata = nullptr;
 };
 
 const std::vector<RegistryRow>& registry_rows() {

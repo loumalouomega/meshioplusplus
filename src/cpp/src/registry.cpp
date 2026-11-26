@@ -239,11 +239,11 @@ constexpr bool kRegistryZlib = false;
  * many extensions to one format, stays its own.
  */
 struct RegistryRow {
-    const char* mName;
-    ReadFn mRead;
-    WriteFn mWrite;
-    ReadExFn mReadEx;
-    MetadataFn mMetadata;
+    const char* mName = nullptr;
+    ReadFn mRead = nullptr;
+    WriteFn mWrite = nullptr;
+    ReadExFn mReadEx = nullptr;
+    MetadataFn mMetadata = nullptr;
 };
 
 const std::vector<RegistryRow>& registry_rows() {

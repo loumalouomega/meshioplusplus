@@ -34,6 +34,7 @@
 
 // System includes
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 // Project includes
@@ -49,6 +50,12 @@ struct BoundingBox3 {
 
 /// Static axis-aligned bounding-box helpers.
 struct BoundingBoxUtils {
+    /// An empty box seeded with `[+inf, -inf]` on every axis.
+    static BoundingBox3 Empty() {
+        constexpr double inf = std::numeric_limits<double>::infinity();
+        return {{inf, inf, inf}, {-inf, -inf, -inf}};
+    }
+
     /// Widens `rBox` to hold `rQ`: `std::min(lo, q)`, `std::max(hi, q)` per axis.
     static void Expand(BoundingBox3& rBox, const Vec3& rQ) {
         for (std::size_t a = 0; a < 3; ++a) {
@@ -67,6 +74,19 @@ struct BoundingBoxUtils {
             return box;
         box.mMin = rPoints[0];
         box.mMax = rPoints[0];
+        for (const Vec3& r_q : rPoints)
+            Expand(box, r_q);
+        return box;
+    }
+
+    /**
+     * @brief The box of `rPoints`, seeded with `[+inf, -inf]`. Unlike
+     * `FromPoints`, an empty input stays inverted (`mMin[0] > mMax[0]`) and a
+     * NaN coordinate leaves the bound unchanged (exact match for infinity-seeded
+     * loops).
+     */
+    static BoundingBox3 FromPointsOrEmpty(const std::vector<Vec3>& rPoints) {
+        BoundingBox3 box = Empty();
         for (const Vec3& r_q : rPoints)
             Expand(box, r_q);
         return box;

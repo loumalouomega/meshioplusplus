@@ -27,7 +27,9 @@ cmake -S "$SRC/meshioplusplus" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
     -DMESHIOPLUSPLUS_WITH_GIDPOST=OFF -DMESHIOPLUSPLUS_WITH_BZIP2=OFF \
     -DMESHIOPLUSPLUS_ZLIB_STATIC=ON -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ
 cmake --build "$BUILD" --parallel "${JOBS:-4}" \
-    --target meshioplusplus_fuzz_read meshioplusplus_fuzz_replay meshioplusplus_fuzz_seeds
+    --target meshioplusplus_fuzz_read meshioplusplus_fuzz_replay meshioplusplus_fuzz_seeds \
+             meshioplusplus_fuzz_mesh_cad_surface meshioplusplus_fuzz_triangulate_polygon_2d \
+             meshioplusplus_fuzz_adapt_volume
 # A failed registry enumeration must fail the build, not silently publish an
 # empty target set: bash does not propagate process-substitution exit status.
 "$BUILD/meshioplusplus_fuzz_replay" -list-formats > "$WORK/meshioplusplus-formats.txt"
@@ -39,6 +41,9 @@ while IFS= read -r fmt; do
     # A format without a dictionary must not leave the loop with status 1.
     true
 done < "$WORK/meshioplusplus-formats.txt"
+for op in mesh_cad_surface triangulate_polygon_2d adapt_volume; do
+    cp "$BUILD/meshioplusplus_fuzz_$op" "$OUT/meshioplusplus_fuzz_$op"
+done
 "$BUILD/meshioplusplus_fuzz_seeds" "$WORK/generated-seeds"
 python3 "$SRC/meshioplusplus/tools/fuzz/oss-fuzz/package_seeds.py" \
     "$SRC/meshioplusplus/tests/fuzz/regressions" "$OUT" --generated "$WORK/generated-seeds"

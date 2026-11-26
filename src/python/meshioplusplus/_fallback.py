@@ -87,7 +87,7 @@ def set_strict_core(enabled: bool | None) -> None:
     _strict = enabled
 
 
-def core_declined(exc: BaseException, fmt: str, direction: str, target) -> bool:
+def core_declined(exc: BaseException, fmt: str, direction: str, target: object) -> bool:
     """Log why the C++ fast path failed and say whether to fall back.
 
     Call it from the shim's ``except Exception as exc`` block::

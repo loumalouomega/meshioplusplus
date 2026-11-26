@@ -98,6 +98,20 @@ license: MIT
 # tests/python/meshes/z88/cantilever/z88o2.txt and z88o3.txt were written by the Z88R
 # solver of Z88OS V15 (https://github.com/LSCAD/Z88OS) for the deck
 # tools/gen_z88_fixtures.py writes; no Z88OS file or code is included.
+# tests/python/meshes/tecplot/visit/*.plt and *.tec are binary and ASCII Tecplot
+# example datasets from VisIt's test data (https://github.com/visit-dav/visit,
+# data/tecplot_test_data.tar.xz), redistributed unmodified under BSD-3-Clause with
+# LICENSE beside them; no VisIt code is copied.
+# tests/python/meshes/lsdyna_binout/binout_glstat and tests/python/meshes/lsdyna_d3plot/dyna/
+# come from Ansys' example-data repository (https://github.com/ansys/example-data,
+# result_files/), MIT licence, with their licence notices beside them in README.md and
+# dyna/LICENSE; no code is copied.
+# tests/python/meshes/abaqus_fil/cjekel/TenBarArea.{fil,dat,inp} come from
+# https://github.com/cjekel/Introduction-to-Python-Numerical-Analysis-for-Engineers-and-Scientist
+# (Copyright Charles Jekel, MIT, cjekel/LICENSE), redistributed unmodified.
+# tests/python/meshes/abaqus_fil/bertoldi/job-strip-angle-buckle-45.fil comes from
+# https://github.com/bertoldi-collab/inverse-design-textile-metamaterials
+# (Copyright Bertoldi Group, MIT, bertoldi/LICENSE), redistributed unmodified.
 #
 # One exception to the MIT licence above: the Julia binding in bindings/julia/
 # is released under GPL-3.0 (copyleft: no permission needed to use/modify/

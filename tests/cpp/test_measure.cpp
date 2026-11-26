@@ -170,3 +170,63 @@ TEST(Measure, AnElementIsADeviationReference) {
     EXPECT_NEAR(std::fabs(params[5]), 1.0, 1e-12);
     EXPECT_THROW(measure_element(r.mMesh, "nope"), std::invalid_argument);
 }
+
+TEST(Measure, ExtendedValidationAndConstructions) {
+    const Mesh block = ms_block(4.0, 0.0);
+
+    // Points, plane_through 3 points, plane intersections to lines, line-line intersection & angle,
+    // and line projection onto a plane.
+    const MeasureResult r = measure(block, R"({"elements": [
+        {"name": "p0", "point": [0, 0, 0]},
+        {"name": "p1", "point": [2, 0, 0]},
+        {"name": "p2", "point": [0, 2, 0]},
+        {"name": "A", "fit": "plane", "region": "bottom"},
+        {"name": "B", "fit": "plane", "region": "xmax"},
+        {"name": "C", "fit": "plane", "region": "ymin"},
+        {"name": "pl", "construct": "plane_through", "of": ["p0", "p1", "p2"]},
+        {"name": "lx", "construct": "intersection", "of": ["A", "C"]},
+        {"name": "ly", "construct": "intersection", "of": ["A", "B"]},
+        {"name": "ix", "construct": "intersection", "of": ["lx", "ly"]},
+        {"name": "proj_l", "construct": "projection", "of": ["lx", "pl"]}],
+      "dimensions": [
+        {"name": "d_ix", "type": "distance", "between": ["ix", "p0"]},
+        {"name": "a_ll", "type": "angle", "between": ["lx", "ly"]},
+        {"name": "a_lp", "type": "angle", "between": ["lx", "pl"]}]})");
+    ASSERT_EQ(r.mDimensions.size(), 3u);
+    EXPECT_NEAR(r.mDimensions[0].mValue, 2.0, 1e-12);
+    EXPECT_NEAR(r.mDimensions[1].mValue, 90.0, 1e-12);
+    EXPECT_NEAR(r.mDimensions[2].mValue, 0.0, 1e-12);
+
+    // Spec validation & construction refusal branches.
+    const std::vector<std::string> bad_specs = {
+        R"({"elements": [{"name": "A", "fit": "bogus", "region": "bottom"}]})",
+        R"({"elements": [{"name": "A", "fit": "plane", "patch": 1}]})",
+        R"({"elements": [{"name": "A", "fit": "plane", "seeds": "not_a_list"}]})",
+        R"({"elements": [{"name": "p", "point": [1, 2]}]})",
+        R"({"elements": [{"name": "A", "fit": "plane", "region": "bottom"},
+                         {"name": "T", "fit": "plane", "region": "top"},
+                         {"name": "bad", "construct": "intersection", "of": ["A", "T"]}]})",
+        R"({"elements": [{"name": "p0", "point": [0, 0, 0]},
+                         {"name": "p1", "point": [1, 0, 0]},
+                         {"name": "p2", "point": [2, 0, 0]},
+                         {"name": "pl", "construct": "plane_through", "of": ["p0", "p1", "p2"]}]})",
+        R"({"elements": [{"name": "p0", "point": [0, 0, 0]},
+                         {"name": "x", "construct": "unknown_op", "of": ["p0"]}]})",
+        R"({"elements": [{"name": "p0", "point": [0, 0, 0]}, {"name": "p1", "point": [1, 0, 0]}],
+            "dimensions": [{"type": "angle", "between": ["p0", "p1"]}]})",
+        R"({"elements": [{"name": "p0", "point": [0, 0, 0]}, {"name": "p1", "point": [1, 0, 0]}],
+            "dimensions": [{"type": "bogus", "between": ["p0", "p1"]}]})",
+        R"({"elements": [{"name": "p0", "point": [0, 0, 0]}, {"name": "p1", "point": [1, 0, 0]}],
+            "dimensions": [{"type": "distance", "between": ["p0", "p1"], "tolerance": 0.1}]})",
+        R"({"elements": [{"name": "p0", "point": [0, 0, 0]}, {"name": "p1", "point": [1, 0, 0]}],
+            "dimensions": [{"type": "distance", "between": ["p0", "p1"], "nominal": 1.0, "tolerance": -1.0}]})",
+        R"({"elements": [{"name": "A", "fit": "plane", "region": "bottom"}],
+            "tolerances": [{"type": "flatness"}]})",
+        R"({"elements": [{"name": "A", "fit": "plane", "region": "bottom"}],
+            "tolerances": [{"type": "perpendicularity", "feature": "A"}]})",
+        R"({"elements": [{"name": "A", "fit": "plane", "region": "bottom"}],
+            "tolerances": [{"type": "roundness", "feature": "A", "sections": 0}]})",
+    };
+    for (const std::string& r_spec : bad_specs)
+        EXPECT_THROW(measure(block, r_spec), std::invalid_argument) << r_spec;
+}

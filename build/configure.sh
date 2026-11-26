@@ -48,10 +48,14 @@ SANITIZE=""
 WARNINGS="OFF"
 WARNINGS_AS_ERRORS="OFF"
 FUZZERS="OFF"
+PRESET=""
 
 usage() {
     cat <<EOF
 Usage: $0 [options]
+  --preset <name>                 configure using a CMakePresets.json preset
+                                  (run 'cmake --list-presets' to see names;
+                                  combine with --build to build it too)
   --backend <SEQ|STL|OPENMP|TBB|KOKKOS|THREADS>  parallel backend (default: STL)
   --mesh-backend <MESHIO|NATIVE|KRATOS>
                                   in-memory mesh backend (default: MESHIO).
@@ -112,6 +116,7 @@ EOF
 
 while [ $# -gt 0 ]; do
     case "$1" in
+        --preset) PRESET="$2"; shift 2 ;;
         --backend) BACKEND="$2"; shift 2 ;;
         --mesh-backend) MESH_BACKEND=$(echo "$2" | tr '[:lower:]' '[:upper:]'); shift 2 ;;
         --build-type) BUILD_TYPE="$2"; shift 2 ;;
@@ -153,6 +158,17 @@ while [ $# -gt 0 ]; do
         *) echo "Unknown option: $1" >&2; usage; exit 1 ;;
     esac
 done
+
+if [ -n "$PRESET" ]; then
+    echo "== meshio++ configure (preset: $PRESET) =="
+    cmake -S "$SOURCE_DIR" --preset "$PRESET"
+    if [ "$DO_BUILD" = "yes" ]; then
+        echo
+        echo "== building (preset: $PRESET) =="
+        cmake --build --preset "$PRESET"
+    fi
+    exit 0
+fi
 
 # gidpostInt.h includes <zlib.h> unconditionally and the binary flavour is
 # always deflated, so the GiD writer cannot be built without zlib.

@@ -39,6 +39,7 @@
 
 // Project includes (private, not installed)
 #include "detail/dynlib.hpp"
+#include "detail/thread_annotations.hpp"
 
 namespace meshioplusplus {
 
@@ -86,21 +87,24 @@ struct ProviderSlot {
 };
 
 struct ProvidersState {
-    std::mutex mMutex;
-    ProviderSlot<CadKernelProvider> mCad;
-    ProviderSlot<TetMesherProvider> mTet;
-    ProviderSlot<RemesherProvider> mRemesher;
+    detail::AnnotatedMutex mMutex;
+    ProviderSlot<CadKernelProvider> mCad MIO_GUARDED_BY(mMutex);
+    ProviderSlot<TetMesherProvider> mTet MIO_GUARDED_BY(mMutex);
+    ProviderSlot<RemesherProvider> mRemesher MIO_GUARDED_BY(mMutex);
     /// The named tetrahedral meshers (roadmap 7.7.2), by name; replaced ones
     /// stay in `mTet.mRetained`.
-    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed;
+    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed
+        MIO_GUARDED_BY(mMutex);
     /// The quad remeshers (roadmap 7.7.3), by name, and every one ever added.
-    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad;
-    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained;
+    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad MIO_GUARDED_BY(mMutex);
+    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained MIO_GUARDED_BY(mMutex);
     /// The profile-solid providers (roadmap 7.7.4), by name, and every one ever added.
-    std::map<std::string, std::shared_ptr<const ProfileSolidProvider>> mProfile;
-    std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained;
-    bool mProfileBuiltinDone = false;
-    bool mExternalDone = false;
+    std::map<std::string, std::shared_ptr<const ProfileSolidProvider>> mProfile
+        MIO_GUARDED_BY(mMutex);
+    std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained
+        MIO_GUARDED_BY(mMutex);
+    bool mProfileBuiltinDone MIO_GUARDED_BY(mMutex) = false;
+    bool mExternalDone MIO_GUARDED_BY(mMutex) = false;
 };
 
 ProvidersState& providers_state() {
@@ -118,7 +122,7 @@ template <class T>
 void slot_register(ProviderSlot<T> ProvidersState::*pSlot, T Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const T>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && (r_state.*pSlot).mCurrent)
         return;
     (r_state.*pSlot).Set(std::move(p_new));
@@ -127,7 +131,7 @@ void slot_register(ProviderSlot<T> ProvidersState::*pSlot, T Provider) {
 template <class T>
 void slot_unregister(ProviderSlot<T> ProvidersState::*pSlot) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     (r_state.*pSlot).mBuiltinDone = true;
     (r_state.*pSlot).mCurrent.reset();
 }
@@ -136,7 +140,7 @@ template <class T>
 std::shared_ptr<const T> slot_get(ProviderSlot<T> ProvidersState::*pSlot) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     return (r_state.*pSlot).mCurrent;
 }
 
@@ -165,7 +169,7 @@ std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept {
 void add_tet_mesher(TetMesherProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const TetMesherProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mTetNamed.count(p_new->mName))
         return;
     r_state.mTet.mRetained.push_back(p_new);
@@ -174,14 +178,14 @@ void add_tet_mesher(TetMesherProvider Provider) {
 
 void remove_tet_mesher(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mTetNamed.erase(rName);
 }
 
 std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     // The default answers to its own name first, so a plugin's mesher that is
     // the default is the one `backend=<its name>` runs.
     if (r_state.mTet.mCurrent && r_state.mTet.mCurrent->mName == rName)
@@ -193,7 +197,7 @@ std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) no
 void add_quad_remesher(QuadRemesherProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mQuad.count(p_new->mName))
         return;
     r_state.mQuadRetained.push_back(p_new);
@@ -202,14 +206,14 @@ void add_quad_remesher(QuadRemesherProvider Provider) {
 
 void remove_quad_remesher(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mQuad.erase(rName);
 }
 
 std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     const auto it = r_state.mQuad.find(rName);
     return it == r_state.mQuad.end() ? nullptr : it->second;
 }
@@ -217,7 +221,7 @@ std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rNa
 void add_profile_solid_provider(ProfileSolidProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const ProfileSolidProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mProfile.count(p_new->mName))
         return;
     r_state.mProfileRetained.push_back(p_new);
@@ -226,7 +230,7 @@ void add_profile_solid_provider(ProfileSolidProvider Provider) {
 
 void remove_profile_solid_provider(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mProfile.erase(rName);
 }
 
@@ -234,7 +238,7 @@ std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
     const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (rName.empty())
         return r_state.mProfile.empty() ? nullptr : r_state.mProfile.begin()->second;
     const auto it = r_state.mProfile.find(rName);
@@ -244,7 +248,7 @@ std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
 std::vector<std::string> profile_solid_provider_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     for (const auto& r_entry : r_state.mProfile)
         names.push_back(r_entry.first);
@@ -254,7 +258,7 @@ std::vector<std::string> profile_solid_provider_names() {
 std::vector<std::string> quad_remesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     for (const auto& r_entry : r_state.mQuad)
         names.push_back(r_entry.first);
@@ -264,7 +268,7 @@ std::vector<std::string> quad_remesher_names() {
 std::vector<std::string> tet_mesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     if (r_state.mTet.mCurrent)
         names.push_back(r_state.mTet.mCurrent->mName);
@@ -292,11 +296,12 @@ namespace {
 /// dlopen runs) does not wait on itself; the flag makes that nested call return
 /// at once. Allocated and never freed, like providers_state(), so a provider
 /// query during static destruction still finds it.
-std::recursive_mutex& plugin_scan_mutex() {                 // NOSONAR(cpp:S8462): see above
-    static auto* const s_mutex = new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474)
+detail::AnnotatedRecursiveMutex& plugin_scan_mutex() {  // NOSONAR(cpp:S8462): see above
+    static auto* const s_mutex =
+        new detail::AnnotatedRecursiveMutex;  // NOSONAR(cpp:S8462,cpp:S8474)
     return *s_mutex;
 }
-bool g_plugins_scan_started = false;           // guarded by the scan mutex
+bool g_plugins_scan_started MIO_GUARDED_BY(plugin_scan_mutex()) = false;
 std::atomic<bool> g_plugins_scan_done{false};  // the lock-free fast path
 
 using PluginAbiFn = int (*)();
@@ -395,7 +400,7 @@ int load_plugins(const std::string& rPaths) noexcept {
 
 static void register_compiled_in_providers() noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     // A slot's builtin goes in once, and never over a provider already there.
     const auto install = [](auto& rSlot, auto&& Make) {
         if (rSlot.mBuiltinDone)
@@ -470,7 +475,7 @@ void register_builtin_providers() noexcept {
     if (g_plugins_scan_done.load())
         return;
     // Recursive on purpose: re-entered by a plugin, see plugin_scan_mutex().
-    const std::lock_guard scan_lock(plugin_scan_mutex());  // NOSONAR(cpp:S8462)
+    const detail::AnnotatedLockGuard scan_lock(plugin_scan_mutex());  // NOSONAR(cpp:S8462)
     if (g_plugins_scan_started)
         return;  // done meanwhile, or this thread's own plugin is asking
     g_plugins_scan_started = true;

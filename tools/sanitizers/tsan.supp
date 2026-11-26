@@ -1,0 +1,5 @@
+# ThreadSanitizer suppressions for meshio++ (roadmap 3.9.1).
+#
+# Every entry here must explain why it is a known third-party false positive
+# (not a race in meshio++'s own code). Leave empty unless a concrete third-party
+# runtime frame is observed under TSan.

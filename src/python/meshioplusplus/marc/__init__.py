@@ -3,9 +3,10 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._series_writer import CoreSeriesWriter
+from .._shims import time_values_shim
 from ._marc import read as _py_read
 from ._marc import read_t19 as _py_read_t19
-from ._marc import time_values as _py_time_values
+from ._marc import time_values as _py_time_values  # noqa: F401
 from ._marc import write as _py_write
 from ._t19 import SeriesWriter as _PySeriesWriter
 from ._t19 import write as _py_write_t19
@@ -62,14 +63,9 @@ def read_t19(filename, points_only=False, arrays=None, time_step=0):
     )
 
 
-def time_values(filename):
-    """The time of every increment of a ``.t19`` post file."""
-    try:
-        return list(_core.marc_t19_time_values(str(filename)))
-    except Exception as exc:
-        if not core_declined(exc, "marc_t19", "read", filename):
-            raise
-    return _py_time_values(filename)
+time_values = time_values_shim(
+    __name__, "marc_t19", """The time of every increment of a ``.t19`` post file."""
+)
 
 
 def write(filename, mesh):

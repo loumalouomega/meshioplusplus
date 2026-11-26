@@ -114,7 +114,6 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
 
     const std::int64_t nx = rSpec.mDims[0];
     const std::int64_t ny = rSpec.mDims[1];
-    const std::int64_t nz = rSpec.mDims[2];
     const std::int64_t px = nx + 1;
     const std::int64_t py = ny + 1;
     const std::int64_t npoints = lattice_num_points(rSpec);

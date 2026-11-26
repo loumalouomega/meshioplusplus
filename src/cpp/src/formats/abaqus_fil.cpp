@@ -91,8 +91,12 @@ std::int64_t fil_word_int(const FilWord& rWord, bool Swap) {
     switch (rWord.mTag) {
         case 'I':
             return static_cast<std::int64_t>(rWord.mRaw);
-        case 'D':
-            return static_cast<std::int64_t>(std::bit_cast<double>(rWord.mRaw));
+        case 'D': {
+            const double d = std::bit_cast<double>(rWord.mRaw);
+            if (!std::isfinite(d) || d < -9223372036854775808.0 || d >= 9223372036854775808.0)
+                throw ReadError("Abaqus .fil: floating-point word out of integer range");
+            return static_cast<std::int64_t>(d);
+        }
         case 'A': {
             char s[9] = {};
             std::memcpy(s, &rWord.mRaw, 8);

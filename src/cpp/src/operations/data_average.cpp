@@ -47,6 +47,7 @@
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
+#include "../detail/field_recovery.hpp"
 #include "../detail/slot_runs.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -204,79 +205,15 @@ CellPointWeight cell_point_weight_from_name(const std::string& rName) {
                                 "' (expected 'uniform' or 'measure')");
 }
 
-Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
-    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Point, rOpts);
-    for (const std::string& n : names)
-        davg_check_target(rMesh, DataLocation::Cell, davg_target_name(n, rOpts), rOpts);
+namespace {
 
-    Mesh out = detail::clone_mesh(rMesh);
+std::vector<std::vector<double>> davg_build_weights(
+    const Mesh& rMesh, const DataAverageOptions& rOpts,
+    std::vector<std::vector<double>>* pRawMeasures) {
     const std::size_t nblocks = rMesh.NumCellBlocks();
-    if (nblocks == 0)
-        return out;
-
-    for (const std::string& name : names) {
-        const NDArray& src = rMesh.PointData(name);
-        const std::size_t ncomp = data_num_components(src);
-        const std::size_t npoints = rMesh.NumPoints();
-
-        // One output array per cell block — the uniform API requires exactly
-        // NumCellBlocks() of them.
-        std::vector<NDArray> blocks;
-        blocks.reserve(nblocks);
-        for (std::size_t b = 0; b < nblocks; ++b) {
-            const auto cb = rMesh.Cells(b);
-            const std::size_t nc = cb.NumCells();
-            NDArray dst(DType::Float64, davg_shape(nc, ncomp));
-            double* pdst = dst.As<double>();
-
-            // Pure gather: each cell reads only its own nodes, so this is safe
-            // to run in parallel and is genuine per-element compute.
-            parallel_for(nc, [&](std::size_t c) {
-                static thread_local std::vector<std::int64_t> nodes;
-                davg_cell_nodes(cb, c, nodes);
-                for (std::size_t k = 0; k < ncomp; ++k) {
-                    double sum = 0.0;
-                    std::int64_t count = 0;
-                    for (std::int64_t node : nodes) {
-                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
-                            continue;
-                        const double v =
-                            detail::read_double(src, static_cast<std::size_t>(node) * ncomp + k);
-                        if (std::isfinite(v)) {
-                            sum += v;
-                            ++count;
-                        }
-                    }
-                    pdst[c * ncomp + k] =
-                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
-                }
-            });
-
-            // The NaN policy is applied serially afterwards so that a `Fail`
-            // throw is deterministic rather than racing between threads.
-            for (std::size_t i = 0; i < nc * ncomp; ++i)
-                pdst[i] =
-                    davg_apply_nan_policy(pdst[i], rOpts, "cell", name, i / (ncomp ? ncomp : 1));
-            blocks.push_back(std::move(dst));
-        }
-        out.AddCellData(davg_target_name(name, rOpts), std::move(blocks));
-    }
-    return out;
-}
-
-Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
-    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Cell, rOpts);
-    for (const std::string& n : names)
-        davg_check_target(rMesh, DataLocation::Point, davg_target_name(n, rOpts), rOpts);
-
-    Mesh out = detail::clone_mesh(rMesh);
-    const std::size_t npoints = rMesh.NumPoints();
-    const std::size_t nblocks = rMesh.NumCellBlocks();
-    if (npoints == 0 || nblocks == 0)
-        return out;
-
-    // Per-cell weights, computed once and reused by every array.
     std::vector<std::vector<double>> weights(nblocks);
+    if (pRawMeasures)
+        pRawMeasures->resize(nblocks);
     bool warned_measure = false;
     for (std::size_t b = 0; b < nblocks; ++b) {
         const auto cb = rMesh.Cells(b);
@@ -288,6 +225,8 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
         std::vector<double>& w = weights[b];
         parallel_for(cb.NumCells(),
                      [&](std::size_t c) { w[c] = detail::cell_measure(points, pdim, cb, c); });
+        if (pRawMeasures)
+            (*pRawMeasures)[b] = w;
         for (double& v : w) {
             if (!std::isfinite(v) || v <= 0.0) {
                 v = 1.0;
@@ -300,104 +239,269 @@ Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts)
             }
         }
     }
+    return weights;
+}
+
+template <class TBlockGetter>
+NDArray davg_cell_to_point_impl(const Mesh& rMesh, std::size_t NumSrcBlocks,
+                                const TBlockGetter& rGetBlock, const std::string& rName,
+                                const DataAverageOptions& rOpts,
+                                const std::vector<std::vector<double>>& rWeights,
+                                std::unique_ptr<DavgIncidence>& rIncidence,
+                                std::vector<double>& rCellWeight,
+                                std::vector<std::size_t>& rCellBlockBase) {
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (NumSrcBlocks != nblocks)
+        throw std::invalid_argument("meshio++: data_average: cell_data '" + rName + "' has " +
+                                    std::to_string(NumSrcBlocks) + " block(s) but the mesh has " +
+                                    std::to_string(nblocks) + " cell block(s)");
+
+    const std::size_t ncomp = data_num_components(rGetBlock(0));
+    for (std::size_t b = 0; b < nblocks; ++b)
+        if (data_num_components(rGetBlock(b)) != ncomp)
+            throw std::invalid_argument("meshio++: data_average: cell_data '" + rName +
+                                        "' has inconsistent component counts across blocks");
+    NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
+    double* pdst = dst.As<double>();
+    if (detail::slot_runs_impl::workers() <= 1) {
+        // One worker (a SEQ build, or one thread): the plain scatter, which
+        // adds the same terms in the same order as the gather below and is
+        // cheaper than building the incidence table first.
+        std::vector<double> sum(npoints * ncomp, 0.0);
+        std::vector<double> wsum(npoints * ncomp, 0.0);
+        std::vector<std::int64_t> nodes;
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            const auto cb = rMesh.Cells(b);
+            const detail::DoubleView src(rGetBlock(b));
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                davg_cell_nodes(cb, c, nodes);
+                const double w = rWeights[b][c];
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    const double v = src[c * ncomp + k];
+                    if (!std::isfinite(v))
+                        continue;
+                    for (std::int64_t node : nodes) {
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const std::size_t idx = static_cast<std::size_t>(node) * ncomp + k;
+                        sum[idx] += w * v;
+                        wsum[idx] += w;
+                    }
+                }
+            }
+        }
+        for (std::size_t i = 0; i < npoints * ncomp; ++i)
+            pdst[i] = wsum[i] > 0.0 ? sum[i] / wsum[i] : std::nan("");
+        for (std::size_t i = 0; i < npoints * ncomp; ++i)
+            pdst[i] =
+                davg_apply_nan_policy(pdst[i], rOpts, "point", rName, i / (ncomp ? ncomp : 1));
+        return dst;
+    }
+    if (!rIncidence) {
+        std::vector<std::size_t> block_base(nblocks + 1, 0);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            block_base[b + 1] = block_base[b] + rMesh.Cells(b).NumCells();
+        rIncidence = std::make_unique<DavgIncidence>(davg_incidence(rMesh, block_base, npoints));
+        rCellWeight.resize(block_base[nblocks]);
+        for (std::size_t b = 0; b < nblocks; ++b)
+            std::copy(rWeights[b].begin(), rWeights[b].end(),
+                      rCellWeight.begin() + static_cast<std::ptrdiff_t>(block_base[b]));
+        rCellBlockBase = std::move(block_base);
+    }
+    // The cell values as doubles, block-major (read_double's conversion).
+    std::vector<double> values(rCellWeight.size() * ncomp);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const detail::DoubleView src(rGetBlock(b));
+        const std::size_t n = (rCellBlockBase[b + 1] - rCellBlockBase[b]) * ncomp;
+        double* to = values.data() + rCellBlockBase[b] * ncomp;
+        parallel_for_bw(n, [&](std::size_t i) { to[i] = src[i]; });
+    }
+
+    // --- accumulation, gathered per point: each point adds its incident
+    // --- cells' weighted values in (block, cell, node) order -- the order
+    // --- the serial scatter added them in (FP add is not associative) --
+    // --- so the sums are bit-identical on every backend and thread count.
+    const DavgIncidence& inc = *rIncidence;
+    parallel_for(npoints, [&](std::size_t pnt) {
+        for (std::size_t k = 0; k < ncomp; ++k) {
+            double sum = 0.0;
+            double wsum = 0.0;
+            for (std::uint64_t j = inc.mStart[pnt]; j < inc.mStart[pnt + 1]; ++j) {
+                const std::uint64_t gc = inc.mCellOf[j];
+                const double v = values[gc * ncomp + k];
+                if (!std::isfinite(v))
+                    continue;
+                const double w = rCellWeight[gc];
+                sum += w * v;
+                wsum += w;
+            }
+            pdst[pnt * ncomp + k] = wsum > 0.0 ? sum / wsum : std::nan("");
+        }
+    });
+    for (std::size_t i = 0; i < npoints * ncomp; ++i)
+        pdst[i] = davg_apply_nan_policy(pdst[i], rOpts, "point", rName, i / (ncomp ? ncomp : 1));
+    return dst;
+}
+
+}  // namespace
+
+namespace detail {
+
+std::vector<NDArray> point_to_cell_array(const Mesh& rMesh, const NDArray& rSrc,
+                                         const std::string& rName,
+                                         const DataAverageOptions& rOpts) {
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    std::vector<NDArray> blocks;
+    if (nblocks == 0)
+        return blocks;
+    const std::size_t ncomp = data_num_components(rSrc);
+    const std::size_t npoints = rMesh.NumPoints();
+    const detail::DoubleView src_v(rSrc);
+    const double* psrc = src_v.Data();
+    blocks.reserve(nblocks);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t nc = cb.NumCells();
+        NDArray dst(DType::Float64, davg_shape(nc, ncomp));
+        double* pdst = dst.As<double>();
+
+        // Pure gather: each cell reads only its own nodes, so this is safe
+        // to run in parallel and is genuine per-element compute.
+        if (!cb.IsPolyhedron() && !cb.IsRagged()) {
+            const detail::Int64View conn_v(cb.Conn());
+            const std::int64_t* pconn = conn_v.Data();
+            const std::size_t npc = cb.NodesPerCell();
+            parallel_for(nc, [&](std::size_t c) {
+                const std::int64_t* row = pconn + c * npc;
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    std::int64_t count = 0;
+                    for (std::size_t j = 0; j < npc; ++j) {
+                        const std::int64_t node = row[j];
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const double v = psrc[static_cast<std::size_t>(node) * ncomp + k];
+                        if (std::isfinite(v)) {
+                            sum += v;
+                            ++count;
+                        }
+                    }
+                    pdst[c * ncomp + k] =
+                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
+                }
+            });
+        } else if (cb.IsRagged() && !cb.IsPolyhedron()) {
+            parallel_for(nc, [&](std::size_t c) {
+                const std::int64_t* row = cb.Row(c);
+                const std::size_t nr = cb.RowSize(c);
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    std::int64_t count = 0;
+                    for (std::size_t j = 0; j < nr; ++j) {
+                        const std::int64_t node = row[j];
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const double v = psrc[static_cast<std::size_t>(node) * ncomp + k];
+                        if (std::isfinite(v)) {
+                            sum += v;
+                            ++count;
+                        }
+                    }
+                    pdst[c * ncomp + k] =
+                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
+                }
+            });
+        } else {
+            parallel_for(nc, [&](std::size_t c) {
+                static thread_local std::vector<std::int64_t> nodes;
+                davg_cell_nodes(cb, c, nodes);
+                for (std::size_t k = 0; k < ncomp; ++k) {
+                    double sum = 0.0;
+                    std::int64_t count = 0;
+                    for (std::int64_t node : nodes) {
+                        if (node < 0 || static_cast<std::size_t>(node) >= npoints)
+                            continue;
+                        const double v = psrc[static_cast<std::size_t>(node) * ncomp + k];
+                        if (std::isfinite(v)) {
+                            sum += v;
+                            ++count;
+                        }
+                    }
+                    pdst[c * ncomp + k] =
+                        count > 0 ? sum / static_cast<double>(count) : std::nan("");
+                }
+            });
+        }
+
+        // The NaN policy is applied serially afterwards so that a `Fail`
+        // throw is deterministic rather than racing between threads.
+        for (std::size_t i = 0; i < nc * ncomp; ++i)
+            pdst[i] = davg_apply_nan_policy(pdst[i], rOpts, "cell", rName, i / (ncomp ? ncomp : 1));
+        blocks.push_back(std::move(dst));
+    }
+    return blocks;
+}
+
+NDArray cell_to_point_array(const Mesh& rMesh, const std::vector<NDArray>& rBlocks,
+                            const std::string& rName, const DataAverageOptions& rOpts,
+                            std::vector<std::vector<double>>* pRawMeasures) {
+    const std::size_t npoints = rMesh.NumPoints();
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    if (npoints == 0 || nblocks == 0) {
+        if (pRawMeasures)
+            pRawMeasures->clear();
+        return NDArray(DType::Float64, {0});
+    }
+    const std::vector<std::vector<double>> weights = davg_build_weights(rMesh, rOpts, pRawMeasures);
+    std::unique_ptr<DavgIncidence> incidence;
+    std::vector<double> cell_weight;
+    std::vector<std::size_t> cell_block_base;
+    return davg_cell_to_point_impl(
+        rMesh, rBlocks.size(), [&](std::size_t b) -> const NDArray& { return rBlocks[b]; }, rName,
+        rOpts, weights, incidence, cell_weight, cell_block_base);
+}
+
+}  // namespace detail
+
+Mesh point_data_to_cell_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
+    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Point, rOpts);
+    for (const std::string& n : names)
+        davg_check_target(rMesh, DataLocation::Cell, davg_target_name(n, rOpts), rOpts);
+
+    Mesh out = detail::clone_mesh(rMesh);
+    if (rMesh.NumCellBlocks() == 0)
+        return out;
+
+    for (const std::string& name : names) {
+        std::vector<NDArray> blocks =
+            detail::point_to_cell_array(rMesh, rMesh.PointData(name), name, rOpts);
+        out.AddCellData(davg_target_name(name, rOpts), std::move(blocks));
+    }
+    return out;
+}
+
+Mesh cell_data_to_point_data(const Mesh& rMesh, const DataAverageOptions& rOpts) {
+    const std::vector<std::string> names = davg_resolve_names(rMesh, DataLocation::Cell, rOpts);
+    for (const std::string& n : names)
+        davg_check_target(rMesh, DataLocation::Point, davg_target_name(n, rOpts), rOpts);
+
+    Mesh out = detail::clone_mesh(rMesh);
+    if (rMesh.NumPoints() == 0 || rMesh.NumCellBlocks() == 0)
+        return out;
+
+    // Per-cell weights, computed once and reused by every array.
+    const std::vector<std::vector<double>> weights = davg_build_weights(rMesh, rOpts, nullptr);
 
     // Built on first use and shared by every array.
     std::unique_ptr<DavgIncidence> incidence;
     std::vector<double> cell_weight;
     std::vector<std::size_t> cell_block_base;
     for (const std::string& name : names) {
-        if (rMesh.CellDataNumBlocks(name) != nblocks)
-            throw std::invalid_argument("meshio++: data_average: cell_data '" + name + "' has " +
-                                        std::to_string(rMesh.CellDataNumBlocks(name)) +
-                                        " block(s) but the mesh has " + std::to_string(nblocks) +
-                                        " cell block(s)");
-
-        const std::size_t ncomp = data_num_components(rMesh.CellData(name, 0));
-        for (std::size_t b = 0; b < nblocks; ++b)
-            if (data_num_components(rMesh.CellData(name, b)) != ncomp)
-                throw std::invalid_argument("meshio++: data_average: cell_data '" + name +
-                                            "' has inconsistent component counts across blocks");
-        NDArray dst(DType::Float64, davg_shape(npoints, ncomp));
-        double* pdst = dst.As<double>();
-        if (detail::slot_runs_impl::workers() <= 1) {
-            // One worker (a SEQ build, or one thread): the plain scatter, which
-            // adds the same terms in the same order as the gather below and is
-            // cheaper than building the incidence table first.
-            std::vector<double> sum(npoints * ncomp, 0.0);
-            std::vector<double> wsum(npoints * ncomp, 0.0);
-            std::vector<std::int64_t> nodes;
-            for (std::size_t b = 0; b < nblocks; ++b) {
-                const auto cb = rMesh.Cells(b);
-                const detail::DoubleView src(rMesh.CellData(name, b));
-                for (std::size_t c = 0; c < cb.NumCells(); ++c) {
-                    davg_cell_nodes(cb, c, nodes);
-                    const double w = weights[b][c];
-                    for (std::size_t k = 0; k < ncomp; ++k) {
-                        const double v = src[c * ncomp + k];
-                        if (!std::isfinite(v))
-                            continue;
-                        for (std::int64_t node : nodes) {
-                            if (node < 0 || static_cast<std::size_t>(node) >= npoints)
-                                continue;
-                            const std::size_t idx = static_cast<std::size_t>(node) * ncomp + k;
-                            sum[idx] += w * v;
-                            wsum[idx] += w;
-                        }
-                    }
-                }
-            }
-            for (std::size_t i = 0; i < npoints * ncomp; ++i)
-                pdst[i] = wsum[i] > 0.0 ? sum[i] / wsum[i] : std::nan("");
-            for (std::size_t i = 0; i < npoints * ncomp; ++i)
-                pdst[i] =
-                    davg_apply_nan_policy(pdst[i], rOpts, "point", name, i / (ncomp ? ncomp : 1));
-            out.AddPointData(davg_target_name(name, rOpts), std::move(dst));
-            continue;
-        }
-        if (!incidence) {
-            std::vector<std::size_t> block_base(nblocks + 1, 0);
-            for (std::size_t b = 0; b < nblocks; ++b)
-                block_base[b + 1] = block_base[b] + rMesh.Cells(b).NumCells();
-            incidence = std::make_unique<DavgIncidence>(davg_incidence(rMesh, block_base, npoints));
-            cell_weight.resize(block_base[nblocks]);
-            for (std::size_t b = 0; b < nblocks; ++b)
-                std::copy(weights[b].begin(), weights[b].end(),
-                          cell_weight.begin() + static_cast<std::ptrdiff_t>(block_base[b]));
-            cell_block_base = std::move(block_base);
-        }
-        // The cell values as doubles, block-major (read_double's conversion).
-        std::vector<double> values(cell_weight.size() * ncomp);
-        for (std::size_t b = 0; b < nblocks; ++b) {
-            const detail::DoubleView src(rMesh.CellData(name, b));
-            const std::size_t n = (cell_block_base[b + 1] - cell_block_base[b]) * ncomp;
-            double* to = values.data() + cell_block_base[b] * ncomp;
-            parallel_for_bw(n, [&](std::size_t i) { to[i] = src[i]; });
-        }
-
-        // --- accumulation, gathered per point: each point adds its incident
-        // --- cells' weighted values in (block, cell, node) order -- the order
-        // --- the serial scatter added them in (FP add is not associative) --
-        // --- so the sums are bit-identical on every backend and thread count.
-        const DavgIncidence& inc = *incidence;
-        parallel_for(npoints, [&](std::size_t pnt) {
-            for (std::size_t k = 0; k < ncomp; ++k) {
-                double sum = 0.0;
-                double wsum = 0.0;
-                for (std::uint64_t j = inc.mStart[pnt]; j < inc.mStart[pnt + 1]; ++j) {
-                    const std::uint64_t gc = inc.mCellOf[j];
-                    const double v = values[gc * ncomp + k];
-                    if (!std::isfinite(v))
-                        continue;
-                    const double w = cell_weight[gc];
-                    sum += w * v;
-                    wsum += w;
-                }
-                pdst[pnt * ncomp + k] = wsum > 0.0 ? sum / wsum : std::nan("");
-            }
-        });
-        for (std::size_t i = 0; i < npoints * ncomp; ++i)
-            pdst[i] = davg_apply_nan_policy(pdst[i], rOpts, "point", name, i / (ncomp ? ncomp : 1));
-
+        NDArray dst = davg_cell_to_point_impl(
+            rMesh, rMesh.CellDataNumBlocks(name),
+            [&](std::size_t b) -> const NDArray& { return rMesh.CellData(name, b); }, name, rOpts,
+            weights, incidence, cell_weight, cell_block_base);
         out.AddPointData(davg_target_name(name, rOpts), std::move(dst));
     }
     return out;

@@ -14,9 +14,24 @@ repos:
     rev: 7.0.0
     hooks:
       - id: flake8
+        additional_dependencies: [flake8-bugbear]
 
   - repo: https://github.com/codespell-project/codespell
     rev: v2.3.0
     hooks:
       - id: codespell
         # Skips and the project word list live in .codespellrc.
+
+  - repo: local
+    hooks:
+      - id: clang-format-staged
+        name: clang-format (staged C++ lines)
+        language: system
+        entry: >-
+          bash -c 'command -v git-clang-format >/dev/null || exit 0;
+          diff=$(git clang-format --staged --diff -- "$@") || exit 1;
+          case "$diff" in ""|"no modified files to format"|"clang-format did not modify any files") exit 0;; esac;
+          printf "%s\n" "$diff"; echo "Run: git clang-format --staged" >&2; exit 1' --
+        files: ^(src/cpp/(include|src|cli|providers|benchmark)|bindings/(c|python|r|octave|wasm)|tests/cpp)/.*\.(c|cc|cpp|h|hpp)$
+        exclude: ^src/cpp/third_party/
+        pass_filenames: true

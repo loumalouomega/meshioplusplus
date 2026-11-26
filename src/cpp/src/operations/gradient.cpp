@@ -48,6 +48,7 @@
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "../detail/field_recovery.hpp"
 #include "../detail/math_utils.hpp"
 #include "../detail/typed_view.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
@@ -605,7 +606,9 @@ GradientMethod gradient_method_from_name(const std::string& rName) {
                                 "' (expected 'green-gauss' or 'least-squares')");
 }
 
-GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
+namespace detail {
+
+GradientArrayResult gradient_array(const Mesh& rMesh, const GradientOptions& rOptions) {
     // --- validation, all before any work ------------------------------------
     if (rOptions.mArrayName.empty())
         throw std::invalid_argument(std::string(kGradPrefix) + "an array name is required");
@@ -654,18 +657,6 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
             std::to_string(field_comp) +
             " components; every operator but the gradient needs a vector field of 2 or 3");
 
-    const std::string out_name = rOptions.mOutputName.empty()
-                                     ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
-                                     : rOptions.mOutputName;
-    if (!rOptions.mOverwrite) {
-        const bool taken = rOptions.mLocation == DataLocation::Point ? rMesh.HasPointData(out_name)
-                                                                     : rMesh.HasCellData(out_name);
-        if (taken)
-            throw std::invalid_argument(
-                std::string(kGradPrefix) + "'" + out_name + "' already exists in " +
-                data_location_name(rOptions.mLocation) + " (pass overwrite=true to replace it)");
-    }
-
     // The field components actually differentiated: one when a component was
     // selected, all of them otherwise.
     const std::size_t work_comp = rOptions.mComponent.has_value() ? 1 : field_comp;
@@ -673,13 +664,9 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         rOptions.mComponent.has_value() ? static_cast<std::size_t>(*rOptions.mComponent) : 0;
     const std::size_t out_comp = grad_out_components(rOptions.mOperator, work_comp);
 
-    // Geometry, connectivity, regions, property sets and every existing array
-    // ride through untouched. No warn_regions_dropped here -- unlike every
-    // restructuring operation, this one does not renumber anything.
-    Mesh out = detail::clone_mesh(rMesh);
     const std::size_t nblocks = rMesh.NumCellBlocks();
     if (nblocks == 0)
-        return GradientResult{std::move(out), 0, 0};
+        return GradientArrayResult{{}, 0, 0};
 
     const int dim = grad_mesh_dimension(rMesh);
     if (dim <= 0)
@@ -901,24 +888,66 @@ GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
         blocks.push_back(std::move(dst));
     }
 
-    out.AddCellData(out_name, std::move(blocks));
+    return GradientArrayResult{std::move(blocks), skipped, fallback};
+}
 
+}  // namespace detail
+
+GradientResult gradient(const Mesh& rMesh, const GradientOptions& rOptions) {
+    // Check name collision before allocating gradient work buffers, keeping
+    // the exact error ordering for invalid inputs.
+    if (!rOptions.mArrayName.empty() && rOptions.mLocation != DataLocation::Field &&
+        rMesh.HasPointData(rOptions.mArrayName)) {
+        const NDArray& field = rMesh.PointData(rOptions.mArrayName);
+        const std::size_t field_comp = data_num_components(field);
+        const bool valid_shape = field_comp > 0 && detail::rows(field) == rMesh.NumPoints();
+        const bool valid_comp =
+            !rOptions.mComponent.has_value() ||
+            (rOptions.mOperator == GradientOperator::Gradient && *rOptions.mComponent >= 0 &&
+             static_cast<std::size_t>(*rOptions.mComponent) < field_comp);
+        const bool valid_op =
+            rOptions.mOperator == GradientOperator::Gradient || field_comp == 2 || field_comp == 3;
+        if (valid_shape && valid_comp && valid_op && !rOptions.mOverwrite) {
+            const std::string out_name =
+                rOptions.mOutputName.empty()
+                    ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
+                    : rOptions.mOutputName;
+            const bool taken = rOptions.mLocation == DataLocation::Point
+                                   ? rMesh.HasPointData(out_name)
+                                   : rMesh.HasCellData(out_name);
+            if (taken)
+                throw std::invalid_argument(std::string(kGradPrefix) + "'" + out_name +
+                                            "' already exists in " +
+                                            data_location_name(rOptions.mLocation) +
+                                            " (pass overwrite=true to replace it)");
+        }
+    }
+
+    detail::GradientArrayResult arr = detail::gradient_array(rMesh, rOptions);
+
+    // Geometry, connectivity, regions, property sets and every existing array
+    // ride through untouched. No warn_regions_dropped here -- unlike every
+    // restructuring operation, this one does not renumber anything.
+    Mesh out = detail::clone_mesh(rMesh);
+    if (rMesh.NumCellBlocks() == 0)
+        return GradientResult{std::move(out), 0, 0};
+
+    const std::string out_name = rOptions.mOutputName.empty()
+                                     ? grad_default_name(rOptions.mArrayName, rOptions.mOperator)
+                                     : rOptions.mOutputName;
     if (rOptions.mLocation == DataLocation::Point) {
-        // Compose the existing averaging rather than reimplementing a scatter:
-        // its accumulation is already deliberately serial, so the point values
-        // stay reproducible. All contributing cell values are equal for a linear
-        // field, so the result is exact to within rounding -- but summing n
-        // copies of g and dividing by n is not bit-exact in IEEE, which is why
-        // the point-located tests use a tolerance.
         DataAverageOptions avg;
         avg.names = {out_name};
         avg.weight = CellPointWeight::Uniform;
         avg.overwrite = true;
-        Mesh with_points = cell_data_to_point_data(out, avg);
-        out = data_drop(with_points, DataLocation::Cell, {out_name});
+        NDArray pt = detail::cell_to_point_array(rMesh, arr.mBlocks, out_name, avg);
+        if (rMesh.NumPoints() > 0)
+            out.AddPointData(out_name, std::move(pt));
+    } else {
+        out.AddCellData(out_name, std::move(arr.mBlocks));
     }
 
-    return GradientResult{std::move(out), skipped, fallback};
+    return GradientResult{std::move(out), arr.mNumSkipped, arr.mNumFallback};
 }
 
 }  // namespace meshioplusplus

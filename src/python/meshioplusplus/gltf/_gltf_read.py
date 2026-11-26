@@ -16,7 +16,6 @@ Draco and meshopt are refused by name.
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import math
 import os
@@ -159,7 +158,7 @@ def _load(filename):
         text = data
     try:
         root = json.loads(text.decode("utf-8-sig"))
-    except (ValueError, UnicodeDecodeError) as exc:
+    except ValueError as exc:
         raise ReadError(f"gltf: invalid JSON ({exc})") from exc
     if not isinstance(root, dict):
         _fail("the document is not a JSON object")
@@ -178,7 +177,7 @@ def _uri_bytes(uri, directory):
             _fail("a data: URI that is not base64")
         try:
             return base64.b64decode(uri[comma + 1 :] + "===", validate=False)
-        except (binascii.Error, ValueError) as exc:
+        except ValueError as exc:
             raise ReadError("gltf: a data: URI is not valid base64") from exc
     path = unquote(uri)
     if not path or path[0] in "/\\" or "://" in path or "\\" in path or ":" in path:

@@ -400,8 +400,8 @@ namespace {
 /// `Split` for the chordal cap.
 template <class TSplit>
 void edgs_sized_stretch(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions, double L0,
-                        double L1, double Length, std::int64_t& rBudget, std::vector<double>& rEnds,
-                        TSplit&& rSplit) {
+                        double L1, double Length, std::int64_t& rBudget,
+                        std::vector<double>& /*rEnds*/, TSplit&& rSplit) {
     const double part = L1 - L0;
     const auto density = [&](double L) {
         const double hx = rOptions.mSize(rTrace.Point(rTrace.ParamAtLength(L)));

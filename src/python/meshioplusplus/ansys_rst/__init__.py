@@ -3,8 +3,9 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._series_writer import CoreSeriesWriter
+from .._shims import time_values_shim
 from ._ansys_rst import read as _py_read
-from ._ansys_rst import time_values as _py_time_values
+from ._ansys_rst import time_values as _py_time_values  # noqa: F401
 from ._write import SeriesWriter as _PySeriesWriter
 from ._write import write as _py_write
 
@@ -69,14 +70,9 @@ def _read(filename, points_only, arrays, time_step, lenient, cyclic):
     )
 
 
-def time_values(filename):
-    """The time (or frequency) of every result set."""
-    try:
-        return list(_core.ansys_rst_time_values(str(filename)))
-    except Exception as exc:
-        if not core_declined(exc, "ansys_rst", "read", filename):
-            raise
-    return _py_time_values(filename)
+time_values = time_values_shim(
+    __name__, "ansys_rst", """The time (or frequency) of every result set."""
+)
 
 
 def write(filename, mesh):

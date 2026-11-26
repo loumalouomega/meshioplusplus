@@ -117,3 +117,22 @@ TEST(Untangle, Refusals) {
     o.mFrozen = {1, 0};
     EXPECT_THROW(untangle(ut_hex_box(2), o), std::invalid_argument);
 }
+
+TEST(Untangle, SmoothImprovesQualityAndMultiNodeUntangles) {
+    ConvertCellsOptions co;
+    co.mMode = ConvertCellsMode::Simplexify;
+    Mesh tets = convert_cells(ut_hex_box(4), co).mMesh;
+    // Perturb two interior vertices strongly so multiple neighbourhoods invert.
+    const std::size_t n1 = (1 * 5 + 1) * 5 + 1;
+    const std::size_t n2 = (3 * 5 + 3) * 5 + 3;
+    tets = ut_move(tets, n1, 0.62, 0.58, 0.60);
+    tets = ut_move(tets, n2, 0.35, 0.40, 0.38);
+    ASSERT_GT(compute_quality(tets).mNumInverted, 0);
+
+    UntangleOptions o;
+    o.mSmooth = true;
+    const UntangleResult r = untangle(tets, o);
+    EXPECT_EQ(r.mNumInvertedAfter, 0);
+    EXPECT_GT(r.mMinQualityAfter, 0.0);
+    EXPECT_EQ(compute_quality(r.mMesh).mNumInverted, 0);
+}
