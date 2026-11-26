@@ -407,7 +407,7 @@ class JobManager:
                     os.kill(pid, signal.SIGTERM)
             else:
                 os.killpg(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
+        except OSError:
             pass
         deadline = time.time() + max(float(grace), 0.0)
         while time.time() < deadline:
@@ -426,7 +426,7 @@ class JobManager:
                         os.kill(pid, signal.SIGTERM)
                 else:
                     os.killpg(pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError, OSError):
+            except OSError:
                 pass
             if proc is not None:
                 try:
