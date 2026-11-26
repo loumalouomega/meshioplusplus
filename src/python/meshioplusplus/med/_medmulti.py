@@ -299,7 +299,7 @@ def _write_med_multi(filename, meshes, mesh_names=None, med_version="4.1.0", **k
         )
         med_mesh.attrs.create("TYP", 0)
 
-        _write_mesh_step(med_mesh, mesh, "MED_NO_PROFILE_INTERNAL", write_num=False)
+        _write_mesh_step(med_mesh, mesh, "MED_NO_PROFILE_INTERNAL", write_num=True)
 
     # Families (FAS)
     fas = f.create_group("FAS")

@@ -439,6 +439,12 @@ mio_status fail(mio_status code, std::string msg) {
     return code;
 }
 
+#define capi_require_arg(cond, label)                                        \
+    do {                                                                     \
+        if (!(cond))                                                         \
+            return fail(MIO_ERR_INVALID_ARG, "meshio++: " label " is NULL"); \
+    } while (0)
+
 // Every fallible extern "C" body runs inside one of these two: no exception
 // crosses the ABI, and the thread-local message is always set on failure.
 template <class F>
@@ -662,8 +668,7 @@ template <class TResult>
 mio_status capi_result_point_map(const TResult* pResult, const void** ppData, mio_dtype* pDtype,
                                  int64_t* pN) {
     return guarded([&]() -> mio_status {
-        if (!pResult)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(pResult, "result");
         return capi_map_out(pResult->mPointMap, ppData, pDtype, pN);
     });
 }
@@ -680,8 +685,7 @@ template <class TResult>
 mio_status capi_result_cell_map(const TResult* pResult, int64_t Block, const void** ppData,
                                 mio_dtype* pDtype, int64_t* pN) {
     return guarded([&]() -> mio_status {
-        if (!pResult)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(pResult, "result");
         if (Block < 0 || static_cast<std::size_t>(Block) >= pResult->mCellMaps.size())
             return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-map block index out of range");
         return capi_map_out(pResult->mCellMaps[static_cast<std::size_t>(Block)], ppData, pDtype,
@@ -1067,8 +1071,7 @@ mio_status mio_read_metadata_cell_block(const mio_read_metadata* meta, int64_t i
                                         int64_t* num_cells, int64_t* num_nodes_per_cell,
                                         int* is_ragged) {
     return guarded([&]() -> mio_status {
-        if (!meta)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: metadata handle is NULL");
+        capi_require_arg(meta, "metadata handle");
         if (index < 0 || static_cast<std::size_t>(index) >= meta->mMeta.mCellBlocks.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: cell block index out of range");
         const meshioplusplus::CellBlockInfo& block =
@@ -1136,8 +1139,7 @@ int64_t mio_read_metadata_region_name(const mio_read_metadata* meta, int64_t ind
 mio_status mio_read_metadata_region_info(const mio_read_metadata* meta, int64_t index,
                                          mio_region_info* out) {
     return guarded([&]() -> mio_status {
-        if (!meta || !out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: metadata/out is NULL");
+        capi_require_arg(meta && out, "metadata/out");
         const std::vector<meshioplusplus::RegionSummary>& regions = meta->mMeta.mRegions;
         if (index < 0 || static_cast<std::size_t>(index) >= regions.size())
             return fail(MIO_ERR_INVALID_ARG,
@@ -1172,8 +1174,7 @@ int64_t mio_read_metadata_name(const mio_read_metadata* meta, int location, int6
 
 mio_status mio_read_metadata_bbox(const mio_read_metadata* meta, double* min, double* max) {
     return guarded([&]() -> mio_status {
-        if (!meta)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: metadata handle is NULL");
+        capi_require_arg(meta, "metadata handle");
         if (!meta->mMeta.mHasBBox)
             return fail(MIO_ERR_NOT_FOUND,
                         "meshio++: no bounding box in this summary (a native metadata path "
@@ -1234,8 +1235,7 @@ int mio_reader_supports_options(const char* format) {
 
 mio_status mio_write(const char* path, const mio_mesh* mesh, const char* format) {
     return guarded([&]() -> mio_status {
-        if (!path || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
+        capi_require_arg(path && mesh, "path/mesh");
         std::string fmt = meshioplusplus::resolve_write_format(path, format_or_empty(format));
         meshioplusplus::detail::provenance_begin_write();
         auto it = meshioplusplus::registry_writers().find(fmt);
@@ -1263,8 +1263,7 @@ void mio_gltf_opts_init(mio_gltf_opts* opts) {
 
 mio_status mio_write_gltf(const char* path, const mio_mesh* mesh, const mio_gltf_opts* opts) {
     return guarded([&]() -> mio_status {
-        if (!path || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
+        capi_require_arg(path && mesh, "path/mesh");
         meshioplusplus::GltfWriteOptions out;
         if (opts) {
             if (opts->container < 0 || opts->container > 2 || opts->up_axis < 0 ||
@@ -1360,8 +1359,7 @@ mio_status write_opts_to_cxx(const mio_write_opts& rOpts, meshioplusplus::WriteO
 mio_status mio_write_ex(const char* path, const mio_mesh* mesh, const char* format,
                         const mio_write_opts* opts) {
     return guarded([&]() -> mio_status {
-        if (!path || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
+        capi_require_arg(path && mesh, "path/mesh");
         if (!opts)
             return mio_write(path, mesh, format);
 
@@ -1513,8 +1511,7 @@ mio_mesh* mio_read_with_info2(const char* path, const char* format, const mio_re
 mio_status mio_write_with_info(const char* path, const mio_mesh* mesh, const char* format,
                                const mio_format_info* info) {
     return guarded([&]() -> mio_status {
-        if (!path || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: path/mesh is NULL");
+        capi_require_arg(path && mesh, "path/mesh");
         if (!info)
             return mio_write(path, mesh, format);
         const std::string fmt = meshioplusplus::resolve_write_format(path, format_or_empty(format));
@@ -2154,8 +2151,7 @@ int64_t mio_mdpa_info_string(const mio_format_info* info, int32_t section, int64
 mio_status mio_mdpa_info_int(const mio_format_info* info, int32_t section, int64_t index,
                              int32_t field, int64_t* value) {
     return guarded([&]() -> mio_status {
-        if (!value)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: value is NULL");
+        capi_require_arg(value, "value");
         const meshioplusplus::MdpaInfo& r_info = capi_mdpa(info);
         const std::size_t i = capi_mdpa_index(r_info, section, index);
         if (field == 0) {
@@ -2318,8 +2314,7 @@ void mio_provenance_set_target(const char* format, const char* encoding, const c
 mio_status mio_convert(const char* in_path, const char* in_format, const char* out_path,
                        const char* out_format) {
     return guarded([&]() -> mio_status {
-        if (!in_path || !out_path)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: path is NULL");
+        capi_require_arg(in_path && out_path, "path");
         std::string rfmt = meshioplusplus::resolve_format(in_path, format_or_empty(in_format));
         std::string wfmt =
             meshioplusplus::resolve_write_format(out_path, format_or_empty(out_format));
@@ -3648,9 +3643,7 @@ mio_mesh* mio_align_datums(const mio_mesh* mesh, const char* primary, const char
 mio_status mio_measure_element_primitive(const mio_mesh* mesh, const char* name, int32_t* type,
                                          double params[10]) {
     return guarded([&]() -> mio_status {
-        if (!mesh || !name || !type || !params)
-            return fail(MIO_ERR_INVALID_ARG,
-                        "meshio++: measure_element_primitive: an argument is NULL");
+        capi_require_arg(mesh && name && type && params, "measure_element_primitive: an argument");
         const auto [t, p] = meshioplusplus::measure_element_primitive(
             meshioplusplus::measure_element(mesh->mMesh, name));
         *type = static_cast<int32_t>(t);
@@ -4140,8 +4133,7 @@ mio_mesh* mio_agglomerate_result_take_mesh(mio_agglomerate_result* result) {
 mio_status mio_agglomerate_result_cell_map(const mio_agglomerate_result* result, const void** data,
                                            mio_dtype* dtype, int64_t* n) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         const NDArray& a = result->mCellMap;
         if (data)
             *data = a.Data();
@@ -4195,8 +4187,7 @@ mio_mesh* mio_tet_to_poly_result_take_mesh(mio_tet_to_poly_result* result) {
 mio_status mio_tet_to_poly_result_vertex_map(const mio_tet_to_poly_result* result,
                                              const void** data, mio_dtype* dtype, int64_t* n) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         const NDArray& a = result->mVertexMap;
         if (data)
             *data = a.Data();
@@ -4212,8 +4203,7 @@ mio_status mio_tet_to_poly_result_counts(const mio_tet_to_poly_result* result,
                                          int64_t* num_new_points, int64_t* num_boundary_faces,
                                          int64_t* num_split_vertices) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (num_new_points)
             *num_new_points = result->mNumNewPoints;
         if (num_boundary_faces)
@@ -4749,8 +4739,7 @@ mio_mesh* mio_partition_result_take_mesh(mio_partition_result* result, int64_t i
 mio_status mio_partition_result_point_map(const mio_partition_result* result, int64_t index,
                                           const void** data, mio_dtype* dtype, int64_t* n) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (index < 0 || static_cast<std::size_t>(index) >= result->mPieces.size())
             return fail(MIO_ERR_NOT_FOUND, "meshio++: piece index out of range");
         const NDArray& a = result->mPieces[static_cast<std::size_t>(index)].mPointMap;
@@ -4777,8 +4766,7 @@ mio_status mio_partition_result_cell_map(const mio_partition_result* result, int
                                          int64_t block, const void** data, mio_dtype* dtype,
                                          int64_t* n) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (index < 0 || static_cast<std::size_t>(index) >= result->mPieces.size())
             return fail(MIO_ERR_NOT_FOUND, "meshio++: piece index out of range");
         const mio_partition_result::Piece& piece = result->mPieces[static_cast<std::size_t>(index)];
@@ -4803,10 +4791,8 @@ mio_status mio_partition_labels(const mio_mesh* mesh, int nparts, const char* me
                                 double imbalance, const char* mode, int seed,
                                 const char* weights_key, int64_t* labels, int64_t labels_size) {
     return guarded([&]() -> mio_status {
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
-        if (!labels)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: labels is NULL");
+        capi_require_arg(mesh, "mesh");
+        capi_require_arg(labels, "labels");
         meshioplusplus::PartitionOptions options =
             partition_options_from_c(nparts, method, imbalance, mode, seed, /*record_ids=*/0,
                                      /*ghost_layers=*/0, weights_key);
@@ -4832,10 +4818,8 @@ mio_status mio_partition_labels(const mio_mesh* mesh, int nparts, const char* me
 
 mio_status mio_stats(const mio_mesh* mesh, mio_stats_report* out) {
     return guarded([&]() -> mio_status {
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
-        if (!out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+        capi_require_arg(mesh, "mesh");
+        capi_require_arg(out, "out");
         meshioplusplus::StatsReport r = meshioplusplus::compute_stats(mesh->mMesh);
         out->num_points = r.mNumPoints;
         out->num_cells = r.mNumCells;
@@ -5060,10 +5044,8 @@ int64_t mio_data_info_name(const mio_data_info* info, int64_t index, char* buf, 
 
 mio_status mio_data_info_entry(const mio_data_info* info, int64_t index, mio_data_array_info* out) {
     return guarded([&]() -> mio_status {
-        if (!info)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: info is NULL");
-        if (!out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+        capi_require_arg(info, "info");
+        capi_require_arg(out, "out");
         if (index < 0 || static_cast<std::size_t>(index) >= info->mReport.mArrays.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: data array index out of range");
         const meshioplusplus::DataArrayInfo& a =
@@ -5088,8 +5070,7 @@ mio_status mio_data_info_entry(const mio_data_info* info, int64_t index, mio_dat
 mio_status mio_data_info_component(const mio_data_info* info, int64_t index, int64_t comp,
                                    double* min, double* max, double* mean) {
     return guarded([&]() -> mio_status {
-        if (!info)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: info is NULL");
+        capi_require_arg(info, "info");
         if (index < 0 || static_cast<std::size_t>(index) >= info->mReport.mArrays.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: data array index out of range");
         const meshioplusplus::DataArrayInfo& a =
@@ -5145,8 +5126,7 @@ int64_t mio_data_integrate_name(const mio_data_integrate* result, int64_t index,
 namespace {
 mio_status fill_field_integral_info(const meshioplusplus::FieldIntegralRegion& rRegion,
                                     mio_field_integral_info* out) {
-    if (!out)
-        return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+    capi_require_arg(out, "out");
     out->num_components = static_cast<int64_t>(rRegion.mTotalPerComponent.size());
     out->num_cells = rRegion.mNumCells;
     out->num_skipped = rRegion.mNumSkipped;
@@ -5174,8 +5154,7 @@ mio_status fill_field_integral_component(const meshioplusplus::FieldIntegralRegi
 mio_status mio_data_integrate_entry(const mio_data_integrate* result, int64_t index,
                                     mio_field_integral_info* out) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: array index out of range");
         return fill_field_integral_info(
@@ -5187,8 +5166,7 @@ mio_status mio_data_integrate_component(const mio_data_integrate* result, int64_
                                         int64_t comp, double* total, double* mean,
                                         double* domain_measure, int64_t* num_nan) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: array index out of range");
         return fill_field_integral_component(
@@ -5223,8 +5201,7 @@ int64_t mio_data_integrate_region_name(const mio_data_integrate* result, int64_t
 mio_status mio_data_integrate_region_entry(const mio_data_integrate* result, int64_t index,
                                            int64_t region, mio_field_integral_info* out) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: array index out of range");
         const auto& regions = result->mReport.mArrays[static_cast<std::size_t>(index)].mRegions;
@@ -5239,8 +5216,7 @@ mio_status mio_data_integrate_region_component(const mio_data_integrate* result,
                                                double* mean, double* domain_measure,
                                                int64_t* num_nan) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (index < 0 || static_cast<std::size_t>(index) >= result->mReport.mArrays.size())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: array index out of range");
         const auto& regions = result->mReport.mArrays[static_cast<std::size_t>(index)].mRegions;
@@ -5258,8 +5234,7 @@ void mio_data_integrate_free(mio_data_integrate* result) {
 mio_status mio_quality_counts(const mio_mesh* mesh, int64_t* num_cells, int64_t* num_inverted,
                               int64_t* num_degenerate) {
     return guarded([&]() -> mio_status {
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        capi_require_arg(mesh, "mesh");
         meshioplusplus::QualityReport rep = meshioplusplus::compute_quality(mesh->mMesh);
         if (num_cells)
             *num_cells = rep.mNumCells;
@@ -5305,8 +5280,7 @@ const mio_mesh* mio_reorder_result_mesh(const mio_reorder_result* result) {
 mio_status mio_reorder_result_node_perm(const mio_reorder_result* result, const void** data,
                                         mio_dtype* dtype, int64_t* n) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         const NDArray& a = result->mNodePerm;
         if (data)
             *data = a.Data();
@@ -5328,8 +5302,7 @@ int64_t mio_reorder_result_num_cell_perms(const mio_reorder_result* result) {
 mio_status mio_reorder_result_cell_perm(const mio_reorder_result* result, int64_t block,
                                         const void** data, mio_dtype* dtype, int64_t* n) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (block < 0 || static_cast<std::size_t>(block) >= result->mCellPerms.size())
             return fail(MIO_ERR_NOT_FOUND, "meshio++: cell-permutation block index out of range");
         const NDArray& a = result->mCellPerms[static_cast<std::size_t>(block)];
@@ -5361,10 +5334,8 @@ int64_t mio_compute_bandwidth(const mio_mesh* mesh) {
 mio_status mio_diff(const mio_mesh* a, const mio_mesh* b, double atol, double rtol, int unordered,
                     mio_diff_result** out) {
     return guarded([&]() -> mio_status {
-        if (!a || !b)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
-        if (!out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+        capi_require_arg(a && b, "mesh");
+        capi_require_arg(out, "out");
         meshioplusplus::DiffOptions opts;
         opts.atol = atol;
         opts.rtol = rtol;
@@ -5377,8 +5348,7 @@ mio_status mio_diff(const mio_mesh* a, const mio_mesh* b, double atol, double rt
 mio_status mio_meshes_equal(const mio_mesh* a, const mio_mesh* b, double atol, double rtol,
                             int unordered, int* out_equal) {
     return guarded([&]() -> mio_status {
-        if (!a || !b)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        capi_require_arg(a && b, "mesh");
         meshioplusplus::DiffOptions opts;
         opts.atol = atol;
         opts.rtol = rtol;
@@ -5409,8 +5379,7 @@ mio_status mio_diff_result_point_summary(const mio_diff_result* result, double* 
                                          double* max_rel_error, int64_t* worst_index,
                                          int64_t* num_exceeding) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         const meshioplusplus::ArrayDiff& p = result->mReport.mPoints;
         if (max_abs_error)
             *max_abs_error = p.mMaxAbsError;
@@ -5434,8 +5403,7 @@ int64_t mio_diff_result_num_block_diffs(const mio_diff_result* result) {
 mio_status mio_diff_result_block(const mio_diff_result* result, int64_t block, int* type_mismatch,
                                  int* count_mismatch, int64_t* conn_mismatch_count) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: result is NULL");
+        capi_require_arg(result, "result");
         if (block < 0 || static_cast<std::size_t>(block) >= result->mReport.mBlocks.size())
             return fail(MIO_ERR_NOT_FOUND, "meshio++: block index out of range");
         const meshioplusplus::BlockDiff& bd =
@@ -5655,8 +5623,7 @@ int64_t mio_mesh_point_dim(const mio_mesh* mesh) {
 
 mio_status mio_mesh_get_points(const mio_mesh* mesh, const void** data, mio_dtype* dtype) {
     return guarded([&]() -> mio_status {
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        capi_require_arg(mesh, "mesh");
         const NDArray& points = mesh->mMesh.Points();
         return array_out(points, data, dtype, nullptr, nullptr);
     });
@@ -5672,8 +5639,7 @@ int64_t mio_mesh_num_cell_blocks(const mio_mesh* mesh) {
 mio_status mio_mesh_cell_block_info(const mio_mesh* mesh, int64_t block, int64_t* num_cells,
                                     int64_t* nodes_per_cell, int32_t* is_ragged) {
     return guarded([&]() -> mio_status {
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        capi_require_arg(mesh, "mesh");
         if (!block_in_range(mesh, block))
             return fail(MIO_ERR_NOT_FOUND,
                         "meshio++: cell block " + std::to_string(block) + " out of range");
@@ -5726,8 +5692,7 @@ void poly_flatten(const meshioplusplus::Mesh::CellView& rView, mio_poly_conn& rO
 mio_status mio_mesh_cell_block_info_ex(const mio_mesh* mesh, int64_t block,
                                        mio_cell_block_info* out) {
     return guarded([&]() -> mio_status {
-        if (!mesh || !out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh or out is NULL");
+        capi_require_arg(mesh && out, "mesh or out");
         if (!block_in_range(mesh, block))
             return fail(MIO_ERR_NOT_FOUND,
                         "meshio++: cell block " + std::to_string(block) + " out of range");
@@ -5771,8 +5736,7 @@ int64_t mio_mesh_cell_block_type(const mio_mesh* mesh, int64_t block, char* buf,
 mio_status mio_mesh_cell_block_conn(const mio_mesh* mesh, int64_t block, const void** conn,
                                     mio_dtype* dtype) {
     return guarded([&]() -> mio_status {
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        capi_require_arg(mesh, "mesh");
         if (!block_in_range(mesh, block))
             return fail(MIO_ERR_NOT_FOUND,
                         "meshio++: cell block " + std::to_string(block) + " out of range");
@@ -5810,8 +5774,7 @@ mio_poly_conn* mio_poly_conn_create(const mio_mesh* mesh, int64_t block) {
 
 mio_status mio_poly_conn_get_shape(const mio_poly_conn* poly, mio_poly_conn_shape* out) {
     return guarded([&]() -> mio_status {
-        if (!poly || !out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: poly or out is NULL");
+        capi_require_arg(poly && out, "poly or out");
         *out = mio_poly_conn_shape{};
         out->is_polyhedron = poly->mIsPolyhedron ? 1 : 0;
         out->num_cells = poly->mNumCells;
@@ -5918,8 +5881,7 @@ template <class Traits>
 mio_status capi_data_get(const mio_mesh* pMesh, const char* pName, const void** ppData,
                          mio_dtype* pDtype, int32_t* pNdim, int64_t* pShape) {
     return guarded([&]() -> mio_status {
-        if (!pMesh || !pName)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh/name is NULL");
+        capi_require_arg(pMesh && pName, "mesh/name");
         if (!Traits::Has(pMesh->mMesh, pName))
             return fail(MIO_ERR_NOT_FOUND, std::string("meshio++: no ") + Traits::kLabel +
                                                " named '" + std::string(pName) + "'");
@@ -5967,8 +5929,7 @@ mio_status mio_mesh_get_cell_data(const mio_mesh* mesh, const char* name, int64_
                                   const void** data, mio_dtype* dtype, int32_t* ndim,
                                   int64_t* shape) {
     return guarded([&]() -> mio_status {
-        if (!mesh || !name)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh/name is NULL");
+        capi_require_arg(mesh && name, "mesh/name");
         if (!mesh->mMesh.HasCellData(name))
             return fail(MIO_ERR_NOT_FOUND,
                         "meshio++: no cell_data named '" + std::string(name) + "'");
@@ -6032,8 +5993,7 @@ int64_t mio_regions_name(const mio_regions* regions, int64_t index, char* buf, i
 
 mio_status mio_regions_info(const mio_regions* regions, int64_t index, mio_region_info* out) {
     return guarded([&]() -> mio_status {
-        if (!regions || !out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: regions/out is NULL");
+        capi_require_arg(regions && out, "regions/out");
         if (index < 0 || static_cast<std::size_t>(index) >= regions->mRegions.size())
             return fail(MIO_ERR_INVALID_ARG,
                         "meshio++: region index " + std::to_string(index) + " out of range");
@@ -6067,8 +6027,7 @@ void mio_regions_free(mio_regions* regions) {
 mio_status mio_mesh_add_region(mio_mesh* mesh, const char* name, mio_region_kind kind, int32_t dim,
                                int64_t tag, const int64_t* entries, int64_t count) {
     return guarded([&]() -> mio_status {
-        if (!mesh || !name)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh/name is NULL");
+        capi_require_arg(mesh && name, "mesh/name");
         if (count < 0 || (count > 0 && !entries))
             return fail(MIO_ERR_INVALID_ARG, "meshio++: region entries is NULL");
         const auto region_kind = static_cast<meshioplusplus::RegionKind>(kind);
@@ -6107,8 +6066,7 @@ mio_exodus_series* mio_exodus_series_create(const char* path) {
 
 mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series, const mio_mesh* mesh) {
     return guarded([&]() -> mio_status {
-        if (!series || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+        capi_require_arg(series && mesh, "series/mesh");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         series->mWriter.WritePointsCells(mesh->mMesh);
         return MIO_OK;
@@ -6121,8 +6079,7 @@ mio_status mio_exodus_series_write_points_cells(mio_exodus_series* series, const
 mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time,
                                         const mio_mesh* mesh) {
     return guarded([&]() -> mio_status {
-        if (!series || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+        capi_require_arg(series && mesh, "series/mesh");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         series->mWriter.WriteData(time, mesh->mMesh);
         return MIO_OK;
@@ -6135,8 +6092,7 @@ mio_status mio_exodus_series_write_data(mio_exodus_series* series, double time,
 
 mio_status mio_exodus_series_flush(mio_exodus_series* series) {
     return guarded([&]() -> mio_status {
-        if (!series)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        capi_require_arg(series, "series");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         series->mWriter.Flush();
         return MIO_OK;
@@ -6148,8 +6104,7 @@ mio_status mio_exodus_series_flush(mio_exodus_series* series) {
 
 mio_status mio_exodus_series_finalize(mio_exodus_series* series) {
     return guarded([&]() -> mio_status {
-        if (!series)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        capi_require_arg(series, "series");
 #ifdef MESHIOPLUSPLUS_HAS_NETCDF
         series->mWriter.Finalize();
         return MIO_OK;
@@ -6228,8 +6183,7 @@ mio_xdmf_series* mio_xdmf_series_create_ex(const char* path, const mio_xdmf_seri
 
 mio_status mio_xdmf_series_write_points_cells(mio_xdmf_series* series, const mio_mesh* mesh) {
     return guarded([&]() -> mio_status {
-        if (!series || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+        capi_require_arg(series && mesh, "series/mesh");
         series->mWriter.WritePointsCells(mesh->mMesh);
         return MIO_OK;
     });
@@ -6237,8 +6191,7 @@ mio_status mio_xdmf_series_write_points_cells(mio_xdmf_series* series, const mio
 
 mio_status mio_xdmf_series_write_data(mio_xdmf_series* series, double time, const mio_mesh* mesh) {
     return guarded([&]() -> mio_status {
-        if (!series || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series/mesh is NULL");
+        capi_require_arg(series && mesh, "series/mesh");
         series->mWriter.WriteData(time, mesh->mMesh);
         return MIO_OK;
     });
@@ -6246,8 +6199,7 @@ mio_status mio_xdmf_series_write_data(mio_xdmf_series* series, double time, cons
 
 mio_status mio_xdmf_series_finalize(mio_xdmf_series* series) {
     return guarded([&]() -> mio_status {
-        if (!series)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        capi_require_arg(series, "series");
         series->mWriter.Finalize();
         return MIO_OK;
     });
@@ -6259,8 +6211,7 @@ mio_status mio_xdmf_series_write_data_arrays(mio_xdmf_series* series, double tim
                                              const mio_named_array* cell_arrays,
                                              int64_t num_cell_arrays) {
     return guarded([&]() -> mio_status {
-        if (!series)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        capi_require_arg(series, "series");
         const auto convert = [](const mio_named_array* p_src, std::int64_t n) {
             std::vector<meshioplusplus::XdmfTimeSeriesWriter::NamedArray> out;
             for (std::int64_t i = 0; i < n; ++i) {
@@ -6288,8 +6239,7 @@ mio_status mio_xdmf_series_write_data_arrays(mio_xdmf_series* series, double tim
 
 mio_status mio_xdmf_series_flush(mio_xdmf_series* series) {
     return guarded([&]() -> mio_status {
-        if (!series)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: series is NULL");
+        capi_require_arg(series, "series");
         series->mWriter.Flush();
         return MIO_OK;
     });
@@ -6324,8 +6274,7 @@ void mio_xdmf_series_free(mio_xdmf_series* series) {
 
 mio_status mio_pipeline_run_file(const char* settings_path) {
     return guarded([&]() -> mio_status {
-        if (!settings_path)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: settings_path is NULL");
+        capi_require_arg(settings_path, "settings_path");
         meshioplusplus::run_pipeline_file(settings_path);
         return MIO_OK;
     });
@@ -6397,8 +6346,7 @@ mio_status mio_med_write_multi(const char* path, const mio_mesh* const* meshes,
 
 mio_status mio_pipeline_run_json(const char* json_text) {
     return guarded([&]() -> mio_status {
-        if (!json_text)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: json_text is NULL");
+        capi_require_arg(json_text, "json_text");
         meshioplusplus::run_pipeline_json(json_text);
         return MIO_OK;
     });
@@ -6554,8 +6502,7 @@ int64_t mio_sequence_step(const mio_sequence* seq, int64_t index) {
 
 mio_status mio_sequence_time(const mio_sequence* seq, int64_t index, double* out_time) {
     return guarded([&]() -> mio_status {
-        if (!out_time)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: out_time is NULL");
+        capi_require_arg(out_time, "out_time");
         *out_time = seq_entry(seq, index).mTime;
         return MIO_OK;
     });
@@ -6603,8 +6550,7 @@ void mio_resample_opts_init(mio_resample_opts* opts) {
 mio_status mio_sequence_resample(const mio_sequence* seq, const char* out_path,
                                  const char* out_format, const mio_resample_opts* opts) {
     return guarded([&]() -> mio_status {
-        if (!seq || !out_path || !opts)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: resample: sequence/out_path/opts is NULL");
+        capi_require_arg(seq && out_path && opts, "resample: sequence/out_path/opts");
         if (opts->num_times < 1 || !opts->times)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: resample: no target times");
         if (opts->method < 0 || opts->method > 2 || opts->extrapolate < 0 || opts->extrapolate > 1)
@@ -6638,8 +6584,7 @@ mio_status mio_sequence_to_timeseries(const mio_sequence* seq, const char* out_p
 mio_status mio_sequence_to_timeseries_ex(const mio_sequence* seq, const char* out_path,
                                          const char* out_format, const mio_write_opts* opts) {
     return guarded([&]() -> mio_status {
-        if (!seq || !out_path)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: sequence/out_path is NULL");
+        capi_require_arg(seq && out_path, "sequence/out_path");
         // Rebuild the input from the plan rather than re-globbing: the handle's
         // entries (and their resolved times) are what the caller inspected.
         meshioplusplus::SequenceInput in;
@@ -6666,8 +6611,7 @@ mio_status mio_sequence_to_timeseries_ex(const mio_sequence* seq, const char* ou
 mio_status mio_timeseries_to_sequence(const char* in_path, const char* in_format,
                                       const char* out_pattern, const char* out_format) {
     return guarded([&]() -> mio_status {
-        if (!in_path || !out_pattern)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: in_path/out_pattern is NULL");
+        capi_require_arg(in_path && out_pattern, "in_path/out_pattern");
         meshioplusplus::SequenceOutput out;
         out.mPath = out_pattern;
         if (out_format)
@@ -6680,8 +6624,7 @@ mio_status mio_timeseries_to_sequence(const char* in_path, const char* in_format
 
 mio_status mio_sequence_pipeline_run_file(const char* settings_path) {
     return guarded([&]() -> mio_status {
-        if (!settings_path)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: settings_path is NULL");
+        capi_require_arg(settings_path, "settings_path");
         meshioplusplus::run_sequence_file(settings_path);
         return MIO_OK;
     });
@@ -6689,8 +6632,7 @@ mio_status mio_sequence_pipeline_run_file(const char* settings_path) {
 
 mio_status mio_sequence_pipeline_run_json(const char* json_text) {
     return guarded([&]() -> mio_status {
-        if (!json_text)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: json_text is NULL");
+        capi_require_arg(json_text, "json_text");
         meshioplusplus::run_sequence_json(json_text);
         return MIO_OK;
     });
@@ -7813,10 +7755,8 @@ int64_t mio_octree_mesh_leaves_per_level(int64_t* out, int64_t n) {
 
 mio_status mio_surface_watertight_check(const mio_mesh* surface, mio_surface_quality* out) {
     return guarded([&]() -> mio_status {
-        if (!surface)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: surface is NULL");
-        if (!out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: out is NULL");
+        capi_require_arg(surface, "surface");
+        capi_require_arg(out, "out");
         capi_fill_quality(meshioplusplus::surface_watertight_check(surface->mMesh), out);
         return MIO_OK;
     });
@@ -7825,10 +7765,8 @@ mio_status mio_surface_watertight_check(const mio_mesh* surface, mio_surface_qua
 mio_status mio_sample_distance(const mio_mesh* surface, const double* points, int64_t n_points,
                                const mio_sdf_opts* opts, double* out) {
     return guarded([&]() -> mio_status {
-        if (!surface)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: surface is NULL");
-        if (!points || !out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: points/out is NULL");
+        capi_require_arg(surface, "surface");
+        capi_require_arg(points && out, "points/out");
         if (n_points < 0)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: n_points is negative");
         if (n_points == 0)
@@ -8389,9 +8327,7 @@ mio_status mio_register_rigid(const mio_mesh* source, const mio_mesh* target,
                               const mio_registration_opts* opts, mio_registration_report* report) {
     return guarded([&]() -> mio_status {
         capi_register_last() = CapiRegisterLast{};
-        if (!source || !target || !report)
-            return fail(MIO_ERR_INVALID_ARG,
-                        "meshio++: register_rigid: source/target/report is NULL");
+        capi_require_arg(source && target && report, "register_rigid: source/target/report");
         mio_registration_opts o;
         mio_registration_opts_init(&o);
         if (opts)
@@ -8418,9 +8354,7 @@ mio_status mio_register_rigid_ex(const mio_mesh* source, const mio_mesh* target,
                                  mio_registration_report* report) {
     return guarded([&]() -> mio_status {
         capi_register_last() = CapiRegisterLast{};
-        if (!source || !target || !report)
-            return fail(MIO_ERR_INVALID_ARG,
-                        "meshio++: register_rigid: source/target/report is NULL");
+        capi_require_arg(source && target && report, "register_rigid: source/target/report");
         mio_registration_ex_opts o;
         mio_registration_ex_opts_init(&o);
         if (opts)
@@ -8469,9 +8403,7 @@ int64_t mio_register_rigid_warnings(char* buf, int64_t buflen) {
 mio_status mio_register_landmarks(const double* source, const double* target, const double* weights,
                                   int64_t n, double matrix[16], double* residuals, double* rms) {
     return guarded([&]() -> mio_status {
-        if (!source || !target || !matrix)
-            return fail(MIO_ERR_INVALID_ARG,
-                        "meshio++: register_landmarks: source/target/matrix is NULL");
+        capi_require_arg(source && target && matrix, "register_landmarks: source/target/matrix");
         if (n < 3)
             return fail(MIO_ERR_INVALID_ARG,
                         "meshio++: register_landmarks: needs at least three pairs, got " +
@@ -8509,8 +8441,7 @@ mio_status mio_find_symmetry_plane(const mio_mesh* mesh, const mio_symmetry_plan
                                    mio_symmetry_plane_report* report) {
     return guarded([&]() -> mio_status {
         capi_symmetry_warnings().clear();
-        if (!mesh || !report)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: find_symmetry_plane: mesh/report is NULL");
+        capi_require_arg(mesh && report, "find_symmetry_plane: mesh/report");
         mio_symmetry_plane_opts o;
         mio_symmetry_plane_opts_init(&o);
         if (opts)
@@ -9948,8 +9879,7 @@ mio_status mio_iga_evaluation_array(const mio_iga_evaluation* evaluation, int32_
                                     int64_t index, const void** data, mio_dtype* dtype,
                                     int32_t* ndim, int64_t* shape) {
     return guarded([&]() -> mio_status {
-        if (!evaluation)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: evaluation handle is NULL");
+        capi_require_arg(evaluation, "evaluation handle");
         const meshioplusplus::IgaEvaluation& e = evaluation->mEval;
         const meshioplusplus::NDArray* a = nullptr;
         switch (which) {
@@ -10530,10 +10460,8 @@ mio_status mio_check_tetrahedra(const mio_mesh* mesh, const mio_check_tetrahedra
                                 mio_check_tetrahedra_report* report) {
     return guarded([&]() -> mio_status {
         capi_tetrahedra_warnings().clear();
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: check_tetrahedra: mesh is NULL");
-        if (!report)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: check_tetrahedra: report is NULL");
+        capi_require_arg(mesh, "check_tetrahedra: mesh");
+        capi_require_arg(report, "check_tetrahedra: report");
         meshioplusplus::TetrahedraCheckOptions o;
         if (opts)
             o.mZeroVolumeFactor = opts->zero_volume_factor;
@@ -11053,8 +10981,7 @@ int64_t mio_mesh_cad_surface_num_corners(void) {
 mio_status mio_mesh_cad_surface_corner(int64_t index, mio_mesh_cad_corner* corner) {
     return guarded([&]() -> mio_status {
         const auto& corners = capi_mesh_cad_state().mCorners;
-        if (!corner)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh_cad_surface: corner is NULL");
+        capi_require_arg(corner, "mesh_cad_surface: corner");
         if (index < 0 || static_cast<std::size_t>(index) >= corners.size())
             return fail(MIO_ERR_INVALID_ARG,
                         "meshio++: mesh_cad_surface: corner index out of range");
@@ -11301,8 +11228,7 @@ void mio_hausdorff_opts_init(mio_hausdorff_opts* opts) {
 mio_status mio_hausdorff_distance(const mio_mesh* a, const mio_mesh* b,
                                   const mio_hausdorff_opts* opts, mio_hausdorff_report* report) {
     return guarded([&]() -> mio_status {
-        if (!a || !b || !report)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: hausdorff_distance: a/b/report is NULL");
+        capi_require_arg(a && b && report, "hausdorff_distance: a/b/report");
         meshioplusplus::HausdorffOptions options;
         if (opts) {
             options.mFaceSamples = opts->face_samples;
@@ -11777,8 +11703,7 @@ mio_mesh* mio_deviation_regions(const mio_mesh* mesh, const mio_deviation_region
 
 mio_status mio_deviation_region_get(int64_t index, mio_deviation_region_info* info) {
     return guarded([&]() -> mio_status {
-        if (!info)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: deviation_regions: info is NULL");
+        capi_require_arg(info, "deviation_regions: info");
         const meshioplusplus::DeviationRegionRecord& g = capi_deviation_region(index);
         *info = mio_deviation_region_info{};
         info->sign = g.mSign;
@@ -12005,8 +11930,7 @@ mio_status mio_find_interface_result_report(const mio_find_interface_result* res
                                             int64_t* num_pairs, double* area, double* max_gap,
                                             int64_t* unmatched_a, int64_t* unmatched_b) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: find_interface result is NULL");
+        capi_require_arg(result, "find_interface result");
         if (num_pairs)
             *num_pairs = result->mReport.mNumPairs;
         if (area)
@@ -12064,8 +11988,7 @@ mio_contact_pairs_result* mio_contact_pairs(const mio_mesh* slave_mesh,
 mio_status mio_contact_pairs_result_info(const mio_contact_pairs_result* result, int64_t* count,
                                          int64_t* unmatched_count) {
     return guarded([&]() -> mio_status {
-        if (!result)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: contact_pairs result is NULL");
+        capi_require_arg(result, "contact_pairs result");
         if (count)
             *count = static_cast<int64_t>(result->mPairs.mSlavePoint.Size());
         if (unmatched_count)
@@ -12141,8 +12064,7 @@ mio_mesh* mio_split_interface(const mio_mesh* mesh, const mio_region_selector* s
 
 mio_status mio_mesh_remove_region(mio_mesh* mesh, int64_t index) {
     return guarded([&]() -> mio_status {
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        capi_require_arg(mesh, "mesh");
         if (index < 0 || static_cast<std::size_t>(index) >= mesh->mMesh.NumRegions())
             return fail(MIO_ERR_INVALID_ARG, "meshio++: region index out of range");
         mesh->mMesh.RemoveRegion(static_cast<std::size_t>(index));
@@ -12180,8 +12102,7 @@ mio_status mio_periodic_pairs_info(const mio_periodic_pairs* pairs, int64_t* num
                                    int64_t* num_unmatched, int64_t* num_fixed,
                                    double* max_residual) {
     return guarded([&]() -> mio_status {
-        if (!pairs)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: pairs is NULL");
+        capi_require_arg(pairs, "pairs");
         if (num_pairs)
             *num_pairs = static_cast<int64_t>(pairs->mPairs.mSlave.Size());
         if (num_unmatched)
@@ -12247,8 +12168,7 @@ mio_status mio_write_graph(const mio_mesh* mesh, const char* kind, const char* p
                            const char* format, int64_t* num_vertices, int64_t* num_edges,
                            int64_t* max_degree) {
     return guarded([&]() -> mio_status {
-        if (!mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mesh is NULL");
+        capi_require_arg(mesh, "mesh");
         if (!path || !*path)
             return fail(MIO_ERR_INVALID_ARG, "meshio++: path is NULL or empty");
         meshioplusplus::GraphSummary s;
@@ -12285,8 +12205,7 @@ mio_status mio_check_quality(const mio_mesh* mesh, const char* spec, int64_t max
                              int64_t max_degenerate, mio_quality_gate_report* report, char* summary,
                              int64_t summary_len) {
     return guarded([&]() -> mio_status {
-        if (!mesh || !report)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: check_quality: mesh/report is NULL");
+        capi_require_arg(mesh && report, "check_quality: mesh/report");
         meshioplusplus::QualityGateOptions options;
         if (spec)
             options.mThresholds = meshioplusplus::parse_quality_thresholds(spec);
@@ -12653,8 +12572,7 @@ int64_t mio_render_text(const mio_mesh* mesh, const mio_render_opts* render,
 mio_status mio_write_snapshot(const char* path, const mio_mesh* mesh, const mio_render_opts* render,
                               const mio_text_opts* text, const mio_snapshot_opts* snapshot) {
     return guarded([&]() -> mio_status {
-        if (!path || !mesh)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: write_snapshot: path/mesh is NULL");
+        capi_require_arg(path && mesh, "write_snapshot: path/mesh");
         meshioplusplus::SnapshotOptions options;
         if (snapshot) {
             for (std::int64_t r : snapshot->reserved)
@@ -12904,8 +12822,7 @@ const meshioplusplus::MassProperties& capi_mass_entry(const mio_mass_report* pRe
 mio_status mio_mass_report_entry(const mio_mass_report* report, int64_t index,
                                  mio_mass_entry* out) {
     return guarded([&]() -> mio_status {
-        if (!out)
-            return fail(MIO_ERR_INVALID_ARG, "meshio++: mass entry: out is NULL");
+        capi_require_arg(out, "mass entry: out");
         const meshioplusplus::MassProperties& e = capi_mass_entry(report, index);
         *out = mio_mass_entry{};
         out->num_cells = e.mNumCells;

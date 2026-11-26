@@ -8,7 +8,7 @@ result from the operation's point and cell maps.
 import numpy as np
 
 
-def remap_sets(src, out, point_map, cell_maps, *, expand=False):
+def remap_sets(src, out, point_map, cell_maps, *, expand=False, unique=False):
     """Remap ``src``'s ``point_sets``/``cell_sets`` onto ``out``.
 
     ``point_map[p]`` is old point ``p``'s new index (negative: dropped).
@@ -17,6 +17,10 @@ def remap_sets(src, out, point_map, cell_maps, *, expand=False):
     block ``b`` (negative: dropped). With ``expand=True`` it is the index of
     parent ``c``'s *first* child, and a parent's children are contiguous, so a
     cell set entry expands to the whole ``[first[c], first[c + 1])`` range.
+
+    With ``unique=True``, surviving mapped indices are deduplicated (used by
+    ``decimate``, where several vertices may collapse onto one survivor).
+    Out-of-range set indices raise ``IndexError`` consistently across callers.
     """
     point_sets = getattr(src, "point_sets", None)
     if point_sets:
@@ -24,7 +28,8 @@ def remap_sets(src, out, point_map, cell_maps, *, expand=False):
         new_ps = {}
         for name, idx in point_sets.items():
             mapped = pm[np.asarray(idx, dtype=np.int64)]
-            new_ps[name] = mapped[mapped >= 0]
+            kept = mapped[mapped >= 0]
+            new_ps[name] = np.unique(kept) if unique else kept
         out.point_sets = new_ps
 
     cell_sets = getattr(src, "cell_sets", None)
@@ -42,7 +47,8 @@ def remap_sets(src, out, point_map, cell_maps, *, expand=False):
                 mapped = np.asarray(cell_maps[b], dtype=np.int64)[
                     np.asarray(idx, dtype=np.int64)
                 ]
-                remapped.append(mapped[mapped >= 0])
+                kept = mapped[mapped >= 0]
+                remapped.append(np.unique(kept) if unique else kept)
             new_cs[name] = remapped
         out.cell_sets = new_cs
 

@@ -3,8 +3,9 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._series_writer import CoreSeriesWriter
+from .._shims import time_values_shim
 from ._d3plot import read as _py_read
-from ._d3plot import time_values as _py_time_values
+from ._d3plot import time_values as _py_time_values  # noqa: F401
 from ._write import SeriesWriter as _PySeriesWriter
 from ._write import write as _py_write
 
@@ -37,14 +38,9 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     )
 
 
-def time_values(filename):
-    """The times of the family's states."""
-    try:
-        return list(_core.lsdyna_d3plot_time_values(str(filename)))
-    except Exception as exc:
-        if not core_declined(exc, "lsdyna_d3plot", "read", filename):
-            raise
-    return _py_time_values(filename)
+time_values = time_values_shim(
+    __name__, "lsdyna_d3plot", """The times of the family's states."""
+)
 
 
 # Found by its file name (``d3plot``) or its control block, never an extension.

@@ -43,6 +43,7 @@
 #include "../detail/mesh_from_soup.hpp"
 #include "octree_mesh_internal.hpp"
 #include "smooth_odt.hpp"
+#include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
@@ -52,8 +53,6 @@ namespace meshioplusplus {
 namespace detail {
 
 namespace {
-
-constexpr int kOctmoFace[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
 
 // The smallest and the largest dihedral angle of a tetrahedron, from one
 // tet_dihedral_angles call (its angles are ascending); -1 and 181 for one
@@ -129,9 +128,11 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
     // The faces used once (the mesh's boundary: the skin, and the box with
     // keep_outside), and the skin's surface graph.
     std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> faces;
+    const auto& tet_faces = cell_faces(CellType::Tetra);
     for (std::size_t n = 0; n < tets.size(); ++n)
-        for (const auto& f : kOctmoFace) {
-            std::array<std::int64_t, 3> k{tets[n][f[0]], tets[n][f[1]], tets[n][f[2]]};
+        for (const auto& f : tet_faces) {
+            std::array<std::int64_t, 3> k{tets[n][f.mNodes[0]], tets[n][f.mNodes[1]],
+                                          tets[n][f.mNodes[2]]};
             std::sort(k.begin(), k.end());
             faces.emplace_back(k, rTets.mMaterial[kept[n]]);
         }

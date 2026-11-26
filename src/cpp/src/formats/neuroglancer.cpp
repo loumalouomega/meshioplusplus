@@ -15,7 +15,6 @@
 //  Main authors:    Vicente Mataix Ferrandiz
 //
 //
-#pragma once
 
 // System includes
 #include <cstdint>

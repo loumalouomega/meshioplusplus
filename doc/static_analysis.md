@@ -99,9 +99,17 @@ The `lint` job runs `tools/check_api_changes.py` against the merge base: a name 
 Two Clang-Tidy runs exist today:
 
 - **Include hygiene, on every pull request.** The `include-cleanup` CI job runs `tools/include-cleanup.sh --check` with the repository's `.clang-tidy`, which enables `misc-include-cleaner` only. Unused includes fail the job; missing-include suggestions are advisory.
-- **Performance audit, on request.** `tools/performance-tidy.sh` runs the `performance-*` checks over a separate Clang tree and writes a JSON report; see [the audit](./benchmarks.md#clang-tidy-performance-audit) for its commands and the triage of its first inventory.
+- **Generalized family runner (`tools/tidy_report.py`).** Runs any `--checks` expression over a Clang compilation database, emits deduplicated JSON, and supports `--baseline FILE` comparisons keyed by `(file, check, message)` (independent of line numbers) so new findings exit non-zero while baselined findings stay visible. `tools/performance-tidy.sh` and `tools/performance_tidy.py` are thin wrappers defaulting to `-*,performance-*`; see [the audit](./benchmarks.md#clang-tidy-performance-audit) for its commands and inventory.
 
 Widening Clang-Tidy to the bug-finding and modernisation check families, first as advisory reports and then as a gate on new findings, is [roadmap item 3.5](./roadmap.md#quality-of-implementation).
+
+## CodeQL, thread safety, typing and SBOM
+
+- **CodeQL (`.github/workflows/codeql.yml`).** Runs on pull requests, pushes to `master` and weekly across C++ (manual Ninja build, SEQ, Python off), Python, JavaScript/TypeScript (`src/viewer`, `src/wasm`) and GitHub Actions.
+- **Clang thread-safety analysis.** Core-private `src/cpp/src/detail/thread_annotations.hpp` defines `MIO_GUARDED_BY` / `MIO_REQUIRES` and thin `AnnotatedMutex` / `AnnotatedLockGuard` / `AnnotatedUniqueLock` wrappers so Clang `-Wthread-safety` (enabled with `MESHIOPLUSPLUS_WARNINGS=ON`) checks mutex ownership across `providers.cpp`, `parallel_threads.cpp`, `nastran_op2.cpp` and `detail/library_lock.{hpp,cpp}` on both libstdc++ and libc++.
+- **ThreadSanitizer (`cpp-tsan`).** Runs the parallel and lock suites under Clang TSan with `MESHIOPLUSPLUS_PARALLEL_BACKEND=THREADS` and `MESHIOPLUSPLUS_NUM_THREADS=4`, using `tools/sanitizers/tsan.supp`.
+- **Typed Python.** The package ships `py.typed`, `[tool.mypy]` configuration in `pyproject.toml`, a `typecheck` environment in `tox.ini`, and `tests/python/typing/usage.py` checked under `mypy --strict`.
+- **CycloneDX SBOM (`tools/gen_sbom.py`).** Generates CycloneDX 1.5 JSON for wheels, CLI binaries and WASM builds from `build/deps-pins.sh`, `build/occt-recipe.sh`, `CMakeLists.txt` and an optional `CMakeCache.txt`; `tests/python/test_sbom.py` also pins `THIRD_PARTY_NOTICES.md`'s version table against the pin files.
 
 ## Acting on a report
 

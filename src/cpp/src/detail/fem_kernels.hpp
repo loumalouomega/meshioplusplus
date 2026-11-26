@@ -96,6 +96,13 @@ inline constexpr int kHexCornerEdges[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {
                                               {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
 
 /**
+ * @brief Outward-wound triangular faces of a positively-oriented linear
+ * tetrahedron (meshio/VTK order), matching `detail::cell_faces(CellType::Tetra)`
+ * as a compile-time constant for hot inner loops.
+ */
+inline constexpr int kTetOutwardFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+
+/**
  * @brief Each corner of a linear wedge (meshio order) and its three edge
  * neighbours, in the order the wedge's scaled Jacobian reads them.
  */

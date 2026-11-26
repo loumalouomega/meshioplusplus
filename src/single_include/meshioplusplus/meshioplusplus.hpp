@@ -45442,6 +45442,7 @@ std::array<double, 6> tet_dihedral_angles(const Vec3& rA, const Vec3& rB, const 
 
 // System includes
 #include <algorithm>
+#include <limits>
 #include <vector>
 
 // Project includes
@@ -45456,6 +45457,12 @@ struct BoundingBox3 {
 
 /// Static axis-aligned bounding-box helpers.
 struct BoundingBoxUtils {
+    /// An empty box seeded with `[+inf, -inf]` on every axis.
+    static BoundingBox3 Empty() {
+        constexpr double inf = std::numeric_limits<double>::infinity();
+        return {{inf, inf, inf}, {-inf, -inf, -inf}};
+    }
+
     /// Widens `rBox` to hold `rQ`: `std::min(lo, q)`, `std::max(hi, q)` per axis.
     static void Expand(BoundingBox3& rBox, const Vec3& rQ) {
         for (std::size_t a = 0; a < 3; ++a) {
@@ -45474,6 +45481,19 @@ struct BoundingBoxUtils {
             return box;
         box.mMin = rPoints[0];
         box.mMax = rPoints[0];
+        for (const Vec3& r_q : rPoints)
+            Expand(box, r_q);
+        return box;
+    }
+
+    /**
+     * @brief The box of `rPoints`, seeded with `[+inf, -inf]`. Unlike
+     * `FromPoints`, an empty input stays inverted (`mMin[0] > mMax[0]`) and a
+     * NaN coordinate leaves the bound unchanged (exact match for infinity-seeded
+     * loops).
+     */
+    static BoundingBox3 FromPointsOrEmpty(const std::vector<Vec3>& rPoints) {
+        BoundingBox3 box = Empty();
         for (const Vec3& r_q : rPoints)
             Expand(box, r_q);
         return box;
@@ -53026,6 +53046,13 @@ inline constexpr int kHexCornerEdges[8][3] = {{1, 3, 4}, {2, 0, 5}, {3, 1, 6}, {
                                               {7, 5, 0}, {4, 6, 1}, {5, 7, 2}, {6, 4, 3}};
 
 /**
+ * @brief Outward-wound triangular faces of a positively-oriented linear
+ * tetrahedron (meshio/VTK order), matching `detail::cell_faces(CellType::Tetra)`
+ * as a compile-time constant for hot inner loops.
+ */
+inline constexpr int kTetOutwardFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
+
+/**
  * @brief Each corner of a linear wedge (meshio order) and its three edge
  * neighbours, in the order the wedge's scaled Jacobian reads them.
  */
@@ -54205,6 +54232,37 @@ struct MathUtils {
         pOut[1] = (c01 * pB[0] + c11 * pB[1] + c12 * pB[2]) * inv;
         pOut[2] = (c02 * pB[0] + c12 * pB[1] + c22 * pB[2]) * inv;
         return true;
+    }
+
+    /**
+     * @brief Solves the general (non-symmetric) 3x3 system with rows
+     * `rA0, rA1, rA2` and right-hand side `rB` by Cramer's rule.
+     *
+     * Sets `rOk = false` and returns `{0, 0, 0}` when `|det(A)| < Eps`.
+     * Matches `quality_solve3` operation for operation.
+     */
+    static Vec3 Solve3(const Vec3& rA0, const Vec3& rA1, const Vec3& rA2, const Vec3& rB,
+                       double Eps, bool& rOk) {
+        auto det = [](const Vec3& r0, const Vec3& r1, const Vec3& r2) {
+            return r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) -
+                   r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
+                   r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
+        };
+        const double d = det(rA0, rA1, rA2);
+        if (std::fabs(d) < Eps) {
+            rOk = false;
+            return {0.0, 0.0, 0.0};
+        }
+        rOk = true;
+        Vec3 x;
+        for (int k = 0; k < 3; ++k) {
+            Vec3 c0 = rA0, c1 = rA1, c2 = rA2;
+            c0[static_cast<std::size_t>(k)] = rB[0];
+            c1[static_cast<std::size_t>(k)] = rB[1];
+            c2[static_cast<std::size_t>(k)] = rB[2];
+            x[static_cast<std::size_t>(k)] = det(c0, c1, c2) / d;
+        }
+        return x;
     }
 
     ///@}
@@ -55600,6 +55658,119 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/layer_sweep.hpp =====
+// ===== begin src/cpp/src/detail/thread_annotations.hpp =====
+/**
+ * @file detail/thread_annotations.hpp
+ * @brief Clang `-Wthread-safety` capability macros and thin mutex/lock
+ * wrappers (roadmap 3.10.3).
+ *
+ * libstdc++'s `std::mutex` carries no Clang capability annotations, so raw
+ * `std::mutex` cannot be named in `MIO_GUARDED_BY(...)`. `AnnotatedMutex`,
+ * `AnnotatedRecursiveMutex`, `AnnotatedLockGuard`, and `AnnotatedUniqueLock`
+ * wrap the standard primitives with zero runtime overhead so Clang checks
+ * lock ownership on both libstdc++ and libc++ builds; on GCC and MSVC the
+ * macros expand to nothing.
+ *
+ * A **core-private** header (not installed): no API or ABI surface.
+ */
+
+// System includes
+#include <condition_variable>
+#include <mutex>
+
+#if defined(__clang__) && (!defined(SWIG))
+#define MIO_THREAD_ANNOTATION(x) __attribute__((x))
+#else
+#define MIO_THREAD_ANNOTATION(x)
+#endif
+
+#define MIO_CAPABILITY(x) MIO_THREAD_ANNOTATION(capability(x))
+#define MIO_SCOPED_CAPABILITY MIO_THREAD_ANNOTATION(scoped_lockable)
+#define MIO_GUARDED_BY(x) MIO_THREAD_ANNOTATION(guarded_by(x))
+#define MIO_PT_GUARDED_BY(x) MIO_THREAD_ANNOTATION(pt_guarded_by(x))
+#define MIO_REQUIRES(...) MIO_THREAD_ANNOTATION(requires_capability(__VA_ARGS__))
+#define MIO_ACQUIRE(...) MIO_THREAD_ANNOTATION(acquire_capability(__VA_ARGS__))
+#define MIO_RELEASE(...) MIO_THREAD_ANNOTATION(release_capability(__VA_ARGS__))
+#define MIO_TRY_ACQUIRE(...) MIO_THREAD_ANNOTATION(try_acquire_capability(__VA_ARGS__))
+#define MIO_EXCLUDES(...) MIO_THREAD_ANNOTATION(locks_excluded(__VA_ARGS__))
+#define MIO_RETURN_CAPABILITY(x) MIO_THREAD_ANNOTATION(lock_returned(x))
+#define MIO_NO_THREAD_SAFETY_ANALYSIS MIO_THREAD_ANNOTATION(no_thread_safety_analysis)
+
+namespace meshioplusplus {
+namespace detail {
+
+/// Zero-overhead `std::mutex` wrapper annotated as a Clang capability.
+class MIO_CAPABILITY("mutex") AnnotatedMutex {
+public:
+    AnnotatedMutex() = default;
+    AnnotatedMutex(const AnnotatedMutex&) = delete;
+    AnnotatedMutex& operator=(const AnnotatedMutex&) = delete;
+
+    void lock() MIO_ACQUIRE() { mMutex.lock(); }
+    bool try_lock() MIO_TRY_ACQUIRE(true) { return mMutex.try_lock(); }
+    void unlock() MIO_RELEASE() { mMutex.unlock(); }
+
+    std::mutex& Native() { return mMutex; }
+
+private:
+    std::mutex mMutex;
+};
+
+/// Zero-overhead `std::recursive_mutex` wrapper annotated as a Clang capability.
+class MIO_CAPABILITY("mutex") AnnotatedRecursiveMutex {
+public:
+    AnnotatedRecursiveMutex() = default;
+    AnnotatedRecursiveMutex(const AnnotatedRecursiveMutex&) = delete;
+    AnnotatedRecursiveMutex& operator=(const AnnotatedRecursiveMutex&) = delete;
+
+    void lock() MIO_ACQUIRE() { mMutex.lock(); }
+    bool try_lock() MIO_TRY_ACQUIRE(true) { return mMutex.try_lock(); }
+    void unlock() MIO_RELEASE() { mMutex.unlock(); }
+
+private:
+    std::recursive_mutex mMutex;  // NOSONAR(cpp:S8462): explicit recursive lock
+};
+
+/// RAII scoped lock for `AnnotatedMutex` / `AnnotatedRecursiveMutex`.
+template <class TMutex>
+class MIO_SCOPED_CAPABILITY AnnotatedLockGuard {
+public:
+    explicit AnnotatedLockGuard(TMutex& rMutex) MIO_ACQUIRE(rMutex) : mrMutex(rMutex) {
+        mrMutex.lock();
+    }
+    ~AnnotatedLockGuard() MIO_RELEASE() { mrMutex.unlock(); }
+    AnnotatedLockGuard(const AnnotatedLockGuard&) = delete;
+    AnnotatedLockGuard& operator=(const AnnotatedLockGuard&) = delete;
+
+private:
+    TMutex& mrMutex;
+};
+
+/// Movable-free unique lock over `AnnotatedMutex` supporting `condition_variable::wait`.
+class MIO_SCOPED_CAPABILITY AnnotatedUniqueLock {
+public:
+    explicit AnnotatedUniqueLock(AnnotatedMutex& rMutex) MIO_ACQUIRE(rMutex)
+        : mLock(rMutex.Native()) {}
+    ~AnnotatedUniqueLock() MIO_RELEASE() = default;
+
+    AnnotatedUniqueLock(const AnnotatedUniqueLock&) = delete;
+    AnnotatedUniqueLock& operator=(const AnnotatedUniqueLock&) = delete;
+
+    void lock() MIO_ACQUIRE() { mLock.lock(); }
+    void unlock() MIO_RELEASE() { mLock.unlock(); }
+
+    template <class TPred>
+    void Wait(std::condition_variable& rCv, TPred&& rPred) MIO_NO_THREAD_SAFETY_ANALYSIS {
+        rCv.wait(mLock, std::forward<TPred>(rPred));
+    }
+
+private:
+    std::unique_lock<std::mutex> mLock;
+};
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/thread_annotations.hpp =====
 // ===== begin src/cpp/src/detail/library_lock.hpp =====
 /**
  * @file detail/library_lock.hpp
@@ -55625,25 +55796,26 @@ double layer_cell_scaled_jacobian(const double* pX, const LayerSweepCell& rCell,
  * from under it, the gid series callback, re-acquires the GIL itself).
  */
 
-#include <mutex>
 
 namespace meshioplusplus {
 namespace detail {
 
 /// The process-wide mutex; prefer `LibraryLock`. Recursive: see above.
-std::recursive_mutex& library_mutex();  // NOSONAR(cpp:S8462): entry points nest
+AnnotatedRecursiveMutex& library_mutex();  // NOSONAR(cpp:S8462): entry points nest
 
 /// How many `LibraryLock`s the calling thread holds (0 when none).
 int& library_lock_depth();
 
 /// RAII guard over `library_mutex()`.
+/// Recursive by design (entry points nest), so it does not declare Clang's
+/// non-reentrant `scoped_lockable` capability.
 class LibraryLock {
 public:
-    LibraryLock() {
+    LibraryLock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         library_mutex().lock();
         ++library_lock_depth();
     }
-    ~LibraryLock() {
+    ~LibraryLock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         --library_lock_depth();
         library_mutex().unlock();
     }
@@ -55663,12 +55835,12 @@ public:
  */
 class LibraryUnlock {
 public:
-    LibraryUnlock() : mDepth(library_lock_depth()) {
+    LibraryUnlock() MIO_NO_THREAD_SAFETY_ANALYSIS : mDepth(library_lock_depth()) {
         for (int i = 0; i < mDepth; ++i)
             library_mutex().unlock();
         library_lock_depth() = 0;
     }
-    ~LibraryUnlock() {
+    ~LibraryUnlock() MIO_NO_THREAD_SAFETY_ANALYSIS {
         for (int i = 0; i < mDepth; ++i)
             library_mutex().lock();
         library_lock_depth() = mDepth;
@@ -92775,8 +92947,8 @@ namespace {
 /// `Split` for the chordal cap.
 template <class TSplit>
 void edgs_sized_stretch(const TrimTrace& rTrace, const EdgeSampleOptions& rOptions, double L0,
-                        double L1, double Length, std::int64_t& rBudget, std::vector<double>& rEnds,
-                        TSplit&& rSplit) {
+                        double L1, double Length, std::int64_t& rBudget,
+                        std::vector<double>& /*rEnds*/, TSplit&& rSplit) {
     const double part = L1 - L0;
     const auto density = [&](double L) {
         const double hx = rOptions.mSize(rTrace.Point(rTrace.ParamAtLength(L)));
@@ -97698,7 +97870,6 @@ Mesh lattice_build_mesh(const LatticeSpec& rSpec) {
 
     const std::int64_t nx = rSpec.mDims[0];
     const std::int64_t ny = rSpec.mDims[1];
-    const std::int64_t nz = rSpec.mDims[2];
     const std::int64_t px = nx + 1;
     const std::int64_t py = ny + 1;
     const std::int64_t npoints = lattice_num_points(rSpec);
@@ -104265,8 +104436,8 @@ namespace detail {
 // Recursive because entry points nest (library_lock.hpp): read_exodus(path,
 // opts) locks and calls read_exodus(path, info, opts), which locks again, and
 // the gid series callback runs Python that may read an HDF5 file.
-std::recursive_mutex& library_mutex() {  // NOSONAR(cpp:S8462): see above
-    static std::recursive_mutex sMutex;  // NOSONAR(cpp:S8462): see above
+AnnotatedRecursiveMutex& library_mutex() {  // NOSONAR(cpp:S8462): see above
+    static AnnotatedRecursiveMutex sMutex;  // NOSONAR(cpp:S8462): see above
     return sMutex;
 }
 
@@ -202398,9 +202569,10 @@ struct Op2wCandidate {
 /// the reader's table: the stress code with von Mises first, so that it wins a tie.
 const std::vector<Op2wCandidate>& op2w_candidates(Op2Family Family, std::int32_t Etype,
                                                   bool Complex, bool Random) {
-    static std::mutex lock;
-    static std::map<std::tuple<int, std::int32_t, bool, bool>, std::vector<Op2wCandidate>> cache;
-    const std::lock_guard<std::mutex> guard(lock);
+    static detail::AnnotatedMutex lock;
+    static std::map<std::tuple<int, std::int32_t, bool, bool>, std::vector<Op2wCandidate>> cache
+        MIO_GUARDED_BY(lock);
+    const detail::AnnotatedLockGuard guard(lock);
     const auto key = std::make_tuple(static_cast<int>(Family), Etype, Complex, Random);
     auto it = cache.find(key);
     if (it != cache.end())
@@ -248717,10 +248889,6 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
     const double eps_abs = 1e-9 * scale;
     const double eps_abs2 = eps_abs * eps_abs;
 
-    // The outward-wound tetra face table (detail/cell_faces.hpp's own rows),
-    // valid for a positively-oriented tetra.
-    static constexpr int kFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
-
     // Scratch reused across the calls of a thread (the clip runs once per
     // candidate pair): only the allocations go, every value is computed as
     // before.
@@ -248733,11 +248901,11 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
     auto& uniq = tScratch.mUniq;
     auto& order = tScratch.mOrder;
     tris.clear();
-    for (const auto& f : kFaces)
+    for (const auto& f : detail::kTetOutwardFaces)
         tris.push_back({src[static_cast<std::size_t>(f[0])], src[static_cast<std::size_t>(f[1])],
                         src[static_cast<std::size_t>(f[2])]});
 
-    for (const auto& f : kFaces) {
+    for (const auto& f : detail::kTetOutwardFaces) {
         if (tris.empty())
             break;
         const detail::Vec3& p0 = tgt[static_cast<std::size_t>(f[0])];
@@ -251272,21 +251440,21 @@ void cut_node_weights(int Family, bool Quadratic, const std::array<double, 3>& r
     }
     if (Family == 2) {
         const double l[3] = {1.0 - rP[0] - rP[1], rP[0], rP[1]};
-        static constexpr int kE[3][2] = {{0, 1}, {1, 2}, {0, 2}};
+        const auto& edges = detail::cell_refine_edges(CellType::Triangle);
         rW.assign(6, 0.0);
         for (int i = 0; i < 3; ++i)
             rW[static_cast<std::size_t>(i)] = l[i] * (2.0 * l[i] - 1.0);
-        for (int e = 0; e < 3; ++e)
-            rW[static_cast<std::size_t>(3 + e)] = 4.0 * l[kE[e][0]] * l[kE[e][1]];
+        for (std::size_t e = 0; e < edges.size(); ++e)
+            rW[3 + e] = 4.0 * l[edges[e][0]] * l[edges[e][1]];
         return;
     }
     const double l[4] = {1.0 - rP[0] - rP[1] - rP[2], rP[0], rP[1], rP[2]};
-    static constexpr int kE[6][2] = {{0, 1}, {1, 2}, {0, 2}, {0, 3}, {1, 3}, {2, 3}};
+    const auto& edges = detail::cell_refine_edges(CellType::Tetra);
     rW.assign(10, 0.0);
     for (int i = 0; i < 4; ++i)
         rW[static_cast<std::size_t>(i)] = l[i] * (2.0 * l[i] - 1.0);
-    for (int e = 0; e < 6; ++e)
-        rW[static_cast<std::size_t>(4 + e)] = 4.0 * l[kE[e][0]] * l[kE[e][1]];
+    for (std::size_t e = 0; e < edges.size(); ++e)
+        rW[4 + e] = 4.0 * l[edges[e][0]] * l[edges[e][1]];
 }
 
 /// The cells being cut, flattened: the top-dimensional blocks' cells.
@@ -284431,8 +284599,6 @@ namespace detail {
 
 namespace {
 
-constexpr int kOctmoFace[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
-
 // The smallest and the largest dihedral angle of a tetrahedron, from one
 // tet_dihedral_angles call (its angles are ascending); -1 and 181 for one
 // that is not positive.
@@ -284507,9 +284673,11 @@ void octree_mesh_optimize(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Octr
     // The faces used once (the mesh's boundary: the skin, and the box with
     // keep_outside), and the skin's surface graph.
     std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> faces;
+    const auto& tet_faces = cell_faces(CellType::Tetra);
     for (std::size_t n = 0; n < tets.size(); ++n)
-        for (const auto& f : kOctmoFace) {
-            std::array<std::int64_t, 3> k{tets[n][f[0]], tets[n][f[1]], tets[n][f[2]]};
+        for (const auto& f : tet_faces) {
+            std::array<std::int64_t, 3> k{tets[n][f.mNodes[0]], tets[n][f.mNodes[1]],
+                                          tets[n][f.mNodes[2]]};
             std::sort(k.begin(), k.end());
             faces.emplace_back(k, rTets.mMaterial[kept[n]]);
         }
@@ -284773,9 +284941,6 @@ namespace meshioplusplus {
 namespace detail {
 
 namespace {
-
-// The tetrahedron's facets (detail/cell_faces), each outward.
-constexpr int kOctmtFacet[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
 
 NDArray octmt_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride) {
     NDArray a = Stride == 1 ? NDArray::Uninit(DType::Int64, {rIds.size()})
@@ -285122,12 +285287,13 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
         triangles.clear();
         incident.clear();
         std::vector<std::pair<std::array<Index, 3>, std::size_t>> faces;
+        const auto& tet_faces = cell_faces(CellType::Tetra);
         for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
             if (rTets.mMaterial[t] <= 0)
                 continue;
-            for (const auto& f : kOctmtFacet) {
-                std::array<Index, 3> key{rTets.mTets[t][f[0]], rTets.mTets[t][f[1]],
-                                         rTets.mTets[t][f[2]]};
+            for (const auto& f : tet_faces) {
+                std::array<Index, 3> key{rTets.mTets[t][f.mNodes[0]], rTets.mTets[t][f.mNodes[1]],
+                                         rTets.mTets[t][f.mNodes[2]]};
                 std::sort(key.begin(), key.end());
                 faces.emplace_back(key, t);
             }
@@ -285532,10 +285698,12 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
             break;
         // The tetrahedra of every face, by sorted node triplet.
         std::map<std::array<Index, 3>, std::vector<std::size_t>> faces_of;
+        const auto& tet_faces = cell_faces(CellType::Tetra);
         for (std::size_t t = 0; t < rTets.mTets.size(); ++t)
-            for (const auto& facet : kOctmtFacet) {
-                std::array<Index, 3> key{rTets.mTets[t][facet[0]], rTets.mTets[t][facet[1]],
-                                         rTets.mTets[t][facet[2]]};
+            for (const auto& facet : tet_faces) {
+                std::array<Index, 3> key{rTets.mTets[t][facet.mNodes[0]],
+                                         rTets.mTets[t][facet.mNodes[1]],
+                                         rTets.mTets[t][facet.mNodes[2]]};
                 std::sort(key.begin(), key.end());
                 faces_of[key].push_back(t);
             }
@@ -285894,11 +286062,12 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> faces;
     const std::int64_t* cp = m.Cells(0).Conn().As<std::int64_t>();
     faces.reserve(kept.size() * 4);
+    const auto& tet_faces = cell_faces(CellType::Tetra);
     for (std::size_t n = 0; n < kept.size(); ++n)
         for (std::int64_t f = 0; f < 4; ++f) {
-            std::array<std::int64_t, 3> key{cp[n * 4 + kOctmtFacet[f][0]],
-                                            cp[n * 4 + kOctmtFacet[f][1]],
-                                            cp[n * 4 + kOctmtFacet[f][2]]};
+            const auto& fn = tet_faces[static_cast<std::size_t>(f)].mNodes;
+            std::array<std::int64_t, 3> key{cp[n * 4 + fn[0]], cp[n * 4 + fn[1]],
+                                            cp[n * 4 + fn[2]]};
             std::sort(key.begin(), key.end());
             faces.emplace_back(key, static_cast<std::int64_t>(n) * 4 + f);
         }
@@ -285946,8 +286115,8 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
             if (inside_uses == 1) {
                 const auto n = static_cast<std::size_t>(last / 4);
                 const auto f = static_cast<std::size_t>(last % 4);
-                skin_faces.push_back({cp[n * 4 + kOctmtFacet[f][0]], cp[n * 4 + kOctmtFacet[f][1]],
-                                      cp[n * 4 + kOctmtFacet[f][2]]});
+                const auto& fn = tet_faces[f].mNodes;
+                skin_faces.push_back({cp[n * 4 + fn[0]], cp[n * 4 + fn[1]], cp[n * 4 + fn[2]]});
             }
             i = j;
         }
@@ -296604,25 +296773,7 @@ void quality_quad(const std::vector<Vec3>& c, bool is2d, double eps, double* m) 
 // Solve the 3x3 system whose rows are a0,a1,a2 for x (Cramer). ok=false if singular.
 Vec3 quality_solve3(const Vec3& a0, const Vec3& a1, const Vec3& a2, const Vec3& b, double eps,
                     bool& rOk) {
-    auto det = [](const Vec3& r0, const Vec3& r1, const Vec3& r2) {
-        return r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) - r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
-               r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
-    };
-    const double d = det(a0, a1, a2);
-    if (std::fabs(d) < eps) {
-        rOk = false;
-        return {0.0, 0.0, 0.0};
-    }
-    rOk = true;
-    Vec3 x;
-    for (int k = 0; k < 3; ++k) {
-        Vec3 c0 = a0, c1 = a1, c2 = a2;
-        c0[k] = b[0];
-        c1[k] = b[1];
-        c2[k] = b[2];
-        x[k] = det(c0, c1, c2) / d;
-    }
-    return x;
+    return detail::MathUtils::Solve3(a0, a1, a2, b, eps, rOk);
 }
 
 void quality_tetra(const std::vector<Vec3>& c, double eps, double* m) {
@@ -322626,12 +322777,12 @@ public:
     /// Runs `rJob` on the caller and up to `Helpers` workers; false, running
     /// nothing, when another thread's job holds the pool.
     bool TryRun(PthrJob& rJob, unsigned Helpers) {
-        std::unique_lock<std::mutex> submit(mSubmit, std::try_to_lock);
+        std::unique_lock<std::mutex> submit(mSubmit.Native(), std::try_to_lock);
         if (!submit.owns_lock())
             return false;
         Helpers = Grow(Helpers);
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            detail::AnnotatedLockGuard lock(mMutex);
             mpJob = &rJob;
             mWanted = Helpers;
             mJoined = 0;
@@ -322642,10 +322793,10 @@ public:
         ++tPthrDepth;
         rJob.Work();
         --tPthrDepth;
-        std::unique_lock<std::mutex> lock(mMutex);
+        detail::AnnotatedUniqueLock lock(mMutex);
         // Every chunk is claimed; wait for the workers still inside one, and
         // close the job to the ones that have not joined yet.
-        mDone.wait(lock, [&] { return mRunning == 0; });
+        lock.Wait(mDone, [&]() MIO_REQUIRES(mMutex) { return mRunning == 0; });
         mpJob = nullptr;
         mWanted = 0;
         return true;
@@ -322667,9 +322818,9 @@ private:
     void Loop() {
         tPthrDepth = 1;
         std::uint64_t seen = 0;
-        std::unique_lock<std::mutex> lock(mMutex);
+        detail::AnnotatedUniqueLock lock(mMutex);
         for (;;) {
-            mWake.wait(lock, [&] { return mGeneration != seen; });
+            lock.Wait(mWake, [&]() MIO_REQUIRES(mMutex) { return mGeneration != seen; });
             seen = mGeneration;
             if (!mpJob || mJoined >= mWanted)
                 continue;
@@ -322684,29 +322835,29 @@ private:
         }
     }
 
-    std::mutex mSubmit;  ///< held by the one caller whose job runs
-    std::mutex mMutex;   ///< guards everything below
+    detail::AnnotatedMutex mSubmit;  ///< held by the one caller whose job runs
+    detail::AnnotatedMutex mMutex;   ///< guards everything below
     std::condition_variable mWake;
     std::condition_variable mDone;
-    PthrJob* mpJob = nullptr;
-    std::uint64_t mGeneration = 0;
-    unsigned mWanted = 0;   ///< workers the current job may take
-    unsigned mJoined = 0;   ///< workers that took it
-    unsigned mRunning = 0;  ///< workers inside it now
+    PthrJob* mpJob MIO_GUARDED_BY(mMutex) = nullptr;
+    std::uint64_t mGeneration MIO_GUARDED_BY(mMutex) = 0;
+    unsigned mWanted MIO_GUARDED_BY(mMutex) = 0;   ///< workers the current job may take
+    unsigned mJoined MIO_GUARDED_BY(mMutex) = 0;   ///< workers that took it
+    unsigned mRunning MIO_GUARDED_BY(mMutex) = 0;  ///< workers inside it now
     std::vector<std::thread> mThreads;
 };
 
-std::mutex gPthrCreate;
+detail::AnnotatedMutex gPthrCreate;
 std::atomic<PthrPool*> gPthrPool{nullptr};
 
 #if !defined(_WIN32)
-void pthr_atfork_prepare() {
+void pthr_atfork_prepare() MIO_NO_THREAD_SAFETY_ANALYSIS {
     gPthrCreate.lock();
 }
-void pthr_atfork_parent() {
+void pthr_atfork_parent() MIO_NO_THREAD_SAFETY_ANALYSIS {
     gPthrCreate.unlock();
 }
-void pthr_atfork_child() {
+void pthr_atfork_child() MIO_NO_THREAD_SAFETY_ANALYSIS {
     // The forking thread is the child's only thread and holds gPthrCreate;
     // the pool's workers did not survive, so it is abandoned (not freed: its
     // mutexes may be held by threads that no longer exist).
@@ -322726,7 +322877,7 @@ PthrPool& pthr_pool() {
         pthread_atfork(pthr_atfork_prepare, pthr_atfork_parent, pthr_atfork_child);
 #endif
     });
-    std::lock_guard<std::mutex> lock(gPthrCreate);
+    detail::AnnotatedLockGuard lock(gPthrCreate);
     p = gPthrPool.load(std::memory_order_acquire);
     if (!p) {
         p = new PthrPool();  // never deleted: see the file comment
@@ -322834,21 +322985,24 @@ struct ProviderSlot {
 };
 
 struct ProvidersState {
-    std::mutex mMutex;
-    ProviderSlot<CadKernelProvider> mCad;
-    ProviderSlot<TetMesherProvider> mTet;
-    ProviderSlot<RemesherProvider> mRemesher;
+    detail::AnnotatedMutex mMutex;
+    ProviderSlot<CadKernelProvider> mCad MIO_GUARDED_BY(mMutex);
+    ProviderSlot<TetMesherProvider> mTet MIO_GUARDED_BY(mMutex);
+    ProviderSlot<RemesherProvider> mRemesher MIO_GUARDED_BY(mMutex);
     /// The named tetrahedral meshers (roadmap 7.7.2), by name; replaced ones
     /// stay in `mTet.mRetained`.
-    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed;
+    std::map<std::string, std::shared_ptr<const TetMesherProvider>> mTetNamed
+        MIO_GUARDED_BY(mMutex);
     /// The quad remeshers (roadmap 7.7.3), by name, and every one ever added.
-    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad;
-    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained;
+    std::map<std::string, std::shared_ptr<const QuadRemesherProvider>> mQuad MIO_GUARDED_BY(mMutex);
+    std::vector<std::shared_ptr<const QuadRemesherProvider>> mQuadRetained MIO_GUARDED_BY(mMutex);
     /// The profile-solid providers (roadmap 7.7.4), by name, and every one ever added.
-    std::map<std::string, std::shared_ptr<const ProfileSolidProvider>> mProfile;
-    std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained;
-    bool mProfileBuiltinDone = false;
-    bool mExternalDone = false;
+    std::map<std::string, std::shared_ptr<const ProfileSolidProvider>> mProfile
+        MIO_GUARDED_BY(mMutex);
+    std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained
+        MIO_GUARDED_BY(mMutex);
+    bool mProfileBuiltinDone MIO_GUARDED_BY(mMutex) = false;
+    bool mExternalDone MIO_GUARDED_BY(mMutex) = false;
 };
 
 ProvidersState& providers_state() {
@@ -322866,7 +323020,7 @@ template <class T>
 void slot_register(ProviderSlot<T> ProvidersState::*pSlot, T Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const T>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && (r_state.*pSlot).mCurrent)
         return;
     (r_state.*pSlot).Set(std::move(p_new));
@@ -322875,7 +323029,7 @@ void slot_register(ProviderSlot<T> ProvidersState::*pSlot, T Provider) {
 template <class T>
 void slot_unregister(ProviderSlot<T> ProvidersState::*pSlot) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     (r_state.*pSlot).mBuiltinDone = true;
     (r_state.*pSlot).mCurrent.reset();
 }
@@ -322884,7 +323038,7 @@ template <class T>
 std::shared_ptr<const T> slot_get(ProviderSlot<T> ProvidersState::*pSlot) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     return (r_state.*pSlot).mCurrent;
 }
 
@@ -322913,7 +323067,7 @@ std::shared_ptr<const TetMesherProvider> tet_mesher() noexcept {
 void add_tet_mesher(TetMesherProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const TetMesherProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mTetNamed.count(p_new->mName))
         return;
     r_state.mTet.mRetained.push_back(p_new);
@@ -322922,14 +323076,14 @@ void add_tet_mesher(TetMesherProvider Provider) {
 
 void remove_tet_mesher(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mTetNamed.erase(rName);
 }
 
 std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     // The default answers to its own name first, so a plugin's mesher that is
     // the default is the one `backend=<its name>` runs.
     if (r_state.mTet.mCurrent && r_state.mTet.mCurrent->mName == rName)
@@ -322941,7 +323095,7 @@ std::shared_ptr<const TetMesherProvider> tet_mesher(const std::string& rName) no
 void add_quad_remesher(QuadRemesherProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const QuadRemesherProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mQuad.count(p_new->mName))
         return;
     r_state.mQuadRetained.push_back(p_new);
@@ -322950,14 +323104,14 @@ void add_quad_remesher(QuadRemesherProvider Provider) {
 
 void remove_quad_remesher(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mQuad.erase(rName);
 }
 
 std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     const auto it = r_state.mQuad.find(rName);
     return it == r_state.mQuad.end() ? nullptr : it->second;
 }
@@ -322965,7 +323119,7 @@ std::shared_ptr<const QuadRemesherProvider> quad_remesher(const std::string& rNa
 void add_profile_solid_provider(ProfileSolidProvider Provider) {
     ProvidersState& r_state = providers_state();
     auto p_new = std::make_shared<const ProfileSolidProvider>(std::move(Provider));
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (t_loading_plugin && r_state.mProfile.count(p_new->mName))
         return;
     r_state.mProfileRetained.push_back(p_new);
@@ -322974,7 +323128,7 @@ void add_profile_solid_provider(ProfileSolidProvider Provider) {
 
 void remove_profile_solid_provider(const std::string& rName) noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     r_state.mProfile.erase(rName);
 }
 
@@ -322982,7 +323136,7 @@ std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
     const std::string& rName) noexcept {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     if (rName.empty())
         return r_state.mProfile.empty() ? nullptr : r_state.mProfile.begin()->second;
     const auto it = r_state.mProfile.find(rName);
@@ -322992,7 +323146,7 @@ std::shared_ptr<const ProfileSolidProvider> profile_solid_provider(
 std::vector<std::string> profile_solid_provider_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     for (const auto& r_entry : r_state.mProfile)
         names.push_back(r_entry.first);
@@ -323002,7 +323156,7 @@ std::vector<std::string> profile_solid_provider_names() {
 std::vector<std::string> quad_remesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     for (const auto& r_entry : r_state.mQuad)
         names.push_back(r_entry.first);
@@ -323012,7 +323166,7 @@ std::vector<std::string> quad_remesher_names() {
 std::vector<std::string> tet_mesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     if (r_state.mTet.mCurrent)
         names.push_back(r_state.mTet.mCurrent->mName);
@@ -323040,11 +323194,12 @@ namespace {
 /// dlopen runs) does not wait on itself; the flag makes that nested call return
 /// at once. Allocated and never freed, like providers_state(), so a provider
 /// query during static destruction still finds it.
-std::recursive_mutex& plugin_scan_mutex() {                 // NOSONAR(cpp:S8462): see above
-    static auto* const s_mutex = new std::recursive_mutex;  // NOSONAR(cpp:S8462,cpp:S8474)
+detail::AnnotatedRecursiveMutex& plugin_scan_mutex() {  // NOSONAR(cpp:S8462): see above
+    static auto* const s_mutex =
+        new detail::AnnotatedRecursiveMutex;  // NOSONAR(cpp:S8462,cpp:S8474)
     return *s_mutex;
 }
-bool g_plugins_scan_started = false;           // guarded by the scan mutex
+bool g_plugins_scan_started MIO_GUARDED_BY(plugin_scan_mutex()) = false;
 std::atomic<bool> g_plugins_scan_done{false};  // the lock-free fast path
 
 using PluginAbiFn = int (*)();
@@ -323143,7 +323298,7 @@ int load_plugins(const std::string& rPaths) noexcept {
 
 static void register_compiled_in_providers() noexcept {
     ProvidersState& r_state = providers_state();
-    const std::lock_guard<std::mutex> lock(r_state.mMutex);
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
     // A slot's builtin goes in once, and never over a provider already there.
     const auto install = [](auto& rSlot, auto&& Make) {
         if (rSlot.mBuiltinDone)
@@ -323218,7 +323373,7 @@ void register_builtin_providers() noexcept {
     if (g_plugins_scan_done.load())
         return;
     // Recursive on purpose: re-entered by a plugin, see plugin_scan_mutex().
-    const std::lock_guard scan_lock(plugin_scan_mutex());  // NOSONAR(cpp:S8462)
+    const detail::AnnotatedLockGuard scan_lock(plugin_scan_mutex());  // NOSONAR(cpp:S8462)
     if (g_plugins_scan_started)
         return;  // done meanwhile, or this thread's own plugin is asking
     g_plugins_scan_started = true;
@@ -323562,11 +323717,11 @@ constexpr bool kRegistryZlib = false;
  * many extensions to one format, stays its own.
  */
 struct RegistryRow {
-    const char* mName;
-    ReadFn mRead;
-    WriteFn mWrite;
-    ReadExFn mReadEx;
-    MetadataFn mMetadata;
+    const char* mName = nullptr;
+    ReadFn mRead = nullptr;
+    WriteFn mWrite = nullptr;
+    ReadExFn mReadEx = nullptr;
+    MetadataFn mMetadata = nullptr;
 };
 
 const std::vector<RegistryRow>& registry_rows() {

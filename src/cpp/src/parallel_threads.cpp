@@ -65,6 +65,7 @@
 #endif
 
 // Project includes
+#include "detail/thread_annotations.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus::detail {
@@ -133,12 +134,12 @@ public:
     /// Runs `rJob` on the caller and up to `Helpers` workers; false, running
     /// nothing, when another thread's job holds the pool.
     bool TryRun(PthrJob& rJob, unsigned Helpers) {
-        std::unique_lock<std::mutex> submit(mSubmit, std::try_to_lock);
+        std::unique_lock<std::mutex> submit(mSubmit.Native(), std::try_to_lock);
         if (!submit.owns_lock())
             return false;
         Helpers = Grow(Helpers);
         {
-            std::lock_guard<std::mutex> lock(mMutex);
+            detail::AnnotatedLockGuard lock(mMutex);
             mpJob = &rJob;
             mWanted = Helpers;
             mJoined = 0;
@@ -149,10 +150,10 @@ public:
         ++tPthrDepth;
         rJob.Work();
         --tPthrDepth;
-        std::unique_lock<std::mutex> lock(mMutex);
+        detail::AnnotatedUniqueLock lock(mMutex);
         // Every chunk is claimed; wait for the workers still inside one, and
         // close the job to the ones that have not joined yet.
-        mDone.wait(lock, [&] { return mRunning == 0; });
+        lock.Wait(mDone, [&]() MIO_REQUIRES(mMutex) { return mRunning == 0; });
         mpJob = nullptr;
         mWanted = 0;
         return true;
@@ -174,9 +175,9 @@ private:
     void Loop() {
         tPthrDepth = 1;
         std::uint64_t seen = 0;
-        std::unique_lock<std::mutex> lock(mMutex);
+        detail::AnnotatedUniqueLock lock(mMutex);
         for (;;) {
-            mWake.wait(lock, [&] { return mGeneration != seen; });
+            lock.Wait(mWake, [&]() MIO_REQUIRES(mMutex) { return mGeneration != seen; });
             seen = mGeneration;
             if (!mpJob || mJoined >= mWanted)
                 continue;
@@ -191,29 +192,29 @@ private:
         }
     }
 
-    std::mutex mSubmit;  ///< held by the one caller whose job runs
-    std::mutex mMutex;   ///< guards everything below
+    detail::AnnotatedMutex mSubmit;  ///< held by the one caller whose job runs
+    detail::AnnotatedMutex mMutex;   ///< guards everything below
     std::condition_variable mWake;
     std::condition_variable mDone;
-    PthrJob* mpJob = nullptr;
-    std::uint64_t mGeneration = 0;
-    unsigned mWanted = 0;   ///< workers the current job may take
-    unsigned mJoined = 0;   ///< workers that took it
-    unsigned mRunning = 0;  ///< workers inside it now
+    PthrJob* mpJob MIO_GUARDED_BY(mMutex) = nullptr;
+    std::uint64_t mGeneration MIO_GUARDED_BY(mMutex) = 0;
+    unsigned mWanted MIO_GUARDED_BY(mMutex) = 0;   ///< workers the current job may take
+    unsigned mJoined MIO_GUARDED_BY(mMutex) = 0;   ///< workers that took it
+    unsigned mRunning MIO_GUARDED_BY(mMutex) = 0;  ///< workers inside it now
     std::vector<std::thread> mThreads;
 };
 
-std::mutex gPthrCreate;
+detail::AnnotatedMutex gPthrCreate;
 std::atomic<PthrPool*> gPthrPool{nullptr};
 
 #if !defined(_WIN32)
-void pthr_atfork_prepare() {
+void pthr_atfork_prepare() MIO_NO_THREAD_SAFETY_ANALYSIS {
     gPthrCreate.lock();
 }
-void pthr_atfork_parent() {
+void pthr_atfork_parent() MIO_NO_THREAD_SAFETY_ANALYSIS {
     gPthrCreate.unlock();
 }
-void pthr_atfork_child() {
+void pthr_atfork_child() MIO_NO_THREAD_SAFETY_ANALYSIS {
     // The forking thread is the child's only thread and holds gPthrCreate;
     // the pool's workers did not survive, so it is abandoned (not freed: its
     // mutexes may be held by threads that no longer exist).
@@ -233,7 +234,7 @@ PthrPool& pthr_pool() {
         pthread_atfork(pthr_atfork_prepare, pthr_atfork_parent, pthr_atfork_child);
 #endif
     });
-    std::lock_guard<std::mutex> lock(gPthrCreate);
+    detail::AnnotatedLockGuard lock(gPthrCreate);
     p = gPthrPool.load(std::memory_order_acquire);
     if (!p) {
         p = new PthrPool();  // never deleted: see the file comment

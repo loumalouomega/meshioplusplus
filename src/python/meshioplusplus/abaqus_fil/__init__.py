@@ -3,8 +3,9 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._series_writer import CoreSeriesWriter
+from .._shims import time_values_shim
 from ._abaqus_fil import read as _py_read
-from ._abaqus_fil import time_values as _py_time_values
+from ._abaqus_fil import time_values as _py_time_values  # noqa: F401
 from ._write import SeriesWriter as _PySeriesWriter
 from ._write import write as _py_write
 
@@ -31,15 +32,9 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     )
 
 
-def time_values(filename):
-    """The total time of every increment, in file order."""
-    if not is_buffer(filename, "r"):
-        try:
-            return list(_core.abaqus_fil_time_values(str(filename)))
-        except Exception as exc:
-            if not core_declined(exc, "abaqus_fil", "read", filename):
-                raise
-    return _py_time_values(filename)
+time_values = time_values_shim(
+    __name__, "abaqus_fil", """The total time of every increment, in file order."""
+)
 
 
 def write(filename, mesh, binary=False, big_endian=False, marker_size=4):

@@ -247,3 +247,20 @@ TEST(MathUtils, PercentileLinearInterpolatesAndClamps) {
     std::vector<double> none;
     EXPECT_TRUE(std::isnan(MathUtils::PercentileLinear(none, 50.0)));
 }
+
+TEST(MathUtils, Solve3SolvesNonSymmetricAndRefusesSingular) {
+    bool ok = false;
+    // Non-symmetric 3x3: [2 1 0; 0 3 -1; 1 0 4] * [1, -2, 3]^T = [0, -9, 13]^T
+    const Vec3 x = MathUtils::Solve3({2.0, 1.0, 0.0}, {0.0, 3.0, -1.0}, {1.0, 0.0, 4.0},
+                                     {0.0, -9.0, 13.0}, 1e-12, ok);
+    ASSERT_TRUE(ok);
+    EXPECT_NEAR(x[0], 1.0, 1e-14);
+    EXPECT_NEAR(x[1], -2.0, 1e-14);
+    EXPECT_NEAR(x[2], 3.0, 1e-14);
+
+    // Singular system
+    const Vec3 bad = MathUtils::Solve3({1.0, 2.0, 3.0}, {2.0, 4.0, 6.0}, {0.0, 0.0, 1.0},
+                                       {1.0, 2.0, 3.0}, 1e-12, ok);
+    EXPECT_FALSE(ok);
+    EXPECT_EQ(bad, (Vec3{0.0, 0.0, 0.0}));
+}

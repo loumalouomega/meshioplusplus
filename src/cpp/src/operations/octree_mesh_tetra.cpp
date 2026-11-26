@@ -42,6 +42,7 @@
 #include "../detail/mesh_from_soup.hpp"
 #include "../detail/tet_checks.hpp"
 #include "octree_mesh_internal.hpp"
+#include "meshioplusplus/detail/cell_faces.hpp"
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/octree.hpp"
@@ -52,9 +53,6 @@ namespace meshioplusplus {
 namespace detail {
 
 namespace {
-
-// The tetrahedron's facets (detail/cell_faces), each outward.
-constexpr int kOctmtFacet[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
 
 NDArray octmt_ids(const std::vector<std::int64_t>& rIds, std::size_t Stride) {
     NDArray a = Stride == 1 ? NDArray::Uninit(DType::Int64, {rIds.size()})
@@ -401,12 +399,13 @@ void octree_mesh_fill_chain_gaps(OctreeMeshSetup& rS, const OctreeMeshOptions& r
         triangles.clear();
         incident.clear();
         std::vector<std::pair<std::array<Index, 3>, std::size_t>> faces;
+        const auto& tet_faces = cell_faces(CellType::Tetra);
         for (std::size_t t = 0; t < rTets.mTets.size(); ++t) {
             if (rTets.mMaterial[t] <= 0)
                 continue;
-            for (const auto& f : kOctmtFacet) {
-                std::array<Index, 3> key{rTets.mTets[t][f[0]], rTets.mTets[t][f[1]],
-                                         rTets.mTets[t][f[2]]};
+            for (const auto& f : tet_faces) {
+                std::array<Index, 3> key{rTets.mTets[t][f.mNodes[0]], rTets.mTets[t][f.mNodes[1]],
+                                         rTets.mTets[t][f.mNodes[2]]};
                 std::sort(key.begin(), key.end());
                 faces.emplace_back(key, t);
             }
@@ -811,10 +810,12 @@ void octree_mesh_fix_volumes(OctreeMeshSetup& /*rS*/, const OctreeMeshOptions& r
             break;
         // The tetrahedra of every face, by sorted node triplet.
         std::map<std::array<Index, 3>, std::vector<std::size_t>> faces_of;
+        const auto& tet_faces = cell_faces(CellType::Tetra);
         for (std::size_t t = 0; t < rTets.mTets.size(); ++t)
-            for (const auto& facet : kOctmtFacet) {
-                std::array<Index, 3> key{rTets.mTets[t][facet[0]], rTets.mTets[t][facet[1]],
-                                         rTets.mTets[t][facet[2]]};
+            for (const auto& facet : tet_faces) {
+                std::array<Index, 3> key{rTets.mTets[t][facet.mNodes[0]],
+                                         rTets.mTets[t][facet.mNodes[1]],
+                                         rTets.mTets[t][facet.mNodes[2]]};
                 std::sort(key.begin(), key.end());
                 faces_of[key].push_back(t);
             }
@@ -1173,11 +1174,12 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
     std::vector<std::pair<std::array<std::int64_t, 3>, std::int64_t>> faces;
     const std::int64_t* cp = m.Cells(0).Conn().As<std::int64_t>();
     faces.reserve(kept.size() * 4);
+    const auto& tet_faces = cell_faces(CellType::Tetra);
     for (std::size_t n = 0; n < kept.size(); ++n)
         for (std::int64_t f = 0; f < 4; ++f) {
-            std::array<std::int64_t, 3> key{cp[n * 4 + kOctmtFacet[f][0]],
-                                            cp[n * 4 + kOctmtFacet[f][1]],
-                                            cp[n * 4 + kOctmtFacet[f][2]]};
+            const auto& fn = tet_faces[static_cast<std::size_t>(f)].mNodes;
+            std::array<std::int64_t, 3> key{cp[n * 4 + fn[0]], cp[n * 4 + fn[1]],
+                                            cp[n * 4 + fn[2]]};
             std::sort(key.begin(), key.end());
             faces.emplace_back(key, static_cast<std::int64_t>(n) * 4 + f);
         }
@@ -1225,8 +1227,8 @@ void octree_mesh_emit_tets(OctreeMeshSetup& rS, const OctreeMeshOptions& rO, Oct
             if (inside_uses == 1) {
                 const auto n = static_cast<std::size_t>(last / 4);
                 const auto f = static_cast<std::size_t>(last % 4);
-                skin_faces.push_back({cp[n * 4 + kOctmtFacet[f][0]], cp[n * 4 + kOctmtFacet[f][1]],
-                                      cp[n * 4 + kOctmtFacet[f][2]]});
+                const auto& fn = tet_faces[f].mNodes;
+                skin_faces.push_back({cp[n * 4 + fn[0]], cp[n * 4 + fn[1]], cp[n * 4 + fn[2]]});
             }
             i = j;
         }

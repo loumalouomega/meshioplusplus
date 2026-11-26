@@ -277,10 +277,6 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
     const double eps_abs = 1e-9 * scale;
     const double eps_abs2 = eps_abs * eps_abs;
 
-    // The outward-wound tetra face table (detail/cell_faces.hpp's own rows),
-    // valid for a positively-oriented tetra.
-    static constexpr int kFaces[4][3] = {{0, 1, 3}, {1, 2, 3}, {2, 0, 3}, {0, 2, 1}};
-
     // Scratch reused across the calls of a thread (the clip runs once per
     // candidate pair): only the allocations go, every value is computed as
     // before.
@@ -293,11 +289,11 @@ double cons_clip_tetra_tetra_volume(const detail::Vec3 tgtIn[4], const detail::V
     auto& uniq = tScratch.mUniq;
     auto& order = tScratch.mOrder;
     tris.clear();
-    for (const auto& f : kFaces)
+    for (const auto& f : detail::kTetOutwardFaces)
         tris.push_back({src[static_cast<std::size_t>(f[0])], src[static_cast<std::size_t>(f[1])],
                         src[static_cast<std::size_t>(f[2])]});
 
-    for (const auto& f : kFaces) {
+    for (const auto& f : detail::kTetOutwardFaces) {
         if (tris.empty())
             break;
         const detail::Vec3& p0 = tgt[static_cast<std::size_t>(f[0])];

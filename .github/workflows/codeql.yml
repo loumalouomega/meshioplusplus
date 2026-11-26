@@ -1,0 +1,81 @@
+# CodeQL static analysis on pull requests, master pushes, and weekly (roadmap 3.10.1).
+# Covers C++ (manual build, SEQ, Python off), Python, JavaScript/TypeScript
+# (src/viewer, src/wasm), and GitHub Actions workflows.
+name: CodeQL
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+  schedule:
+    - cron: "30 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: cpp
+            build-mode: manual
+          - language: python
+            build-mode: none
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          lfs: false
+
+      - name: Initialise submodules
+        if: matrix.language == 'cpp'
+        uses: ./.github/actions/init-submodules
+
+      - name: Install native build dependencies
+        if: matrix.language == 'cpp'
+        run: |
+          sudo grep -rl 'packages.microsoft.com' /etc/apt/sources.list.d/ 2>/dev/null | xargs -r sudo rm -f
+          sudo apt-get update
+          sudo apt-get install -y ninja-build zlib1g-dev libbz2-dev pkg-config
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Build C++ core and C API for CodeQL
+        if: matrix.language == 'cpp'
+        run: |
+          cmake -S . -B build-codeql -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF \
+            -DMESHIOPLUSPLUS_BUILD_TESTS=OFF \
+            -DMESHIOPLUSPLUS_BUILD_C_API=ON \
+            -DMESHIOPLUSPLUS_BUILD_CLI=ON \
+            -DMESHIOPLUSPLUS_PARALLEL_BACKEND=SEQ \
+            -DMESHIOPLUSPLUS_WITH_HDF5=OFF \
+            -DMESHIOPLUSPLUS_WITH_NETCDF=OFF \
+            -DMESHIOPLUSPLUS_WITH_OCCT=OFF
+          cmake --build build-codeql -j
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v3
+        with:
+          category: "/language:${{ matrix.language }}"

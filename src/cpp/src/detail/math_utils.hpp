@@ -177,6 +177,37 @@ struct MathUtils {
         return true;
     }
 
+    /**
+     * @brief Solves the general (non-symmetric) 3x3 system with rows
+     * `rA0, rA1, rA2` and right-hand side `rB` by Cramer's rule.
+     *
+     * Sets `rOk = false` and returns `{0, 0, 0}` when `|det(A)| < Eps`.
+     * Matches `quality_solve3` operation for operation.
+     */
+    static Vec3 Solve3(const Vec3& rA0, const Vec3& rA1, const Vec3& rA2, const Vec3& rB,
+                       double Eps, bool& rOk) {
+        auto det = [](const Vec3& r0, const Vec3& r1, const Vec3& r2) {
+            return r0[0] * (r1[1] * r2[2] - r1[2] * r2[1]) -
+                   r0[1] * (r1[0] * r2[2] - r1[2] * r2[0]) +
+                   r0[2] * (r1[0] * r2[1] - r1[1] * r2[0]);
+        };
+        const double d = det(rA0, rA1, rA2);
+        if (std::fabs(d) < Eps) {
+            rOk = false;
+            return {0.0, 0.0, 0.0};
+        }
+        rOk = true;
+        Vec3 x;
+        for (int k = 0; k < 3; ++k) {
+            Vec3 c0 = rA0, c1 = rA1, c2 = rA2;
+            c0[static_cast<std::size_t>(k)] = rB[0];
+            c1[static_cast<std::size_t>(k)] = rB[1];
+            c2[static_cast<std::size_t>(k)] = rB[2];
+            x[static_cast<std::size_t>(k)] = det(c0, c1, c2) / d;
+        }
+        return x;
+    }
+
     ///@}
 
     ///@name Order statistics

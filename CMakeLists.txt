@@ -830,7 +830,7 @@ list(APPEND _mio_core_incs
 # this is PRIVATE. A PUBLIC entry would put the vendored copy on every consumer's
 # include path once the C++ API is installed, colliding with a consumer that
 # vendors its own pugixml (Kratos does).
-list(APPEND _mio_core_priv_incs
+list(APPEND _mio_core_sys_incs
      ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/pugixml)
 
 if(EMSCRIPTEN)
@@ -896,6 +896,9 @@ function(meshioplusplus_target_warnings target)
     endif()
   else()
     set(_flags -Wall -Wextra)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+      list(APPEND _flags -Wthread-safety)
+    endif()
     if(MESHIOPLUSPLUS_WARNINGS_AS_ERRORS)
       list(APPEND _flags -Werror)
     endif()
@@ -934,13 +937,54 @@ function(meshioplusplus_target_hardened_stl target)
 endfunction()
 
 # --------------------------------------------------------------------------
+# Release binary hardening (roadmap 3.17.4): opt-in PRIVATE compile/link
+# hardening for released CLI binaries and wheels. Never exported to consumers.
+# --------------------------------------------------------------------------
+option(MESHIOPLUSPLUS_HARDENING
+       "Build meshio++'s own targets with release binary hardening flags (PRIVATE)" OFF)
+
+function(meshioplusplus_target_hardening target)
+  if(NOT MESHIOPLUSPLUS_HARDENING OR NOT TARGET ${target} OR EMSCRIPTEN)
+    return()
+  endif()
+  get_target_property(_type ${target} TYPE)
+  if(_type STREQUAL "INTERFACE_LIBRARY")
+    return()
+  endif()
+  if(MSVC)
+    target_compile_options(${target} PRIVATE
+      "$<$<COMPILE_LANGUAGE:CXX>:/guard:cf;/Qspectre>"
+      "$<$<COMPILE_LANGUAGE:C>:/guard:cf;/Qspectre>")
+    if(NOT _type STREQUAL "OBJECT_LIBRARY" AND NOT _type STREQUAL "STATIC_LIBRARY")
+      target_link_options(${target} PRIVATE /GUARD:CF)
+    endif()
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+    set(_h_copts -fstack-protector-strong)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")
+      list(APPEND _h_copts -fcf-protection=full)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
+      list(APPEND _h_copts -mbranch-protection=standard)
+    endif()
+    # _FORTIFY_SOURCE requires optimization; skip on Debug / -O0 builds.
+    target_compile_options(${target} PRIVATE
+      "$<$<COMPILE_LANGUAGE:CXX>:${_h_copts}>"
+      "$<$<COMPILE_LANGUAGE:C>:${_h_copts}>"
+      "$<$<AND:$<NOT:$<CONFIG:Debug>>,$<OR:$<COMPILE_LANGUAGE:CXX>,$<COMPILE_LANGUAGE:C>>>:-U_FORTIFY_SOURCE;-D_FORTIFY_SOURCE=3>")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT _type STREQUAL "OBJECT_LIBRARY"
+       AND NOT _type STREQUAL "STATIC_LIBRARY")
+      target_link_options(${target} PRIVATE -Wl,-z,relro,-z,now)
+    endif()
+  endif()
+endfunction()
+
+# --------------------------------------------------------------------------
 # Sanitizers for the cpp-sanitize CI job and local triage (doc/fuzzing.md).
 # A ;-list such as "address;undefined". Applied PUBLIC like the coverage
 # flags, so the GoogleTest binary, the C API objects and the fuzz/replay
 # drivers are all instrumented. UBSan is made fatal (-fno-sanitize-recover):
-# a report that only prints would pass ctest. Python is refused: a sanitized
-# _core needs the runtime LD_PRELOADed into the interpreter, which is a
-# debugging session, not a build configuration.
+# a report that only prints would pass ctest. Python is refused by default
+# unless MESHIOPLUSPLUS_SANITIZE_PYTHON=ON is explicitly set (a sanitized
+# _core needs the sanitizer runtime LD_PRELOADed into the interpreter).
 #
 # MESHIOPLUSPLUS_BUILD_FUZZERS (Clang) builds the libFuzzer reader target
 # (tests/fuzz/). It needs the *core* compiled with -fsanitize=fuzzer-no-link
@@ -949,6 +993,8 @@ endfunction()
 # --------------------------------------------------------------------------
 set(MESHIOPLUSPLUS_SANITIZE "" CACHE STRING
     "Sanitizers for the core, tests and C API, e.g. address;undefined (GCC/Clang)")
+option(MESHIOPLUSPLUS_SANITIZE_PYTHON
+       "Allow MESHIOPLUSPLUS_SANITIZE with MESHIOPLUSPLUS_BUILD_PYTHON (requires LD_PRELOAD)" OFF)
 option(MESHIOPLUSPLUS_BUILD_FUZZERS "Build the libFuzzer reader targets (Clang)" OFF)
 set(MESHIOPLUSPLUS_FUZZING_ENGINE "" CACHE STRING
     "External fuzzing engine link arguments (OSS-Fuzz's LIB_FUZZING_ENGINE)")
@@ -972,9 +1018,12 @@ if(_mio_sanitize_list)
   if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     message(FATAL_ERROR "meshio++: MESHIOPLUSPLUS_SANITIZE needs GCC or Clang, got ${CMAKE_CXX_COMPILER_ID}")
   endif()
-  if(EMSCRIPTEN OR MESHIOPLUSPLUS_BUILD_PYTHON)
-    message(FATAL_ERROR "meshio++: sanitizers and fuzzers are for native C++ builds; "
-                        "configure with -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF")
+  if(EMSCRIPTEN)
+    message(FATAL_ERROR "meshio++: sanitizers and fuzzers are not supported with Emscripten")
+  endif()
+  if(MESHIOPLUSPLUS_BUILD_PYTHON AND NOT MESHIOPLUSPLUS_SANITIZE_PYTHON)
+    message(FATAL_ERROR "meshio++: sanitizers with Python require -DMESHIOPLUSPLUS_SANITIZE_PYTHON=ON "
+                        "(and LD_PRELOAD of the sanitizer runtime), or -DMESHIOPLUSPLUS_BUILD_PYTHON=OFF")
   endif()
   string(REPLACE ";" "," _mio_sanitize "${_mio_sanitize_list}")
   message(STATUS "meshio++: sanitizers ON (-fsanitize=${_mio_sanitize})")
@@ -1285,7 +1334,7 @@ if(MESHIOPLUSPLUS_WITH_EIGEN AND
   # pugixml -- this is a git-submodule path inside the source tree, so exporting
   # it would bake a directory that simply does not exist on a consumer's machine
   # into meshioplusplusTargets.cmake and break find_package() outright.
-  list(APPEND _mio_core_priv_incs
+  list(APPEND _mio_core_sys_incs
        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/eigen)
 else()
   message(STATUS "meshio++: Eigen not found/disabled - MED transpose uses the plain loop")
@@ -1305,7 +1354,7 @@ if(MESHIOPLUSPLUS_WITH_JSON AND
   # PRIVATE for exactly Eigen's reason above: a submodule path inside the
   # source tree must never leak into meshioplusplusTargets.cmake, and no
   # installed header names an nlohmann type (pipeline.cpp only).
-  list(APPEND _mio_core_priv_incs
+  list(APPEND _mio_core_sys_incs
        ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/json/single_include)
 else()
   message(STATUS "meshio++: nlohmann/json not found/disabled - pipeline JSON parsing raises")
@@ -1326,7 +1375,7 @@ if(_mio_gidpost_enabled)
     # symbols.
     list(APPEND _mio_core_libs "${MESHIOPLUSPLUS_HDF5_HL_LIBRARY}")
   endif()
-  list(APPEND _mio_core_priv_incs "${_mio_gidpost_dir}")
+  list(APPEND _mio_core_sys_incs "${_mio_gidpost_dir}")
 endif()
 
 # --------------------------------------------------------------------------
@@ -2395,6 +2444,12 @@ if(MESHIOPLUSPLUS_BUILD_CLI)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/third_party/polyscope/CMakeLists.txt")
       message(STATUS "meshio++: Polyscope viewer enabled (CLI only)")
       add_subdirectory(src/cpp/third_party/polyscope EXCLUDE_FROM_ALL)
+      if(TARGET polyscope)
+        get_target_property(_ps_incs polyscope INTERFACE_INCLUDE_DIRECTORIES)
+        if(_ps_incs)
+          set_target_properties(polyscope PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_ps_incs}")
+        endif()
+      endif()
       target_sources(meshioplusplus_cli PRIVATE src/cpp/cli/polyscope_view.cpp)
       target_link_libraries(meshioplusplus_cli PRIVATE polyscope)
       target_compile_definitions(meshioplusplus_cli PRIVATE MESHIOPLUSPLUS_HAS_POLYSCOPE)
@@ -2449,5 +2504,16 @@ if(MESHIOPLUSPLUS_HARDENED_STL)
       meshioplusplus_cli meshioplusplus_tests meshioplusplus_bench
       meshioplusplus_bench_ops meshioplusplus_bench_ops_allocs meshioplusplus_bench_containers)
     meshioplusplus_target_hardened_stl(${_mio_t})
+  endforeach()
+endif()
+
+# Release binary hardening (MESHIOPLUSPLUS_HARDENING), PRIVATE on the same targets.
+if(MESHIOPLUSPLUS_HARDENING)
+  foreach(_mio_t
+      meshioplusplus_core_obj meshioplusplus_core_meshio meshioplusplus_core_native
+      meshioplusplus_core_kratos _core meshioplusplus_c_obj meshioplusplus
+      meshioplusplus_cli meshioplusplus_tests meshioplusplus_bench
+      meshioplusplus_bench_ops meshioplusplus_bench_ops_allocs meshioplusplus_bench_containers)
+    meshioplusplus_target_hardening(${_mio_t})
   endforeach()
 endif()

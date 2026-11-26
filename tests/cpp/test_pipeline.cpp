@@ -769,6 +769,54 @@ TEST(Pipeline, OptionSpellingsAreOwnedHere) {
     EXPECT_THROW(meshioplusplus::pipeline_mmap_from_name("maybe"), std::invalid_argument);
 }
 
+TEST(Pipeline, StepValidationErrors) {
+    PipelineStep unknown_op;
+    unknown_op.mOp = "NoSuchOperation";
+    EXPECT_THROW(meshioplusplus::validate_pipeline_step(unknown_op), std::invalid_argument);
+
+    PipelineStep unknown_key;
+    unknown_key.mOp = "Clean";
+    unknown_key.mParams["NoSuchKey"] = 1.0;
+    EXPECT_THROW(meshioplusplus::validate_pipeline_step(unknown_key), std::invalid_argument);
+
+    PipelineReport report;
+
+    PipelineStep bad_bool;
+    bad_bool.mOp = "Clean";
+    bad_bool.mParams["Weld"] = std::string("not_a_bool");
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(Mesh{}, bad_bool, report),
+                 std::invalid_argument);
+
+    PipelineStep bad_num;
+    bad_num.mOp = "Clean";
+    bad_num.mParams["Atol"] = std::string("not_a_num");
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(Mesh{}, bad_num, report),
+                 std::invalid_argument);
+
+    PipelineStep bad_vec;
+    bad_vec.mOp = "Transform";
+    bad_vec.mParams["Translate"] = std::vector<double>{1.0, 2.0};
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(Mesh{}, bad_vec, report),
+                 std::invalid_argument);
+
+    PipelineStep rot_missing_deg;
+    rot_missing_deg.mOp = "Transform";
+    rot_missing_deg.mParams["RotateAxis"] = std::vector<double>{0.0, 0.0, 1.0};
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(Mesh{}, rot_missing_deg, report),
+                 std::invalid_argument);
+
+    PipelineStep crop_missing_normal;
+    crop_missing_normal.mOp = "Crop";
+    crop_missing_normal.mParams["PlaneOrigin"] = std::vector<double>{0.0, 0.0, 0.0};
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(Mesh{}, crop_missing_normal, report),
+                 std::invalid_argument);
+
+    PipelineStep remesh_no_size;
+    remesh_no_size.mOp = "Remesh";
+    EXPECT_THROW(meshioplusplus::apply_pipeline_step(Mesh{}, remesh_no_size, report),
+                 std::invalid_argument);
+}
+
 // ---------------------------------------------------------------------------
 // The JSON front-end. Split per build: with the parser, parse/run round
 // trips; without it, every entry point throws NAMING THE FLAG (and this leg
@@ -918,6 +966,27 @@ TEST(PipelineJson, GenerateNeedsNoInput) {
     EXPECT_THROW(meshioplusplus::run_pipeline_json(R"({"Version": 1,
         "Operations": [{"Op": "Generate", "Shape": "blob"}], "Output": {"Path": "x.vtk"}})"),
                  std::invalid_argument);
+}
+
+TEST(PipelineJson, OptionValidationErrors) {
+    const std::vector<std::string> bad_docs = {
+        R"({"Version": 99, "Operations": []})",
+        R"({"Version": 1, "Operations": [{"Op": "NoSuchOperation"}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Clean", "NoSuchKey": 1}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Clean", "Weld": "not_a_bool"}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Clean", "Atol": "not_a_num"}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Smooth", "Iterations": "not_an_int"}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Transform", "Translate": [1, 2]}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Transform", "RotateAxis": [0, 0, 1]}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Remesh"}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Remesh", "TargetSize": 0.2, "Metric": "bogus"}]})",
+        R"({"Version": 1, "Operations": [{"Op": "Crop", "PlaneOrigin": [0, 0, 0]}]})",
+        R"({"Version": 2, "Inputs": {}, "Steps": [{"Op": "Clean", "Input": "missing"}]})",
+        R"({"Version": 2, "Steps": "not_a_list"})",
+    };
+    for (const std::string& r_doc : bad_docs) {
+        EXPECT_THROW(meshioplusplus::run_pipeline_json(r_doc), std::exception) << r_doc;
+    }
 }
 
 #else  // !MESHIOPLUSPLUS_HAS_JSON

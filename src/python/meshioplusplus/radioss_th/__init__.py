@@ -3,9 +3,10 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._series_writer import CoreSeriesWriter
+from .._shims import time_values_shim
 from ._th import SeriesWriter as _PySeriesWriter
 from ._th import read as _py_read
-from ._th import time_values as _py_time_values
+from ._th import time_values as _py_time_values  # noqa: F401
 from ._th import write as _py_write
 
 
@@ -34,14 +35,9 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     return _py_read(filename, points_only, arrays, time_step)
 
 
-def time_values(filename):
-    """The time of every complete output."""
-    try:
-        return list(_core.radioss_th_time_values(str(filename)))
-    except Exception as exc:
-        if not core_declined(exc, "radioss_th", "read", filename):
-            raise
-    return _py_time_values(filename)
+time_values = time_values_shim(
+    __name__, "radioss_th", """The time of every complete output."""
+)
 
 
 def write(filename, mesh):
