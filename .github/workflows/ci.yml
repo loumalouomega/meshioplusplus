@@ -906,18 +906,23 @@ jobs:
           #     a version bump that forgets them turns this step red.
           grep -qF "find_package(meshioplusplus $ver EXACT CONFIG REQUIRED COMPONENTS CXX)" doc/cpp_api.md
           grep -qF "find_package(meshioplusplus $ver EXACT CONFIG REQUIRED COMPONENTS CXX)" README.md
-      - name: C API ABI diff against last release tag (roadmap 3.13.1)
+      - name: C API ABI diff against base (roadmap 3.13.1)
         if: matrix.shared == 'ON' && matrix.default_backend == 'MESHIO'
         run: |
           set -eu
-          base_tag=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
-          if [ -z "$base_tag" ]; then
-            echo "No previous v* release tag found; skipping abidiff."
+          if [ -n "${{ github.base_ref }}" ]; then
+            git fetch --depth=1 origin "${{ github.base_ref }}"
+            base_ref=$(git merge-base HEAD FETCH_HEAD || echo FETCH_HEAD)
+          else
+            base_ref=$(git describe --tags --abbrev=0 --match 'v*' HEAD^ 2>/dev/null || true)
+          fi
+          if [ -z "$base_ref" ]; then
+            echo "No base ref found; skipping abidiff."
             exit 0
           fi
           head_so=$(readlink -f inst/lib/libmeshioplusplus.so)
           head_major=$(awk '/^#define MIO_VERSION_MAJOR / {print $3}' bindings/c/include/meshioplusplus/meshioplusplus.h)
-          git worktree add --detach /tmp/abi-base "$base_tag"
+          git worktree add --detach /tmp/abi-base "$base_ref"
           trap 'git worktree remove --force /tmp/abi-base 2>/dev/null || true' EXIT
           base_major=$(awk '/^#define MIO_VERSION_MAJOR / {print $3}' /tmp/abi-base/bindings/c/include/meshioplusplus/meshioplusplus.h)
           cmake -S /tmp/abi-base -B /tmp/abi-base-build -G Ninja \
@@ -928,15 +933,22 @@ jobs:
             -DMESHIOPLUSPLUS_MESH_BACKEND=MESHIO
           cmake --build /tmp/abi-base-build --target meshioplusplus
           base_so=$(readlink -f /tmp/abi-base-build/libmeshioplusplus.so)
+          cat > /tmp/c_api.abignore <<'EOF'
+          [suppress_function]
+            symbol_name_not_regexp = ^mio_
+          [suppress_variable]
+            symbol_name_not_regexp = ^mio_
+          EOF
           set +e
           abidiff --no-added-syms \
+            --suppressions /tmp/c_api.abignore \
             --headers-dir1 /tmp/abi-base/bindings/c/include \
             --headers-dir2 bindings/c/include \
             "$base_so" "$head_so"
           rc=$?
           set -e
           if [ $((rc & 8)) -ne 0 ] && [ "$head_major" = "$base_major" ]; then
-            echo "::error::Incompatible C API ABI change vs $base_tag without MIO_VERSION_MAJOR bump (abidiff exit $rc)"
+            echo "::error::Incompatible C API ABI change vs $base_ref without MIO_VERSION_MAJOR bump (abidiff exit $rc)"
             exit 1
           fi
       # The backend link guard, which no CMake consumer can exercise: the macro
