@@ -926,7 +926,7 @@ jobs:
             -DMESHIOPLUSPLUS_BUILD_C_API=ON \
             -DBUILD_SHARED_LIBS=ON \
             -DMESHIOPLUSPLUS_MESH_BACKEND=MESHIO
-          cmake --build /tmp/abi-base-build --target meshioplusplus_c
+          cmake --build /tmp/abi-base-build --target meshioplusplus
           base_so=$(readlink -f /tmp/abi-base-build/libmeshioplusplus.so)
           set +e
           abidiff --no-added-syms \
