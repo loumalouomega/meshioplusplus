@@ -83,6 +83,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/mesh.hpp"
 #include "meshioplusplus/region.hpp"
+#include "../../src/cpp/src/detail/string_field.hpp"
 
 namespace py = pybind11;
 
@@ -516,6 +517,96 @@ inline void py_regions_to_mesh(py::handle pymesh, meshioplusplus::Mesh& rMesh) {
  *         `allow_ragged` is `false`, or if any array cannot be coerced to a
  *         supported dtype/shape.
  */
+inline bool try_encode_field_string(meshioplusplus::Mesh& rMesh, const std::string& rName,
+                                    py::handle obj) {
+    if (py::isinstance<py::str>(obj)) {
+        meshioplusplus::detail::set_field_string(rMesh, rName, py::cast<std::string>(obj));
+        return true;
+    }
+    if (py::isinstance<py::list>(obj) || py::isinstance<py::tuple>(obj)) {
+        py::sequence seq = py::reinterpret_borrow<py::sequence>(obj);
+        if (seq.size() > 0) {
+            bool all_str = true;
+            for (py::handle el : seq) {
+                if (!py::isinstance<py::str>(el)) {
+                    all_str = false;
+                    break;
+                }
+            }
+            if (all_str) {
+                std::vector<std::string> vals;
+                vals.reserve(static_cast<std::size_t>(seq.size()));
+                for (py::handle el : seq)
+                    vals.push_back(py::cast<std::string>(el));
+                meshioplusplus::detail::set_field_strings(rMesh, rName, vals);
+                return true;
+            }
+        }
+    }
+    if (py::isinstance<py::array>(obj)) {
+        py::array arr = py::reinterpret_borrow<py::array>(obj);
+        const char kind = arr.dtype().kind();
+        if (kind == 'U' || kind == 'S') {
+            if (arr.ndim() == 0) {
+                py::object item = arr.attr("item")();
+                std::string s = py::isinstance<py::bytes>(item)
+                                    ? py::cast<std::string>(item.attr("decode")("utf-8"))
+                                    : py::cast<std::string>(item);
+                meshioplusplus::detail::set_field_string(rMesh, rName, s);
+                return true;
+            }
+            if (arr.ndim() == 1) {
+                std::vector<std::string> vals;
+                vals.reserve(static_cast<std::size_t>(arr.shape(0)));
+                for (py::handle el : arr) {
+                    py::object item = el.attr("item")();
+                    std::string s = py::isinstance<py::bytes>(item)
+                                        ? py::cast<std::string>(item.attr("decode")("utf-8"))
+                                        : py::cast<std::string>(item);
+                    vals.push_back(std::move(s));
+                }
+                meshioplusplus::detail::set_field_strings(rMesh, rName, vals);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+inline py::array ensure_contiguous_maybe_bool(py::handle obj, PyMeshRefs& rRefs, bool& rIsBool) {
+    rIsBool = false;
+    if (py::isinstance<py::bool_>(obj)) {
+        rIsBool = true;
+        py::object np = py::module_::import("numpy");
+        py::array arr =
+            np.attr("ascontiguousarray")(obj, py::arg("dtype") = np.attr("uint8")).cast<py::array>();
+        rRefs.mKeep.push_back(arr);
+        return arr;
+    }
+    if (py::isinstance<py::array>(obj)) {
+        py::array arr = py::reinterpret_borrow<py::array>(obj);
+        if (arr.dtype().kind() == 'b') {
+            rIsBool = true;
+            py::object np = py::module_::import("numpy");
+            py::array u8 =
+                np.attr("ascontiguousarray")(arr, py::arg("dtype") = np.attr("uint8"))
+                    .cast<py::array>();
+            rRefs.mKeep.push_back(u8);
+            return u8;
+        }
+    }
+    py::array d = ensure_contiguous(obj, rRefs);
+    if (d.dtype().kind() == 'b') {
+        rIsBool = true;
+        py::object np = py::module_::import("numpy");
+        py::array u8 =
+            np.attr("ascontiguousarray")(d, py::arg("dtype") = np.attr("uint8")).cast<py::array>();
+        rRefs.mKeep.push_back(u8);
+        return u8;
+    }
+    return d;
+}
+
 inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& rRefs,
                                        bool lenient_field_data = false, bool allow_ragged = false) {
     meshioplusplus::Mesh m;
@@ -542,17 +633,25 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& rRefs,
 
     for (auto item : pymesh.attr("point_data").cast<py::dict>()) {
         std::string name = py::cast<std::string>(item.first);
-        py::array d = ensure_contiguous(item.second, rRefs);
+        bool is_bool = false;
+        py::array d = ensure_contiguous_maybe_bool(item.second, rRefs, is_bool);
+        if (is_bool)
+            meshioplusplus::detail::set_bool_marker(m, "point", name);
         m.mPointData.emplace(std::move(name), view_from_numpy(d));
     }
 
     for (auto item : pymesh.attr("cell_data").cast<py::dict>()) {
         std::string name = py::cast<std::string>(item.first);
         std::vector<meshioplusplus::NDArray> blocks;
+        bool any_bool = false;
         for (py::handle a : py::reinterpret_borrow<py::object>(item.second)) {
-            py::array d = ensure_contiguous(a, rRefs);
+            bool is_bool = false;
+            py::array d = ensure_contiguous_maybe_bool(a, rRefs, is_bool);
+            any_bool = any_bool || is_bool;
             blocks.push_back(view_from_numpy(d));
         }
+        if (any_bool)
+            meshioplusplus::detail::set_bool_marker(m, "cell", name);
         m.mCellData.emplace(std::move(name), std::move(blocks));
     }
 
@@ -560,15 +659,23 @@ inline meshioplusplus::Mesh py_to_mesh(py::handle pymesh, PyMeshRefs& rRefs,
     if (!fd.is_none()) {
         for (auto item : fd.cast<py::dict>()) {
             std::string name = py::cast<std::string>(item.first);
+            if (try_encode_field_string(m, name, item.second))
+                continue;
             if (lenient_field_data) {
                 try {
-                    py::array d = ensure_contiguous(item.second, rRefs);
+                    bool is_bool = false;
+                    py::array d = ensure_contiguous_maybe_bool(item.second, rRefs, is_bool);
+                    if (is_bool)
+                        meshioplusplus::detail::set_bool_marker(m, "field", name);
                     m.mFieldData.emplace(std::move(name), view_from_numpy(d));
                 } catch (...) {
                     // non-numeric entry: handled by the caller's side-channel
                 }
             } else {
-                py::array d = ensure_contiguous(item.second, rRefs);
+                bool is_bool = false;
+                py::array d = ensure_contiguous_maybe_bool(item.second, rRefs, is_bool);
+                if (is_bool)
+                    meshioplusplus::detail::set_bool_marker(m, "field", name);
                 m.mFieldData.emplace(std::move(name), view_from_numpy(d));
             }
         }
@@ -785,23 +892,83 @@ inline py::object mesh_to_py(meshioplusplus::Mesh&& m) {
         }
     }
 
+    // Pre-scan string fields and boolean markers before moving NDArray buffers.
+    std::unordered_set<std::string> bool_point_names;
+    std::unordered_set<std::string> bool_cell_names;
+    std::unordered_set<std::string> bool_field_names;
+    std::unordered_map<std::string, std::string> scalar_strings;
+    std::unordered_map<std::string, std::vector<std::string>> list_strings;
+    std::unordered_set<std::string> hidden_field_keys;
+
+    const auto fd_names = meshioplusplus::detail::sorted_keys(m.mFieldData);
+    for (const auto& name : fd_names) {
+        if (meshioplusplus::detail::is_bool_marker_key(name)) {
+            hidden_field_keys.insert(name);
+            continue;
+        }
+        if (auto s = meshioplusplus::detail::get_field_string(m, name)) {
+            scalar_strings.emplace(name, std::move(*s));
+            hidden_field_keys.insert(meshioplusplus::detail::string_offsets_key(name));
+        } else if (meshioplusplus::detail::is_field_string_list(m, name)) {
+            if (auto lst = meshioplusplus::detail::get_field_strings(m, name)) {
+                list_strings.emplace(name, std::move(*lst));
+                hidden_field_keys.insert(meshioplusplus::detail::string_offsets_key(name));
+            }
+        }
+    }
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.mPointData))
+        if (meshioplusplus::detail::is_bool_array(m, "point", name))
+            bool_point_names.insert(name);
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.mCellData))
+        if (meshioplusplus::detail::is_bool_array(m, "cell", name))
+            bool_cell_names.insert(name);
+    for (const auto& name : fd_names)
+        if (meshioplusplus::detail::is_bool_array(m, "field", name))
+            bool_field_names.insert(name);
+
     // point_data/cell_data/field_data are unordered_map; iterate in sorted key
     // order so the resulting Python dict has a deterministic key order.
     py::dict point_data;
-    for (const auto& name : meshioplusplus::detail::sorted_keys(m.mPointData))
-        point_data[py::str(name)] = numpy_from_ndarray(std::move(m.mPointData.at(name)));
+    for (const auto& name : meshioplusplus::detail::sorted_keys(m.mPointData)) {
+        py::array arr = numpy_from_ndarray(std::move(m.mPointData.at(name)));
+        if (bool_point_names.count(name) != 0)
+            arr = arr.attr("astype")("bool").cast<py::array>();
+        point_data[py::str(name)] = std::move(arr);
+    }
 
     py::dict cell_data;
     for (const auto& name : meshioplusplus::detail::sorted_keys(m.mCellData)) {
+        const bool is_bool = bool_cell_names.count(name) != 0;
         py::list lst;
-        for (auto& a : m.mCellData.at(name))
-            lst.append(numpy_from_ndarray(std::move(a)));
+        for (auto& a : m.mCellData.at(name)) {
+            py::array arr = numpy_from_ndarray(std::move(a));
+            if (is_bool)
+                arr = arr.attr("astype")("bool").cast<py::array>();
+            lst.append(std::move(arr));
+        }
         cell_data[py::str(name)] = lst;
     }
 
     py::dict field_data;
-    for (const auto& name : meshioplusplus::detail::sorted_keys(m.mFieldData))
-        field_data[py::str(name)] = numpy_from_ndarray(std::move(m.mFieldData.at(name)));
+    for (const auto& name : fd_names) {
+        if (hidden_field_keys.count(name) != 0)
+            continue;
+        if (auto it = scalar_strings.find(name); it != scalar_strings.end()) {
+            field_data[py::str(name)] = py::str(it->second);
+            continue;
+        }
+        if (auto it = list_strings.find(name); it != list_strings.end()) {
+            py::list lst;
+            for (const auto& s : it->second)
+                lst.append(py::str(s));
+            field_data[py::str(name)] = std::move(lst);
+            continue;
+        }
+        py::array arr = numpy_from_ndarray(std::move(m.mFieldData.at(name)));
+        if (bool_field_names.count(name) != 0)
+            arr = arr.attr("astype")("bool").cast<py::array>();
+        field_data[py::str(name)] = std::move(arr);
+    }
 
     return MeshCls(points, cells, py::arg("point_data") = point_data,
                    py::arg("cell_data") = cell_data, py::arg("field_data") = field_data,

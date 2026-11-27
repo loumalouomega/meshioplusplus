@@ -6005,6 +6005,14 @@ MIO_API mio_status mio_mesh_get_field_data(const mio_mesh* mesh, const char* nam
                                            const void** data, mio_dtype* dtype, int32_t* ndim,
                                            int64_t* shape);
 
+/** Store a UTF-8 string in field_data under `name` (roadmap §8.2 convention). */
+MIO_API mio_status mio_mesh_set_field_string(mio_mesh* mesh, const char* name, const char* value);
+
+/** Copy a UTF-8 string stored in field_data under `name` into `buf`.
+ *  @return the byte length (excluding NUL), or -1 if absent / not a string. */
+MIO_API int64_t mio_mesh_get_field_string(const mio_mesh* mesh, const char* name, char* buf,
+                                          int64_t buflen);
+
 /* ---------------------------------------------------------------------
  * Named regions
  *

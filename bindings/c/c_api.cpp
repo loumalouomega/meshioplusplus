@@ -76,6 +76,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/detail/compressed_input.hpp"
+#include "../../src/cpp/src/detail/string_field.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
 #include "meshioplusplus/operations/hull.hpp"
@@ -5965,6 +5966,27 @@ int64_t mio_mesh_field_data_name(const mio_mesh* mesh, int64_t index, char* buf,
 mio_status mio_mesh_get_field_data(const mio_mesh* mesh, const char* name, const void** data,
                                    mio_dtype* dtype, int32_t* ndim, int64_t* shape) {
     return capi_data_get<CapiFieldDataTraits>(mesh, name, data, dtype, ndim, shape);
+}
+
+mio_status mio_mesh_set_field_string(mio_mesh* mesh, const char* name, const char* value) {
+    return capi_guarded_status([&]() {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        capi_require(name && name[0] != '\0', "meshio++: field name is empty");
+        capi_require(value, "meshio++: string value is NULL");
+        meshioplusplus::detail::set_field_string(mesh->mMesh, name, value);
+    });
+}
+
+int64_t mio_mesh_get_field_string(const mio_mesh* mesh, const char* name, char* buf,
+                                  int64_t buflen) {
+    return capi_guarded_count([&]() -> int64_t {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        capi_require(name && name[0] != '\0', "meshio++: field name is empty");
+        auto s = meshioplusplus::detail::get_field_string(mesh->mMesh, name);
+        if (!s)
+            return -1;
+        return copy_string(*s, buf, buflen);
+    });
 }
 
 /* ---------------------------------------------------------------------

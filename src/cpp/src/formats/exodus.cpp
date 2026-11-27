@@ -54,6 +54,7 @@
 #include "library_preflight.hpp"
 #include "../detail/dtype_table.hpp"
 #include "../detail/ghost_names.hpp"
+#include "../detail/string_field.hpp"
 
 namespace meshioplusplus {
 
@@ -1039,6 +1040,17 @@ Mesh read_exodus(const std::string& rPath, ExodusInfo& rInfo, const ReadOptions&
         *gv.As<double>() = global_values[g];
         mesh.AddFieldData("exodus:global:" + global_names[g], std::move(gv));
     }
+    // User title attribute (skip the default meshio++ provenance banner).
+    {
+        std::size_t title_len = 0;
+        if (nc_inq_attlen(ncid, NC_GLOBAL, "title", &title_len) == NC_NOERR && title_len > 0) {
+            const std::string title = read_att_text(ncid, NC_GLOBAL, "title");
+            if (!title.empty() && title.rfind("Written by meshio++", 0) != 0 &&
+                title.rfind("Created by meshio++", 0) != 0) {
+                detail::set_field_string(mesh, "title", title);
+            }
+        }
+    }
 
     return mesh;
 }
@@ -1268,11 +1280,16 @@ void exo_write_file(const std::string& rPath, const Mesh& rMesh, bool EmitStep, 
 
     // global attributes
     {
-        auto title_lines = detail::provenance_lines(detail::SlotTier::Block);
-        std::string title = title_lines[0];
-        for (std::size_t i = 1; i < title_lines.size(); ++i) {
-            title += '\n';
-            title += title_lines[i];
+        std::string title;
+        if (auto custom_title = detail::get_field_string(rMesh, "title")) {
+            title = *custom_title;
+        } else {
+            auto title_lines = detail::provenance_lines(detail::SlotTier::Block);
+            title = title_lines[0];
+            for (std::size_t i = 1; i < title_lines.size(); ++i) {
+                title += '\n';
+                title += title_lines[i];
+            }
         }
         check(nc_put_att_text(ncid, NC_GLOBAL, "title", title.size(), title.c_str()), "title",
               true);

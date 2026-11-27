@@ -83,6 +83,10 @@ Complex-valued fields are stored as matched pairs of real-valued arrays named **
 
 Structured readers (`vti`, `vtr`, `vts`, legacy structured VTK, VTKHDF `ImageData`, CGNS structured zones and PLOT3D) annotate each expanded structured block with `field_data["meshio:structured:<block>"] = [ni, nj, nk]` (`int64` point counts, `i` fastest). Structured writers check this annotation before falling back to geometric uniform-lattice detection, allowing graded rectilinear grids (`.vtr`) and curvilinear structured grids (`.vts`, PLOT3D) to round-trip without re-deriving topology. Operations that modify geometry or topology (such as `smooth`, and any non-data/non-rigid pipeline step) strip `meshio:structured:*` so deformed or unstructured meshes are explicitly refused by structured writers rather than silently miswritten. In Python, `to_grid(mesh)` and `from_grid(grid_array)` bridge regular-lattice `Mesh` objects and [`GridArray`](./grids.md).
 
+## Strings and booleans
+
+String `field_data` entries cross the C++ core without a dedicated string `DType`: a scalar UTF-8 string `name` is stored as a 1-D `uint8` byte array under `field_data[name]` paired with a 1-element `int64` array `field_data["<name>:offsets"] = [len]`, and a list of `k` strings is stored as concatenated UTF-8 bytes paired with `int64` CSR offsets of length `k + 1`. Boolean arrays in `point_data`, `cell_data` or `field_data` are stored as `uint8` (`0`/`1`) with a companion marker `field_data["meshio:bool:<loc>:<name>"] = [1]` (`loc` in `point`, `cell`, `field`). The Python conversion encodes and decodes both transparently (hiding the companion keys), and the C API exposes `mio_mesh_set_field_string` and `mio_mesh_get_field_string`.
+
 ## Convenience properties
 
 | Property | Returns |
