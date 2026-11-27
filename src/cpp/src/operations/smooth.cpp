@@ -1346,8 +1346,11 @@ SmoothResult smooth(const Mesh& rMesh, const SmoothOptions& rOptions) {
             blocks.push_back(detail::data_owned_copy(rMesh.CellData(name, b)));
         out.AddCellData(name, std::move(blocks));
     }
-    for (const std::string& name : rMesh.FieldDataNames())
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (name.rfind("meshio:structured:", 0) == 0 || name == "plot3d:dims")
+            continue;
         out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+    }
 
     return result;
 }

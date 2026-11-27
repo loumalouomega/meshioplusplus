@@ -46,6 +46,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/chunked_parse.hpp"
+#include "../detail/structured_grid.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/vtk_hex_order.hpp"
@@ -511,6 +512,9 @@ Mesh read_vtk(const std::string& rPath) try {
         if (mesh.NumPoints() != count)
             throw ReadError("VTK: POINTS count differs from DIMENSIONS");
         detail::vtk_structured_cells(dims, conn, offsets, types);
+        detail::set_structured_dims(mesh, 0, static_cast<std::int64_t>(dims[0]),
+                                    static_cast<std::int64_t>(dims[1]),
+                                    static_cast<std::int64_t>(dims[2]));
         conn_ptr = conn.data();
     }
     if ((have_point_data && declared_points != mesh.NumPoints()) ||

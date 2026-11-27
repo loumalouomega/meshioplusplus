@@ -49,6 +49,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "../detail/lattice_cells.hpp"
+#include "../detail/structured_grid.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/ndarray_utils.hpp"
 #include "../detail/vtk_write_cell.hpp"
@@ -1695,6 +1696,8 @@ Mesh vtkhdf_read_image_data(hid_t Root, const ReadOptions& rOpts) {
         NDArray conn = NDArray::Uninit(DType::Int64, {num_cells, npc});
         std::memcpy(conn.Data(), lattice.data(), lattice.size() * sizeof(std::int64_t));
         mesh.AddCellBlock(type, std::move(conn));
+        detail::set_structured_dims(mesh, 0, static_cast<std::int64_t>(ni),
+                                    static_cast<std::int64_t>(nj), static_cast<std::int64_t>(nk));
     }
     const auto add = [&](const char* pGroup, std::size_t Rows, bool Point) {
         if (!rOpts.WantsAnyData())

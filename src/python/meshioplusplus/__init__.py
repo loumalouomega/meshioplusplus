@@ -184,6 +184,8 @@ if TYPE_CHECKING:
     from ._grid import grid
     from ._grid_transfer import (
         GridArray,
+        from_grid,
+        to_grid,
         GridSpec,
         PowerSpectrum,
         expand_grid,
@@ -548,6 +550,8 @@ _LAZY_ATTRS = {
     "fichera": "_primitives",
     "solid_torus": "_primitives",
     "GridArray": "_grid_transfer",
+    "to_grid": "_grid_transfer",
+    "from_grid": "_grid_transfer",
     "GridSpec": "_grid_transfer",
     "PowerSpectrum": "_grid_transfer",
     "expand_grid": "_grid_transfer",
@@ -1070,6 +1074,8 @@ __all__ = [
     "has_zarr",
     "GridSpec",
     "GridArray",
+    "to_grid",
+    "from_grid",
     "PowerSpectrum",
     "sample_grid",
     "scatter_grid",

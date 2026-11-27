@@ -79,6 +79,10 @@ A symmetric tensor stored as six components per point or cell uses the order **`
 
 Complex-valued fields are stored as matched pairs of real-valued arrays named **`<base>_real`** and **`<base>_imag`** (the convention shared by UNV, Nastran OP2, Nastran HDF5 and EnSight). Writers for formats with native complex fields pair matching `<base>_real` and `<base>_imag` arrays into one complex field on output; `transform(..., rotate_vector_data=True)` rotates both halves together, `interpolate(..., arrays=["u"])` expands a complex base name to both arrays, `data_calc` evaluates `abs(u)` (`hypot(u_real, u_imag)`) and `phase(u)` (`atan2(u_imag, u_real)`), and `data_info` annotates matched pairs with `complex_pair` and `complex_part`. In Python, `complex_pairs(mesh)` lists complex base names, `to_complex(mesh, name)` combines a pair into a `complex64`/`complex128` NumPy array, and `from_complex(mesh, name, array)` stores a complex array as `<name>_real` and `<name>_imag`.
 
+## Structured grids
+
+Structured readers (`vti`, `vtr`, `vts`, legacy structured VTK, VTKHDF `ImageData`, CGNS structured zones and PLOT3D) annotate each expanded structured block with `field_data["meshio:structured:<block>"] = [ni, nj, nk]` (`int64` point counts, `i` fastest). Structured writers check this annotation before falling back to geometric uniform-lattice detection, allowing graded rectilinear grids (`.vtr`) and curvilinear structured grids (`.vts`, PLOT3D) to round-trip without re-deriving topology. Operations that modify geometry or topology (such as `smooth`, and any non-data/non-rigid pipeline step) strip `meshio:structured:*` so deformed or unstructured meshes are explicitly refused by structured writers rather than silently miswritten. In Python, `to_grid(mesh)` and `from_grid(grid_array)` bridge regular-lattice `Mesh` objects and [`GridArray`](./grids.md).
+
 ## Convenience properties
 
 | Property | Returns |

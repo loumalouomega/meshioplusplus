@@ -6413,6 +6413,17 @@
     ]
    }
   },
+  "from_grid": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "grid_array"
+     }
+    ]
+   }
+  },
   "from_pyvista": {
    "kind": "function",
    "signature": {
@@ -12130,6 +12141,22 @@
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "zero_copy_only"
+     }
+    ]
+   }
+  },
+  "to_grid": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "fields"
      }
     ]
    }

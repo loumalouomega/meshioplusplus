@@ -217,6 +217,117 @@ def lattice_from_mesh(mesh):
     return dims, origin, spacing
 
 
+def get_structured_dims(mesh, block: int = 0):
+    """Return ``(ni, nj, nk)`` point counts from ``field_data['meshio:structured:<block>']``
+    (or ``plot3d:dims`` fallback), or ``None``."""
+    fd = getattr(mesh, "field_data", None) or {}
+    key = f"meshio:structured:{block}"
+    if key in fd:
+        arr = np.asarray(fd[key]).reshape(-1)
+        if arr.size == 3:
+            ni, nj, nk = int(arr[0]), int(arr[1]), int(arr[2])
+            if ni > 0 and nj > 0 and nk > 0:
+                return (ni, nj, nk)
+    if "plot3d:dims" in fd:
+        arr = np.asarray(fd["plot3d:dims"])
+        if arr.ndim == 2 and arr.shape[1] == 3 and block < arr.shape[0]:
+            ni, nj, nk = int(arr[block, 0]), int(arr[block, 1]), int(arr[block, 2])
+            if ni > 0 and nj > 0 and nk > 0:
+                return (ni, nj, nk)
+    return None
+
+
+def _validate_structured_single_block(mesh, pdims):
+    ni, nj, nk = pdims
+    if ni < 2 or nj < 2 or nk < 2 or len(mesh.cells) != 1:
+        return False
+    if len(mesh.points) != ni * nj * nk:
+        return False
+    block = mesh.cells[0]
+    if block.type != "hexahedron":
+        return False
+    conn = np.asarray(block.data)
+    nx, ny, nz = ni - 1, nj - 1, nk - 1
+    if conn.ndim != 2 or conn.shape != (nx * ny * nz, 8):
+        return False
+
+    def _expect_cell(i, j, k):
+        def idx(a, b, c):
+            return (c * nj + b) * ni + a
+
+        return np.array(
+            [
+                idx(i, j, k),
+                idx(i + 1, j, k),
+                idx(i + 1, j + 1, k),
+                idx(i, j + 1, k),
+                idx(i, j, k + 1),
+                idx(i + 1, j, k + 1),
+                idx(i + 1, j + 1, k + 1),
+                idx(i, j + 1, k + 1),
+            ],
+            dtype=np.int64,
+        )
+
+    return bool(
+        np.array_equal(conn[0].astype(np.int64), _expect_cell(0, 0, 0))
+        and np.array_equal(
+            conn[-1].astype(np.int64), _expect_cell(nx - 1, ny - 1, nz - 1)
+        )
+    )
+
+
+def rectilinear_from_mesh(mesh):
+    """Recover ``(cell_dims, xs, ys, zs)`` for a rectilinear (possibly graded) grid."""
+    pts = np.asarray(mesh.points, dtype=np.float64)
+    if pts.ndim != 2 or pts.shape[1] < 3:
+        return None
+    pdims = get_structured_dims(mesh, 0)
+    if pdims is not None:
+        if not _validate_structured_single_block(mesh, pdims):
+            return None
+        ni, nj, nk = pdims
+    else:
+        spec = lattice_from_mesh(mesh)
+        if spec is None:
+            return None
+        cdims, _, _ = spec
+        ni, nj, nk = int(cdims[0]) + 1, int(cdims[1]) + 1, int(cdims[2]) + 1
+    grid_pts = pts[:, :3].reshape(nk, nj, ni, 3)
+    xs = grid_pts[0, 0, :, 0].copy()
+    ys = grid_pts[0, :, 0, 1].copy()
+    zs = grid_pts[:, 0, 0, 2].copy()
+    if (
+        not np.all(np.diff(xs) > 0)
+        or not np.all(np.diff(ys) > 0)
+        or not np.all(np.diff(zs) > 0)
+    ):
+        return None
+    tol_x = 1e-9 * max(1.0, abs(xs[-1] - xs[0]))
+    tol_y = 1e-9 * max(1.0, abs(ys[-1] - ys[0]))
+    tol_z = 1e-9 * max(1.0, abs(zs[-1] - zs[0]))
+    if (
+        np.max(np.abs(grid_pts[:, :, :, 0] - xs[None, None, :])) > tol_x
+        or np.max(np.abs(grid_pts[:, :, :, 1] - ys[None, :, None])) > tol_y
+        or np.max(np.abs(grid_pts[:, :, :, 2] - zs[:, None, None])) > tol_z
+    ):
+        return None
+    return np.array([ni - 1, nj - 1, nk - 1], dtype=np.int64), xs, ys, zs
+
+
+def curvilinear_from_mesh(mesh):
+    """Recover ``cell_dims`` for a curvilinear structured grid."""
+    pdims = get_structured_dims(mesh, 0)
+    if pdims is not None:
+        if not _validate_structured_single_block(mesh, pdims):
+            return None
+        return np.array([pdims[0] - 1, pdims[1] - 1, pdims[2] - 1], dtype=np.int64)
+    spec = lattice_from_mesh(mesh)
+    if spec is None:
+        return None
+    return spec[0]
+
+
 def grid(
     dims, origin=(0.0, 0.0, 0.0), spacing=(1.0, 1.0, 1.0), max_cells=DEFAULT_MAX_CELLS
 ):

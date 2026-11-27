@@ -543,6 +543,19 @@ class GridArray:
         )
 
 
+def to_grid(mesh: Mesh, *, fields=None) -> GridArray:
+    """Convert a regular-lattice :class:`Mesh` into a :class:`GridArray`."""
+    return GridArray.from_mesh(mesh, fields=fields)
+
+
+def from_grid(grid_array: GridArray) -> Mesh:
+    """Convert a :class:`GridArray` into a structured :class:`Mesh`."""
+    mesh = grid_array.to_mesh()
+    d, h, w = grid_array.spec.shape
+    mesh.field_data["meshio:structured:0"] = np.array([w, h, d], dtype=np.int64)
+    return mesh
+
+
 @dataclass(frozen=True)
 class PowerSpectrum:
     """An azimuthally averaged power spectrum, and the bins it was built on."""

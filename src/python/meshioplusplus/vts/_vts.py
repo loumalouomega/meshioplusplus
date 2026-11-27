@@ -52,6 +52,19 @@ def _read_points(piece, reader, dims, num_points):
 
 
 def write(filename, mesh, binary=True, compression="zlib", header_type=None):
+    from .._exceptions import WriteError
+    from .._grid import curvilinear_from_mesh
+
+    dims = curvilinear_from_mesh(mesh)
+    if dims is None:
+        raise WriteError(
+            "StructuredGrid needs a structured lattice: either one hexahedron "
+            "block annotated with field_data['meshio:structured:0'] matching "
+            "its topology, or an unannotated uniform axis-aligned lattice. An "
+            "unstructured, partial, or geometry-modified mesh (for example "
+            "after smooth) cannot be written as .vts -- write it as .vtu."
+        )
+
     def geometry(lines, emit, dims, origin, spacing, compression):
         emit("Points", [("Points", np.asarray(mesh.points, dtype=np.float64))])
 
@@ -60,17 +73,10 @@ def write(filename, mesh, binary=True, compression="zlib", header_type=None):
         mesh,
         grid="StructuredGrid",
         prefix="VTS",
-        not_lattice=(
-            "StructuredGrid is a lattice, and this mesh is not one: it needs "
-            "exactly one hexahedron block whose points tile an axis-aligned box "
-            "with uniform spacing (the writer recovers WholeExtent from it, then "
-            "writes the mesh's own points unchanged). A partial grid "
-            "(voxelize's 'surface'/'inside' fill, or an octree) cannot be "
-            "written as .vts either -- write it as .vtu, which stores the "
-            "cells explicitly."
-        ),
+        not_lattice="",
         binary=binary,
         compression=compression,
         header_type=header_type,
         geometry=geometry,
+        dims_override=dims,
     )

@@ -947,13 +947,6 @@ Gauss-point results are the primary output of a structural solver, and no operat
 - **Steps.** `detail/region_tree.hpp` (parse, build, parent and children queries) with the KRATOS interpreter moved onto it; the five formats' writers rebuild their nesting from it; `regions` reports print the tree.
 - **Done when.** A nested `.vtm` and a VTKHDF file with an `Assembly` round-trip with the same nesting. **M, design pass first; after 8.2**
 
-### 8.6 Structured grids that stay structured
-
-- **State today.** `vti`, `vtr`, `vts` and legacy structured VTK are expanded to explicit cells by `detail::vtk_structured_cells` (`src/cpp/src/detail/vtk_xml_pieces.cpp` line 315): eight indices per cell for what three integers describe. Their writers accept only a mesh that `detail::lattice_from_mesh` (`detail/grid_lattice.hpp` line 205) recognises as a lattice, which is why they fail [conformance](./conformance.md) on the canonical mesh. CGNS structured zones are refused (2.3.1.3) and PLOT3D is not read (2.4.2). The physics-ML [grids](./grids.md) are the opposite case: `GridSpec`/`GridArray` in Python with no `Mesh`.
-- **Decisions to take first.** (1) Recommended first step: an annotation, not a block kind: `field_data["meshio:structured:<block>"] = [ni, nj, nk]` (point counts) set by every structured reader on the block it expands, checked by `lattice_from_mesh` instead of re-deriving, honoured by the structured writers (which then also accept curvilinear lattices for `vts`, CGNS and PLOT3D without geometric detection), and removed by any operation that changes the block's points or cells (the pipeline clears it unless the step is data-only or a rigid transform; an explicit list, tested). This closes the three conformance failures by declaring what the formats hold, and costs no ABI. (2) An implicit-connectivity block (`CellView` generating corners from indices) only for 10⁸-cell voxel data: every operation's hot loop reads connectivity through `CellView`, and the measured cost of changing it is what kept the backends' `CellView`s apart ([§6](#code-duplication)). XL, and only with a workload.
-- **Steps (annotation).** The key and its invalidation rule in [mesh data model](./mesh_data_model.md); readers (`vti`, `vtr`, `vts`, legacy VTK, VTKHDF image data, CGNS, PLOT3D, EnSight `block`) set it; writers use it; `conformance_spec.py`'s three `error` declarations become lattice round-trips; `to_grid(mesh)`/`from_grid` join `Mesh` and the Python `GridArray`.
-- **Done when.** `read("a.vts")` then `write("b.vts")` is exact, and the same mesh after `smooth` is refused by name. **M** (annotation); **XL** (block kind), design pass first
-
 ---
 
 ## 9. Operations {#operations}

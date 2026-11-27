@@ -19,6 +19,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/parallel.hpp"
 #include "region_field_data.hpp"
+#include "structured_grid.hpp"
 #include "text_cursor.hpp"
 #include "vtk_xml_read.hpp"
 
@@ -500,6 +501,13 @@ Mesh vtk_xml_read_pieces(const std::string& rPath, const ReadOptions& rOpts, con
     regions_from_field_arrays(mesh, fields, &file_map, pFormat);
     for (auto& [name, arr] : passthrough)
         mesh.AddFieldData(name, std::move(arr));
+    if (h.mPieces.size() == 1 && std::strcmp(pType, "UnstructuredGrid") != 0 &&
+        std::strcmp(pType, "PolyData") != 0) {
+        const auto& d = h.mPieces[0].mDims;
+        if (d[0] > 0 && d[1] > 0 && d[2] > 0)
+            set_structured_dims(mesh, 0, static_cast<std::int64_t>(d[0]),
+                                static_cast<std::int64_t>(d[1]), static_cast<std::int64_t>(d[2]));
+    }
     return mesh;
 }
 

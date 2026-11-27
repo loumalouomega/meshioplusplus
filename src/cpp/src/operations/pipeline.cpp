@@ -4041,6 +4041,29 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
         }
         mesh = rPipeline.mVersion == 2 ? pipe_apply_v2(std::move(mesh), step, report, &model)
                                        : pipe_apply_step(std::move(mesh), step, report, &model);
+        // Strip structured-grid annotations after any step that modifies
+        // geometry or topology (keep for data-only steps and rigid Transform).
+        auto pipe_preserves_structured = [](const std::string& rOp) {
+            return rOp == "DataCalc" || rOp == "DataCondition" || rOp == "DataDrop" ||
+                   rOp == "DataKeep" || rOp == "DataRename" || rOp == "DataAverage" ||
+                   rOp == "PointDataToCellData" || rOp == "CellDataToPointData" ||
+                   rOp == "Gradient" || rOp == "Hessian" || rOp == "TensorInvariants" ||
+                   rOp == "SmoothField" || rOp == "Colorize" || rOp == "Transform" ||
+                   rOp == "Regions" || rOp == "Quality" || rOp == "FvmQuality" ||
+                   rOp == "CheckConformity" || rOp == "CheckTetrahedra" ||
+                   rOp == "EstimateError" || rOp == "ErrorSize" || rOp == "SurfaceDistance" ||
+                   rOp == "Deviation" || rOp == "Thickness" || rOp == "ComputeCurvature" ||
+                   rOp == "ComputeNormals" || rOp == "ComputePointNormals" ||
+                   rOp == "CriticalPoints" || rOp == "Eigenmodes" || rOp == "SpectralDescriptors";
+        };
+        if (!pipe_preserves_structured(step.mOp)) {
+            std::vector<std::string> drop_keys;
+            for (const std::string& fn : mesh.FieldDataNames())
+                if (fn.rfind("meshio:structured:", 0) == 0 || fn == "plot3d:dims")
+                    drop_keys.push_back(fn);
+            if (!drop_keys.empty())
+                mesh = data_drop(mesh, DataLocation::Field, drop_keys);
+        }
         // Projected onto it, the mesh matches the model again.
         if (model.Has() && !pipe_is_model_step(step.mOp) && step.mOp != "FitCad" &&
             step.mOp != "ProjectToCad")
