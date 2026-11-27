@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/formats/ensight.hpp"
 #include "meshioplusplus/formats/nastran_op2.hpp"
 #include "meshioplusplus/formats/unv.hpp"
@@ -42,7 +43,7 @@ Mesh make_complex_mesh() {
     c[3] = 0;
     c[4] = 2;
     c[5] = 3;
-    m.AddCellBlock(CellType::Triangle, std::move(conn));
+    m.AddCellBlock("triangle", std::move(conn));
 
     NDArray p_re(DType::Float64, {4});
     NDArray p_im(DType::Float64, {4});
@@ -153,17 +154,15 @@ TEST(ComplexPairs, DataCalcAbsAndPhase) {
     Mesh m = make_complex_mesh();
 
     DataCalcOptions mag_opts;
-    mag_opts.mExpression = "abs(p)";
-    mag_opts.mOutput = "p_mag";
-    Mesh m1 = data_calc(m, mag_opts);
+    mag_opts.output = "p_mag";
+    Mesh m1 = data_calc(m, "abs(p)", mag_opts);
     ASSERT_TRUE(m1.HasPointData("p_mag"));
     for (std::size_t i = 0; i < 4; ++i)
         EXPECT_NEAR(m1.PointData("p_mag").As<double>()[i], 5.0 * (i + 1), 1e-12);
 
     DataCalcOptions phase_opts;
-    phase_opts.mExpression = "phase(p)";
-    phase_opts.mOutput = "p_phase";
-    Mesh m2 = data_calc(m, phase_opts);
+    phase_opts.output = "p_phase";
+    Mesh m2 = data_calc(m, "phase(p)", phase_opts);
     ASSERT_TRUE(m2.HasPointData("p_phase"));
     const double expected_phase = std::atan2(4.0, 3.0);
     for (std::size_t i = 0; i < 4; ++i)
@@ -173,8 +172,8 @@ TEST(ComplexPairs, DataCalcAbsAndPhase) {
 TEST(ComplexPairs, InterpolateBaseNameExpandsPair) {
     Mesh src = make_complex_mesh();
     Mesh dst;
-    dst.AssignPoints(src.Points().MakeOwned());
-    dst.AddCellBlock(CellType::Triangle, src.Cells(0).Conn().MakeOwned());
+    dst.AssignPoints(detail::data_owned_copy(src.Points()));
+    dst.AddCellBlock("triangle", detail::data_owned_copy(src.Cells(0).Conn()));
 
     InterpolateOptions opts;
     opts.mArrays = {"p"};
@@ -187,11 +186,9 @@ TEST(ComplexPairs, InterpolateBaseNameExpandsPair) {
 
 TEST(ComplexPairs, TransformRotatesBothVectorHalves) {
     Mesh m = make_complex_mesh();
-    TransformOptions opts;
-    opts.mRotateAxis = {0.0, 0.0, 1.0};
-    opts.mRotateAngleDeg = 90.0;
-    opts.mRotateVectorData = true;
-    Mesh out = transform(m, opts);
+    const double half_pi = std::atan2(1.0, 0.0);
+    const AffineTransform rot = transform_rotation(0.0, 0.0, 1.0, half_pi);
+    Mesh out = transform(m, rot, /*rotate_vector_data=*/true);
     // U_real = (1, 0, 0) rotated +90 deg around Z -> (0, 1, 0)
     // U_imag = (0, 2, 0) rotated +90 deg around Z -> (-2, 0, 0)
     EXPECT_NEAR(out.PointData("U_real").As<double>()[0], 0.0, 1e-12);
