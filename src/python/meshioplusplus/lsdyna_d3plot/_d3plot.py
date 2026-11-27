@@ -966,6 +966,9 @@ class _CellArrays:
                 mesh.field_data[f"{fmt}:layout:{name}"] = np.array(
                     [pts, width], dtype=np.int64
                 )
+                mesh.field_data[f"meshio:ip:{name}"] = np.array(
+                    [pts, width, -1], dtype=np.int64
+                )
 
 
 def _read_state(f, mesh, blocks, where, index, wanted):

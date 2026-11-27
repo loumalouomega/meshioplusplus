@@ -921,4 +921,7 @@ def read(filename, points_only=False, arrays=None, time_step=0):
             mesh.field_data["abaqus:layout:" + name] = np.array(
                 [pts, width], dtype=np.int64
             )
+            mesh.field_data["meshio:ip:" + name] = np.array(
+                [pts, width, 0 if location == 2 else -1], dtype=np.int64
+            )
     return mesh
