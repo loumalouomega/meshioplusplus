@@ -13161,8 +13161,7 @@ mio_mesh* mio_streamlines(const mio_mesh* mesh, const mio_streamlines_opts* opts
         o.mArray = opts->array;
         o.mSeeds = opts->seeds;
         if (opts->seed_points && opts->num_seed_points > 0) {
-            o.mSeedPoints.assign(opts->seed_points,
-                                 opts->seed_points + opts->num_seed_points * 3);
+            o.mSeedPoints.assign(opts->seed_points, opts->seed_points + opts->num_seed_points * 3);
         }
         o.mDirection = static_cast<meshioplusplus::StreamlineDirection>(opts->direction);
         o.mIntegrator = static_cast<meshioplusplus::StreamlineIntegrator>(opts->integrator);

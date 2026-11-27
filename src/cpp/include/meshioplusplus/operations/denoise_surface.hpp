@@ -58,7 +58,8 @@ struct DenoiseSurfaceOptions {
     std::int64_t mNormalIterations = 10;
     /// Number of vertex-position update iterations.
     std::int64_t mVertexIterations = 10;
-    /// Spatial Gaussian sigma over face centroid distances; 0 selects mean adjacent centroid distance.
+    /// Spatial Gaussian sigma over face centroid distances; 0 selects mean adjacent centroid
+    /// distance.
     double mSigmaSpatial = 0.0;
     /// Normal-similarity Gaussian sigma (in unit-normal Euclidean distance, typically 0.2..0.5).
     double mSigmaNormal = 0.35;
@@ -87,7 +88,7 @@ struct DenoiseSurfaceResult {
 /**
  * @brief Denoise a surface mesh while preserving sharp dihedral features.
  */
-MESHIOPLUSPLUS_API DenoiseSurfaceResult
-denoise_surface(const Mesh& rMesh, const DenoiseSurfaceOptions& rOptions = {});
+MESHIOPLUSPLUS_API DenoiseSurfaceResult denoise_surface(const Mesh& rMesh,
+                                                        const DenoiseSurfaceOptions& rOptions = {});
 
 }  // namespace meshioplusplus

@@ -863,8 +863,7 @@ inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>
                 const auto j = static_cast<std::size_t>(lattice[m][1]);
                 const auto k = static_cast<std::size_t>(lattice[m][2]);
                 rVal[m] = bu[i] * bv[j] * bw[k];
-                rGrad[m] = {dbu[i] * bv[j] * bw[k], bu[i] * dbv[j] * bw[k],
-                            bu[i] * bv[j] * dbw[k]};
+                rGrad[m] = {dbu[i] * bv[j] * bw[k], bu[i] * dbv[j] * bw[k], bu[i] * bv[j] * dbw[k]};
             }
             break;
         }
@@ -884,10 +883,10 @@ inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>
                 const int i = lattice[m][0];
                 const int j = lattice[m][1];
                 const int k = P - i - j;
-                const double c = fact[static_cast<std::size_t>(P)] /
-                                 (fact[static_cast<std::size_t>(i)] *
-                                  fact[static_cast<std::size_t>(j)] *
-                                  fact[static_cast<std::size_t>(k)]);
+                const double c =
+                    fact[static_cast<std::size_t>(P)] /
+                    (fact[static_cast<std::size_t>(i)] * fact[static_cast<std::size_t>(j)] *
+                     fact[static_cast<std::size_t>(k)]);
                 const double pu = pow_int(u, i);
                 const double pv = pow_int(v, j);
                 const double pl = pow_int(l0, k);
@@ -922,11 +921,10 @@ inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>
                 const int j = lattice[m][1];
                 const int k = lattice[m][2];
                 const int l = P - i - j - k;
-                const double c = fact[static_cast<std::size_t>(P)] /
-                                 (fact[static_cast<std::size_t>(i)] *
-                                  fact[static_cast<std::size_t>(j)] *
-                                  fact[static_cast<std::size_t>(k)] *
-                                  fact[static_cast<std::size_t>(l)]);
+                const double c =
+                    fact[static_cast<std::size_t>(P)] /
+                    (fact[static_cast<std::size_t>(i)] * fact[static_cast<std::size_t>(j)] *
+                     fact[static_cast<std::size_t>(k)] * fact[static_cast<std::size_t>(l)]);
                 const double pu = pow_int(u, i);
                 const double pv = pow_int(v, j);
                 const double pw = pow_int(w, k);
@@ -968,10 +966,10 @@ inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>
                 const int j = lattice[m][1];
                 const int k = lattice[m][2];
                 const int l = P - i - j;
-                const double c = fact[static_cast<std::size_t>(P)] /
-                                 (fact[static_cast<std::size_t>(i)] *
-                                  fact[static_cast<std::size_t>(j)] *
-                                  fact[static_cast<std::size_t>(l)]);
+                const double c =
+                    fact[static_cast<std::size_t>(P)] /
+                    (fact[static_cast<std::size_t>(i)] * fact[static_cast<std::size_t>(j)] *
+                     fact[static_cast<std::size_t>(l)]);
                 const double pu = pow_int(u, i);
                 const double pv = pow_int(v, j);
                 const double pl = pow_int(l0, l);
@@ -1259,8 +1257,8 @@ inline bool eval_reference_shape(CellType Type, std::size_t NumNodes,
         const double denom = std::fabs(omw) > 1e-14 ? omw : 1e-14;
         const double a = u / denom;
         const double b = v / denom;
-        rVal = {(1.0 - a) * (1.0 - b) * omw, a * (1.0 - b) * omw, a * b * omw,
-                (1.0 - a) * b * omw, w};
+        rVal = {(1.0 - a) * (1.0 - b) * omw, a * (1.0 - b) * omw, a * b * omw, (1.0 - a) * b * omw,
+                w};
         // Derivatives via quotient rule: N0 = (1-w-u)(1-w-v)/(1-w), etc.
         const double du0 = -(1.0 - b), dv0 = -(1.0 - a);
         const double du1 = (1.0 - b), dv1 = -a;

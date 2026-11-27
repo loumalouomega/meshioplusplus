@@ -88,8 +88,7 @@ FvmQualityReport compute_fvm_quality(const Mesh& rMesh) {
     FvmQualityReport report;
     const std::size_t nblocks = rMesh.NumCellBlocks();
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
-    const std::size_t total_cells =
-        bases.empty() ? 0 : static_cast<std::size_t>(bases.back());
+    const std::size_t total_cells = bases.empty() ? 0 : static_cast<std::size_t>(bases.back());
 
     // Allocate NaN-initialized per-block output cell arrays for all 4 metrics.
     const double qnan = std::numeric_limits<double>::quiet_NaN();

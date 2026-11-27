@@ -8428,8 +8428,8 @@ val transfer_operator_js(const val& rCoarseObj, const val& rFineObj, const val& 
             if (rOptions.hasOwnProperty("fallbackNearest"))
                 options.mFallbackNearest = rOptions["fallbackNearest"].as<bool>();
         }
-        return sparse_op_to_val(
-            meshioplusplus::transfer_operator(val_to_mesh(rCoarseObj), val_to_mesh(rFineObj), options));
+        return sparse_op_to_val(meshioplusplus::transfer_operator(val_to_mesh(rCoarseObj),
+                                                                  val_to_mesh(rFineObj), options));
     });
 }
 
@@ -8488,8 +8488,8 @@ val denoise_surface_js(const val& rMeshObj, const val& rOptions) {
         meshioplusplus::DenoiseSurfaceOptions options;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
             if (rOptions.hasOwnProperty("method"))
-                options.mMethod = meshioplusplus::denoise_method_from_name(
-                    rOptions["method"].as<std::string>());
+                options.mMethod =
+                    meshioplusplus::denoise_method_from_name(rOptions["method"].as<std::string>());
             if (rOptions.hasOwnProperty("normalIterations"))
                 options.mNormalIterations =
                     static_cast<std::int64_t>(rOptions["normalIterations"].as<double>());

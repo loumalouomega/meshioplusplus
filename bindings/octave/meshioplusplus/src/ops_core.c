@@ -2015,61 +2015,70 @@ static mxArray *O_mio_laplacian_eigenmodes(const mxArray **a) {
     return mio_o_struct(4, keys, values);
 }
 
-static mxArray *mio_o_unpack_sparse_op(mio_sparse_operator *op, const char *who) {
-    if (op == NULL) mio_o_fail(who);
+static mxArray* mio_o_unpack_sparse_op(mio_sparse_operator* op, const char* who) {
+    if (op == NULL)
+        mio_o_fail(who);
     int64_t rows = mio_sparse_operator_rows(op);
     int64_t cols = mio_sparse_operator_cols(op);
     int64_t nnz = mio_sparse_operator_nnz(op);
     int64_t n_ip = 0, n_ix = 0, n_vl = 0;
-    const int64_t *ip = mio_sparse_operator_indptr(op, &n_ip);
-    const int64_t *ix = mio_sparse_operator_indices(op, &n_ix);
-    const double *vl = mio_sparse_operator_values(op, &n_vl);
-    mxArray *mip = mxCreateDoubleMatrix(1, (mwSize)n_ip, mxREAL);
-    double *pip = mxGetPr(mip);
-    for (int64_t i = 0; i < n_ip; ++i) pip[i] = (double)ip[i];
-    mxArray *mix = mxCreateDoubleMatrix(1, (mwSize)n_ix, mxREAL);
-    double *pix = mxGetPr(mix);
-    for (int64_t i = 0; i < n_ix; ++i) pix[i] = (double)ix[i];
-    mxArray *mvl = mxCreateDoubleMatrix(1, (mwSize)n_vl, mxREAL);
-    if (n_vl > 0) memcpy(mxGetPr(mvl), vl, (size_t)n_vl * sizeof(double));
+    const int64_t* ip = mio_sparse_operator_indptr(op, &n_ip);
+    const int64_t* ix = mio_sparse_operator_indices(op, &n_ix);
+    const double* vl = mio_sparse_operator_values(op, &n_vl);
+    mxArray* mip = mxCreateDoubleMatrix(1, (mwSize)n_ip, mxREAL);
+    double* pip = mxGetPr(mip);
+    for (int64_t i = 0; i < n_ip; ++i)
+        pip[i] = (double)ip[i];
+    mxArray* mix = mxCreateDoubleMatrix(1, (mwSize)n_ix, mxREAL);
+    double* pix = mxGetPr(mix);
+    for (int64_t i = 0; i < n_ix; ++i)
+        pix[i] = (double)ix[i];
+    mxArray* mvl = mxCreateDoubleMatrix(1, (mwSize)n_vl, mxREAL);
+    if (n_vl > 0)
+        memcpy(mxGetPr(mvl), vl, (size_t)n_vl * sizeof(double));
     mio_sparse_operator_free(op);
-    const char *keys[] = {"rows", "cols", "nnz", "indptr", "indices", "values"};
-    mxArray *vals[] = {mio_o_scalar((double)rows), mio_o_scalar((double)cols),
-                       mio_o_scalar((double)nnz), mip, mix, mvl};
+    const char* keys[] = {"rows", "cols", "nnz", "indptr", "indices", "values"};
+    mxArray* vals[] = {mio_o_scalar((double)rows),
+                       mio_o_scalar((double)cols),
+                       mio_o_scalar((double)nnz),
+                       mip,
+                       mix,
+                       mvl};
     return mio_o_struct(6, keys, vals);
 }
 
-static mxArray *O_mio_mesh_operator(const mxArray **a) {
-    mio_sparse_operator *op =
+static mxArray* O_mio_mesh_operator(const mxArray** a) {
+    mio_sparse_operator* op =
         mio_mesh_operator(mio_o_mesh(a[0]), (int32_t)mio_o_double(a[1], "kind"));
     return mio_o_unpack_sparse_op(op, "mesh_operator");
 }
 
-static mxArray *O_mio_smooth_field(const mxArray **a) {
+static mxArray* O_mio_smooth_field(const mxArray** a) {
     mio_smooth_field_opts opts;
     mio_smooth_field_opts_init(&opts);
-    char *arr = mio_o_string(a[1], "array");
-    char *out_name = mio_o_string(a[2], "output");
+    char* arr = mio_o_string(a[1], "array");
+    char* out_name = mio_o_string(a[2], "output");
     opts.array = arr;
     opts.output = out_name[0] ? out_name : NULL;
     opts.length = mio_o_double(a[3], "length");
     opts.tolerance = mio_o_double(a[4], "tolerance");
     opts.max_iterations = (int64_t)mio_o_double(a[5], "max_iterations");
     mio_smooth_field_report rep;
-    mio_mesh *out = mio_smooth_field(mio_o_mesh(a[0]), &opts, &rep);
+    mio_mesh* out = mio_smooth_field(mio_o_mesh(a[0]), &opts, &rep);
     mxFree(arr);
     mxFree(out_name);
-    if (out == NULL) mio_o_fail("smooth_field");
-    const char *keys[] = {"mesh", "num_degenerate", "iterations", "converged"};
-    mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)rep.num_degenerate),
+    if (out == NULL)
+        mio_o_fail("smooth_field");
+    const char* keys[] = {"mesh", "num_degenerate", "iterations", "converged"};
+    mxArray* values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)rep.num_degenerate),
                          mio_o_scalar((double)rep.iterations), mio_o_logical(rep.converged != 0)};
     return mio_o_struct(4, keys, values);
 }
 
-static mxArray *O_mio_streamlines(const mxArray **a) {
+static mxArray* O_mio_streamlines(const mxArray** a) {
     mio_streamlines_opts opts;
     mio_streamlines_opts_init(&opts);
-    char *arr = mio_o_string(a[1], "array");
+    char* arr = mio_o_string(a[1], "array");
     opts.array = arr;
     opts.seeds = (int64_t)mio_o_double(a[2], "seeds");
     opts.direction = (int32_t)mio_o_double(a[3], "direction");
@@ -2078,32 +2087,34 @@ static mxArray *O_mio_streamlines(const mxArray **a) {
     opts.step = mio_o_double(a[6], "step");
     opts.max_steps = (int64_t)mio_o_double(a[7], "max_steps");
     opts.tolerance = mio_o_double(a[8], "tolerance");
-    mio_streamlines_report *rep = NULL;
-    mio_mesh *out = mio_streamlines(mio_o_mesh(a[0]), &opts, &rep);
+    mio_streamlines_report* rep = NULL;
+    mio_mesh* out = mio_streamlines(mio_o_mesh(a[0]), &opts, &rep);
     mxFree(arr);
-    if (out == NULL) mio_o_fail("streamlines");
+    if (out == NULL)
+        mio_o_fail("streamlines");
     int64_t n_lines = rep ? mio_streamlines_report_num_lines(rep) : 0;
-    if (rep) mio_streamlines_report_free(rep);
-    const char *keys[] = {"mesh", "num_lines"};
-    mxArray *values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)n_lines)};
+    if (rep)
+        mio_streamlines_report_free(rep);
+    const char* keys[] = {"mesh", "num_lines"};
+    mxArray* values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)n_lines)};
     return mio_o_struct(2, keys, values);
 }
 
-static mxArray *O_mio_transfer_operator(const mxArray **a) {
+static mxArray* O_mio_transfer_operator(const mxArray** a) {
     mio_transfer_operator_opts opts;
     mio_transfer_operator_opts_init(&opts);
     opts.mode = (int32_t)mio_o_double(a[2], "mode");
     opts.transpose = mio_o_bool(a[3], "transpose") ? 1 : 0;
     opts.tolerance = mio_o_double(a[4], "tolerance");
     opts.fallback_nearest = mio_o_bool(a[5], "fallback_nearest") ? 1 : 0;
-    mio_sparse_operator *op =
-        mio_transfer_operator(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts);
+    mio_sparse_operator* op = mio_transfer_operator(mio_o_mesh(a[0]), mio_o_mesh(a[1]), &opts);
     return mio_o_unpack_sparse_op(op, "transfer_operator");
 }
 
-static mxArray *O_mio_attach_fvm_quality(const mxArray **a) {
-    mio_mesh *out = mio_attach_fvm_quality(mio_o_mesh(a[0]));
-    if (out == NULL) mio_o_fail("attach_fvm_quality");
+static mxArray* O_mio_attach_fvm_quality(const mxArray** a) {
+    mio_mesh* out = mio_attach_fvm_quality(mio_o_mesh(a[0]));
+    if (out == NULL)
+        mio_o_fail("attach_fvm_quality");
     return mio_o_wrap_mesh(out);
 }
 

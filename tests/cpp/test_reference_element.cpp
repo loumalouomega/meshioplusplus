@@ -84,7 +84,8 @@ TEST(ReferenceElement, QuadratureExactness) {
     // Pyramid: volume = 1/3, \int w dV = \int_0^1 w (1-w)^2 dw = 1/12
     {
         const auto r = quadrature_rule(CellType::Pyramid, 3);
-        EXPECT_NEAR(integrate_rule(r, [](double, double, double) { return 1.0; }), 1.0 / 3.0, 1e-14);
+        EXPECT_NEAR(integrate_rule(r, [](double, double, double) { return 1.0; }), 1.0 / 3.0,
+                    1e-14);
         EXPECT_NEAR(integrate_rule(r, [](double, double, double w) { return w; }), 1.0 / 12.0,
                     1e-14);
     }
@@ -93,13 +94,16 @@ TEST(ReferenceElement, QuadratureExactness) {
 TEST(ReferenceElement, ShapeFunctionsAndGradients) {
     // Test Quad8 serendipity and Tetra10 quadratic reproduction + analytical derivatives.
     {
-        const std::vector<Vec3> q8 = {{0, 0, 0},   {2, 0, 0},   {2, 3, 0},   {0, 3, 0},
-                                      {1, 0, 0},   {2, 1.5, 0}, {1, 3, 0},   {0, 1.5, 0}};
-        auto fn = [](const Vec3& p) { return 1.0 + 2.0 * p[0] - 3.0 * p[1] + p[0] * p[1] + 0.5 * p[0] * p[0]; };
+        const std::vector<Vec3> q8 = {{0, 0, 0}, {2, 0, 0},   {2, 3, 0}, {0, 3, 0},
+                                      {1, 0, 0}, {2, 1.5, 0}, {1, 3, 0}, {0, 1.5, 0}};
+        auto fn = [](const Vec3& p) {
+            return 1.0 + 2.0 * p[0] - 3.0 * p[1] + p[0] * p[1] + 0.5 * p[0] * p[0];
+        };
         std::vector<double> vals;
         std::vector<Vec3> grads;
         double meas = 0.0;
-        ASSERT_TRUE(shape_eval_and_jacobian(CellType::Quad8, q8, {0.3, 0.7, 0.0}, vals, grads, meas));
+        ASSERT_TRUE(
+            shape_eval_and_jacobian(CellType::Quad8, q8, {0.3, 0.7, 0.0}, vals, grads, meas));
         EXPECT_NEAR(meas, 6.0, 1e-12);
         Vec3 x{0, 0, 0};
         double f = 0.0;
@@ -127,8 +131,8 @@ TEST(ReferenceElement, ShapeFunctionsAndGradients) {
         std::vector<double> vals;
         std::vector<Vec3> grads;
         double meas = 0.0;
-        ASSERT_TRUE(shape_eval_and_jacobian(CellType::Tetra10, t10, {0.2, 0.3, 0.25}, vals, grads,
-                                            meas));
+        ASSERT_TRUE(
+            shape_eval_and_jacobian(CellType::Tetra10, t10, {0.2, 0.3, 0.25}, vals, grads, meas));
         // Jacobian = diag(2, 3, 4), det = 24
         EXPECT_NEAR(meas, 24.0, 1e-12);
         Vec3 x{0, 0, 0};
@@ -150,9 +154,9 @@ TEST(ReferenceElement, ShapeFunctionsAndGradients) {
 }
 
 TEST(ReferenceElement, BernsteinLagrangeRoundTrip) {
-    for (lagrange::Shape s : {lagrange::Shape::Line, lagrange::Shape::Triangle,
-                              lagrange::Shape::Quad, lagrange::Shape::Tetra,
-                              lagrange::Shape::Hexahedron, lagrange::Shape::Wedge}) {
+    for (lagrange::Shape s :
+         {lagrange::Shape::Line, lagrange::Shape::Triangle, lagrange::Shape::Quad,
+          lagrange::Shape::Tetra, lagrange::Shape::Hexahedron, lagrange::Shape::Wedge}) {
         for (int p : {1, 2, 3}) {
             const std::size_t n = lagrange::num_nodes(s, p);
             const auto b2l = lagrange::bezier_to_lagrange_matrix(s, p);

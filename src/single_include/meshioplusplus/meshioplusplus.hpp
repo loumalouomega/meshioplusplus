@@ -29846,7 +29846,8 @@ struct DenoiseSurfaceOptions {
     std::int64_t mNormalIterations = 10;
     /// Number of vertex-position update iterations.
     std::int64_t mVertexIterations = 10;
-    /// Spatial Gaussian sigma over face centroid distances; 0 selects mean adjacent centroid distance.
+    /// Spatial Gaussian sigma over face centroid distances; 0 selects mean adjacent centroid
+    /// distance.
     double mSigmaSpatial = 0.0;
     /// Normal-similarity Gaussian sigma (in unit-normal Euclidean distance, typically 0.2..0.5).
     double mSigmaNormal = 0.35;
@@ -29875,8 +29876,8 @@ struct DenoiseSurfaceResult {
 /**
  * @brief Denoise a surface mesh while preserving sharp dihedral features.
  */
-MESHIOPLUSPLUS_API DenoiseSurfaceResult
-denoise_surface(const Mesh& rMesh, const DenoiseSurfaceOptions& rOptions = {});
+MESHIOPLUSPLUS_API DenoiseSurfaceResult denoise_surface(const Mesh& rMesh,
+                                                        const DenoiseSurfaceOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/denoise_surface.hpp =====
@@ -30771,7 +30772,8 @@ struct EvaluateCellsResult {
     NDArray mPoints;
     /// Evaluated field values per requested field name (`(N,)` or `(N, C)`).
     std::vector<std::pair<std::string, NDArray>> mValues;
-    /// Evaluated physical gradients per requested field name (`(N, 3)` or `(N, C, 3)`), if requested.
+    /// Evaluated physical gradients per requested field name (`(N, 3)` or `(N, C, 3)`), if
+    /// requested.
     std::vector<std::pair<std::string, NDArray>> mGradients;
     /// Number of queries successfully evaluated.
     std::int64_t mNumEvaluated = 0;
@@ -42796,8 +42798,8 @@ enum class SpectralDescriptorKind : std::int32_t {
 };
 
 /// Parse `"hks"` or `"wks"` (case-insensitive).
-MESHIOPLUSPLUS_API SpectralDescriptorKind spectral_descriptor_kind_from_name(
-    const std::string& rName);
+MESHIOPLUSPLUS_API SpectralDescriptorKind
+spectral_descriptor_kind_from_name(const std::string& rName);
 
 /// Options for `spectral_descriptors`.
 struct SpectralDescriptorsOptions {
@@ -44084,8 +44086,8 @@ struct TransferOperatorOptions {
  * Returns `MeshOperatorResult` where `mNumDegenerate` counts fine points that
  * could not be located (0 when all points are located or `mFallbackNearest` is true).
  */
-MESHIOPLUSPLUS_API MeshOperatorResult transfer_operator(const Mesh& rCoarse, const Mesh& rFine,
-                                                        const TransferOperatorOptions& rOptions = {});
+MESHIOPLUSPLUS_API MeshOperatorResult transfer_operator(
+    const Mesh& rCoarse, const Mesh& rFine, const TransferOperatorOptions& rOptions = {});
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/transfer_operator.hpp =====
@@ -58614,9 +58616,8 @@ public:
                         rOut.emplace_back(d2, id);
                 }
             });
-        std::sort(rOut.begin(), rOut.end(), [](const auto& rA, const auto& rB) {
-            return rA.second < rB.second;
-        });
+        std::sort(rOut.begin(), rOut.end(),
+                  [](const auto& rA, const auto& rB) { return rA.second < rB.second; });
     }
 
 private:
@@ -60808,8 +60809,7 @@ inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>
                 const auto j = static_cast<std::size_t>(lattice[m][1]);
                 const auto k = static_cast<std::size_t>(lattice[m][2]);
                 rVal[m] = bu[i] * bv[j] * bw[k];
-                rGrad[m] = {dbu[i] * bv[j] * bw[k], bu[i] * dbv[j] * bw[k],
-                            bu[i] * bv[j] * dbw[k]};
+                rGrad[m] = {dbu[i] * bv[j] * bw[k], bu[i] * dbv[j] * bw[k], bu[i] * bv[j] * dbw[k]};
             }
             break;
         }
@@ -60829,10 +60829,10 @@ inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>
                 const int i = lattice[m][0];
                 const int j = lattice[m][1];
                 const int k = P - i - j;
-                const double c = fact[static_cast<std::size_t>(P)] /
-                                 (fact[static_cast<std::size_t>(i)] *
-                                  fact[static_cast<std::size_t>(j)] *
-                                  fact[static_cast<std::size_t>(k)]);
+                const double c =
+                    fact[static_cast<std::size_t>(P)] /
+                    (fact[static_cast<std::size_t>(i)] * fact[static_cast<std::size_t>(j)] *
+                     fact[static_cast<std::size_t>(k)]);
                 const double pu = pow_int(u, i);
                 const double pv = pow_int(v, j);
                 const double pl = pow_int(l0, k);
@@ -60867,11 +60867,10 @@ inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>
                 const int j = lattice[m][1];
                 const int k = lattice[m][2];
                 const int l = P - i - j - k;
-                const double c = fact[static_cast<std::size_t>(P)] /
-                                 (fact[static_cast<std::size_t>(i)] *
-                                  fact[static_cast<std::size_t>(j)] *
-                                  fact[static_cast<std::size_t>(k)] *
-                                  fact[static_cast<std::size_t>(l)]);
+                const double c =
+                    fact[static_cast<std::size_t>(P)] /
+                    (fact[static_cast<std::size_t>(i)] * fact[static_cast<std::size_t>(j)] *
+                     fact[static_cast<std::size_t>(k)] * fact[static_cast<std::size_t>(l)]);
                 const double pu = pow_int(u, i);
                 const double pv = pow_int(v, j);
                 const double pw = pow_int(w, k);
@@ -60913,10 +60912,10 @@ inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>
                 const int j = lattice[m][1];
                 const int k = lattice[m][2];
                 const int l = P - i - j;
-                const double c = fact[static_cast<std::size_t>(P)] /
-                                 (fact[static_cast<std::size_t>(i)] *
-                                  fact[static_cast<std::size_t>(j)] *
-                                  fact[static_cast<std::size_t>(l)]);
+                const double c =
+                    fact[static_cast<std::size_t>(P)] /
+                    (fact[static_cast<std::size_t>(i)] * fact[static_cast<std::size_t>(j)] *
+                     fact[static_cast<std::size_t>(l)]);
                 const double pu = pow_int(u, i);
                 const double pv = pow_int(v, j);
                 const double pl = pow_int(l0, l);
@@ -61204,8 +61203,8 @@ inline bool eval_reference_shape(CellType Type, std::size_t NumNodes,
         const double denom = std::fabs(omw) > 1e-14 ? omw : 1e-14;
         const double a = u / denom;
         const double b = v / denom;
-        rVal = {(1.0 - a) * (1.0 - b) * omw, a * (1.0 - b) * omw, a * b * omw,
-                (1.0 - a) * b * omw, w};
+        rVal = {(1.0 - a) * (1.0 - b) * omw, a * (1.0 - b) * omw, a * b * omw, (1.0 - a) * b * omw,
+                w};
         // Derivatives via quotient rule: N0 = (1-w-u)(1-w-v)/(1-w), etc.
         const double du0 = -(1.0 - b), dv0 = -(1.0 - a);
         const double du1 = (1.0 - b), dv1 = -a;
@@ -63407,8 +63406,8 @@ inline TetFem build_tet_fem(const Mesh& rMesh, const std::string& rOp) {
         for (std::size_t c = 0; c < cb.NumCells(); ++c) {
             const std::int64_t id = cell_idx++;
             const std::array<std::int64_t, 4> nodes = {
-                read_int(conn, c * 4 + 0), read_int(conn, c * 4 + 1),
-                read_int(conn, c * 4 + 2), read_int(conn, c * 4 + 3)};
+                read_int(conn, c * 4 + 0), read_int(conn, c * 4 + 1), read_int(conn, c * 4 + 2),
+                read_int(conn, c * 4 + 3)};
             const Vec3 p[4] = {out.mPoints[static_cast<std::size_t>(nodes[0])],
                                out.mPoints[static_cast<std::size_t>(nodes[1])],
                                out.mPoints[static_cast<std::size_t>(nodes[2])],
@@ -252804,7 +252803,8 @@ CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOpti
         if (!detail::reference_element_info(ct, k, info))
             continue;
         if (info.mOrder < 2)
-            continue;  // Linear fields on linear cells have constant gradient (no isolated interior extrema).
+            continue;  // Linear fields on linear cells have constant gradient (no isolated interior
+                       // extrema).
 
         const int dim = info.mDim;
         const int n_sub = rOptions.mSeedSubdivisions > 0
@@ -252873,15 +252873,15 @@ CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOpti
                             break;
                         for (int i = 0; i < dim; ++i)
                             H[static_cast<std::size_t>(i * dim + j)] =
-                                (gp[static_cast<std::size_t>(i)] - gm[static_cast<std::size_t>(i)]) /
+                                (gp[static_cast<std::size_t>(i)] -
+                                 gm[static_cast<std::size_t>(i)]) /
                                 (2.0 * h);
                     }
                     // Symmetrize H and solve H * step = -g.
                     for (int i = 0; i < dim; ++i)
                         for (int j = i + 1; j < dim; ++j) {
-                            const double avg =
-                                0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
-                                       H[static_cast<std::size_t>(j * dim + i)]);
+                            const double avg = 0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
+                                                      H[static_cast<std::size_t>(j * dim + i)]);
                             H[static_cast<std::size_t>(i * dim + j)] = avg;
                             H[static_cast<std::size_t>(j * dim + i)] = avg;
                         }
@@ -252894,7 +252894,8 @@ CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOpti
                     // Damped step to stay well-behaved.
                     double step_norm = 0.0;
                     for (int i = 0; i < dim; ++i)
-                        step_norm += rhs[static_cast<std::size_t>(i)] * rhs[static_cast<std::size_t>(i)];
+                        step_norm +=
+                            rhs[static_cast<std::size_t>(i)] * rhs[static_cast<std::size_t>(i)];
                     step_norm = std::sqrt(step_norm);
                     const double scale = step_norm > 0.5 ? (0.5 / step_norm) : 1.0;
                     for (int i = 0; i < dim; ++i)
@@ -252937,9 +252938,8 @@ CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOpti
                 }
                 for (int i = 0; i < dim; ++i)
                     for (int j = i + 1; j < dim; ++j) {
-                        const double avg =
-                            0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
-                                   H[static_cast<std::size_t>(j * dim + i)]);
+                        const double avg = 0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
+                                                  H[static_cast<std::size_t>(j * dim + i)]);
                         H[static_cast<std::size_t>(i * dim + j)] = avg;
                         H[static_cast<std::size_t>(j * dim + i)] = avg;
                     }
@@ -258912,7 +258912,8 @@ std::vector<std::uint8_t> df_region_mask(const Mesh& rMesh, const std::string& r
                 const std::size_t k = cb.NodesPerCell();
                 const NDArray& conn = cb.Conn();
                 for (std::size_t j = 0; j < k; ++j) {
-                    const std::int64_t v = detail::read_int(conn, static_cast<std::size_t>(row) * k + j);
+                    const std::int64_t v =
+                        detail::read_int(conn, static_cast<std::size_t>(row) * k + j);
                     if (v >= 0 && static_cast<std::size_t>(v) < n)
                         mask[static_cast<std::size_t>(v)] = 1;
                 }
@@ -259026,8 +259027,7 @@ DeformResult deform_ffd(const Mesh& rMesh, const FfdOptions& rOptions) {
         const int p = req < 0 ? static_cast<int>(counts[static_cast<std::size_t>(d)] - 1)
                               : static_cast<int>(req);
         if (p < 1 || static_cast<std::size_t>(p) >= counts[static_cast<std::size_t>(d)])
-            throw std::invalid_argument(
-                "deform_ffd: degree must satisfy 1 <= p <= grid_dims - 1");
+            throw std::invalid_argument("deform_ffd: degree must satisfy 1 <= p <= grid_dims - 1");
         degs[static_cast<std::size_t>(d)] = p;
     }
 
@@ -259094,8 +259094,7 @@ DeformResult deform_rbf(const Mesh& rMesh, const RbfOptions& rOptions) {
     if (rOptions.mControlPoints.empty() || rOptions.mControlPoints.size() % 3 != 0)
         throw std::invalid_argument("deform_rbf: control_points must be non-empty flat 3*M");
     if (rOptions.mDisplacements.size() != rOptions.mControlPoints.size())
-        throw std::invalid_argument(
-            "deform_rbf: displacements must match control_points length");
+        throw std::invalid_argument("deform_rbf: displacements must match control_points length");
     if (!(rOptions.mRegularization >= 0.0) || !std::isfinite(rOptions.mRegularization))
         throw std::invalid_argument("deform_rbf: regularization must be >= 0 and finite");
 
@@ -259130,8 +259129,7 @@ DeformResult deform_rbf(const Mesh& rMesh, const RbfOptions& rOptions) {
         const std::size_t k = use_poly ? (m + 4) : m;
         std::vector<double> mat(k * k, 0.0);
         for (std::size_t i = 0; i < m; ++i) {
-            mat[i * k + i] =
-                df_rbf_eval(rOptions.mKernel, 0.0, radius) + rOptions.mRegularization;
+            mat[i * k + i] = df_rbf_eval(rOptions.mKernel, 0.0, radius) + rOptions.mRegularization;
             for (std::size_t j = i + 1; j < m; ++j) {
                 const double r = detail::vec3_norm(detail::vec3_sub(ctrl[i], ctrl[j]));
                 const double val = df_rbf_eval(rOptions.mKernel, r, radius);
@@ -259317,7 +259315,8 @@ void dn_face_geometry(const detail::SurfaceRings& rRings, const std::vector<Vec3
         const std::size_t k = static_cast<std::size_t>(e - s);
         Vec3 c{0.0, 0.0, 0.0};
         for (std::size_t i = 0; i < k; ++i) {
-            const Vec3& p = rXyz[static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i])];
+            const Vec3& p =
+                rXyz[static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i])];
             c[0] += p[0];
             c[1] += p[1];
             c[2] += p[2];
@@ -259331,8 +259330,8 @@ void dn_face_geometry(const detail::SurfaceRings& rRings, const std::vector<Vec3
         // Newell normal / area vector.
         Vec3 n{0.0, 0.0, 0.0};
         for (std::size_t i = 0; i < k; ++i) {
-            const Vec3& p0 = rXyz[static_cast<std::size_t>(
-                rRings.mNodes[static_cast<std::size_t>(s) + i])];
+            const Vec3& p0 =
+                rXyz[static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i])];
             const Vec3& p1 = rXyz[static_cast<std::size_t>(
                 rRings.mNodes[static_cast<std::size_t>(s) + ((i + 1) % k)])];
             const Vec3 d0 = detail::vec3_sub(p0, c);
@@ -259358,8 +259357,7 @@ Vec3 dn_single_face_normal(const detail::SurfaceRings& rRings, std::size_t f,
     const std::int64_t e = rRings.mStart[f + 1];
     const std::size_t k = static_cast<std::size_t>(e - s);
     auto get_p = [&](std::size_t i) -> Vec3 {
-        const auto vid =
-            static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i]);
+        const auto vid = static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i]);
         return vid == OverrideV ? rOverridePos : rXyz[vid];
     };
     const Vec3 p0 = get_p(0);
@@ -259406,8 +259404,8 @@ DenoiseSurfaceResult denoise_surface(const Mesh& rMesh, const DenoiseSurfaceOpti
     if (!rOptions.mRegion.empty()) {
         const std::size_t ridx = rMesh.FindRegion(rOptions.mRegion, RegionKind::Cell);
         if (ridx == Mesh::npos)
-            throw std::invalid_argument("denoise_surface: unknown Cell region '" + rOptions.mRegion +
-                                        "'");
+            throw std::invalid_argument("denoise_surface: unknown Cell region '" +
+                                        rOptions.mRegion + "'");
         const Region& reg = rMesh.Region(ridx);
         const std::int64_t* ent = reg.Entries();
         for (std::size_t i = 0; i < reg.NumEntries(); ++i)
@@ -259525,8 +259523,8 @@ DenoiseSurfaceResult denoise_surface(const Mesh& rMesh, const DenoiseSurfaceOpti
                 // Consistency = max normal spread in patch * max adjacent edge salience.
                 double max_sal = 0.0;
                 for (std::size_t g : edge_adj[f])
-                    max_sal =
-                        std::max(max_sal, detail::vec3_norm(detail::vec3_sub(normals[f], normals[g])));
+                    max_sal = std::max(max_sal,
+                                       detail::vec3_norm(detail::vec3_sub(normals[f], normals[g])));
                 patch_cons[f] = max_diff * (max_sal + 1e-6);
             });
             parallel_for(nf, [&](std::size_t f) {
@@ -261684,7 +261682,8 @@ BasisTarget basis_target_from_name(const std::string& rName) {
 EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions& rOptions) {
     const std::size_t nq = rOptions.mCells.size();
     if (rOptions.mReferencePoints.size() != nq * 3)
-        throw std::invalid_argument("evaluate_cells: reference_points length must be 3 * len(cells)");
+        throw std::invalid_argument(
+            "evaluate_cells: reference_points length must be 3 * len(cells)");
 
     std::vector<std::string> fields = rOptions.mFields;
     if (fields.empty()) {
@@ -261692,7 +261691,8 @@ EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions
     } else {
         for (const std::string& f : fields)
             if (!rMesh.HasPointData(f))
-                throw std::invalid_argument(data_unknown_key_message(rMesh, DataLocation::Point, f));
+                throw std::invalid_argument(
+                    data_unknown_key_message(rMesh, DataLocation::Point, f));
     }
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
@@ -261716,8 +261716,7 @@ EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions
         f_ptrs[fi] = &arr;
         const std::size_t c = data_num_components(arr);
         f_comps[fi] = c;
-        NDArray v_arr =
-            c == 1 ? NDArray(DType::Float64, {nq}) : NDArray(DType::Float64, {nq, c});
+        NDArray v_arr = c == 1 ? NDArray(DType::Float64, {nq}) : NDArray(DType::Float64, {nq, c});
         std::fill(v_arr.As<double>(), v_arr.As<double>() + v_arr.Size(), qnan);
         result.mValues.emplace_back(fields[fi], std::move(v_arr));
         if (rOptions.mDerivatives) {
@@ -261798,8 +261797,8 @@ EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions
                 for (std::size_t comp = 0; comp < nc; ++comp) {
                     double gx = 0.0, gy = 0.0, gz = 0.0;
                     for (std::size_t i = 0; i < k; ++i) {
-                        const double fv = detail::read_double(
-                            src, static_cast<std::size_t>(nids[i]) * nc + comp);
+                        const double fv =
+                            detail::read_double(src, static_cast<std::size_t>(nids[i]) * nc + comp);
                         gx += grads[i][0] * fv;
                         gy += grads[i][1] * fv;
                         gz += grads[i][2] * fv;
@@ -261850,15 +261849,12 @@ ChangeBasisResult change_basis(const Mesh& rMesh, const ChangeBasisOptions& rOpt
         const CellType ct = cell_type_from_name(cb.Type());
         const NDArray& in_conn = cb.Conn();
         detail::ReferenceElementInfo info;
-        if (!detail::reference_element_info(ct, k, info) || info.mIsSerendipity ||
-            info.mIsPyramid)
-            throw std::invalid_argument(
-                "change_basis: unsupported cell type '" + cb.Type() +
-                "' (expected full Lagrange or Bezier cells)");
+        if (!detail::reference_element_info(ct, k, info) || info.mIsSerendipity || info.mIsPyramid)
+            throw std::invalid_argument("change_basis: unsupported cell type '" + cb.Type() +
+                                        "' (expected full Lagrange or Bezier cells)");
 
-        const bool same_basis =
-            (info.mIsBezier && rOptions.mTarget == BasisTarget::Bezier) ||
-            (!info.mIsBezier && rOptions.mTarget == BasisTarget::Lagrange);
+        const bool same_basis = (info.mIsBezier && rOptions.mTarget == BasisTarget::Bezier) ||
+                                (!info.mIsBezier && rOptions.mTarget == BasisTarget::Lagrange);
 
         std::vector<double> mat;
         if (!same_basis) {
@@ -267776,8 +267772,7 @@ FvmQualityReport compute_fvm_quality(const Mesh& rMesh) {
     FvmQualityReport report;
     const std::size_t nblocks = rMesh.NumCellBlocks();
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
-    const std::size_t total_cells =
-        bases.empty() ? 0 : static_cast<std::size_t>(bases.back());
+    const std::size_t total_cells = bases.empty() ? 0 : static_cast<std::size_t>(bases.back());
 
     // Allocate NaN-initialized per-block output cell arrays for all 4 metrics.
     const double qnan = std::numeric_limits<double>::quiet_NaN();
@@ -274039,36 +274034,47 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
                 };
 
                 if (info.mShape == lagrange::Shape::Quad) {
-                    std::vector<std::int64_t> grid(static_cast<std::size_t>((n_sub + 1) * (n_sub + 1)));
+                    std::vector<std::int64_t> grid(
+                        static_cast<std::size_t>((n_sub + 1) * (n_sub + 1)));
                     for (int j = 0; j <= n_sub; ++j)
                         for (int i = 0; i <= n_sub; ++i)
                             grid[static_cast<std::size_t>(j * (n_sub + 1) + i)] =
                                 add_node({i * inv_n, j * inv_n, 0.0});
                     for (int j = 0; j < n_sub; ++j) {
                         for (int i = 0; i < n_sub; ++i) {
-                            const std::int64_t v00 = grid[static_cast<std::size_t>(j * (n_sub + 1) + i)];
-                            const std::int64_t v10 = grid[static_cast<std::size_t>(j * (n_sub + 1) + i + 1)];
-                            const std::int64_t v11 = grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i + 1)];
-                            const std::int64_t v01 = grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i)];
+                            const std::int64_t v00 =
+                                grid[static_cast<std::size_t>(j * (n_sub + 1) + i)];
+                            const std::int64_t v10 =
+                                grid[static_cast<std::size_t>(j * (n_sub + 1) + i + 1)];
+                            const std::int64_t v11 =
+                                grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i + 1)];
+                            const std::int64_t v01 =
+                                grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i)];
                             sub_tris.insert(sub_tris.end(), {v00, v10, v11, v00, v11, v01});
                         }
                     }
                 } else if (info.mShape == lagrange::Shape::Triangle) {
-                    std::vector<std::vector<std::int64_t>> row_ids(static_cast<std::size_t>(n_sub + 1));
+                    std::vector<std::vector<std::int64_t>> row_ids(
+                        static_cast<std::size_t>(n_sub + 1));
                     for (int j = 0; j <= n_sub; ++j) {
-                        row_ids[static_cast<std::size_t>(j)].resize(static_cast<std::size_t>(n_sub - j + 1));
+                        row_ids[static_cast<std::size_t>(j)].resize(
+                            static_cast<std::size_t>(n_sub - j + 1));
                         for (int i = 0; i <= n_sub - j; ++i)
                             row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] =
                                 add_node({i * inv_n, j * inv_n, 0.0});
                     }
                     for (int j = 0; j < n_sub; ++j) {
                         for (int i = 0; i < n_sub - j; ++i) {
-                            const std::int64_t a = row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)];
-                            const std::int64_t b = row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i + 1)];
-                            const std::int64_t d = row_ids[static_cast<std::size_t>(j + 1)][static_cast<std::size_t>(i)];
+                            const std::int64_t a =
+                                row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)];
+                            const std::int64_t b = row_ids[static_cast<std::size_t>(j)]
+                                                          [static_cast<std::size_t>(i + 1)];
+                            const std::int64_t d = row_ids[static_cast<std::size_t>(j + 1)]
+                                                          [static_cast<std::size_t>(i)];
                             sub_tris.insert(sub_tris.end(), {a, b, d});
                             if (i + 1 < n_sub - j) {
-                                const std::int64_t e = row_ids[static_cast<std::size_t>(j + 1)][static_cast<std::size_t>(i + 1)];
+                                const std::int64_t e = row_ids[static_cast<std::size_t>(j + 1)]
+                                                              [static_cast<std::size_t>(i + 1)];
                                 sub_tris.insert(sub_tris.end(), {b, e, d});
                             }
                         }
@@ -274085,7 +274091,8 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
                         for (int j = 0; j < n_sub; ++j) {
                             for (int i = 0; i < n_sub; ++i) {
                                 auto at = [&](int di, int dj, int dk) {
-                                    return grid[static_cast<std::size_t>(((kk + dk) * s + (j + dj)) * s + (i + di))];
+                                    return grid[static_cast<std::size_t>(
+                                        ((kk + dk) * s + (j + dj)) * s + (i + di))];
                                 };
                                 const std::int64_t v0 = at(0, 0, 0), v1 = at(1, 0, 0),
                                                    v2 = at(1, 1, 0), v3 = at(0, 1, 0),
@@ -274125,16 +274132,15 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
                                     const std::int64_t d = at(i + 1, j + 1, kk);
                                     const std::int64_t e = at(i + 1, j, kk + 1);
                                     const std::int64_t f = at(i, j + 1, kk + 1);
-                                    sub_tets.insert(sub_tets.end(),
-                                                    {a, d, b0, e, b0, d, f, e, b0, f, c0, e, a, b0,
-                                                     c0, e});
+                                    sub_tets.insert(sub_tets.end(), {a, d, b0, e, b0, d, f, e, b0,
+                                                                     f, c0, e, a, b0, c0, e});
                                 }
                                 // Inverted tet when i+j+kk <= n_sub - 3
                                 if (i + j + kk <= n_sub - 3) {
-                                    sub_tets.insert(sub_tets.end(),
-                                                    {at(i + 1, j + 1, kk), at(i + 1, j, kk + 1),
-                                                     at(i, j + 1, kk + 1),
-                                                     at(i + 1, j + 1, kk + 1)});
+                                    sub_tets.insert(
+                                        sub_tets.end(),
+                                        {at(i + 1, j + 1, kk), at(i + 1, j, kk + 1),
+                                         at(i, j + 1, kk + 1), at(i + 1, j + 1, kk + 1)});
                                 }
                             }
                         }
@@ -301802,8 +301808,7 @@ std::string qg_g(double v) {
 }
 
 std::string qg_name(const std::string& rMetric, double Min, double Max, double Fraction) {
-    const std::string m =
-        rMetric.rfind("quality:", 0) == 0 ? rMetric.substr(8) : rMetric;
+    const std::string m = rMetric.rfind("quality:", 0) == 0 ? rMetric.substr(8) : rMetric;
     std::string s;
     if (!std::isnan(Min) && !std::isnan(Max))
         s = qg_g(Min) + " <= " + m + " <= " + qg_g(Max);
@@ -316769,9 +316774,8 @@ std::int64_t sp_find_edge_cell(const Mesh& rMesh, std::int64_t U, std::int64_t V
                                const std::vector<std::pair<std::uint64_t, std::int64_t>>& rMap) {
     const std::int64_t lo = std::min(U, V);
     const std::int64_t hi = std::max(U, V);
-    const std::uint64_t key =
-        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(lo)) << 32) |
-        static_cast<std::uint64_t>(static_cast<std::uint32_t>(hi));
+    const std::uint64_t key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(lo)) << 32) |
+                              static_cast<std::uint64_t>(static_cast<std::uint32_t>(hi));
     auto it = std::lower_bound(rMap.begin(), rMap.end(), key,
                                [](const auto& rP, std::uint64_t K) { return rP.first < K; });
     if (it != rMap.end() && it->first == key)
@@ -316967,28 +316971,26 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
                         const double inv_a2 = 1.0 / a2;
                         const Vec3 g1 = detail::vec3_scale(detail::vec3_cross(nrm, e2), -inv_a2);
                         const Vec3 g2 = detail::vec3_scale(detail::vec3_cross(nrm, e1), inv_a2);
-                        const double d1 = pd[static_cast<std::size_t>(vb)] -
-                                          pd[static_cast<std::size_t>(va)];
-                        const double d2 = pd[static_cast<std::size_t>(vc)] -
-                                          pd[static_cast<std::size_t>(va)];
-                        const Vec3 dir = detail::vec3_scale(
-                            detail::vec3_add(detail::vec3_scale(g1, d1),
-                                             detail::vec3_scale(g2, d2)),
-                            -1.0);
+                        const double d1 =
+                            pd[static_cast<std::size_t>(vb)] - pd[static_cast<std::size_t>(va)];
+                        const double d2 =
+                            pd[static_cast<std::size_t>(vc)] - pd[static_cast<std::size_t>(va)];
+                        const Vec3 dir =
+                            detail::vec3_scale(detail::vec3_add(detail::vec3_scale(g1, d1),
+                                                                detail::vec3_scale(g2, d2)),
+                                               -1.0);
                         // Express dir in (e1, e2) coordinates: dir = alpha e1 + beta e2.
                         const double alpha = detail::vec3_dot(dir, g1);
                         const double beta = detail::vec3_dot(dir, g2);
                         if (alpha > 1e-12 && beta > 1e-12) {
                             const double t = 1.0 / (alpha + beta);
                             const double u = beta * t;  // fraction along edge (vb, vc)
-                            const Vec3 exit_p =
-                                detail::vec3_add(p1, detail::vec3_scale(detail::vec3_sub(p2, p1), u));
-                            const double exit_d =
-                                (1.0 - u) * pd[static_cast<std::size_t>(vb)] +
-                                u * pd[static_cast<std::size_t>(vc)];
+                            const Vec3 exit_p = detail::vec3_add(
+                                p1, detail::vec3_scale(detail::vec3_sub(p2, p1), u));
+                            const double exit_d = (1.0 - u) * pd[static_cast<std::size_t>(vb)] +
+                                                  u * pd[static_cast<std::size_t>(vc)];
                             const double seg_l = detail::vec3_norm(detail::vec3_sub(exit_p, p0));
-                            const double slope =
-                                seg_l > 1e-15 ? (cur_d - exit_d) / seg_l : 0.0;
+                            const double slope = seg_l > 1e-15 ? (cur_d - exit_d) / seg_l : 0.0;
                             if (slope > best_slope) {
                                 best_slope = slope;
                                 best_f = static_cast<std::int64_t>(f);
@@ -317002,8 +317004,8 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
                     // Also consider descending along edges (va->vb) and (va->vc).
                     for (std::int64_t nb : {vb, vc}) {
                         const double dn = pd[static_cast<std::size_t>(nb)];
-                        const double elen =
-                            detail::vec3_norm(detail::vec3_sub(xyz[static_cast<std::size_t>(nb)], p0));
+                        const double elen = detail::vec3_norm(
+                            detail::vec3_sub(xyz[static_cast<std::size_t>(nb)], p0));
                         const double slope = elen > 1e-15 ? (cur_d - dn) / elen : 0.0;
                         if (slope > best_slope) {
                             best_slope = slope;
@@ -317109,10 +317111,9 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
                             nb[0] * p[0][1] + nb[1] * p[1][1] + nb[2] * p[2][1],
                             nb[0] * p[0][2] + nb[1] * p[1][2] + nb[2] * p[2][2],
                         };
-                        const double next_d =
-                            nb[0] * pd[static_cast<std::size_t>(v[0])] +
-                            nb[1] * pd[static_cast<std::size_t>(v[1])] +
-                            nb[2] * pd[static_cast<std::size_t>(v[2])];
+                        const double next_d = nb[0] * pd[static_cast<std::size_t>(v[0])] +
+                                              nb[1] * pd[static_cast<std::size_t>(v[1])] +
+                                              nb[2] * pd[static_cast<std::size_t>(v[2])];
                         if (next_d < cur_d - 1e-14) {
                             rev_pts.push_back(next_p);
                             rev_cells.push_back(rings.mCell[f]);
@@ -317163,7 +317164,8 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
             std::reverse(rev_cells.begin(), rev_cells.end());
             std::vector<double> cum(rev_pts.size(), 0.0);
             for (std::size_t i = 1; i < rev_pts.size(); ++i)
-                cum[i] = cum[i - 1] + detail::vec3_norm(detail::vec3_sub(rev_pts[i], rev_pts[i - 1]));
+                cum[i] =
+                    cum[i - 1] + detail::vec3_norm(detail::vec3_sub(rev_pts[i], rev_pts[i - 1]));
             result.mReached = true;
             result.mTotalLength = cum.back();
             result.mNumSegments = static_cast<std::int64_t>(rev_pts.size() - 1);
@@ -317196,8 +317198,8 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
         const std::int64_t end = adj.mXadj[static_cast<std::size_t>(u) + 1];
         for (std::int64_t e = beg; e < end; ++e) {
             const std::int64_t v = adj.mAdj[static_cast<std::size_t>(e)];
-            const double w = detail::vec3_norm(
-                detail::vec3_sub(xyz[static_cast<std::size_t>(v)], xyz[static_cast<std::size_t>(u)]));
+            const double w = detail::vec3_norm(detail::vec3_sub(xyz[static_cast<std::size_t>(v)],
+                                                                xyz[static_cast<std::size_t>(u)]));
             const double nd = du + w;
             const std::size_t vu = static_cast<std::size_t>(v);
             if (nd < dist[vu] || (nd == dist[vu] && (parent[vu] < 0 || u < parent[vu]))) {
@@ -317264,7 +317266,8 @@ GeodesicVoronoiResult geodesic_voronoi(const Mesh& rMesh, const GeodesicVoronoiO
         seeds.push_back(sp_nearest_vertex(xyz, p));
     }
     if (seeds.empty())
-        throw std::invalid_argument("geodesic_voronoi: at least one source or seed_point is required");
+        throw std::invalid_argument(
+            "geodesic_voronoi: at least one source or seed_point is required");
 
     const detail::NodeAdjacency adj =
         detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
@@ -317353,7 +317356,8 @@ GeodesicVoronoiResult geodesic_voronoi(const Mesh& rMesh, const GeodesicVoronoiO
                     const std::size_t k = cb.NodesPerCell();
                     const NDArray& conn = cb.Conn();
                     for (std::size_t i = 0; i < k; ++i) {
-                        const auto vid = static_cast<std::size_t>(detail::read_int(conn, c * k + i));
+                        const auto vid =
+                            static_cast<std::size_t>(detail::read_int(conn, c * k + i));
                         if (label[vid] >= 0 &&
                             (dist[vid] < best_d ||
                              (dist[vid] == best_d && (best_lbl < 0 || label[vid] < best_lbl)))) {
@@ -317953,7 +317957,8 @@ void sk_assemble_cot_laplacian(const std::vector<Vec3>& rPts,
         const Vec3 e0 = detail::vec3_sub(p[2], p[1]);
         const Vec3 e1 = detail::vec3_sub(p[0], p[2]);
         const Vec3 e2 = detail::vec3_sub(p[1], p[0]);
-        const double dbl_area = detail::vec3_norm(detail::vec3_cross(e2, detail::vec3_scale(e1, -1.0)));
+        const double dbl_area =
+            detail::vec3_norm(detail::vec3_cross(e2, detail::vec3_scale(e1, -1.0)));
         if (!(dbl_area > 1e-18))
             continue;
         const double a_third = dbl_area / 6.0;
@@ -317966,9 +317971,12 @@ void sk_assemble_cot_laplacian(const std::vector<Vec3>& rPts,
             const double c = detail::vec3_dot(rU, rV) / dbl_area;
             return std::clamp(0.5 * c, 0.0, 1e4);
         };
-        const double w0 = cot_w(detail::vec3_sub(p[1], p[0]), detail::vec3_sub(p[2], p[0]));  // opp (1,2)
-        const double w1 = cot_w(detail::vec3_sub(p[2], p[1]), detail::vec3_sub(p[0], p[1]));  // opp (2,0)
-        const double w2 = cot_w(detail::vec3_sub(p[0], p[2]), detail::vec3_sub(p[1], p[2]));  // opp (0,1)
+        const double w0 =
+            cot_w(detail::vec3_sub(p[1], p[0]), detail::vec3_sub(p[2], p[0]));  // opp (1,2)
+        const double w1 =
+            cot_w(detail::vec3_sub(p[2], p[1]), detail::vec3_sub(p[0], p[1]));  // opp (2,0)
+        const double w2 =
+            cot_w(detail::vec3_sub(p[0], p[2]), detail::vec3_sub(p[1], p[2]));  // opp (0,1)
 
         const std::size_t idx[3] = {i0, i1, i2};
         const double w[3] = {w0, w1, w2};
@@ -318225,10 +318233,10 @@ SkeletonResult extract_skeleton(const Mesh& rMesh, const SkeletonOptions& rOptio
                 const double len = detail::vec3_norm(detail::vec3_sub(
                     xyz[static_cast<std::size_t>(a)], xyz[static_cast<std::size_t>(b)]));
                 if (len < merge_tol) {
-                    xyz[static_cast<std::size_t>(a)] = detail::vec3_scale(
-                        detail::vec3_add(xyz[static_cast<std::size_t>(a)],
-                                         xyz[static_cast<std::size_t>(b)]),
-                        0.5);
+                    xyz[static_cast<std::size_t>(a)] =
+                        detail::vec3_scale(detail::vec3_add(xyz[static_cast<std::size_t>(a)],
+                                                            xyz[static_cast<std::size_t>(b)]),
+                                           0.5);
                     uf.UniteInto(a, b);
                     merged = true;
                     break;
@@ -318279,8 +318287,7 @@ SkeletonResult extract_skeleton(const Mesh& rMesh, const SkeletonOptions& rOptio
 
     // 5. Optional recentering & inscribed radius via DistanceQuery on original surface.
     const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, "");
-    const detail::DistanceQuery dq =
-        detail::build_distance_query(soup, SurfaceDistanceOptions{});
+    const detail::DistanceQuery dq = detail::build_distance_query(soup, SurfaceDistanceOptions{});
     if (rOptions.mRecenter && n_sk > 0) {
         std::vector<Vec3> sum_p(n_sk, {0.0, 0.0, 0.0});
         std::vector<std::size_t> cnt_p(n_sk, 0);
@@ -326544,8 +326551,8 @@ MeshOperatorResult transfer_operator(const Mesh& rCoarse, const Mesh& rFine,
             ent.Shape()[1] == 4 && n_fine >= n_coarse) {
             // Verify leading coarse points match coordinates within tolerance.
             bool coords_match = true;
-            const double tol2 = std::max(rOptions.mTolerance, 1e-9) *
-                                std::max(rOptions.mTolerance, 1e-9);
+            const double tol2 =
+                std::max(rOptions.mTolerance, 1e-9) * std::max(rOptions.mTolerance, 1e-9);
             for (std::size_t i = 0; i < n_coarse; ++i) {
                 const Vec3 d = detail::vec3_sub(fine_xyz[i], coarse_xyz[i]);
                 if (detail::vec3_norm_sq(d) > tol2) {
@@ -326632,7 +326639,8 @@ MeshOperatorResult transfer_operator(const Mesh& rCoarse, const Mesh& rFine,
             ConvertCellsOptions copt;
             copt.mMode = ConvertCellsMode::Simplexify;
             const auto simp_res = convert_cells(rCoarse, copt);
-            const detail::PointLocator locator(simp_res.mMesh, rOptions.mTolerance, "transfer_operator");
+            const detail::PointLocator locator(simp_res.mMesh, rOptions.mTolerance,
+                                               "transfer_operator");
             const std::size_t k = locator.NodesPerSimplex();
             const std::vector<std::int64_t>& conn = locator.Connectivity();
 

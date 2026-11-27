@@ -160,8 +160,8 @@ MeshOperatorResult transfer_operator(const Mesh& rCoarse, const Mesh& rFine,
             ent.Shape()[1] == 4 && n_fine >= n_coarse) {
             // Verify leading coarse points match coordinates within tolerance.
             bool coords_match = true;
-            const double tol2 = std::max(rOptions.mTolerance, 1e-9) *
-                                std::max(rOptions.mTolerance, 1e-9);
+            const double tol2 =
+                std::max(rOptions.mTolerance, 1e-9) * std::max(rOptions.mTolerance, 1e-9);
             for (std::size_t i = 0; i < n_coarse; ++i) {
                 const Vec3 d = detail::vec3_sub(fine_xyz[i], coarse_xyz[i]);
                 if (detail::vec3_norm_sq(d) > tol2) {
@@ -248,7 +248,8 @@ MeshOperatorResult transfer_operator(const Mesh& rCoarse, const Mesh& rFine,
             ConvertCellsOptions copt;
             copt.mMode = ConvertCellsMode::Simplexify;
             const auto simp_res = convert_cells(rCoarse, copt);
-            const detail::PointLocator locator(simp_res.mMesh, rOptions.mTolerance, "transfer_operator");
+            const detail::PointLocator locator(simp_res.mMesh, rOptions.mTolerance,
+                                               "transfer_operator");
             const std::size_t k = locator.NodesPerSimplex();
             const std::vector<std::int64_t>& conn = locator.Connectivity();
 

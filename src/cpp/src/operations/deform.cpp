@@ -106,7 +106,8 @@ std::vector<std::uint8_t> df_region_mask(const Mesh& rMesh, const std::string& r
                 const std::size_t k = cb.NodesPerCell();
                 const NDArray& conn = cb.Conn();
                 for (std::size_t j = 0; j < k; ++j) {
-                    const std::int64_t v = detail::read_int(conn, static_cast<std::size_t>(row) * k + j);
+                    const std::int64_t v =
+                        detail::read_int(conn, static_cast<std::size_t>(row) * k + j);
                     if (v >= 0 && static_cast<std::size_t>(v) < n)
                         mask[static_cast<std::size_t>(v)] = 1;
                 }
@@ -220,8 +221,7 @@ DeformResult deform_ffd(const Mesh& rMesh, const FfdOptions& rOptions) {
         const int p = req < 0 ? static_cast<int>(counts[static_cast<std::size_t>(d)] - 1)
                               : static_cast<int>(req);
         if (p < 1 || static_cast<std::size_t>(p) >= counts[static_cast<std::size_t>(d)])
-            throw std::invalid_argument(
-                "deform_ffd: degree must satisfy 1 <= p <= grid_dims - 1");
+            throw std::invalid_argument("deform_ffd: degree must satisfy 1 <= p <= grid_dims - 1");
         degs[static_cast<std::size_t>(d)] = p;
     }
 
@@ -288,8 +288,7 @@ DeformResult deform_rbf(const Mesh& rMesh, const RbfOptions& rOptions) {
     if (rOptions.mControlPoints.empty() || rOptions.mControlPoints.size() % 3 != 0)
         throw std::invalid_argument("deform_rbf: control_points must be non-empty flat 3*M");
     if (rOptions.mDisplacements.size() != rOptions.mControlPoints.size())
-        throw std::invalid_argument(
-            "deform_rbf: displacements must match control_points length");
+        throw std::invalid_argument("deform_rbf: displacements must match control_points length");
     if (!(rOptions.mRegularization >= 0.0) || !std::isfinite(rOptions.mRegularization))
         throw std::invalid_argument("deform_rbf: regularization must be >= 0 and finite");
 
@@ -324,8 +323,7 @@ DeformResult deform_rbf(const Mesh& rMesh, const RbfOptions& rOptions) {
         const std::size_t k = use_poly ? (m + 4) : m;
         std::vector<double> mat(k * k, 0.0);
         for (std::size_t i = 0; i < m; ++i) {
-            mat[i * k + i] =
-                df_rbf_eval(rOptions.mKernel, 0.0, radius) + rOptions.mRegularization;
+            mat[i * k + i] = df_rbf_eval(rOptions.mKernel, 0.0, radius) + rOptions.mRegularization;
             for (std::size_t j = i + 1; j < m; ++j) {
                 const double r = detail::vec3_norm(detail::vec3_sub(ctrl[i], ctrl[j]));
                 const double val = df_rbf_eval(rOptions.mKernel, r, radius);

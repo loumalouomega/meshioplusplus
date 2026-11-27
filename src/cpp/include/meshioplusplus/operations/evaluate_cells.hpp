@@ -54,7 +54,8 @@ struct EvaluateCellsResult {
     NDArray mPoints;
     /// Evaluated field values per requested field name (`(N,)` or `(N, C)`).
     std::vector<std::pair<std::string, NDArray>> mValues;
-    /// Evaluated physical gradients per requested field name (`(N, 3)` or `(N, C, 3)`), if requested.
+    /// Evaluated physical gradients per requested field name (`(N, 3)` or `(N, C, 3)`), if
+    /// requested.
     std::vector<std::pair<std::string, NDArray>> mGradients;
     /// Number of queries successfully evaluated.
     std::int64_t mNumEvaluated = 0;

@@ -106,8 +106,7 @@ std::string qg_g(double v) {
 }
 
 std::string qg_name(const std::string& rMetric, double Min, double Max, double Fraction) {
-    const std::string m =
-        rMetric.rfind("quality:", 0) == 0 ? rMetric.substr(8) : rMetric;
+    const std::string m = rMetric.rfind("quality:", 0) == 0 ? rMetric.substr(8) : rMetric;
     std::string s;
     if (!std::isnan(Min) && !std::isnan(Max))
         s = qg_g(Min) + " <= " + m + " <= " + qg_g(Max);

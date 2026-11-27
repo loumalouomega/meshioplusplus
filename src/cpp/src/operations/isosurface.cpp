@@ -387,36 +387,47 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
                 };
 
                 if (info.mShape == lagrange::Shape::Quad) {
-                    std::vector<std::int64_t> grid(static_cast<std::size_t>((n_sub + 1) * (n_sub + 1)));
+                    std::vector<std::int64_t> grid(
+                        static_cast<std::size_t>((n_sub + 1) * (n_sub + 1)));
                     for (int j = 0; j <= n_sub; ++j)
                         for (int i = 0; i <= n_sub; ++i)
                             grid[static_cast<std::size_t>(j * (n_sub + 1) + i)] =
                                 add_node({i * inv_n, j * inv_n, 0.0});
                     for (int j = 0; j < n_sub; ++j) {
                         for (int i = 0; i < n_sub; ++i) {
-                            const std::int64_t v00 = grid[static_cast<std::size_t>(j * (n_sub + 1) + i)];
-                            const std::int64_t v10 = grid[static_cast<std::size_t>(j * (n_sub + 1) + i + 1)];
-                            const std::int64_t v11 = grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i + 1)];
-                            const std::int64_t v01 = grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i)];
+                            const std::int64_t v00 =
+                                grid[static_cast<std::size_t>(j * (n_sub + 1) + i)];
+                            const std::int64_t v10 =
+                                grid[static_cast<std::size_t>(j * (n_sub + 1) + i + 1)];
+                            const std::int64_t v11 =
+                                grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i + 1)];
+                            const std::int64_t v01 =
+                                grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i)];
                             sub_tris.insert(sub_tris.end(), {v00, v10, v11, v00, v11, v01});
                         }
                     }
                 } else if (info.mShape == lagrange::Shape::Triangle) {
-                    std::vector<std::vector<std::int64_t>> row_ids(static_cast<std::size_t>(n_sub + 1));
+                    std::vector<std::vector<std::int64_t>> row_ids(
+                        static_cast<std::size_t>(n_sub + 1));
                     for (int j = 0; j <= n_sub; ++j) {
-                        row_ids[static_cast<std::size_t>(j)].resize(static_cast<std::size_t>(n_sub - j + 1));
+                        row_ids[static_cast<std::size_t>(j)].resize(
+                            static_cast<std::size_t>(n_sub - j + 1));
                         for (int i = 0; i <= n_sub - j; ++i)
                             row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] =
                                 add_node({i * inv_n, j * inv_n, 0.0});
                     }
                     for (int j = 0; j < n_sub; ++j) {
                         for (int i = 0; i < n_sub - j; ++i) {
-                            const std::int64_t a = row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)];
-                            const std::int64_t b = row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i + 1)];
-                            const std::int64_t d = row_ids[static_cast<std::size_t>(j + 1)][static_cast<std::size_t>(i)];
+                            const std::int64_t a =
+                                row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)];
+                            const std::int64_t b = row_ids[static_cast<std::size_t>(j)]
+                                                          [static_cast<std::size_t>(i + 1)];
+                            const std::int64_t d = row_ids[static_cast<std::size_t>(j + 1)]
+                                                          [static_cast<std::size_t>(i)];
                             sub_tris.insert(sub_tris.end(), {a, b, d});
                             if (i + 1 < n_sub - j) {
-                                const std::int64_t e = row_ids[static_cast<std::size_t>(j + 1)][static_cast<std::size_t>(i + 1)];
+                                const std::int64_t e = row_ids[static_cast<std::size_t>(j + 1)]
+                                                              [static_cast<std::size_t>(i + 1)];
                                 sub_tris.insert(sub_tris.end(), {b, e, d});
                             }
                         }
@@ -433,7 +444,8 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
                         for (int j = 0; j < n_sub; ++j) {
                             for (int i = 0; i < n_sub; ++i) {
                                 auto at = [&](int di, int dj, int dk) {
-                                    return grid[static_cast<std::size_t>(((kk + dk) * s + (j + dj)) * s + (i + di))];
+                                    return grid[static_cast<std::size_t>(
+                                        ((kk + dk) * s + (j + dj)) * s + (i + di))];
                                 };
                                 const std::int64_t v0 = at(0, 0, 0), v1 = at(1, 0, 0),
                                                    v2 = at(1, 1, 0), v3 = at(0, 1, 0),
@@ -473,16 +485,15 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
                                     const std::int64_t d = at(i + 1, j + 1, kk);
                                     const std::int64_t e = at(i + 1, j, kk + 1);
                                     const std::int64_t f = at(i, j + 1, kk + 1);
-                                    sub_tets.insert(sub_tets.end(),
-                                                    {a, d, b0, e, b0, d, f, e, b0, f, c0, e, a, b0,
-                                                     c0, e});
+                                    sub_tets.insert(sub_tets.end(), {a, d, b0, e, b0, d, f, e, b0,
+                                                                     f, c0, e, a, b0, c0, e});
                                 }
                                 // Inverted tet when i+j+kk <= n_sub - 3
                                 if (i + j + kk <= n_sub - 3) {
-                                    sub_tets.insert(sub_tets.end(),
-                                                    {at(i + 1, j + 1, kk), at(i + 1, j, kk + 1),
-                                                     at(i, j + 1, kk + 1),
-                                                     at(i + 1, j + 1, kk + 1)});
+                                    sub_tets.insert(
+                                        sub_tets.end(),
+                                        {at(i + 1, j + 1, kk), at(i + 1, j, kk + 1),
+                                         at(i, j + 1, kk + 1), at(i + 1, j + 1, kk + 1)});
                                 }
                             }
                         }

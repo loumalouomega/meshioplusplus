@@ -72,7 +72,8 @@ void sk_assemble_cot_laplacian(const std::vector<Vec3>& rPts,
         const Vec3 e0 = detail::vec3_sub(p[2], p[1]);
         const Vec3 e1 = detail::vec3_sub(p[0], p[2]);
         const Vec3 e2 = detail::vec3_sub(p[1], p[0]);
-        const double dbl_area = detail::vec3_norm(detail::vec3_cross(e2, detail::vec3_scale(e1, -1.0)));
+        const double dbl_area =
+            detail::vec3_norm(detail::vec3_cross(e2, detail::vec3_scale(e1, -1.0)));
         if (!(dbl_area > 1e-18))
             continue;
         const double a_third = dbl_area / 6.0;
@@ -85,9 +86,12 @@ void sk_assemble_cot_laplacian(const std::vector<Vec3>& rPts,
             const double c = detail::vec3_dot(rU, rV) / dbl_area;
             return std::clamp(0.5 * c, 0.0, 1e4);
         };
-        const double w0 = cot_w(detail::vec3_sub(p[1], p[0]), detail::vec3_sub(p[2], p[0]));  // opp (1,2)
-        const double w1 = cot_w(detail::vec3_sub(p[2], p[1]), detail::vec3_sub(p[0], p[1]));  // opp (2,0)
-        const double w2 = cot_w(detail::vec3_sub(p[0], p[2]), detail::vec3_sub(p[1], p[2]));  // opp (0,1)
+        const double w0 =
+            cot_w(detail::vec3_sub(p[1], p[0]), detail::vec3_sub(p[2], p[0]));  // opp (1,2)
+        const double w1 =
+            cot_w(detail::vec3_sub(p[2], p[1]), detail::vec3_sub(p[0], p[1]));  // opp (2,0)
+        const double w2 =
+            cot_w(detail::vec3_sub(p[0], p[2]), detail::vec3_sub(p[1], p[2]));  // opp (0,1)
 
         const std::size_t idx[3] = {i0, i1, i2};
         const double w[3] = {w0, w1, w2};
@@ -344,10 +348,10 @@ SkeletonResult extract_skeleton(const Mesh& rMesh, const SkeletonOptions& rOptio
                 const double len = detail::vec3_norm(detail::vec3_sub(
                     xyz[static_cast<std::size_t>(a)], xyz[static_cast<std::size_t>(b)]));
                 if (len < merge_tol) {
-                    xyz[static_cast<std::size_t>(a)] = detail::vec3_scale(
-                        detail::vec3_add(xyz[static_cast<std::size_t>(a)],
-                                         xyz[static_cast<std::size_t>(b)]),
-                        0.5);
+                    xyz[static_cast<std::size_t>(a)] =
+                        detail::vec3_scale(detail::vec3_add(xyz[static_cast<std::size_t>(a)],
+                                                            xyz[static_cast<std::size_t>(b)]),
+                                           0.5);
                     uf.UniteInto(a, b);
                     merged = true;
                     break;
@@ -398,8 +402,7 @@ SkeletonResult extract_skeleton(const Mesh& rMesh, const SkeletonOptions& rOptio
 
     // 5. Optional recentering & inscribed radius via DistanceQuery on original surface.
     const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, "");
-    const detail::DistanceQuery dq =
-        detail::build_distance_query(soup, SurfaceDistanceOptions{});
+    const detail::DistanceQuery dq = detail::build_distance_query(soup, SurfaceDistanceOptions{});
     if (rOptions.mRecenter && n_sk > 0) {
         std::vector<Vec3> sum_p(n_sk, {0.0, 0.0, 0.0});
         std::vector<std::size_t> cnt_p(n_sk, 0);

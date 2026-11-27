@@ -9801,7 +9801,8 @@ TEST(CApi, Roadmap9And15Operations) {
     EXPECT_NEAR(max_d, 0.05, 1e-6);
     mio_mesh_free(rbf_out);
 
-    // 6. Surface ops on sphere: denoise, skeleton, shortest_path, geodesic_voronoi, spectral_descriptors
+    // 6. Surface ops on sphere: denoise, skeleton, shortest_path, geodesic_voronoi,
+    // spectral_descriptors
     mio_gen_opts gopts;
     mio_gen_opts_init(&gopts);
     gopts.radius = 1.0;
@@ -9868,4 +9869,3 @@ TEST(CApi, Roadmap9And15Operations) {
     mio_mesh_free(sph);
     mio_mesh_free(tet);
 }
-

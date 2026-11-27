@@ -54,8 +54,8 @@ enum class SpectralDescriptorKind : std::int32_t {
 };
 
 /// Parse `"hks"` or `"wks"` (case-insensitive).
-MESHIOPLUSPLUS_API SpectralDescriptorKind spectral_descriptor_kind_from_name(
-    const std::string& rName);
+MESHIOPLUSPLUS_API SpectralDescriptorKind
+spectral_descriptor_kind_from_name(const std::string& rName);
 
 /// Options for `spectral_descriptors`.
 struct SpectralDescriptorsOptions {

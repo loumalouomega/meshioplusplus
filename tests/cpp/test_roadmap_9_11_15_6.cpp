@@ -81,7 +81,7 @@ TEST(Roadmap15, QuadratureIntegrateQuadraticCells) {
     // Exact integral over [0, 1]^2 = 1/3 + 1 = 4/3.
     Mesh m;
     NDArray pts(DType::Float64, {8, 3});
-    const double coords[8][3] = {{0, 0, 0}, {1, 0, 0},   {1, 1, 0},   {0, 1, 0},
+    const double coords[8][3] = {{0, 0, 0},   {1, 0, 0},   {1, 1, 0},   {0, 1, 0},
                                  {0.5, 0, 0}, {1, 0.5, 0}, {0.5, 1, 0}, {0, 0.5, 0}};
     double* pp = pts.As<double>();
     NDArray f(DType::Float64, {8});
@@ -355,7 +355,8 @@ TEST(Roadmap9, FvmQualityAndGate) {
     EXPECT_NEAR(rep.mMetrics[2].second.mMax, 1.0, 1e-12);  // volume_ratio
 
     QualityGateOptions gopt;
-    gopt.mThresholds = parse_quality_thresholds("fvm:non_orthogonality <= 70; fvm:volume_ratio <= 2");
+    gopt.mThresholds =
+        parse_quality_thresholds("fvm:non_orthogonality <= 70; fvm:volume_ratio <= 2");
     const QualityGateResult gres = check_quality(hex, gopt);
     EXPECT_TRUE(gres.mPassed);
 

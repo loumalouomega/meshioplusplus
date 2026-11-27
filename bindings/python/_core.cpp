@@ -7796,7 +7796,8 @@ PYBIND11_MODULE(_core, m) {
         py::arg("reuse_eigenmodes") = true, py::arg("wks_variance") = 0.0,
         py::arg("tolerance") = 1e-8, py::arg("max_iterations") = 0, py::arg("output") = "");
 
-    // Inter-mesh sparse CSR prolongation / restriction operator. See operations/transfer_operator.hpp.
+    // Inter-mesh sparse CSR prolongation / restriction operator. See
+    // operations/transfer_operator.hpp.
     m.def(
         "transfer_operator",
         [](py::object pycoarse, py::object pyfine, const std::string& mode, bool transpose,

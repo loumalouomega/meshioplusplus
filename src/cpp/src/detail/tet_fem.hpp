@@ -92,8 +92,8 @@ inline TetFem build_tet_fem(const Mesh& rMesh, const std::string& rOp) {
         for (std::size_t c = 0; c < cb.NumCells(); ++c) {
             const std::int64_t id = cell_idx++;
             const std::array<std::int64_t, 4> nodes = {
-                read_int(conn, c * 4 + 0), read_int(conn, c * 4 + 1),
-                read_int(conn, c * 4 + 2), read_int(conn, c * 4 + 3)};
+                read_int(conn, c * 4 + 0), read_int(conn, c * 4 + 1), read_int(conn, c * 4 + 2),
+                read_int(conn, c * 4 + 3)};
             const Vec3 p[4] = {out.mPoints[static_cast<std::size_t>(nodes[0])],
                                out.mPoints[static_cast<std::size_t>(nodes[1])],
                                out.mPoints[static_cast<std::size_t>(nodes[2])],

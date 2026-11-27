@@ -65,7 +65,8 @@ void dn_face_geometry(const detail::SurfaceRings& rRings, const std::vector<Vec3
         const std::size_t k = static_cast<std::size_t>(e - s);
         Vec3 c{0.0, 0.0, 0.0};
         for (std::size_t i = 0; i < k; ++i) {
-            const Vec3& p = rXyz[static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i])];
+            const Vec3& p =
+                rXyz[static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i])];
             c[0] += p[0];
             c[1] += p[1];
             c[2] += p[2];
@@ -79,8 +80,8 @@ void dn_face_geometry(const detail::SurfaceRings& rRings, const std::vector<Vec3
         // Newell normal / area vector.
         Vec3 n{0.0, 0.0, 0.0};
         for (std::size_t i = 0; i < k; ++i) {
-            const Vec3& p0 = rXyz[static_cast<std::size_t>(
-                rRings.mNodes[static_cast<std::size_t>(s) + i])];
+            const Vec3& p0 =
+                rXyz[static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i])];
             const Vec3& p1 = rXyz[static_cast<std::size_t>(
                 rRings.mNodes[static_cast<std::size_t>(s) + ((i + 1) % k)])];
             const Vec3 d0 = detail::vec3_sub(p0, c);
@@ -106,8 +107,7 @@ Vec3 dn_single_face_normal(const detail::SurfaceRings& rRings, std::size_t f,
     const std::int64_t e = rRings.mStart[f + 1];
     const std::size_t k = static_cast<std::size_t>(e - s);
     auto get_p = [&](std::size_t i) -> Vec3 {
-        const auto vid =
-            static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i]);
+        const auto vid = static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i]);
         return vid == OverrideV ? rOverridePos : rXyz[vid];
     };
     const Vec3 p0 = get_p(0);
@@ -154,8 +154,8 @@ DenoiseSurfaceResult denoise_surface(const Mesh& rMesh, const DenoiseSurfaceOpti
     if (!rOptions.mRegion.empty()) {
         const std::size_t ridx = rMesh.FindRegion(rOptions.mRegion, RegionKind::Cell);
         if (ridx == Mesh::npos)
-            throw std::invalid_argument("denoise_surface: unknown Cell region '" + rOptions.mRegion +
-                                        "'");
+            throw std::invalid_argument("denoise_surface: unknown Cell region '" +
+                                        rOptions.mRegion + "'");
         const Region& reg = rMesh.Region(ridx);
         const std::int64_t* ent = reg.Entries();
         for (std::size_t i = 0; i < reg.NumEntries(); ++i)
@@ -273,8 +273,8 @@ DenoiseSurfaceResult denoise_surface(const Mesh& rMesh, const DenoiseSurfaceOpti
                 // Consistency = max normal spread in patch * max adjacent edge salience.
                 double max_sal = 0.0;
                 for (std::size_t g : edge_adj[f])
-                    max_sal =
-                        std::max(max_sal, detail::vec3_norm(detail::vec3_sub(normals[f], normals[g])));
+                    max_sal = std::max(max_sal,
+                                       detail::vec3_norm(detail::vec3_sub(normals[f], normals[g])));
                 patch_cons[f] = max_diff * (max_sal + 1e-6);
             });
             parallel_for(nf, [&](std::size_t f) {

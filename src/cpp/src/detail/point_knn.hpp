@@ -181,9 +181,8 @@ public:
                         rOut.emplace_back(d2, id);
                 }
             });
-        std::sort(rOut.begin(), rOut.end(), [](const auto& rA, const auto& rB) {
-            return rA.second < rB.second;
-        });
+        std::sort(rOut.begin(), rOut.end(),
+                  [](const auto& rA, const auto& rB) { return rA.second < rB.second; });
     }
 
 private:

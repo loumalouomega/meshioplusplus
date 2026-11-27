@@ -102,7 +102,8 @@ BasisTarget basis_target_from_name(const std::string& rName) {
 EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions& rOptions) {
     const std::size_t nq = rOptions.mCells.size();
     if (rOptions.mReferencePoints.size() != nq * 3)
-        throw std::invalid_argument("evaluate_cells: reference_points length must be 3 * len(cells)");
+        throw std::invalid_argument(
+            "evaluate_cells: reference_points length must be 3 * len(cells)");
 
     std::vector<std::string> fields = rOptions.mFields;
     if (fields.empty()) {
@@ -110,7 +111,8 @@ EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions
     } else {
         for (const std::string& f : fields)
             if (!rMesh.HasPointData(f))
-                throw std::invalid_argument(data_unknown_key_message(rMesh, DataLocation::Point, f));
+                throw std::invalid_argument(
+                    data_unknown_key_message(rMesh, DataLocation::Point, f));
     }
 
     const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
@@ -134,8 +136,7 @@ EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions
         f_ptrs[fi] = &arr;
         const std::size_t c = data_num_components(arr);
         f_comps[fi] = c;
-        NDArray v_arr =
-            c == 1 ? NDArray(DType::Float64, {nq}) : NDArray(DType::Float64, {nq, c});
+        NDArray v_arr = c == 1 ? NDArray(DType::Float64, {nq}) : NDArray(DType::Float64, {nq, c});
         std::fill(v_arr.As<double>(), v_arr.As<double>() + v_arr.Size(), qnan);
         result.mValues.emplace_back(fields[fi], std::move(v_arr));
         if (rOptions.mDerivatives) {
@@ -216,8 +217,8 @@ EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions
                 for (std::size_t comp = 0; comp < nc; ++comp) {
                     double gx = 0.0, gy = 0.0, gz = 0.0;
                     for (std::size_t i = 0; i < k; ++i) {
-                        const double fv = detail::read_double(
-                            src, static_cast<std::size_t>(nids[i]) * nc + comp);
+                        const double fv =
+                            detail::read_double(src, static_cast<std::size_t>(nids[i]) * nc + comp);
                         gx += grads[i][0] * fv;
                         gy += grads[i][1] * fv;
                         gz += grads[i][2] * fv;
@@ -268,15 +269,12 @@ ChangeBasisResult change_basis(const Mesh& rMesh, const ChangeBasisOptions& rOpt
         const CellType ct = cell_type_from_name(cb.Type());
         const NDArray& in_conn = cb.Conn();
         detail::ReferenceElementInfo info;
-        if (!detail::reference_element_info(ct, k, info) || info.mIsSerendipity ||
-            info.mIsPyramid)
-            throw std::invalid_argument(
-                "change_basis: unsupported cell type '" + cb.Type() +
-                "' (expected full Lagrange or Bezier cells)");
+        if (!detail::reference_element_info(ct, k, info) || info.mIsSerendipity || info.mIsPyramid)
+            throw std::invalid_argument("change_basis: unsupported cell type '" + cb.Type() +
+                                        "' (expected full Lagrange or Bezier cells)");
 
-        const bool same_basis =
-            (info.mIsBezier && rOptions.mTarget == BasisTarget::Bezier) ||
-            (!info.mIsBezier && rOptions.mTarget == BasisTarget::Lagrange);
+        const bool same_basis = (info.mIsBezier && rOptions.mTarget == BasisTarget::Bezier) ||
+                                (!info.mIsBezier && rOptions.mTarget == BasisTarget::Lagrange);
 
         std::vector<double> mat;
         if (!same_basis) {

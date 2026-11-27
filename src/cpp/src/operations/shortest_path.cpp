@@ -125,9 +125,8 @@ std::int64_t sp_find_edge_cell(const Mesh& rMesh, std::int64_t U, std::int64_t V
                                const std::vector<std::pair<std::uint64_t, std::int64_t>>& rMap) {
     const std::int64_t lo = std::min(U, V);
     const std::int64_t hi = std::max(U, V);
-    const std::uint64_t key =
-        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(lo)) << 32) |
-        static_cast<std::uint64_t>(static_cast<std::uint32_t>(hi));
+    const std::uint64_t key = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(lo)) << 32) |
+                              static_cast<std::uint64_t>(static_cast<std::uint32_t>(hi));
     auto it = std::lower_bound(rMap.begin(), rMap.end(), key,
                                [](const auto& rP, std::uint64_t K) { return rP.first < K; });
     if (it != rMap.end() && it->first == key)
@@ -323,28 +322,26 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
                         const double inv_a2 = 1.0 / a2;
                         const Vec3 g1 = detail::vec3_scale(detail::vec3_cross(nrm, e2), -inv_a2);
                         const Vec3 g2 = detail::vec3_scale(detail::vec3_cross(nrm, e1), inv_a2);
-                        const double d1 = pd[static_cast<std::size_t>(vb)] -
-                                          pd[static_cast<std::size_t>(va)];
-                        const double d2 = pd[static_cast<std::size_t>(vc)] -
-                                          pd[static_cast<std::size_t>(va)];
-                        const Vec3 dir = detail::vec3_scale(
-                            detail::vec3_add(detail::vec3_scale(g1, d1),
-                                             detail::vec3_scale(g2, d2)),
-                            -1.0);
+                        const double d1 =
+                            pd[static_cast<std::size_t>(vb)] - pd[static_cast<std::size_t>(va)];
+                        const double d2 =
+                            pd[static_cast<std::size_t>(vc)] - pd[static_cast<std::size_t>(va)];
+                        const Vec3 dir =
+                            detail::vec3_scale(detail::vec3_add(detail::vec3_scale(g1, d1),
+                                                                detail::vec3_scale(g2, d2)),
+                                               -1.0);
                         // Express dir in (e1, e2) coordinates: dir = alpha e1 + beta e2.
                         const double alpha = detail::vec3_dot(dir, g1);
                         const double beta = detail::vec3_dot(dir, g2);
                         if (alpha > 1e-12 && beta > 1e-12) {
                             const double t = 1.0 / (alpha + beta);
                             const double u = beta * t;  // fraction along edge (vb, vc)
-                            const Vec3 exit_p =
-                                detail::vec3_add(p1, detail::vec3_scale(detail::vec3_sub(p2, p1), u));
-                            const double exit_d =
-                                (1.0 - u) * pd[static_cast<std::size_t>(vb)] +
-                                u * pd[static_cast<std::size_t>(vc)];
+                            const Vec3 exit_p = detail::vec3_add(
+                                p1, detail::vec3_scale(detail::vec3_sub(p2, p1), u));
+                            const double exit_d = (1.0 - u) * pd[static_cast<std::size_t>(vb)] +
+                                                  u * pd[static_cast<std::size_t>(vc)];
                             const double seg_l = detail::vec3_norm(detail::vec3_sub(exit_p, p0));
-                            const double slope =
-                                seg_l > 1e-15 ? (cur_d - exit_d) / seg_l : 0.0;
+                            const double slope = seg_l > 1e-15 ? (cur_d - exit_d) / seg_l : 0.0;
                             if (slope > best_slope) {
                                 best_slope = slope;
                                 best_f = static_cast<std::int64_t>(f);
@@ -358,8 +355,8 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
                     // Also consider descending along edges (va->vb) and (va->vc).
                     for (std::int64_t nb : {vb, vc}) {
                         const double dn = pd[static_cast<std::size_t>(nb)];
-                        const double elen =
-                            detail::vec3_norm(detail::vec3_sub(xyz[static_cast<std::size_t>(nb)], p0));
+                        const double elen = detail::vec3_norm(
+                            detail::vec3_sub(xyz[static_cast<std::size_t>(nb)], p0));
                         const double slope = elen > 1e-15 ? (cur_d - dn) / elen : 0.0;
                         if (slope > best_slope) {
                             best_slope = slope;
@@ -465,10 +462,9 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
                             nb[0] * p[0][1] + nb[1] * p[1][1] + nb[2] * p[2][1],
                             nb[0] * p[0][2] + nb[1] * p[1][2] + nb[2] * p[2][2],
                         };
-                        const double next_d =
-                            nb[0] * pd[static_cast<std::size_t>(v[0])] +
-                            nb[1] * pd[static_cast<std::size_t>(v[1])] +
-                            nb[2] * pd[static_cast<std::size_t>(v[2])];
+                        const double next_d = nb[0] * pd[static_cast<std::size_t>(v[0])] +
+                                              nb[1] * pd[static_cast<std::size_t>(v[1])] +
+                                              nb[2] * pd[static_cast<std::size_t>(v[2])];
                         if (next_d < cur_d - 1e-14) {
                             rev_pts.push_back(next_p);
                             rev_cells.push_back(rings.mCell[f]);
@@ -519,7 +515,8 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
             std::reverse(rev_cells.begin(), rev_cells.end());
             std::vector<double> cum(rev_pts.size(), 0.0);
             for (std::size_t i = 1; i < rev_pts.size(); ++i)
-                cum[i] = cum[i - 1] + detail::vec3_norm(detail::vec3_sub(rev_pts[i], rev_pts[i - 1]));
+                cum[i] =
+                    cum[i - 1] + detail::vec3_norm(detail::vec3_sub(rev_pts[i], rev_pts[i - 1]));
             result.mReached = true;
             result.mTotalLength = cum.back();
             result.mNumSegments = static_cast<std::int64_t>(rev_pts.size() - 1);
@@ -552,8 +549,8 @@ ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& r
         const std::int64_t end = adj.mXadj[static_cast<std::size_t>(u) + 1];
         for (std::int64_t e = beg; e < end; ++e) {
             const std::int64_t v = adj.mAdj[static_cast<std::size_t>(e)];
-            const double w = detail::vec3_norm(
-                detail::vec3_sub(xyz[static_cast<std::size_t>(v)], xyz[static_cast<std::size_t>(u)]));
+            const double w = detail::vec3_norm(detail::vec3_sub(xyz[static_cast<std::size_t>(v)],
+                                                                xyz[static_cast<std::size_t>(u)]));
             const double nd = du + w;
             const std::size_t vu = static_cast<std::size_t>(v);
             if (nd < dist[vu] || (nd == dist[vu] && (parent[vu] < 0 || u < parent[vu]))) {
@@ -620,7 +617,8 @@ GeodesicVoronoiResult geodesic_voronoi(const Mesh& rMesh, const GeodesicVoronoiO
         seeds.push_back(sp_nearest_vertex(xyz, p));
     }
     if (seeds.empty())
-        throw std::invalid_argument("geodesic_voronoi: at least one source or seed_point is required");
+        throw std::invalid_argument(
+            "geodesic_voronoi: at least one source or seed_point is required");
 
     const detail::NodeAdjacency adj =
         detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
@@ -709,7 +707,8 @@ GeodesicVoronoiResult geodesic_voronoi(const Mesh& rMesh, const GeodesicVoronoiO
                     const std::size_t k = cb.NodesPerCell();
                     const NDArray& conn = cb.Conn();
                     for (std::size_t i = 0; i < k; ++i) {
-                        const auto vid = static_cast<std::size_t>(detail::read_int(conn, c * k + i));
+                        const auto vid =
+                            static_cast<std::size_t>(detail::read_int(conn, c * k + i));
                         if (label[vid] >= 0 &&
                             (dist[vid] < best_d ||
                              (dist[vid] == best_d && (best_lbl < 0 || label[vid] < best_lbl)))) {

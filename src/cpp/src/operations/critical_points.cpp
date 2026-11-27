@@ -129,7 +129,8 @@ CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOpti
         if (!detail::reference_element_info(ct, k, info))
             continue;
         if (info.mOrder < 2)
-            continue;  // Linear fields on linear cells have constant gradient (no isolated interior extrema).
+            continue;  // Linear fields on linear cells have constant gradient (no isolated interior
+                       // extrema).
 
         const int dim = info.mDim;
         const int n_sub = rOptions.mSeedSubdivisions > 0
@@ -198,15 +199,15 @@ CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOpti
                             break;
                         for (int i = 0; i < dim; ++i)
                             H[static_cast<std::size_t>(i * dim + j)] =
-                                (gp[static_cast<std::size_t>(i)] - gm[static_cast<std::size_t>(i)]) /
+                                (gp[static_cast<std::size_t>(i)] -
+                                 gm[static_cast<std::size_t>(i)]) /
                                 (2.0 * h);
                     }
                     // Symmetrize H and solve H * step = -g.
                     for (int i = 0; i < dim; ++i)
                         for (int j = i + 1; j < dim; ++j) {
-                            const double avg =
-                                0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
-                                       H[static_cast<std::size_t>(j * dim + i)]);
+                            const double avg = 0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
+                                                      H[static_cast<std::size_t>(j * dim + i)]);
                             H[static_cast<std::size_t>(i * dim + j)] = avg;
                             H[static_cast<std::size_t>(j * dim + i)] = avg;
                         }
@@ -219,7 +220,8 @@ CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOpti
                     // Damped step to stay well-behaved.
                     double step_norm = 0.0;
                     for (int i = 0; i < dim; ++i)
-                        step_norm += rhs[static_cast<std::size_t>(i)] * rhs[static_cast<std::size_t>(i)];
+                        step_norm +=
+                            rhs[static_cast<std::size_t>(i)] * rhs[static_cast<std::size_t>(i)];
                     step_norm = std::sqrt(step_norm);
                     const double scale = step_norm > 0.5 ? (0.5 / step_norm) : 1.0;
                     for (int i = 0; i < dim; ++i)
@@ -262,9 +264,8 @@ CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOpti
                 }
                 for (int i = 0; i < dim; ++i)
                     for (int j = i + 1; j < dim; ++j) {
-                        const double avg =
-                            0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
-                                   H[static_cast<std::size_t>(j * dim + i)]);
+                        const double avg = 0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
+                                                  H[static_cast<std::size_t>(j * dim + i)]);
                         H[static_cast<std::size_t>(i * dim + j)] = avg;
                         H[static_cast<std::size_t>(j * dim + i)] = avg;
                     }

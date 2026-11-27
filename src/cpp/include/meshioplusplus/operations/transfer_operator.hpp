@@ -71,7 +71,7 @@ struct TransferOperatorOptions {
  * Returns `MeshOperatorResult` where `mNumDegenerate` counts fine points that
  * could not be located (0 when all points are located or `mFallbackNearest` is true).
  */
-MESHIOPLUSPLUS_API MeshOperatorResult transfer_operator(const Mesh& rCoarse, const Mesh& rFine,
-                                                        const TransferOperatorOptions& rOptions = {});
+MESHIOPLUSPLUS_API MeshOperatorResult transfer_operator(
+    const Mesh& rCoarse, const Mesh& rFine, const TransferOperatorOptions& rOptions = {});
 
 }  // namespace meshioplusplus
