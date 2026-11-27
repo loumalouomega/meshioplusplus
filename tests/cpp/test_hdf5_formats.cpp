@@ -406,10 +406,8 @@ TEST(Med, LenientReadsNonDefaultStepMetadataIntoMedInfo) {
 }
 
 TEST(Med, LenientSkipsAnElgaSupportButKeepsTheMesh) {
-    // An ELNO/ELGA support is one value per node-within-cell or Gauss point --
-    // a 3-D shape the uniform mesh API's (n,)/(n,k) cell_data cannot hold at
-    // all. Strict declines the file; lenient drops that one field and still
-    // returns the geometry, which is the whole point for a Python-less caller.
+    // An unknown support kind (not NOE, MAI.<type>, or NOE.<type>) is rejected
+    // in strict mode and skipped in lenient mode while keeping the geometry.
     std::string p = med_field_fixture();
     {
         h5::SilenceErrors silence;
@@ -417,8 +415,8 @@ TEST(Med, LenientSkipsAnElgaSupportButKeepsTheMesh) {
         h5::Hid field = h5::open_group(f, "CHA/temperature");
         std::vector<std::string> steps = h5::group_links(field);
         h5::Hid ts = h5::open_group(field, steps[0]);
-        // Rename the NOE support to an ELGA-style one the reader must refuse.
-        H5Lmove(ts, "NOE", ts, "NOE.TR3", H5P_DEFAULT, H5P_DEFAULT);
+        // Rename the NOE support to an unknown support kind the reader must refuse.
+        H5Lmove(ts, "NOE", ts, "AUX.TR3", H5P_DEFAULT, H5P_DEFAULT);
     }
 
     meshioplusplus::MedInfo strict_info;
@@ -430,7 +428,7 @@ TEST(Med, LenientSkipsAnElgaSupportButKeepsTheMesh) {
     EXPECT_EQ(out.NumPoints(), mt::tri_mesh().NumPoints());
     EXPECT_EQ(out.NumCellBlocks(), 1u);
     ASSERT_EQ(info.mSkippedConstructs.size(), 1u);
-    EXPECT_NE(info.mSkippedConstructs[0].find("ELNO/ELGA"), std::string::npos);
+    EXPECT_NE(info.mSkippedConstructs[0].find("unsupported support kind"), std::string::npos);
 
     std::error_code ec;
     std::filesystem::remove(p, ec);
