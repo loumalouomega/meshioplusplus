@@ -5969,11 +5969,10 @@ mio_status mio_mesh_get_field_data(const mio_mesh* mesh, const char* name, const
 }
 
 mio_status mio_mesh_set_field_string(mio_mesh* mesh, const char* name, const char* value) {
-    return capi_guarded_status([&]() {
-        capi_require(mesh, "meshio++: mesh is NULL");
-        capi_require(name && name[0] != '\0', "meshio++: field name is empty");
-        capi_require(value, "meshio++: string value is NULL");
+    return guarded([&]() -> mio_status {
+        capi_require_arg(mesh && name && name[0] != '\0' && value, "mesh/name/value");
         meshioplusplus::detail::set_field_string(mesh->mMesh, name, value);
+        return MIO_OK;
     });
 }
 
@@ -5981,7 +5980,8 @@ int64_t mio_mesh_get_field_string(const mio_mesh* mesh, const char* name, char* 
                                   int64_t buflen) {
     return capi_guarded_count([&]() -> int64_t {
         capi_require(mesh, "meshio++: mesh is NULL");
-        capi_require(name && name[0] != '\0', "meshio++: field name is empty");
+        if (!name || name[0] == '\0')
+            throw meshioplusplus::ReadError("meshio++: field name is empty");
         auto s = meshioplusplus::detail::get_field_string(mesh->mMesh, name);
         if (!s)
             return -1;
