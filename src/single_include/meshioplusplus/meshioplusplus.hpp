@@ -236435,6 +236435,7 @@ bool VtkhdfTimeSeriesWriter::Finalized() const {
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -236653,7 +236654,7 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
             std::string mName;
             std::vector<std::pair<std::string, std::size_t>> mDatasets;  // (leaf_name, piece_idx)
             std::vector<std::string> mChildOrder;
-            std::unordered_map<std::string, VtmTreeNode> mChildren;
+            std::unordered_map<std::string, std::unique_ptr<VtmTreeNode>> mChildren;
         };
         VtmTreeNode root_node;
         auto ensure_group = [&](const std::vector<std::string>& rSegs,
@@ -236664,11 +236665,11 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
                 auto it = cur->mChildren.find(seg);
                 if (it == cur->mChildren.end()) {
                     cur->mChildOrder.push_back(seg);
-                    VtmTreeNode child;
-                    child.mName = seg;
+                    auto child = std::make_unique<VtmTreeNode>();
+                    child->mName = seg;
                     it = cur->mChildren.emplace(seg, std::move(child)).first;
                 }
-                cur = &it->second;
+                cur = it->second.get();
             }
             return cur;
         };
@@ -236693,7 +236694,7 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
                    << "\" file=\"" << piece_files[pi] << "\"/>\n";
             }
             for (const std::string& cname : rNode.mChildOrder) {
-                const VtmTreeNode& child = rNode.mChildren.at(cname);
+                const VtmTreeNode& child = *rNode.mChildren.at(cname);
                 os << "<Block index=\"" << idx++ << "\" name=\"" << vtm_xml_attr(child.mName)
                    << "\">\n";
                 self(self, child);
