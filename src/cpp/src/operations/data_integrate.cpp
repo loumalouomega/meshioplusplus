@@ -41,6 +41,10 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/region.hpp"
 
+// Project includes (private, not installed)
+#include "../detail/quadrature.hpp"
+#include "../detail/reference_element.hpp"
+
 namespace meshioplusplus {
 
 namespace {
@@ -223,8 +227,9 @@ struct DintMode {
     bool mBoundary = false;
     bool mPoint = false;
     bool mFlux = false;
+    bool mQuad = false;
     std::string mBase;
-    bool Plain() const { return !mBoundary && !mPoint && !mFlux; }
+    bool Plain() const { return !mBoundary && !mPoint && !mFlux && !mQuad; }
 };
 
 bool dint_starts_with(const std::string& s, const char* p) {
@@ -247,19 +252,178 @@ DintMode dint_parse(const Mesh& rMesh, const std::string& rName) {
     } else if (dint_starts_with(s, "flux:")) {
         m.mFlux = true;
         s = s.substr(5);
+    } else if (dint_starts_with(s, "quad:")) {
+        m.mQuad = true;
+        s = s.substr(5);
     }
     if (m.Plain())
         return m;  // no prefix: the unknown-name error follows
-    if (m.mBoundary && !m.mPoint && !m.mFlux)
+    if (m.mBoundary && !m.mPoint && !m.mFlux && !m.mQuad)
         throw std::invalid_argument(
-            "meshio++: data_integrate: 'boundary:' needs 'point:' or 'flux:' after it (the "
-            "boundary surface carries no cell_data)");
+            "meshio++: data_integrate: 'boundary:' needs 'point:', 'quad:' or 'flux:' after it "
+            "(the boundary surface carries no cell_data)");
     m.mBase = s;
     return m;
 }
 
 [[noreturn]] void dint_fail(const std::string& rMessage) {
     throw std::invalid_argument("meshio++: data_integrate: " + rMessage);
+}
+
+// Integrate a point_data array by Gauss quadrature on each cell's shape functions.
+FieldIntegralArray dint_quad_array(const Mesh& rMesh, const std::string& rBaseName,
+                                   const std::string& rReportName) {
+    if (!rMesh.HasPointData(rBaseName))
+        dint_fail("'quad:" + rBaseName + "' names no point_data array");
+    const NDArray& pdata = rMesh.PointData(rBaseName);
+    const std::size_t comps = data_num_components(pdata);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+
+    // Per-cell quadrature measure and integral (block-major).
+    std::vector<std::vector<double>> cell_vol(nblocks);
+    std::vector<std::vector<double>> cell_int(nblocks);
+    std::vector<std::vector<std::uint8_t>> cell_nan(nblocks);
+    std::int64_t domain_num_cells = 0;
+    std::int64_t domain_num_skipped = 0;
+
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t nc = cb.NumCells();
+        cell_vol[b].assign(nc, -1.0);
+        cell_int[b].assign(nc * comps, 0.0);
+        cell_nan[b].assign(nc * comps, 0);
+
+        detail::ReferenceElementInfo info;
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (cb.IsRagged() || !detail::reference_element_info(ct, cb.NodesPerCell(), info)) {
+            domain_num_skipped += static_cast<std::int64_t>(nc);
+            continue;
+        }
+        const detail::QuadratureRule rule =
+            detail::quadrature_rule(ct, std::max(2 * info.mOrder + 1, 2));
+        if (rule.mPoints.empty()) {
+            domain_num_skipped += static_cast<std::int64_t>(nc);
+            continue;
+        }
+        const std::size_t n_nodes = cb.NodesPerCell();
+        const NDArray& conn = cb.Conn();
+
+        parallel_for(nc, [&](std::size_t c) {
+            std::vector<detail::Vec3> cpts(n_nodes);
+            std::vector<std::int64_t> cids(n_nodes);
+            for (std::size_t i = 0; i < n_nodes; ++i) {
+                const std::int64_t nid = detail::read_int(conn, c * n_nodes + i);
+                cids[i] = nid;
+                const std::size_t u = static_cast<std::size_t>(nid);
+                cpts[i] = {detail::read_double(points, u * pdim + 0),
+                           pdim > 1 ? detail::read_double(points, u * pdim + 1) : 0.0,
+                           pdim > 2 ? detail::read_double(points, u * pdim + 2) : 0.0};
+            }
+            std::vector<double> vals;
+            std::vector<detail::Vec3> grads;
+            double vol = 0.0;
+            std::vector<double> acc(comps, 0.0);
+            std::vector<std::uint8_t> has_nan(comps, 0);
+            for (std::size_t k = 0; k < comps; ++k) {
+                for (std::size_t i = 0; i < n_nodes; ++i) {
+                    const double fv =
+                        detail::read_double(pdata, static_cast<std::size_t>(cids[i]) * comps + k);
+                    if (!std::isfinite(fv)) {
+                        has_nan[k] = 1;
+                        break;
+                    }
+                }
+            }
+            for (std::size_t q = 0; q < rule.mPoints.size(); ++q) {
+                double meas = 0.0;
+                if (!detail::shape_eval_and_jacobian(ct, cpts, rule.mPoints[q], vals, grads,
+                                                     meas)) {
+                    vol = -1.0;
+                    break;
+                }
+                const double w = rule.mWeights[q] * meas;
+                vol += w;
+                for (std::size_t k = 0; k < comps; ++k) {
+                    if (has_nan[k])
+                        continue;
+                    double fq = 0.0;
+                    for (std::size_t i = 0; i < n_nodes; ++i)
+                        fq += vals[i] * detail::read_double(
+                                            pdata, static_cast<std::size_t>(cids[i]) * comps + k);
+                    acc[k] += w * fq;
+                }
+            }
+            if (std::isfinite(vol) && vol > 0.0) {
+                cell_vol[b][c] = vol;
+                for (std::size_t k = 0; k < comps; ++k) {
+                    cell_int[b][c * comps + k] = acc[k];
+                    cell_nan[b][c * comps + k] = has_nan[k];
+                }
+            }
+        });
+
+        for (std::size_t c = 0; c < nc; ++c) {
+            if (cell_vol[b][c] > 0.0)
+                ++domain_num_cells;
+            else
+                ++domain_num_skipped;
+        }
+    }
+
+    FieldIntegralArray arr;
+    arr.mName = rReportName;
+    arr.mNumComponents = static_cast<std::int64_t>(comps);
+
+    std::vector<detail::WeightedSum> domain_stats(comps);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t nc = cell_vol[b].size();
+        for (std::size_t c = 0; c < nc; ++c) {
+            const double w = cell_vol[b][c];
+            if (!(w > 0.0))
+                continue;
+            for (std::size_t k = 0; k < comps; ++k) {
+                if (cell_nan[b][c * comps + k])
+                    domain_stats[k].Add(std::numeric_limits<double>::quiet_NaN(), w);
+                else
+                    domain_stats[k].Add(cell_int[b][c * comps + k] / w, w);
+            }
+        }
+    }
+    arr.mDomain = dint_build_region("", domain_stats, domain_num_cells, domain_num_skipped, comps);
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    for (const std::string& rname : rMesh.RegionNames()) {
+        const std::size_t idx = rMesh.FindRegion(rname, RegionKind::Cell);
+        if (idx == Mesh::npos)
+            continue;
+        const Region& region = rMesh.Region(idx);
+        std::vector<detail::WeightedSum> rstats(comps);
+        std::int64_t rcells = 0;
+        std::int64_t rskip = 0;
+        const std::int64_t* entries = region.Entries();
+        for (std::size_t e = 0; e < region.NumEntries(); ++e) {
+            const auto [b, row] = detail::global_to_block_row(bases, entries[e]);
+            if (b == static_cast<std::size_t>(-1))
+                continue;
+            const std::size_t c = static_cast<std::size_t>(row);
+            const double w = cell_vol[b][c];
+            if (!(w > 0.0)) {
+                ++rskip;
+                continue;
+            }
+            ++rcells;
+            for (std::size_t k = 0; k < comps; ++k) {
+                if (cell_nan[b][c * comps + k])
+                    rstats[k].Add(std::numeric_limits<double>::quiet_NaN(), w);
+                else
+                    rstats[k].Add(cell_int[b][c * comps + k] / w, w);
+            }
+        }
+        arr.mRegions.push_back(dint_build_region(rname, rstats, rcells, rskip, comps));
+    }
+    return arr;
 }
 
 }  // namespace
@@ -280,12 +444,11 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
     Mesh bound;
     bool have_bound = false;
     std::vector<std::string> temp_names(modes.size());
+    std::vector<FieldIntegralArray> quad_results(modes.size());
     for (std::size_t i = 0; i < modes.size(); ++i) {
         const DintMode& m = modes[i];
         if (m.Plain())
             continue;
-        const std::string temp = "\x01integrate" + std::to_string(i);
-        temp_names[i] = temp;
         Mesh* wk = &plain;
         if (m.mBoundary) {
             if (!have_bound) {
@@ -296,6 +459,12 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
             }
             wk = &bound;
         }
+        if (m.mQuad) {
+            quad_results[i] = dint_quad_array(*wk, m.mBase, rOptions.mArrayNames[i]);
+            continue;
+        }
+        const std::string temp = "\x01integrate" + std::to_string(i);
+        temp_names[i] = temp;
         const bool as_point = wk->HasPointData(m.mBase);
         const bool as_cell = !m.mPoint && wk->HasCellData(m.mBase);
         if (m.mPoint && !as_point)
@@ -355,6 +524,8 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
     DataIntegrateOptions plain_opts;
     DataIntegrateOptions bound_opts;
     for (std::size_t i = 0; i < modes.size(); ++i) {
+        if (modes[i].mQuad)
+            continue;
         if (modes[i].Plain())
             plain_opts.mArrayNames.push_back(rOptions.mArrayNames[i]);
         else if (modes[i].mBoundary)
@@ -362,13 +533,18 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
         else
             plain_opts.mArrayNames.push_back(temp_names[i]);
     }
-    const DataIntegrateReport pr = dint_core(plain, plain_opts);
+    const DataIntegrateReport pr =
+        plain_opts.mArrayNames.empty() ? DataIntegrateReport{} : dint_core(plain, plain_opts);
     const DataIntegrateReport br =
         bound_opts.mArrayNames.empty() ? DataIntegrateReport{} : dint_core(bound, bound_opts);
     DataIntegrateReport out;
     std::size_t pi = 0;
     std::size_t bi = 0;
     for (std::size_t i = 0; i < modes.size(); ++i) {
+        if (modes[i].mQuad) {
+            out.mArrays.push_back(std::move(quad_results[i]));
+            continue;
+        }
         FieldIntegralArray arr =
             (!modes[i].Plain() && modes[i].mBoundary) ? br.mArrays[bi++] : pr.mArrays[pi++];
         arr.mName = rOptions.mArrayNames[i];

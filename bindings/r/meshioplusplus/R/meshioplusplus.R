@@ -832,6 +832,52 @@ mio_laplacian_eigenmodes <- function(mesh, num_modes = 10, tolerance = 1e-8,
   )
 }
 
+#' @export
+mio_mesh_operator <- function(mesh, kind = "laplacian") {
+  kinds <- c(laplacian = 0L, mass_lumped = 1L, mass_consistent = 2L, gradient = 3L)
+  if (!is.character(kind) || length(kind) != 1L || !(kind %in% names(kinds))) {
+    stop("mio_mesh_operator: unknown kind '", kind, "'")
+  }
+  .Call(R_mio_mesh_operator, mesh, kinds[[kind]])
+}
+
+#' @export
+mio_smooth_field <- function(mesh, array, output = "", length = 0.0,
+                             tolerance = 1e-12, max_iterations = 0) {
+  .Call(
+    R_mio_smooth_field, mesh, as.character(array), as.character(output),
+    as.numeric(length), as.numeric(tolerance), as.numeric(max_iterations)
+  )
+}
+
+#' @export
+mio_streamlines <- function(mesh, array, seeds = 40, direction = "both",
+                            integrator = "rk4", max_length = 0.5, step = 0.0,
+                            max_steps = 0, tolerance = 1e-6) {
+  dirs <- c(both = 0L, forward = 1L, backward = 2L)
+  ints <- c(rk4 = 0L, rk45 = 1L)
+  .Call(
+    R_mio_streamlines, mesh, as.character(array), as.numeric(seeds),
+    dirs[[direction]], ints[[integrator]], as.numeric(max_length),
+    as.numeric(step), as.numeric(max_steps), as.numeric(tolerance)
+  )
+}
+
+#' @export
+mio_transfer_operator <- function(coarse, fine, mode = "auto", transpose = FALSE,
+                                  tolerance = 1e-12, fallback_nearest = FALSE) {
+  modes <- c(auto = 0L, nested = 1L, barycentric = 2L)
+  .Call(
+    R_mio_transfer_operator, coarse, fine, modes[[mode]], as.logical(transpose),
+    as.numeric(tolerance), as.logical(fallback_nearest)
+  )
+}
+
+#' @export
+mio_attach_fvm_quality <- function(mesh) {
+  .Call(R_mio_attach_fvm_quality, mesh)
+}
+
 #' Rigid registration by iterative closest points
 #'
 #' The rotation and translation laying `source`'s points onto `target` (its

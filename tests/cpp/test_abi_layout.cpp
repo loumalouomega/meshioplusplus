@@ -169,6 +169,15 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/cut.hpp"
+#include "meshioplusplus/operations/fvm_quality.hpp"
+#include "meshioplusplus/operations/denoise_surface.hpp"
+#include "meshioplusplus/operations/skeleton.hpp"
+#include "meshioplusplus/operations/shortest_path.hpp"
+#include "meshioplusplus/operations/deform.hpp"
+#include "meshioplusplus/operations/evaluate_cells.hpp"
+#include "meshioplusplus/operations/critical_points.hpp"
+#include "meshioplusplus/operations/transfer_operator.hpp"
+#include "meshioplusplus/operations/spectral_descriptors.hpp"
 
 namespace {
 
@@ -912,6 +921,17 @@ MIO_ABI_LAYOUT(meshioplusplus::PrepareMetricOptions, 104, 8);
 static_assert(sizeof(meshioplusplus::AdjacencyKind) == 4 &&
                   sizeof(meshioplusplus::GraphFormat) == 4,
               "meshio++ ABI: adjacency enum underlying width changed (Tier A, doc/abi.md)");
+MIO_ABI_LAYOUT(meshioplusplus::DenoiseSurfaceOptions, 80, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SkeletonOptions, 48, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ShortestPathOptions, 96, 8);
+MIO_ABI_LAYOUT(meshioplusplus::GeodesicVoronoiOptions, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::FfdOptions, 160, 8);
+MIO_ABI_LAYOUT(meshioplusplus::RbfOptions, 112, 8);
+MIO_ABI_LAYOUT(meshioplusplus::EvaluateCellsOptions, 80, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ChangeBasisOptions, 8, 4);
+MIO_ABI_LAYOUT(meshioplusplus::CriticalPointsOptions, 64, 8);
+MIO_ABI_LAYOUT(meshioplusplus::TransferOperatorOptions, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SpectralDescriptorsOptions, 88, 8);
 
 // --- The mesh itself, which IS the backend ----------------------------------
 // Each backend gets its own line because Mesh is a different type per backend;

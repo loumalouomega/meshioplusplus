@@ -5837,3 +5837,281 @@ function compute_sdf(surface::Mesh; structure=:voxel, resolution=nothing,
               degenerate_triangles=Int(q.degenerate_triangles),
               watertight=q.watertight != 0))
 end
+
+# --- roadmap 9.11-9.15 & 15.2-15.6 ------------------------------------------
+
+function _unpack_sparse_operator(ptr::Ptr{Cvoid})
+    op = _check_ptr(ptr)
+    try
+        rows = Int(ccall(_sym(:mio_sparse_operator_rows), Int64, (Ptr{Cvoid},), op))
+        cols = Int(ccall(_sym(:mio_sparse_operator_cols), Int64, (Ptr{Cvoid},), op))
+        nnz = Int(ccall(_sym(:mio_sparse_operator_nnz), Int64, (Ptr{Cvoid},), op))
+        n_ip = Ref{Int64}(0)
+        p_ip = ccall(_sym(:mio_sparse_operator_indptr), Ptr{Int64}, (Ptr{Cvoid}, Ptr{Int64}), op, n_ip)
+        n_ix = Ref{Int64}(0)
+        p_ix = ccall(_sym(:mio_sparse_operator_indices), Ptr{Int64}, (Ptr{Cvoid}, Ptr{Int64}), op, n_ix)
+        n_vl = Ref{Int64}(0)
+        p_vl = ccall(_sym(:mio_sparse_operator_values), Ptr{Cdouble}, (Ptr{Cvoid}, Ptr{Int64}), op, n_vl)
+        indptr = n_ip[] > 0 ? copy(unsafe_wrap(Vector{Int64}, p_ip, Int(n_ip[]))) : Int64[]
+        indices = n_ix[] > 0 ? copy(unsafe_wrap(Vector{Int64}, p_ix, Int(n_ix[]))) : Int64[]
+        values = n_vl[] > 0 ? copy(unsafe_wrap(Vector{Float64}, p_vl, Int(n_vl[]))) : Float64[]
+        return (rows=rows, cols=cols, nnz=nnz, indptr=indptr, indices=indices, values=values)
+    finally
+        ccall(_sym(:mio_sparse_operator_free), Cvoid, (Ptr{Cvoid},), op)
+    end
+end
+
+const _OPERATOR_KINDS = Dict(:laplacian => Int32(0), :mass_lumped => Int32(1),
+                             :mass_consistent => Int32(2), :gradient => Int32(3))
+
+function mesh_operator(m::Mesh; kind::Symbol=:laplacian)
+    ptr = ccall(_sym(:mio_mesh_operator), Ptr{Cvoid}, (Ptr{Cvoid}, Int32),
+                _handle(m), _code(_OPERATOR_KINDS, kind, "kind"))
+    _unpack_sparse_operator(ptr)
+end
+
+function smooth_field(m::Mesh, array::AbstractString; output::AbstractString="",
+                      length::Real=0.0, tolerance::Real=1e-12, max_iterations::Integer=0)
+    arr_c = Vector{UInt8}(codeunits(String(array) * "\0"))
+    out_c = Vector{UInt8}(codeunits(String(output) * "\0"))
+    rep = Ref{_CSmoothFieldReport}()
+    ptr = GC.@preserve arr_c out_c begin
+        opts = _CSmoothFieldOpts(Cstring(pointer(arr_c)),
+                                 isempty(output) ? Cstring(C_NULL) : Cstring(pointer(out_c)),
+                                 Cdouble(length), Cdouble(tolerance), Int64(max_iterations),
+                                 (Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_smooth_field), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CSmoothFieldOpts}, Ptr{_CSmoothFieldReport}),
+              _handle(m), Ref(opts), rep)
+    end
+    r = rep[]
+    (mesh=Mesh(_check_ptr(ptr)), num_degenerate=Int(r.num_degenerate),
+     iterations=Int(r.iterations), converged=r.converged != 0)
+end
+
+const _STREAMLINE_DIRS = Dict(:both => Int32(0), :forward => Int32(1), :backward => Int32(2))
+const _STREAMLINE_INTS = Dict(:rk4 => Int32(0), :rk45 => Int32(1))
+
+function streamlines(m::Mesh, array::AbstractString; seeds::Integer=40,
+                     seed_points::Union{Nothing,AbstractVector{<:Real}}=nothing,
+                     direction::Symbol=:both, integrator::Symbol=:rk4,
+                     step::Real=0.0, max_length::Real=0.5, max_steps::Integer=0,
+                     terminal_speed::Real=0.0, tolerance::Real=1e-6)
+    arr_c = Vector{UInt8}(codeunits(String(array) * "\0"))
+    sp = seed_points === nothing ? Float64[] : Float64[Float64(v) for v in seed_points]
+    rep_ref = Ref{Ptr{Cvoid}}(C_NULL)
+    ptr = GC.@preserve arr_c sp begin
+        opts = _CStreamlinesOpts(Cstring(pointer(arr_c)), Int64(seeds),
+                                 isempty(sp) ? Ptr{Cdouble}(C_NULL) : pointer(sp),
+                                 Int64(div(length(sp), 3)),
+                                 _code(_STREAMLINE_DIRS, direction, "direction"),
+                                 _code(_STREAMLINE_INTS, integrator, "integrator"),
+                                 Cdouble(step), Cdouble(max_length), Int64(max_steps),
+                                 Cdouble(terminal_speed), Cdouble(tolerance),
+                                 (Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_streamlines), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CStreamlinesOpts}, Ptr{Ptr{Cvoid}}),
+              _handle(m), Ref(opts), rep_ref)
+    end
+    mesh = Mesh(_check_ptr(ptr))
+    rep = rep_ref[]
+    n_lines = 0
+    if rep != C_NULL
+        n_lines = Int(ccall(_sym(:mio_streamlines_report_num_lines), Int64, (Ptr{Cvoid},), rep))
+        ccall(_sym(:mio_streamlines_report_free), Cvoid, (Ptr{Cvoid},), rep)
+    end
+    (mesh=mesh, num_lines=n_lines)
+end
+
+const _TRANSFER_MODES = Dict(:auto => Int32(0), :nested => Int32(1), :barycentric => Int32(2))
+
+function transfer_operator(coarse::Mesh, fine::Mesh; mode::Symbol=:auto,
+                           transpose::Bool=false, tolerance::Real=1e-12,
+                           fallback_nearest::Bool=false)
+    opts = _CTransferOperatorOpts(_code(_TRANSFER_MODES, mode, "mode"),
+                                  transpose ? Int32(1) : Int32(0),
+                                  Cdouble(tolerance),
+                                  fallback_nearest ? Int32(1) : Int32(0), Int32(0),
+                                  (Int64(0), Int64(0), Int64(0)))
+    ptr = ccall(_sym(:mio_transfer_operator), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{Cvoid}, Ref{_CTransferOperatorOpts}),
+                _handle(coarse), _handle(fine), Ref(opts))
+    _unpack_sparse_operator(ptr)
+end
+
+const _SPECTRAL_KINDS = Dict(:hks => Int32(0), :wks => Int32(1))
+
+function spectral_descriptors(m::Mesh; kind::Symbol=:hks, scale_invariant::Bool=false,
+                              num_modes::Integer=32, num_scales::Integer=16,
+                              reuse_eigenmodes::Bool=true, wks_variance::Real=0.0,
+                              tolerance::Real=1e-8, max_iterations::Integer=0,
+                              output::AbstractString="")
+    out_c = Vector{UInt8}(codeunits(String(output) * "\0"))
+    used = Ref{Int64}(0)
+    reused = Ref{Int32}(0)
+    ptr = GC.@preserve out_c begin
+        opts = _CSpectralDescriptorsOpts(_code(_SPECTRAL_KINDS, kind, "kind"),
+                                         scale_invariant ? Int32(1) : Int32(0),
+                                         Int64(num_modes), Int64(num_scales),
+                                         reuse_eigenmodes ? Int32(1) : Int32(0), Int32(0),
+                                         Cdouble(wks_variance), Cdouble(tolerance),
+                                         Int64(max_iterations),
+                                         isempty(output) ? Cstring(C_NULL) : Cstring(pointer(out_c)),
+                                         (Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_spectral_descriptors), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CSpectralDescriptorsOpts}, Ptr{Int64}, Ptr{Int32}),
+              _handle(m), Ref(opts), used, reused)
+    end
+    (mesh=Mesh(_check_ptr(ptr)), num_modes_used=Int(used[]), reused_eigenmodes=reused[] != 0)
+end
+
+function attach_fvm_quality(m::Mesh)
+    ptr = ccall(_sym(:mio_attach_fvm_quality), Ptr{Cvoid}, (Ptr{Cvoid},), _handle(m))
+    Mesh(_check_ptr(ptr))
+end
+
+const _DENOISE_METHODS = Dict(:bilateral => Int32(0), :guided => Int32(1))
+
+function denoise_surface(m::Mesh; method::Symbol=:bilateral, normal_iterations::Integer=10,
+                         vertex_iterations::Integer=10, sigma_spatial::Real=0.0,
+                         sigma_normal::Real=0.35, fix_boundary::Bool=true,
+                         guard_foldover::Bool=true, region::AbstractString="")
+    reg_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    moved = Ref{Int64}(0)
+    max_d = Ref{Cdouble}(0.0)
+    ptr = GC.@preserve reg_c begin
+        opts = _CDenoiseSurfaceOpts(_code(_DENOISE_METHODS, method, "method"),
+                                    fix_boundary ? Int32(1) : Int32(0),
+                                    Int64(normal_iterations), Int64(vertex_iterations),
+                                    Cdouble(sigma_spatial), Cdouble(sigma_normal),
+                                    guard_foldover ? Int32(1) : Int32(0), Int32(0),
+                                    isempty(region) ? Cstring(C_NULL) : Cstring(pointer(reg_c)),
+                                    (Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_denoise_surface), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CDenoiseSurfaceOpts}, Ptr{Int64}, Ptr{Cdouble}),
+              _handle(m), Ref(opts), moved, max_d)
+    end
+    (mesh=Mesh(_check_ptr(ptr)), num_nodes_moved=Int(moved[]), max_displacement=Float64(max_d[]))
+end
+
+function extract_skeleton(m::Mesh; max_iterations::Integer=10, contraction_weight::Real=1.0,
+                          attraction_weight::Real=1.0, volume_tolerance::Real=1e-4,
+                          merge_tolerance::Real=0.0, recenter::Bool=true)
+    nn = Ref{Int64}(0)
+    ns = Ref{Int64}(0)
+    opts = _CSkeletonOpts(Int64(max_iterations), Cdouble(contraction_weight),
+                          Cdouble(attraction_weight), Cdouble(volume_tolerance),
+                          Cdouble(merge_tolerance), recenter ? Int32(1) : Int32(0), Int32(0),
+                          (Int64(0), Int64(0), Int64(0), Int64(0)))
+    ptr = ccall(_sym(:mio_extract_skeleton), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CSkeletonOpts}, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), Ref(opts), nn, ns)
+    (mesh=Mesh(_check_ptr(ptr)), num_nodes=Int(nn[]), num_segments=Int(ns[]))
+end
+
+const _SHORTEST_PATH_METHODS = Dict(:dijkstra => Int32(0), :heat_trace => Int32(1))
+
+function shortest_path(m::Mesh; source::Integer=-1, target::Integer=-1,
+                       method::Symbol=:dijkstra, time_factor::Real=1.0)
+    len = Ref{Cdouble}(0.0)
+    reached = Ref{Int32}(0)
+    opts = _CShortestPathOpts(Int64(source), Int64(target), Int32(0), Int32(0),
+                              (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                              _code(_SHORTEST_PATH_METHODS, method, "method"), Int32(0),
+                              Cdouble(time_factor), (Int64(0), Int64(0), Int64(0)))
+    ptr = ccall(_sym(:mio_shortest_path), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CShortestPathOpts}, Ptr{Cdouble}, Ptr{Int32}),
+                _handle(m), Ref(opts), len, reached)
+    (mesh=Mesh(_check_ptr(ptr)), total_length=Float64(len[]), reached=reached[] != 0)
+end
+
+function geodesic_voronoi(m::Mesh, sources::AbstractVector{<:Integer}; attach_cell_labels::Bool=true)
+    src = Int64[Int64(s) for s in sources]
+    unreached = Ref{Int64}(0)
+    max_d = Ref{Cdouble}(0.0)
+    ptr = GC.@preserve src begin
+        ccall(_sym(:mio_geodesic_voronoi), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ptr{Int64}, Int64, Ptr{Cdouble}, Int64, Int32, Ptr{Int64}, Ptr{Cdouble}),
+              _handle(m), pointer(src), Int64(length(src)), Ptr{Cdouble}(C_NULL), Int64(0),
+              attach_cell_labels ? Int32(1) : Int32(0), unreached, max_d)
+    end
+    (mesh=Mesh(_check_ptr(ptr)), num_unreached=Int(unreached[]), max_distance=Float64(max_d[]))
+end
+
+function deform_ffd(m::Mesh, displacements::AbstractVector{<:Real};
+                    grid_dims::NTuple{3,Integer}=(2, 2, 2),
+                    degrees::NTuple{3,Integer}=(0, 0, 0),
+                    region::AbstractString="")
+    disp = Float64[Float64(v) for v in displacements]
+    reg_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    n_inv = Ref{Int64}(0)
+    max_d = Ref{Cdouble}(0.0)
+    ptr = GC.@preserve disp reg_c begin
+        opts = _CDeformFfdOpts(Int64.(grid_dims), Int64.(degrees), pointer(disp),
+                               Int64(length(disp)), Int32(0), Int32(0),
+                               (0.0, 0.0, 0.0), (0.0, 0.0, 0.0),
+                               isempty(region) ? Cstring(C_NULL) : Cstring(pointer(reg_c)),
+                               (Int64(0), Int64(0)))
+        ccall(_sym(:mio_deform_ffd), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CDeformFfdOpts}, Ptr{Int64}, Ptr{Cdouble}),
+              _handle(m), Ref(opts), n_inv, max_d)
+    end
+    (mesh=Mesh(_check_ptr(ptr)), num_inverted=Int(n_inv[]), max_displacement=Float64(max_d[]))
+end
+
+const _RBF_KERNELS = Dict(:tps => Int32(0), :wendland_c2 => Int32(1))
+
+function deform_rbf(m::Mesh, control_points::AbstractVector{<:Real},
+                    displacements::AbstractVector{<:Real}; kernel::Symbol=:tps,
+                    polynomial::Bool=true, radius::Real=0.0, regularization::Real=0.0,
+                    region::AbstractString="")
+    ctrl = Float64[Float64(v) for v in control_points]
+    disp = Float64[Float64(v) for v in displacements]
+    reg_c = Vector{UInt8}(codeunits(String(region) * "\0"))
+    n_inv = Ref{Int64}(0)
+    max_d = Ref{Cdouble}(0.0)
+    ptr = GC.@preserve ctrl disp reg_c begin
+        opts = _CDeformRbfOpts(pointer(ctrl), pointer(disp), Int64(div(length(ctrl), 3)),
+                               _code(_RBF_KERNELS, kernel, "kernel"),
+                               polynomial ? Int32(1) : Int32(0),
+                               Cdouble(radius), Cdouble(regularization),
+                               isempty(region) ? Cstring(C_NULL) : Cstring(pointer(reg_c)),
+                               (Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_deform_rbf), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CDeformRbfOpts}, Ptr{Int64}, Ptr{Cdouble}),
+              _handle(m), Ref(opts), n_inv, max_d)
+    end
+    (mesh=Mesh(_check_ptr(ptr)), num_inverted=Int(n_inv[]), max_displacement=Float64(max_d[]))
+end
+
+const _BASIS_TARGETS = Dict(:lagrange => Int32(0), :bezier => Int32(1))
+
+function change_basis(m::Mesh; target::Symbol=:bezier, transform_fields::Bool=true)
+    n_conv = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_change_basis), Ptr{Cvoid},
+                (Ptr{Cvoid}, Int32, Int32, Ptr{Int64}),
+                _handle(m), _code(_BASIS_TARGETS, target, "target"),
+                transform_fields ? Int32(1) : Int32(0), n_conv)
+    (mesh=Mesh(_check_ptr(ptr)), num_converted=Int(n_conv[]))
+end
+
+function critical_points(m::Mesh, array::AbstractString; tolerance::Real=1e-10,
+                         max_iterations::Integer=30, merge_tolerance::Real=1e-6,
+                         seed_subdivisions::Integer=0)
+    arr_c = Vector{UInt8}(codeunits(String(array) * "\0"))
+    nmin = Ref{Int64}(0)
+    nmax = Ref{Int64}(0)
+    nsad = Ref{Int64}(0)
+    ptr = GC.@preserve arr_c begin
+        opts = _CCriticalPointsOpts(Cstring(pointer(arr_c)), Cdouble(tolerance),
+                                    Int64(max_iterations), Cdouble(merge_tolerance),
+                                    Int64(seed_subdivisions),
+                                    (Int64(0), Int64(0), Int64(0), Int64(0)))
+        ccall(_sym(:mio_critical_points), Ptr{Cvoid},
+              (Ptr{Cvoid}, Ref{_CCriticalPointsOpts}, Ptr{Int64}, Ptr{Int64}, Ptr{Int64}),
+              _handle(m), Ref(opts), nmin, nmax, nsad)
+    end
+    (mesh=Mesh(_check_ptr(ptr)), num_minima=Int(nmin[]), num_maxima=Int(nmax[]),
+     num_saddles=Int(nsad[]))
+end
+

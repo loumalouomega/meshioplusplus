@@ -206,4 +206,68 @@ inline double tet_amips(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Ve
     return q > 0.0 ? 1.0 / q : std::numeric_limits<double>::infinity();
 }
 
+/**
+ * @brief P1 barycentric shape-function gradients and unsigned volume of the
+ * tetrahedron `(p[0], p[1], p[2], p[3])` (roadmap 3.4.4 / 15.2.1).
+ *
+ * Each gradient `rGrad[i]` is constant on the cell and satisfies
+ * `rGrad[i] . (p[j] - p[k]) = delta_{ij} - delta_{ik}`. Returns false when
+ * the tetrahedron is degenerate (`|6V| <= 1e-30`).
+ */
+inline bool tet_p1_gradients(const Vec3 p[4], Vec3 rGrad[4], double& rVolume) {
+    const double vol6 = tet_volume6(p[0], p[1], p[2], p[3]);
+    const double abs_vol6 = std::abs(vol6);
+    if (!(abs_vol6 > 1e-30)) {
+        rVolume = 0.0;
+        for (int i = 0; i < 4; ++i)
+            rGrad[i] = {0.0, 0.0, 0.0};
+        return false;
+    }
+    rVolume = abs_vol6 / 6.0;
+    const double inv_vol6 = 1.0 / vol6;
+    // Opposite face (j, k, l) oriented so that (p_k - p_j) x (p_l - p_j) points
+    // inward toward p_i when vol6 > 0: grad phi_i = ((p_k - p_j) x (p_l - p_j)) / vol6.
+    // Check: for p0=(0,0,0), p1=(1,0,0), p2=(0,1,0), p3=(0,0,1), vol6 = +1:
+    //   grad phi_0 = (p2-p1) x (p3-p1) ... let's verify:
+    //   (p3-p1) x (p2-p1) = (-1,0,1) x (-1,1,0) = (-1, -1, -1) -> dot(p0-p1) = +1.
+    //   (p2-p0) x (p3-p0) = (0,1,0) x (0,0,1) = (1, 0, 0) -> grad phi_1.
+    //   (p3-p0) x (p1-p0) = (0,0,1) x (1,0,0) = (0, 1, 0) -> grad phi_2.
+    //   (p1-p0) x (p2-p0) = (1,0,0) x (0,1,0) = (0, 0, 1) -> grad phi_3.
+    const Vec3 e1 = vec3_sub(p[1], p[0]);
+    const Vec3 e2 = vec3_sub(p[2], p[0]);
+    const Vec3 e3 = vec3_sub(p[3], p[0]);
+    rGrad[1] = vec3_scale(vec3_cross(e2, e3), inv_vol6);
+    rGrad[2] = vec3_scale(vec3_cross(e3, e1), inv_vol6);
+    rGrad[3] = vec3_scale(vec3_cross(e1, e2), inv_vol6);
+    rGrad[0] = {-(rGrad[1][0] + rGrad[2][0] + rGrad[3][0]),
+                -(rGrad[1][1] + rGrad[2][1] + rGrad[3][1]),
+                -(rGrad[1][2] + rGrad[2][2] + rGrad[3][2])};
+    return true;
+}
+
+/**
+ * @brief Local 4x4 P1 stiffness matrix `K_{ij} = |V| (grad phi_i . grad phi_j)`
+ * for a tetrahedron, symmetric positive semi-definite with row sums zero.
+ */
+inline void tet_p1_stiffness(const Vec3 rGrad[4], double Volume, double rK[4][4]) {
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i; j < 4; ++j) {
+            const double val = Volume * vec3_dot(rGrad[i], rGrad[j]);
+            rK[i][j] = val;
+            rK[j][i] = val;
+        }
+    }
+}
+
+/**
+ * @brief Local 4x4 P1 consistent mass matrix `M_{ij} = |V| (1 + delta_{ij}) / 20`.
+ */
+inline void tet_p1_mass_consistent(double Volume, double rM[4][4]) {
+    const double off = Volume / 20.0;
+    const double diag = Volume / 10.0;
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            rM[i][j] = (i == j) ? diag : off;
+}
+
 }  // namespace meshioplusplus::detail

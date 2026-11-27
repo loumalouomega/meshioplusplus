@@ -44,7 +44,14 @@ from collections import OrderedDict
 
 import numpy as np
 
-from .. import GeometryGuard, GridArray, GridSpec, adapt, adapt_volume, agglomerate
+from .. import (
+    GeometryGuard,
+    GridArray,
+    GridSpec,
+    adapt,
+    adapt_volume,
+    agglomerate,
+)
 from .. import align_datums as _align_datums_op
 from .. import (
     annulus,
@@ -5240,6 +5247,426 @@ def tool_mesh_operator(input_path, output_path, kind="laplacian", file_format=No
     )
 
 
+def tool_spectral_descriptors(
+    input_path,
+    output_path,
+    kind="hks",
+    num_modes=32,
+    num_scales=16,
+    scale_invariant=False,
+    reuse_eigenmodes=True,
+    wks_variance=0.0,
+    tolerance=1e-8,
+    max_iterations=0,
+    output_name="",
+    input_format=None,
+    output_format=None,
+):
+    """Compute HKS or WKS spectral shape descriptors on a triangle surface."""
+    from .._spectral_descriptors import spectral_descriptors
+
+    mesh = _load(input_path, input_format)
+    out, report = spectral_descriptors(
+        mesh,
+        kind=kind,
+        num_modes=num_modes,
+        num_scales=num_scales,
+        scale_invariant=scale_invariant,
+        reuse_eigenmodes=reuse_eigenmodes,
+        wks_variance=wks_variance,
+        tolerance=tolerance,
+        max_iterations=max_iterations,
+        output=output_name,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_modes_used=int(report["num_modes_used"]),
+        reused_eigenmodes=bool(report["reused_eigenmodes"]),
+    )
+
+
+def tool_transfer_operator(
+    coarse_path,
+    fine_path,
+    output_path,
+    mode="auto",
+    transpose=False,
+    tolerance=1e-12,
+    fallback_nearest=False,
+    coarse_format=None,
+    fine_format=None,
+):
+    """Build sparse CSR prolongation/restriction matrix between coarse and fine meshes (.npz)."""
+    from .._transfer_operator import transfer_operator
+
+    coarse = _load(coarse_path, coarse_format, readonly=True)
+    fine = _load(fine_path, fine_format, readonly=True)
+    (indptr, indices, values, shape), report = transfer_operator(
+        coarse,
+        fine,
+        mode=mode,
+        transpose=transpose,
+        tolerance=tolerance,
+        fallback_nearest=fallback_nearest,
+        sparse=False,
+        return_report=True,
+    )
+    resolved_out = _resolve(output_path, for_write=True)
+    np.savez(
+        resolved_out,
+        indptr=indptr,
+        indices=indices,
+        values=values,
+        shape=np.asarray(shape),
+    )
+    return _json_safe(
+        {
+            "output": str(resolved_out),
+            "shape": list(shape),
+            "nnz": int(len(values)),
+            "num_unlocated": int(report["num_unlocated"]),
+        }
+    )
+
+
+def tool_fvm_quality(
+    input_path,
+    output_path=None,
+    input_format=None,
+    output_format=None,
+):
+    """Compute finite-volume face-pair quality metrics (non-orthogonality, skewness, volume ratio)."""
+    from .._fvm_quality import attach_fvm_quality, compute_fvm_quality
+
+    mesh = _load(input_path, input_format, readonly=(output_path is None))
+    rep = compute_fvm_quality(mesh)
+    summary = {
+        "num_cells": int(rep["num_cells"]),
+        "num_faces": int(rep["num_faces"]),
+        "num_interior_faces": int(rep["num_interior_faces"]),
+        "num_severe_non_ortho": int(rep["num_severe_non_ortho"]),
+        "num_negative_pyramids": int(rep["num_negative_pyramids"]),
+        "metrics": {
+            k: {
+                "min": float(v["min"]),
+                "max": float(v["max"]),
+                "mean": float(v["mean"]),
+                "count": int(v["count"]),
+            }
+            for k, v in rep["metrics"].items()
+        },
+    }
+    if output_path is not None:
+        out = attach_fvm_quality(mesh)
+        summary["output"] = str(_store(out, output_path, output_format))
+    return _json_safe(summary)
+
+
+def tool_denoise_surface(
+    input_path,
+    output_path,
+    method="bilateral",
+    normal_iterations=10,
+    vertex_iterations=10,
+    sigma_spatial=0.0,
+    sigma_normal=0.35,
+    fix_boundary=True,
+    guard_foldover=True,
+    region="",
+    input_format=None,
+    output_format=None,
+):
+    """Feature-preserving bilateral or guided normal surface denoising."""
+    from .._denoise_surface import denoise_surface
+
+    mesh = _load(input_path, input_format)
+    out, report = denoise_surface(
+        mesh,
+        method=method,
+        normal_iterations=normal_iterations,
+        vertex_iterations=vertex_iterations,
+        sigma_spatial=sigma_spatial,
+        sigma_normal=sigma_normal,
+        fix_boundary=fix_boundary,
+        guard_foldover=guard_foldover,
+        region=region,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_nodes_moved=int(report["num_nodes_moved"]),
+        max_displacement=float(report["max_displacement"]),
+        num_skipped_foldover=int(report["num_skipped_foldover"]),
+    )
+
+
+def tool_extract_skeleton(
+    input_path,
+    output_path,
+    max_iterations=10,
+    contraction_weight=1.0,
+    attraction_weight=1.0,
+    volume_tolerance=1e-4,
+    merge_tolerance=0.0,
+    recenter=True,
+    input_format=None,
+    output_format=None,
+):
+    """Extract a 1-D curve skeleton / centerline from a closed triangle surface."""
+    from .._skeleton import extract_skeleton
+
+    mesh = _load(input_path, input_format)
+    out, report = extract_skeleton(
+        mesh,
+        max_iterations=max_iterations,
+        contraction_weight=contraction_weight,
+        attraction_weight=attraction_weight,
+        volume_tolerance=volume_tolerance,
+        merge_tolerance=merge_tolerance,
+        recenter=recenter,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        contraction_iterations=int(report["contraction_iterations"]),
+        volume_ratio=float(report["volume_ratio"]),
+        num_nodes=int(report["num_nodes"]),
+        num_segments=int(report["num_segments"]),
+        num_branches=int(report["num_branches"]),
+        num_endpoints=int(report["num_endpoints"]),
+    )
+
+
+def tool_shortest_path(
+    input_path,
+    output_path,
+    source=-1,
+    target=-1,
+    source_point=None,
+    target_point=None,
+    method="dijkstra",
+    time_factor=1.0,
+    input_format=None,
+    output_format=None,
+):
+    """Extract a shortest geodesic path between two landmarks as a 1-D line mesh."""
+    from .._shortest_path import shortest_path
+
+    mesh = _load(input_path, input_format)
+    out, report = shortest_path(
+        mesh,
+        source=source,
+        target=target,
+        source_point=source_point,
+        target_point=target_point,
+        method=method,
+        time_factor=time_factor,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        total_length=float(report["total_length"]),
+        num_segments=int(report["num_segments"]),
+        reached=bool(report["reached"]),
+    )
+
+
+def tool_geodesic_voronoi(
+    input_path,
+    output_path,
+    sources=None,
+    seed_points=None,
+    attach_cell_labels=True,
+    input_format=None,
+    output_format=None,
+):
+    """Partition a mesh into multi-source geodesic Voronoi regions."""
+    from .._shortest_path import geodesic_voronoi
+
+    mesh = _load(input_path, input_format)
+    out, report = geodesic_voronoi(
+        mesh,
+        sources=sources,
+        seed_points=seed_points,
+        attach_cell_labels=attach_cell_labels,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_sources=int(report["num_sources"]),
+        num_unreached=int(report["num_unreached"]),
+        max_distance=float(report["max_distance"]),
+    )
+
+
+def tool_deform_ffd(
+    input_path,
+    output_path,
+    grid_dims,
+    displacements,
+    degrees=None,
+    box_min=None,
+    box_max=None,
+    region="",
+    input_format=None,
+    output_format=None,
+):
+    """Deform a mesh via a tensor-product Bezier / B-spline FFD lattice."""
+    from .._deform import deform_ffd
+
+    mesh = _load(input_path, input_format)
+    out, report = deform_ffd(
+        mesh,
+        grid_dims=grid_dims,
+        displacements=displacements,
+        degrees=degrees if degrees is not None else (-1, -1, -1),
+        box_min=box_min,
+        box_max=box_max,
+        region=region,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_nodes_moved=int(report["num_nodes_moved"]),
+        num_inverted=int(report["num_inverted"]),
+        max_displacement=float(report["max_displacement"]),
+    )
+
+
+def tool_deform_rbf(
+    input_path,
+    output_path,
+    control_points,
+    displacements,
+    kernel="tps",
+    radius=0.0,
+    polynomial=True,
+    regularization=0.0,
+    region="",
+    input_format=None,
+    output_format=None,
+):
+    """Deform a mesh via RBF interpolation of sparse control-point displacements."""
+    from .._deform import deform_rbf
+
+    mesh = _load(input_path, input_format)
+    out, report = deform_rbf(
+        mesh,
+        control_points=control_points,
+        displacements=displacements,
+        kernel=kernel,
+        radius=radius,
+        polynomial=polynomial,
+        regularization=regularization,
+        region=region,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_nodes_moved=int(report["num_nodes_moved"]),
+        num_inverted=int(report["num_inverted"]),
+        max_displacement=float(report["max_displacement"]),
+    )
+
+
+def tool_evaluate_cells(
+    input_path,
+    cells,
+    reference_points,
+    fields=None,
+    derivatives=False,
+    input_format=None,
+):
+    """Evaluate physical positions, fields, and optional gradients at cell reference points."""
+    from .._high_order import evaluate_cells
+
+    mesh = _load(input_path, input_format, readonly=True)
+    res = evaluate_cells(
+        mesh,
+        cells=cells,
+        reference_points=reference_points,
+        fields=fields,
+        derivatives=derivatives,
+    )
+    return _json_safe(
+        {
+            "points": np.asarray(res["points"]).tolist(),
+            "values": {k: np.asarray(v).tolist() for k, v in res["values"].items()},
+            "gradients": {
+                k: np.asarray(v).tolist() for k, v in res["gradients"].items()
+            },
+            "num_evaluated": int(res["num_evaluated"]),
+        }
+    )
+
+
+def tool_change_basis(
+    input_path,
+    output_path,
+    target="bezier",
+    transform_fields=True,
+    input_format=None,
+    output_format=None,
+):
+    """Convert between Lagrange and Bezier cell representations."""
+    from .._high_order import change_basis
+
+    mesh = _load(input_path, input_format)
+    out, report = change_basis(
+        mesh,
+        target=target,
+        transform_fields=transform_fields,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_converted=int(report["num_converted"]),
+    )
+
+
+def tool_critical_points(
+    input_path,
+    output_path,
+    array,
+    tolerance=1e-10,
+    max_iterations=30,
+    merge_tolerance=1e-6,
+    seed_subdivisions=0,
+    input_format=None,
+    output_format=None,
+):
+    """Locate and classify critical points of a scalar point_data field."""
+    from .._high_order import critical_points
+
+    mesh = _load(input_path, input_format)
+    out, report = critical_points(
+        mesh,
+        array=array,
+        tolerance=tolerance,
+        max_iterations=max_iterations,
+        merge_tolerance=merge_tolerance,
+        seed_subdivisions=seed_subdivisions,
+        return_report=True,
+    )
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        num_minima=int(report["num_minima"]),
+        num_maxima=int(report["num_maxima"]),
+        num_saddles=int(report["num_saddles"]),
+        num_degenerate=int(report["num_degenerate"]),
+    )
+
+
 def tool_smooth_field(
     input_path,
     output_path,
@@ -8236,6 +8663,74 @@ TOOL_REGISTRY = OrderedDict(
         (
             "mesh_operator",
             {"fn": tool_mesh_operator, "wraps": ("mesh_operator",), "gated": None},
+        ),
+        (
+            "spectral_descriptors",
+            {
+                "fn": tool_spectral_descriptors,
+                "wraps": ("spectral_descriptors",),
+                "gated": None,
+            },
+        ),
+        (
+            "transfer_operator",
+            {
+                "fn": tool_transfer_operator,
+                "wraps": ("transfer_operator",),
+                "gated": None,
+            },
+        ),
+        (
+            "fvm_quality",
+            {
+                "fn": tool_fvm_quality,
+                "wraps": ("compute_fvm_quality", "attach_fvm_quality"),
+                "gated": None,
+            },
+        ),
+        (
+            "denoise_surface",
+            {"fn": tool_denoise_surface, "wraps": ("denoise_surface",), "gated": None},
+        ),
+        (
+            "extract_skeleton",
+            {
+                "fn": tool_extract_skeleton,
+                "wraps": ("extract_skeleton",),
+                "gated": None,
+            },
+        ),
+        (
+            "shortest_path",
+            {"fn": tool_shortest_path, "wraps": ("shortest_path",), "gated": None},
+        ),
+        (
+            "geodesic_voronoi",
+            {
+                "fn": tool_geodesic_voronoi,
+                "wraps": ("geodesic_voronoi",),
+                "gated": None,
+            },
+        ),
+        (
+            "deform_ffd",
+            {"fn": tool_deform_ffd, "wraps": ("deform_ffd",), "gated": None},
+        ),
+        (
+            "deform_rbf",
+            {"fn": tool_deform_rbf, "wraps": ("deform_rbf",), "gated": None},
+        ),
+        (
+            "evaluate_cells",
+            {"fn": tool_evaluate_cells, "wraps": ("evaluate_cells",), "gated": None},
+        ),
+        (
+            "change_basis",
+            {"fn": tool_change_basis, "wraps": ("change_basis",), "gated": None},
+        ),
+        (
+            "critical_points",
+            {"fn": tool_critical_points, "wraps": ("critical_points",), "gated": None},
         ),
         ("regions", {"fn": tool_regions, "wraps": (), "gated": None}),
         (

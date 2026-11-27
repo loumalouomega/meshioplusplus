@@ -89,6 +89,7 @@
 #include "meshioplusplus/operations/reconstruct_surface.hpp"
 #include "meshioplusplus/operations/remesh_quads.hpp"
 #include "meshioplusplus/operations/cut.hpp"
+#include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/auto_align.hpp"
 #include "meshioplusplus/operations/fit_curves.hpp"
@@ -1262,6 +1263,39 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
                         {"NumPieces", static_cast<double>(r.mNumPieces)},
                         {"Dimension", static_cast<double>(r.mDimension)},
                         {"Measure", r.mMeasure}});
+        return std::move(r.mMesh);
+    }
+
+    if (op == "Streamlines") {
+        StreamlinesOptions o;
+        o.mArray = pipe_text(rStep, "Array", "");
+        o.mSeeds = static_cast<std::int64_t>(pipe_number(rStep, "Seeds", 40.0));
+        const std::string dir = pipe_text(rStep, "Direction", "both");
+        if (dir == "both")
+            o.mDirection = StreamlineDirection::Both;
+        else if (dir == "forward")
+            o.mDirection = StreamlineDirection::Forward;
+        else if (dir == "backward")
+            o.mDirection = StreamlineDirection::Backward;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Direction' must be 'both', 'forward' or 'backward'"));
+        const std::string integ = pipe_text(rStep, "Integrator", "rk4");
+        if (integ == "rk4")
+            o.mIntegrator = StreamlineIntegrator::RK4;
+        else if (integ == "rk45")
+            o.mIntegrator = StreamlineIntegrator::RK45;
+        else
+            throw std::invalid_argument(pipe_err(rStep, "'Integrator' must be 'rk4' or 'rk45'"));
+        o.mStep = pipe_number(rStep, "Step", 0.0);
+        o.mMaxLength = pipe_number(rStep, "MaxLength", 0.5);
+        o.mMaxSteps = static_cast<std::int64_t>(pipe_number(rStep, "MaxSteps", 0.0));
+        o.mTerminalSpeed = pipe_number(rStep, "TerminalSpeed", 0.0);
+        o.mTolerance = pipe_number(rStep, "Tolerance", 1e-6);
+        StreamlinesResult r = streamlines(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLines", static_cast<double>(r.mNumLines)},
+                        {"NumSeedsOutside", static_cast<double>(r.mNumSeedsOutside)}});
         return std::move(r.mMesh);
     }
 

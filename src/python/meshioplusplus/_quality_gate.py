@@ -53,8 +53,21 @@ METRICS = (
     "quality:diagonal_ratio",
 )
 
+FVM_METRICS = (
+    "fvm:non_orthogonality",
+    "fvm:face_skewness",
+    "fvm:volume_ratio",
+    "fvm:interpolation_weight",
+)
+
 
 def _full_name(metric):
+    if metric.startswith("fvm:"):
+        if metric not in FVM_METRICS:
+            raise ValueError(
+                f"{_PREFIX}unknown metric '{metric}' (expected one of {', '.join(FVM_METRICS)})"
+            )
+        return metric
     full = metric if metric.startswith("quality:") else "quality:" + metric
     if full not in METRICS:
         names = ", ".join(m[8:] for m in METRICS)

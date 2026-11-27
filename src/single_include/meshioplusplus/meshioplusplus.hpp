@@ -27933,6 +27933,76 @@ MESHIOPLUSPLUS_API CoordinateResult convert_coordinates(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/coordinates.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/critical_points.hpp =====
+/**
+ * @file operations/critical_points.hpp
+ * @brief Critical points (`nabla f = 0`) of a scalar field on high-order or
+ * linear cells via damped Newton iteration and Hessian eigenvalue
+ * classification (roadmap 15.3.3).
+ *
+ * Returns a `vertex` mesh carrying:
+ *  - `point_data["critical:value"]` (Float64 scalar value at the critical point),
+ *  - `point_data["critical:type"]` (Int32: 0 = minimum, 1 = maximum, 2 = saddle,
+ *    3 = degenerate),
+ *  - `point_data["critical:cell"]` (Int64 owning global cell id).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+inline constexpr const char* kCriticalValueName = "critical:value";
+inline constexpr const char* kCriticalTypeName = "critical:type";
+inline constexpr const char* kCriticalCellName = "critical:cell";
+
+/// Classification of a scalar-field critical point by Hessian eigenvalue signs.
+enum class CriticalPointType : std::int32_t {
+    Minimum = 0,
+    Maximum = 1,
+    Saddle = 2,
+    Degenerate = 3,
+};
+
+/// Options for `critical_points`.
+struct CriticalPointsOptions {
+    /// Name of the scalar `point_data` field to analyze (required).
+    std::string mArray;
+    /// Gradient-norm convergence tolerance for Newton iteration.
+    double mTolerance = 1e-10;
+    /// Maximum Newton iterations per seed.
+    std::int64_t mMaxIterations = 30;
+    /// Spatial deduplication tolerance across shared cell faces/seeds.
+    double mMergeTolerance = 1e-6;
+    /// Reference-lattice seed subdivisions per axis (0 = auto `order + 1`).
+    std::int64_t mSeedSubdivisions = 0;
+};
+
+/// Result of `critical_points`.
+struct CriticalPointsResult {
+    /// `vertex` mesh of deduplicated critical points.
+    Mesh mMesh;
+    /// Number of local minima found.
+    std::int64_t mNumMinima = 0;
+    /// Number of local maxima found.
+    std::int64_t mNumMaxima = 0;
+    /// Number of saddle points found.
+    std::int64_t mNumSaddles = 0;
+    /// Number of degenerate critical points found.
+    std::int64_t mNumDegenerate = 0;
+};
+
+/**
+ * @brief Locate and classify critical points of a scalar point_data field.
+ */
+MESHIOPLUSPLUS_API CriticalPointsResult critical_points(const Mesh& rMesh,
+                                                        const CriticalPointsOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/critical_points.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/refine.hpp =====
 /**
  * @file refine.hpp
@@ -29644,6 +29714,172 @@ MESHIOPLUSPLUS_API DecimateVolumeResult decimate_volume(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/decimate_volume.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/deform.hpp =====
+/**
+ * @file operations/deform.hpp
+ * @brief Parametric Free-Form Deformation (`deform_ffd`, Sederberg & Parry
+ * 1986) and Radial Basis Function control-point morphing (`deform_rbf`,
+ * de Boer, van der Schoot & Bijl 2007) (roadmap 9.15).
+ *
+ * Both preserve connectivity, regions, and all point/cell/field data on
+ * volume, surface, polyhedral, and high-order meshes alike.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Radial basis function kernel for `deform_rbf`.
+enum class RbfKernel : std::int32_t {
+    /// Global 3-D biharmonic / thin-plate spline `phi(r) = r`.
+    Tps = 0,
+    /// Compactly-supported Wendland C2 `phi(r) = (1 - r/R)_+^4 (4 r/R + 1)`.
+    WendlandC2 = 1,
+};
+
+/// Parse `"tps"` or `"wendland_c2"`.
+MESHIOPLUSPLUS_API RbfKernel rbf_kernel_from_name(const std::string& rName);
+
+/// Options for `deform_ffd`.
+struct FfdOptions {
+    /// Control-lattice point counts `(nx, ny, nz)` along X, Y, Z (each >= 2).
+    std::array<std::int64_t, 3> mGridDims = {2, 2, 2};
+    /// B-spline degrees `(px, py, pz)`; -1 selects Bezier (`n - 1`).
+    std::array<std::int64_t, 3> mDegrees = {-1, -1, -1};
+    /// Control-point displacements, flat `3 * nx * ny * nz` in `(k, j, i)` order (i fastest).
+    std::vector<double> mDisplacements;
+    /// If true, use `mBoxMin`/`mBoxMax` as the lattice bounds; else use the mesh bounding box.
+    bool mHasBounds = false;
+    /// Lattice lower corner when `mHasBounds` is true.
+    std::array<double, 3> mBoxMin = {0.0, 0.0, 0.0};
+    /// Lattice upper corner when `mHasBounds` is true.
+    std::array<double, 3> mBoxMax = {1.0, 1.0, 1.0};
+    /// Optional Point or Cell region name to restrict deformation (empty = all points).
+    std::string mRegion;
+};
+
+/// Options for `deform_rbf`.
+struct RbfOptions {
+    /// Control-point coordinates, flat `3 * M`.
+    std::vector<double> mControlPoints;
+    /// Prescribed displacements at the control points, flat `3 * M`.
+    std::vector<double> mDisplacements;
+    /// Radial basis kernel (`Tps` or `WendlandC2`).
+    RbfKernel mKernel = RbfKernel::Tps;
+    /// Support radius for `WendlandC2`; 0 selects `0.5 * bounding_box_diagonal`.
+    double mRadius = 0.0;
+    /// Include linear polynomial reproduction (`1, x, y, z`).
+    bool mPolynomial = true;
+    /// Non-negative Tikhonov regularization added to the RBF diagonal.
+    double mRegularization = 0.0;
+    /// Optional Point or Cell region name to restrict deformation (empty = all points).
+    std::string mRegion;
+};
+
+/// Shared result for `deform_ffd` and `deform_rbf`.
+struct DeformResult {
+    /// Deformed copy of the input mesh.
+    Mesh mMesh;
+    /// Number of vertices with non-zero displacement.
+    std::int64_t mNumNodesMoved = 0;
+    /// Number of 3-D cells with negative signed volume after deformation.
+    std::int64_t mNumInverted = 0;
+    /// Maximum Euclidean displacement across all vertices.
+    double mMaxDisplacement = 0.0;
+};
+
+/**
+ * @brief Deform a mesh with a tensor-product Bezier / B-spline FFD lattice.
+ */
+MESHIOPLUSPLUS_API DeformResult deform_ffd(const Mesh& rMesh, const FfdOptions& rOptions);
+
+/**
+ * @brief Deform a mesh by RBF interpolation of sparse control-point displacements.
+ */
+MESHIOPLUSPLUS_API DeformResult deform_rbf(const Mesh& rMesh, const RbfOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/deform.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/denoise_surface.hpp =====
+/**
+ * @file operations/denoise_surface.hpp
+ * @brief Feature-preserving surface denoising via two-stage bilateral and
+ * guided normal filtering (roadmap 9.12; Zheng et al. 2011; Zhang et al. 2015;
+ * Sun et al. 2007).
+ *
+ * Stage 1 filters face normals iteratively in deterministic Jacobi
+ * `parallel_for` passes using spatial and normal-similarity Gaussian weights.
+ * Stage 2 updates vertex positions to align with the filtered normals, with an
+ * optional facet fold-over guard.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Normal-filtering method for `denoise_surface`.
+enum class DenoiseMethod : std::int32_t {
+    /// Local bilateral normal filter (Zheng et al. 2011).
+    Bilateral = 0,
+    /// Patch-guided bilateral normal filter (Zhang et al. 2015).
+    Guided = 1,
+};
+
+/// Parse `"bilateral"` or `"guided"`.
+MESHIOPLUSPLUS_API DenoiseMethod denoise_method_from_name(const std::string& rName);
+
+/// Options for `denoise_surface`.
+struct DenoiseSurfaceOptions {
+    /// Filtering method (`Bilateral` or `Guided`).
+    DenoiseMethod mMethod = DenoiseMethod::Bilateral;
+    /// Number of Jacobi normal-filtering iterations.
+    std::int64_t mNormalIterations = 10;
+    /// Number of vertex-position update iterations.
+    std::int64_t mVertexIterations = 10;
+    /// Spatial Gaussian sigma over face centroid distances; 0 selects mean adjacent centroid distance.
+    double mSigmaSpatial = 0.0;
+    /// Normal-similarity Gaussian sigma (in unit-normal Euclidean distance, typically 0.2..0.5).
+    double mSigmaNormal = 0.35;
+    /// Keep boundary vertices fixed.
+    bool mFixBoundary = true;
+    /// Skip vertex moves that would flip an incident face normal against its filtered normal.
+    bool mGuardFoldover = true;
+    /// Optional named Cell region to denoise (empty = whole surface).
+    std::string mRegion;
+};
+
+/// Result of `denoise_surface`.
+struct DenoiseSurfaceResult {
+    /// The denoised mesh.
+    Mesh mMesh;
+    /// Number of vertices whose position changed.
+    std::int64_t mNumNodesMoved = 0;
+    /// Maximum Euclidean displacement of any vertex.
+    double mMaxDisplacement = 0.0;
+    /// Number of per-iteration vertex updates skipped by the fold-over guard.
+    std::int64_t mNumSkippedFoldover = 0;
+    /// Spatial sigma actually used (helpful when `mSigmaSpatial == 0`).
+    double mSigmaSpatialUsed = 0.0;
+};
+
+/**
+ * @brief Denoise a surface mesh while preserving sharp dihedral features.
+ */
+MESHIOPLUSPLUS_API DenoiseSurfaceResult
+denoise_surface(const Mesh& rMesh, const DenoiseSurfaceOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/denoise_surface.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/detect.hpp =====
 /**
  * @file operations/detect.hpp
@@ -30500,6 +30736,88 @@ MESHIOPLUSPLUS_API ErrorSizeResult error_size(const Mesh& rMesh, const ErrorSize
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/error_size.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/evaluate_cells.hpp =====
+/**
+ * @file operations/evaluate_cells.hpp
+ * @brief High-order cell evaluation (`evaluate_cells`) and exact
+ * Lagrange <-> Bezier change of basis (`change_basis`) (roadmap 15.3.1, 15.3.2).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `evaluate_cells`.
+struct EvaluateCellsOptions {
+    /// Global block-major cell ids to evaluate (`N` entries).
+    std::vector<std::int64_t> mCells;
+    /// Reference coordinates in `[0, 1]` (flat `3 * N` entries).
+    std::vector<double> mReferencePoints;
+    /// Point-data field names to evaluate (empty = all numeric point_data).
+    std::vector<std::string> mFields;
+    /// If true, also compute physical gradients `nabla_x f` via the inverse Jacobian.
+    bool mDerivatives = false;
+};
+
+/// Result of `evaluate_cells`.
+struct EvaluateCellsResult {
+    /// Evaluated physical coordinates, Float64 `(N, 3)`.
+    NDArray mPoints;
+    /// Evaluated field values per requested field name (`(N,)` or `(N, C)`).
+    std::vector<std::pair<std::string, NDArray>> mValues;
+    /// Evaluated physical gradients per requested field name (`(N, 3)` or `(N, C, 3)`), if requested.
+    std::vector<std::pair<std::string, NDArray>> mGradients;
+    /// Number of queries successfully evaluated.
+    std::int64_t mNumEvaluated = 0;
+};
+
+/// Target polynomial basis for `change_basis`.
+enum class BasisTarget : std::int32_t {
+    Bezier = 0,
+    Lagrange = 1,
+};
+
+/// Parse `"bezier"` or `"lagrange"`.
+MESHIOPLUSPLUS_API BasisTarget basis_target_from_name(const std::string& rName);
+
+/// Options for `change_basis`.
+struct ChangeBasisOptions {
+    /// Target basis (`Bezier` or `Lagrange`).
+    BasisTarget mTarget = BasisTarget::Bezier;
+    /// If true, transform numeric `point_data` arrays alongside coordinates.
+    bool mTransformFields = true;
+};
+
+/// Result of `change_basis`.
+struct ChangeBasisResult {
+    /// Converted mesh (`VtkBezier*` with `HigherOrderDegrees` or `VtkLagrange*`).
+    Mesh mMesh;
+    /// Number of cells transformed.
+    std::int64_t mNumConverted = 0;
+};
+
+/**
+ * @brief Evaluate physical positions, point fields, and optional physical
+ * gradients at arbitrary reference points inside mesh cells.
+ */
+MESHIOPLUSPLUS_API EvaluateCellsResult evaluate_cells(const Mesh& rMesh,
+                                                      const EvaluateCellsOptions& rOptions);
+
+/**
+ * @brief Convert between Lagrange and Bezier cell representations via exact
+ * Bernstein-Lagrange transformation matrices.
+ */
+MESHIOPLUSPLUS_API ChangeBasisResult change_basis(const Mesh& rMesh,
+                                                  const ChangeBasisOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/evaluate_cells.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/extrude.hpp =====
 /**
  * @file operations/extrude.hpp
@@ -32466,6 +32784,148 @@ MESHIOPLUSPLUS_API FlipNormalsResult flip_normals(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/flip_normals.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/quality.hpp =====
+/**
+ * @file operations/quality.hpp
+ * @brief Per-cell mesh quality metrics + inverted-element detection, part of
+ * the dependency-free mesh-operations layer.
+ *
+ * `compute_quality` scores every cell of every block on a fixed set of
+ * geometric metrics (area/volume, scaled Jacobian, aspect ratio, skewness,
+ * interior/dihedral angles, warpage) evaluated on the cell's *corner* nodes
+ * (quadratic variants reduce to their linear parent), and aggregates a
+ * per-metric summary plus counts of inverted (negative signed volume) and
+ * degenerate (near-zero) cells. `attach_quality` returns a copy of the mesh
+ * with every metric attached as `cell_data` (name `"quality:<metric>"`), ready
+ * to write out and visualise. All metrics use only standard C++ math and the
+ * uniform mesh API, so they run under every mesh backend.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief Aggregate statistics for one quality metric over all cells that have
+ * a finite value for it.
+ */
+struct QualityMetricSummary {
+    /// Number of histogram bins spanning `[mMin, mMax]`.
+    static constexpr int K = 10;
+    double mMin = std::numeric_limits<double>::quiet_NaN();
+    double mMax = std::numeric_limits<double>::quiet_NaN();
+    double mMean = std::numeric_limits<double>::quiet_NaN();
+    /// Cells contributing a finite value.
+    std::int64_t mCount = 0;
+    /// Counts per bin over `[mMin, mMax]`; all zero when `mCount == 0`.
+    std::array<std::int64_t, K> mHistogram{};
+};
+
+/**
+ * @brief The result of `compute_quality`: per-metric summaries, per-cell metric
+ * arrays (ready to attach as `cell_data`), and inverted/degenerate counts.
+ */
+struct QualityReport {
+    /// Total cells scored (across all blocks, including unsupported ones).
+    std::int64_t mNumCells = 0;
+    /// Cells with negative signed volume/area.
+    std::int64_t mNumInverted = 0;
+    /// Cells that are degenerate (near-zero volume/edge/Jacobian).
+    std::int64_t mNumDegenerate = 0;
+    /// Metric name -> summary, in the fixed metric order (see `quality.cpp`).
+    std::vector<std::pair<std::string, QualityMetricSummary>> mMetrics;
+    /// Metric name -> one `Float64` array of shape `(num_cells_in_block, 1)`
+    /// per cell block (NaN where the metric does not apply), in the same order.
+    std::vector<std::pair<std::string, std::vector<NDArray>>> mCellArrays;
+};
+
+/**
+ * @brief Compute per-cell quality metrics and their aggregate report.
+ * @param rMesh the mesh to evaluate
+ * @return the filled `QualityReport`
+ */
+MESHIOPLUSPLUS_API QualityReport compute_quality(const Mesh& rMesh);
+
+/**
+ * @brief A copy of @p rMesh with every quality metric attached as `cell_data`.
+ *
+ * Each metric becomes a `cell_data` entry named `"quality:<metric>"` with one
+ * array per cell block (NaN where the metric does not apply to that block's
+ * cell type).
+ * @param rMesh the mesh to score
+ * @return a copy carrying the metric arrays
+ */
+MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/fvm_quality.hpp =====
+/**
+ * @file operations/fvm_quality.hpp
+ * @brief Finite-volume (CFD) interior face-pair mesh quality diagnostics
+ * (roadmap 9.11): non-orthogonality (degrees), FVM face skewness, adjacent
+ * cell volume growth ratio, and face pyramid-height / concavity checks across
+ * every interior owner-neighbour face pair (including polyhedra).
+ *
+ * Worst-face values are projected onto owner and neighbour cells as
+ * `fvm:non_orthogonality`, `fvm:face_skewness`, `fvm:volume_ratio`, and
+ * `fvm:min_pyramid_height`, which `check_quality` (`quality_gate.hpp`) can
+ * gate on directly (e.g. `"fvm:non_orthogonality <= 70"`).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+inline constexpr const char* kFvmNonOrthogonalityName = "fvm:non_orthogonality";
+inline constexpr const char* kFvmFaceSkewnessName = "fvm:face_skewness";
+inline constexpr const char* kFvmVolumeRatioName = "fvm:volume_ratio";
+inline constexpr const char* kFvmMinPyramidHeightName = "fvm:min_pyramid_height";
+
+/// Summary report of `compute_fvm_quality`.
+struct FvmQualityReport {
+    /// Number of 3-D volume cells evaluated.
+    std::int64_t mNumCells = 0;
+    /// Total faces found (interior + boundary).
+    std::int64_t mNumFaces = 0;
+    /// Number of interior owner-neighbour face pairs evaluated.
+    std::int64_t mNumInteriorFaces = 0;
+    /// Number of interior faces with non-orthogonality > 70 deg.
+    std::int64_t mNumSevereNonOrtho = 0;
+    /// Number of interior faces with negative owner or neighbour pyramid height.
+    std::int64_t mNumNegativePyramids = 0;
+    /// Per-interior-face summary statistics keyed by `fvm:*` metric name.
+    std::vector<std::pair<std::string, QualityMetricSummary>> mMetrics;
+    /// Worst-face values projected onto cells, per block, keyed by `fvm:*` name.
+    std::vector<std::pair<std::string, std::vector<NDArray>>> mCellArrays;
+};
+
+/**
+ * @brief Compute finite-volume face-pair quality metrics on a 3-D volume mesh.
+ */
+MESHIOPLUSPLUS_API FvmQualityReport compute_fvm_quality(const Mesh& rMesh);
+
+/**
+ * @brief Return a copy of @p rMesh with the `fvm:*` cell_data arrays attached.
+ */
+MESHIOPLUSPLUS_API Mesh attach_fvm_quality(const Mesh& rMesh);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/fvm_quality.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/geodesic.hpp =====
 /**
  * @file operations/geodesic.hpp
@@ -35195,89 +35655,6 @@ MESHIOPLUSPLUS_API MirrorResult mirror(const Mesh& rMesh, const MirrorOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/mirror.hpp =====
-// ===== begin src/cpp/include/meshioplusplus/operations/quality.hpp =====
-/**
- * @file operations/quality.hpp
- * @brief Per-cell mesh quality metrics + inverted-element detection, part of
- * the dependency-free mesh-operations layer.
- *
- * `compute_quality` scores every cell of every block on a fixed set of
- * geometric metrics (area/volume, scaled Jacobian, aspect ratio, skewness,
- * interior/dihedral angles, warpage) evaluated on the cell's *corner* nodes
- * (quadratic variants reduce to their linear parent), and aggregates a
- * per-metric summary plus counts of inverted (negative signed volume) and
- * degenerate (near-zero) cells. `attach_quality` returns a copy of the mesh
- * with every metric attached as `cell_data` (name `"quality:<metric>"`), ready
- * to write out and visualise. All metrics use only standard C++ math and the
- * uniform mesh API, so they run under every mesh backend.
- */
-
-// System includes
-#include <array>
-#include <cstdint>
-#include <limits>
-#include <string>
-#include <utility>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus {
-
-/**
- * @brief Aggregate statistics for one quality metric over all cells that have
- * a finite value for it.
- */
-struct QualityMetricSummary {
-    /// Number of histogram bins spanning `[mMin, mMax]`.
-    static constexpr int K = 10;
-    double mMin = std::numeric_limits<double>::quiet_NaN();
-    double mMax = std::numeric_limits<double>::quiet_NaN();
-    double mMean = std::numeric_limits<double>::quiet_NaN();
-    /// Cells contributing a finite value.
-    std::int64_t mCount = 0;
-    /// Counts per bin over `[mMin, mMax]`; all zero when `mCount == 0`.
-    std::array<std::int64_t, K> mHistogram{};
-};
-
-/**
- * @brief The result of `compute_quality`: per-metric summaries, per-cell metric
- * arrays (ready to attach as `cell_data`), and inverted/degenerate counts.
- */
-struct QualityReport {
-    /// Total cells scored (across all blocks, including unsupported ones).
-    std::int64_t mNumCells = 0;
-    /// Cells with negative signed volume/area.
-    std::int64_t mNumInverted = 0;
-    /// Cells that are degenerate (near-zero volume/edge/Jacobian).
-    std::int64_t mNumDegenerate = 0;
-    /// Metric name -> summary, in the fixed metric order (see `quality.cpp`).
-    std::vector<std::pair<std::string, QualityMetricSummary>> mMetrics;
-    /// Metric name -> one `Float64` array of shape `(num_cells_in_block, 1)`
-    /// per cell block (NaN where the metric does not apply), in the same order.
-    std::vector<std::pair<std::string, std::vector<NDArray>>> mCellArrays;
-};
-
-/**
- * @brief Compute per-cell quality metrics and their aggregate report.
- * @param rMesh the mesh to evaluate
- * @return the filled `QualityReport`
- */
-MESHIOPLUSPLUS_API QualityReport compute_quality(const Mesh& rMesh);
-
-/**
- * @brief A copy of @p rMesh with every quality metric attached as `cell_data`.
- *
- * Each metric becomes a `cell_data` entry named `"quality:<metric>"` with one
- * array per cell block (NaN where the metric does not apply to that block's
- * cell type).
- * @param rMesh the mesh to score
- * @return a copy carrying the metric arrays
- */
-MESHIOPLUSPLUS_API Mesh attach_quality(const Mesh& rMesh);
-
-}  // namespace meshioplusplus
-// ===== end src/cpp/include/meshioplusplus/operations/quality.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/mmg.hpp =====
 /**
  * @file mmg.hpp
@@ -41391,6 +41768,110 @@ MESHIOPLUSPLUS_API PipelineReport run_sequence_file(const std::string& rPath);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/sequence.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/shortest_path.hpp =====
+/**
+ * @file operations/shortest_path.hpp
+ * @brief Shortest geodesic paths (`shortest_path`) and multi-source geodesic
+ * Voronoi partitioning (`geodesic_voronoi`) on meshes (roadmap 9.14).
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+inline constexpr const char* kPathDistanceName = "path:distance";
+inline constexpr const char* kPathSourceCellName = "path:source_cell";
+inline constexpr const char* kGeodesicNearestSourceName = "geodesic:nearest_source";
+
+/// Algorithm for `shortest_path`.
+enum class ShortestPathMethod : std::int32_t {
+    /// Deterministic edge-graph Dijkstra with ascending vertex-id tie-breaking.
+    Dijkstra = 0,
+    /// Gradient back-trace across triangle faces from `geodesic_distance`'s heat field.
+    HeatTrace = 1,
+};
+
+/// Parse `"dijkstra"` or `"heat_trace"`.
+MESHIOPLUSPLUS_API ShortestPathMethod shortest_path_method_from_name(const std::string& rName);
+
+/// Options for `shortest_path`.
+struct ShortestPathOptions {
+    /// Source vertex id (>= 0) when `mHasSourcePoint` is false.
+    std::int64_t mSource = -1;
+    /// Target vertex id (>= 0) when `mHasTargetPoint` is false.
+    std::int64_t mTarget = -1;
+    /// If true, snap `mSourcePoint` to the nearest mesh vertex.
+    bool mHasSourcePoint = false;
+    /// 3-D source coordinates when `mHasSourcePoint` is true.
+    std::array<double, 3> mSourcePoint = {0.0, 0.0, 0.0};
+    /// If true, snap `mTargetPoint` to the nearest mesh vertex.
+    bool mHasTargetPoint = false;
+    /// 3-D target coordinates when `mHasTargetPoint` is true.
+    std::array<double, 3> mTargetPoint = {0.0, 0.0, 0.0};
+    /// Path extraction method (`Dijkstra` or `HeatTrace`).
+    ShortestPathMethod mMethod = ShortestPathMethod::Dijkstra;
+    /// Heat-method time factor when `mMethod == HeatTrace`.
+    double mTimeFactor = 1.0;
+};
+
+/// Result of `shortest_path`.
+struct ShortestPathResult {
+    /// 1-D `line` mesh carrying `point_data["path:distance"]` and `cell_data["path:source_cell"]`.
+    Mesh mMesh;
+    /// Total arc length of the extracted path (0 if source == target, NaN if unreachable).
+    double mTotalLength = 0.0;
+    /// Number of line segments in `mMesh`.
+    std::int64_t mNumSegments = 0;
+    /// Resolved source vertex id.
+    std::int64_t mSourceVertex = -1;
+    /// Resolved target vertex id.
+    std::int64_t mTargetVertex = -1;
+    /// True if a path connecting source and target was found.
+    bool mReached = false;
+};
+
+/// Options for `geodesic_voronoi`.
+struct GeodesicVoronoiOptions {
+    /// Seed vertex ids (0-based).
+    std::vector<std::int64_t> mSources;
+    /// Optional 3-D seed coordinates (flat `3 * K`), snapped to nearest mesh vertices.
+    std::vector<double> mSeedPoints;
+    /// If true, also attach majority-vote `cell_data["geodesic:nearest_source"]`.
+    bool mAttachCellLabels = true;
+};
+
+/// Result of `geodesic_voronoi`.
+struct GeodesicVoronoiResult {
+    /// Copy of input mesh with `geodesic:distance` and `geodesic:nearest_source`.
+    Mesh mMesh;
+    /// Number of seed sources used.
+    std::int64_t mNumSources = 0;
+    /// Number of vertices not reachable from any seed.
+    std::int64_t mNumUnreached = 0;
+    /// Maximum finite distance across reached vertices.
+    double mMaxDistance = 0.0;
+};
+
+/**
+ * @brief Extract a shortest path between two landmarks on a mesh as a 1-D `line` mesh.
+ */
+MESHIOPLUSPLUS_API ShortestPathResult shortest_path(const Mesh& rMesh,
+                                                    const ShortestPathOptions& rOptions);
+
+/**
+ * @brief Partition a mesh into multi-source geodesic Voronoi regions.
+ */
+MESHIOPLUSPLUS_API GeodesicVoronoiResult geodesic_voronoi(const Mesh& rMesh,
+                                                          const GeodesicVoronoiOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/shortest_path.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/shrinkwrap.hpp =====
 /**
  * @file operations/shrinkwrap.hpp
@@ -41602,6 +42083,75 @@ MESHIOPLUSPLUS_API SilhouetteResult silhouette(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/silhouette.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/skeleton.hpp =====
+/**
+ * @file operations/skeleton.hpp
+ * @brief Curve-skeleton and centerline extraction from a closed triangle
+ * surface via mean-curvature flow contraction and connectivity thinning
+ * (roadmap 9.13; Au et al. 2008; Tagliasacchi et al. 2012).
+ *
+ * Returns a 1-D `line` mesh carrying:
+ *  - `point_data["skeleton:radius"]`: local inscribed radius (distance to the
+ *    original surface via `detail::DistanceQuery`),
+ *  - `point_data["skeleton:degree"]`: graph vertex degree (1 = endpoint,
+ *    2 = regular, >= 3 = branch),
+ *  - `field_data["skeleton:surface_map"]`: `(n_input_points,)` Int64 mapping
+ *    each input surface vertex to its skeleton node id.
+ */
+
+// System includes
+#include <cstdint>
+
+// Project includes
+
+namespace meshioplusplus {
+
+inline constexpr const char* kSkeletonRadiusName = "skeleton:radius";
+inline constexpr const char* kSkeletonDegreeName = "skeleton:degree";
+inline constexpr const char* kSkeletonSurfaceMapName = "skeleton:surface_map";
+
+/// Options for `extract_skeleton`.
+struct SkeletonOptions {
+    /// Maximum mean-curvature flow contraction iterations.
+    std::int64_t mMaxIterations = 10;
+    /// Initial Laplacian contraction weight multiplier (scaled by mean edge^2).
+    double mContractionWeight = 1.0;
+    /// Medial-axis attraction weight multiplier.
+    double mAttractionWeight = 1.0;
+    /// Stop contracting once enclosed volume ratio `|V| / |V_0|` falls below this threshold.
+    double mVolumeTolerance = 1e-4;
+    /// Edge-length merge tolerance on the thinned 1-D graph (0 = auto `0.25 * mean_edge`).
+    double mMergeTolerance = 0.0;
+    /// Recenter skeleton vertices toward the mean of their mapped surface vertices' nearest axis.
+    bool mRecenter = true;
+};
+
+/// Result of `extract_skeleton`.
+struct SkeletonResult {
+    /// 1-D `line` mesh representing the extracted curve skeleton.
+    Mesh mMesh;
+    /// Number of contraction iterations executed.
+    std::int64_t mContractionIterations = 0;
+    /// Final volume ratio `|V_final| / |V_0|`.
+    double mVolumeRatio = 0.0;
+    /// Number of skeleton nodes.
+    std::int64_t mNumNodes = 0;
+    /// Number of skeleton line segments.
+    std::int64_t mNumSegments = 0;
+    /// Number of branch nodes (degree >= 3).
+    std::int64_t mNumBranches = 0;
+    /// Number of endpoint nodes (degree == 1).
+    std::int64_t mNumEndpoints = 0;
+};
+
+/**
+ * @brief Extract a 1-D curve skeleton / centerline from a triangle surface mesh.
+ */
+MESHIOPLUSPLUS_API SkeletonResult extract_skeleton(const Mesh& rMesh,
+                                                   const SkeletonOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/skeleton.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/slice.hpp =====
 /**
  * @file slice.hpp
@@ -42210,6 +42760,88 @@ MESHIOPLUSPLUS_API SobolevResult sobolev_deform(const Mesh& rMesh, const Sobolev
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/sobolev_deform.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/spectral_descriptors.hpp =====
+/**
+ * @file operations/spectral_descriptors.hpp
+ * @brief Intrinsic, isometry-invariant spectral shape descriptors (roadmap 15.6):
+ * Heat Kernel Signature (HKS; Sun, Ovsjanikov and Guibas 2009) and Wave Kernel
+ * Signature (WKS; Aubry, Schlickewei and Cremers 2011), built directly on the
+ * Laplace-Beltrami eigenpairs of `laplacian_eigenmodes`.
+ *
+ * When `mReuseEigenmodes` is true and the mesh already carries
+ * `point_data["laplacian:modes"]` and `field_data["laplacian:eigenvalues"]`,
+ * those eigenpairs are reused without re-running the eigensolver.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Default point-data array name for HKS (`(n, num_scales)` Float64).
+inline constexpr const char* kSpectralHksName = "spectral:hks";
+/// Default point-data array name for WKS (`(n, num_scales)` Float64).
+inline constexpr const char* kSpectralWksName = "spectral:wks";
+/// Field-data array name for the log-spaced scales (`(num_scales,)` Float64).
+inline constexpr const char* kSpectralScalesName = "spectral:scales";
+
+/// Which spectral shape descriptor to compute.
+enum class SpectralDescriptorKind : std::int32_t {
+    Hks = 0,
+    Wks = 1,
+};
+
+/// Parse `"hks"` or `"wks"` (case-insensitive).
+MESHIOPLUSPLUS_API SpectralDescriptorKind spectral_descriptor_kind_from_name(
+    const std::string& rName);
+
+/// Options for `spectral_descriptors`.
+struct SpectralDescriptorsOptions {
+    /// Descriptor family (`Hks` or `Wks`).
+    SpectralDescriptorKind mKind = SpectralDescriptorKind::Hks;
+    /// Number of Laplace-Beltrami eigenmodes to compute when not reusing existing ones.
+    std::int64_t mNumModes = 32;
+    /// Number of log-spaced time (HKS) or log-energy (WKS) scales.
+    std::int64_t mNumScales = 16;
+    /// Normalize each scale by its spectral trace (HKS) or scale-invariant log-derivative.
+    bool mScaleInvariant = false;
+    /// Reuse `laplacian:modes` / `laplacian:eigenvalues` if already attached to the mesh.
+    bool mReuseEigenmodes = true;
+    /// WKS Gaussian standard deviation in log-energy; 0 selects `7 * (e_max - e_min) / num_scales`.
+    double mWksVariance = 0.0;
+    /// Tolerance forwarded to `laplacian_eigenmodes` when eigenmodes are computed.
+    double mTolerance = 1e-8;
+    /// Max iterations forwarded to `laplacian_eigenmodes`; 0 uses its default.
+    std::int64_t mMaxIterations = 0;
+    /// Output point-data array name; empty defaults to `spectral:hks` or `spectral:wks`.
+    std::string mOutput;
+};
+
+/// Result of `spectral_descriptors`.
+struct SpectralDescriptorsResult {
+    /// Output mesh carrying the descriptor point array and `spectral:scales` field array.
+    Mesh mMesh;
+    /// The log-spaced time (HKS) or log-energy (WKS) scales evaluated.
+    std::vector<double> mScales;
+    /// Number of positive eigenmodes used in the descriptor sum.
+    std::int64_t mNumModesUsed = 0;
+    /// True when precomputed `laplacian:modes` / `laplacian:eigenvalues` were reused.
+    bool mReusedEigenmodes = false;
+};
+
+/**
+ * @brief Compute HKS or WKS spectral shape descriptors on a triangle surface.
+ * @throws std::invalid_argument on invalid options or unsupported mesh topology.
+ */
+MESHIOPLUSPLUS_API SpectralDescriptorsResult
+spectral_descriptors(const Mesh& rMesh, const SpectralDescriptorsOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/spectral_descriptors.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/split.hpp =====
 /**
  * @file operations/split.hpp
@@ -43400,6 +44032,63 @@ MESHIOPLUSPLUS_API ThicknessResult thickness(const Mesh& rMesh, const Mesh& rTar
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/thickness.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/transfer_operator.hpp =====
+/**
+ * @file operations/transfer_operator.hpp
+ * @brief Sparse CSR inter-mesh prolongation (`P`: coarse -> fine) and
+ * restriction (`R = P^T`: fine -> coarse) transfer operators (roadmap 15.5).
+ *
+ * Uses exact nested stencils from `refine:entity` when available, or
+ * barycentric interpolation via `detail::PointLocator` / surface projection
+ * for arbitrary non-nested mesh pairs. Every located row sums to 1 (partition
+ * of unity) with deterministic ascending column indices.
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// How `transfer_operator` builds the coarse-to-fine interpolation weights.
+enum class TransferOperatorMode : std::int32_t {
+    /// Use `refine:entity` nested stencils when compatible, else barycentric location.
+    Auto = 0,
+    /// Require `refine:entity` nested stencils (throws if absent/incompatible).
+    Nested = 1,
+    /// Always use geometric barycentric location (`PointLocator` / surface projection).
+    Barycentric = 2,
+};
+
+/// Parse `"auto"`, `"nested"`, or `"barycentric"`.
+MESHIOPLUSPLUS_API TransferOperatorMode transfer_operator_mode_from_name(const std::string& rName);
+
+/// Options for `transfer_operator`.
+struct TransferOperatorOptions {
+    /// Weight-construction strategy (`Auto`, `Nested`, or `Barycentric`).
+    TransferOperatorMode mMode = TransferOperatorMode::Auto;
+    /// If true, return the transpose restriction operator `R = P^T` (`n_coarse x n_fine`).
+    bool mTranspose = false;
+    /// Geometric containment tolerance for barycentric location.
+    double mTolerance = 1e-12;
+    /// If true, fall back to nearest coarse vertex (weight 1) for fine points outside `coarse`.
+    bool mFallbackNearest = false;
+};
+
+/**
+ * @brief Build the sparse CSR prolongation matrix `P` (`n_fine x n_coarse`), or
+ * restriction `R = P^T` (`n_coarse x n_fine`) when `rOptions.mTranspose` is true.
+ *
+ * Returns `MeshOperatorResult` where `mNumDegenerate` counts fine points that
+ * could not be located (0 when all points are located or `mFallbackNearest` is true).
+ */
+MESHIOPLUSPLUS_API MeshOperatorResult transfer_operator(const Mesh& rCoarse, const Mesh& rFine,
+                                                        const TransferOperatorOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/transfer_operator.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
 /**
  * @file undo_green.hpp
@@ -53215,6 +53904,70 @@ inline double tet_amips(const Vec3& rA, const Vec3& rB, const Vec3& rC, const Ve
     return q > 0.0 ? 1.0 / q : std::numeric_limits<double>::infinity();
 }
 
+/**
+ * @brief P1 barycentric shape-function gradients and unsigned volume of the
+ * tetrahedron `(p[0], p[1], p[2], p[3])` (roadmap 3.4.4 / 15.2.1).
+ *
+ * Each gradient `rGrad[i]` is constant on the cell and satisfies
+ * `rGrad[i] . (p[j] - p[k]) = delta_{ij} - delta_{ik}`. Returns false when
+ * the tetrahedron is degenerate (`|6V| <= 1e-30`).
+ */
+inline bool tet_p1_gradients(const Vec3 p[4], Vec3 rGrad[4], double& rVolume) {
+    const double vol6 = tet_volume6(p[0], p[1], p[2], p[3]);
+    const double abs_vol6 = std::abs(vol6);
+    if (!(abs_vol6 > 1e-30)) {
+        rVolume = 0.0;
+        for (int i = 0; i < 4; ++i)
+            rGrad[i] = {0.0, 0.0, 0.0};
+        return false;
+    }
+    rVolume = abs_vol6 / 6.0;
+    const double inv_vol6 = 1.0 / vol6;
+    // Opposite face (j, k, l) oriented so that (p_k - p_j) x (p_l - p_j) points
+    // inward toward p_i when vol6 > 0: grad phi_i = ((p_k - p_j) x (p_l - p_j)) / vol6.
+    // Check: for p0=(0,0,0), p1=(1,0,0), p2=(0,1,0), p3=(0,0,1), vol6 = +1:
+    //   grad phi_0 = (p2-p1) x (p3-p1) ... let's verify:
+    //   (p3-p1) x (p2-p1) = (-1,0,1) x (-1,1,0) = (-1, -1, -1) -> dot(p0-p1) = +1.
+    //   (p2-p0) x (p3-p0) = (0,1,0) x (0,0,1) = (1, 0, 0) -> grad phi_1.
+    //   (p3-p0) x (p1-p0) = (0,0,1) x (1,0,0) = (0, 1, 0) -> grad phi_2.
+    //   (p1-p0) x (p2-p0) = (1,0,0) x (0,1,0) = (0, 0, 1) -> grad phi_3.
+    const Vec3 e1 = vec3_sub(p[1], p[0]);
+    const Vec3 e2 = vec3_sub(p[2], p[0]);
+    const Vec3 e3 = vec3_sub(p[3], p[0]);
+    rGrad[1] = vec3_scale(vec3_cross(e2, e3), inv_vol6);
+    rGrad[2] = vec3_scale(vec3_cross(e3, e1), inv_vol6);
+    rGrad[3] = vec3_scale(vec3_cross(e1, e2), inv_vol6);
+    rGrad[0] = {-(rGrad[1][0] + rGrad[2][0] + rGrad[3][0]),
+                -(rGrad[1][1] + rGrad[2][1] + rGrad[3][1]),
+                -(rGrad[1][2] + rGrad[2][2] + rGrad[3][2])};
+    return true;
+}
+
+/**
+ * @brief Local 4x4 P1 stiffness matrix `K_{ij} = |V| (grad phi_i . grad phi_j)`
+ * for a tetrahedron, symmetric positive semi-definite with row sums zero.
+ */
+inline void tet_p1_stiffness(const Vec3 rGrad[4], double Volume, double rK[4][4]) {
+    for (int i = 0; i < 4; ++i) {
+        for (int j = i; j < 4; ++j) {
+            const double val = Volume * vec3_dot(rGrad[i], rGrad[j]);
+            rK[i][j] = val;
+            rK[j][i] = val;
+        }
+    }
+}
+
+/**
+ * @brief Local 4x4 P1 consistent mass matrix `M_{ij} = |V| (1 + delta_{ij}) / 20`.
+ */
+inline void tet_p1_mass_consistent(double Volume, double rM[4][4]) {
+    const double off = Volume / 20.0;
+    const double diag = Volume / 10.0;
+    for (int i = 0; i < 4; ++i)
+        for (int j = 0; j < 4; ++j)
+            rM[i][j] = (i == j) ? diag : off;
+}
+
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/fem_kernels.hpp =====
 // ===== begin src/cpp/src/detail/field_recovery.hpp =====
@@ -57838,6 +58591,34 @@ public:
         return count;
     }
 
+    /**
+     * @brief All indexed points within @p Radius of @p rP
+     * (`dx*dx + dy*dy + dz*dz <= Radius * Radius`), appended to @p rOut as
+     * `(squared_distance, id)` pairs sorted deterministically by ascending id.
+     */
+    void WithinRadius(const Vec& rP, double Radius,
+                      std::vector<std::pair<double, std::int64_t>>& rOut) const {
+        rOut.clear();
+        if (mPoints.empty() || !(Radius >= 0.0))
+            return;
+        const Vec lo{rP[0] - Radius, rP[1] - Radius, rP[2] - Radius};
+        const Vec hi{rP[0] + Radius, rP[1] + Radius, rP[2] + Radius};
+        const double r2 = Radius * Radius;
+        mGrid.ForEachInBox(
+            mGrid.KeyOf(lo.data()), mGrid.KeyOf(hi.data()), [&](const BucketView& rIds) {
+                for (const std::int64_t id : rIds) {
+                    const Vec& q = mPoints[static_cast<std::size_t>(id)];
+                    const double dx = rP[0] - q[0], dy = rP[1] - q[1], dz = rP[2] - q[2];
+                    const double d2 = dx * dx + dy * dy + dz * dz;
+                    if (d2 <= r2)
+                        rOut.emplace_back(d2, id);
+                }
+            });
+        std::sort(rOut.begin(), rOut.end(), [](const auto& rA, const auto& rB) {
+            return rA.second < rB.second;
+        });
+    }
+
 private:
     std::vector<Vec> mPoints;
     BucketTable mGrid{1.0};
@@ -58712,6 +59493,348 @@ QuadRecombineResult quad_recombine(
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/quad_recombine.hpp =====
+// ===== begin src/cpp/src/detail/quadrature.hpp =====
+/**
+ * @file detail/quadrature.hpp
+ * @brief Shared Gauss quadrature rules on reference elements (roadmap 3.4.3 / 15.1).
+ *
+ * All element rules live in the `[0, 1]` reference coordinates used by
+ * `detail/reference_element.hpp` (`lagrange::vtk_lattice`):
+ *   - Line: `[0, 1]`, measure 1.
+ *   - Triangle: `u, v >= 0, u + v <= 1`, measure 1/2.
+ *   - Quad: `[0, 1]^2`, measure 1.
+ *   - Tetra: `u, v, w >= 0, u + v + w <= 1`, measure 1/6.
+ *   - Hexahedron: `[0, 1]^3`, measure 1.
+ *   - Wedge: `Triangle x [0, 1]`, measure 1/2.
+ *   - Pyramid: `0 <= w <= 1, 0 <= u, v <= 1 - w`, measure 1/3.
+ *
+ * Weights sum to the reference element's measure so that
+ * `sum_q w_q * |det J(xi_q)| * f(xi_q)` approximates `\int_K f dK`.
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// A quadrature rule in `[0, 1]` reference coordinates.
+struct QuadratureRule {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<double> mWeights;
+};
+
+/**
+ * @brief @p N-point Gauss-Legendre nodes and weights on `[-1, 1]`, sorted
+ * ascending by node. Exact for polynomials of degree `2N - 1`.
+ */
+inline void gauss_legendre_1d(int N, std::vector<double>& rNodes, std::vector<double>& rWeights) {
+    rNodes.resize(static_cast<std::size_t>(N));
+    rWeights.resize(static_cast<std::size_t>(N));
+    if (N <= 0)
+        return;
+    constexpr double kPi = 3.14159265358979323846;
+    const int m = (N + 1) / 2;
+    for (int i = 0; i < m; ++i) {
+        double z = std::cos(kPi * (static_cast<double>(i) + 0.75) / (static_cast<double>(N) + 0.5));
+        double pp = 0.0;
+        for (int iter = 0; iter < 50; ++iter) {
+            double p1 = 1.0;
+            double p2 = 0.0;
+            for (int j = 1; j <= N; ++j) {
+                const double p3 = p2;
+                p2 = p1;
+                p1 = ((2.0 * j - 1.0) * z * p2 - (j - 1.0) * p3) / static_cast<double>(j);
+            }
+            pp = static_cast<double>(N) * (z * p1 - p2) / (z * z - 1.0);
+            const double dz = p1 / pp;
+            z -= dz;
+            if (std::abs(dz) <= 1e-16)
+                break;
+        }
+        const double w = 2.0 / ((1.0 - z * z) * pp * pp);
+        rNodes[static_cast<std::size_t>(i)] = -z;
+        rNodes[static_cast<std::size_t>(N - 1 - i)] = z;
+        rWeights[static_cast<std::size_t>(i)] = w;
+        rWeights[static_cast<std::size_t>(N - 1 - i)] = w;
+    }
+}
+
+/// @p N-point Gauss-Legendre nodes and weights mapped to `[0, 1]`.
+inline void gauss_legendre_unit(int N, std::vector<double>& rNodes, std::vector<double>& rWeights) {
+    gauss_legendre_1d(N, rNodes, rWeights);
+    for (std::size_t i = 0; i < rNodes.size(); ++i) {
+        rNodes[i] = 0.5 * (rNodes[i] + 1.0);
+        rWeights[i] *= 0.5;
+    }
+}
+
+/// Symmetric triangle quadrature on the unit triangle (`u, v >= 0, u+v <= 1`, area 0.5).
+inline QuadratureRule quadrature_triangle(int ExactOrder) {
+    QuadratureRule rule;
+    const auto add_sym3 = [&](double a, double b, double w_area_frac) {
+        const double w = 0.5 * w_area_frac;
+        const double c = 1.0 - a - b;
+        rule.mPoints.push_back({a, b, 0.0});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({b, c, 0.0});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({c, a, 0.0});
+        rule.mWeights.push_back(w);
+    };
+    const auto add_sym6 = [&](double a, double b, double w_area_frac) {
+        const double w = 0.5 * w_area_frac;
+        const double c = 1.0 - a - b;
+        const double p[6][2] = {{a, b}, {b, a}, {b, c}, {c, b}, {c, a}, {a, c}};
+        for (const auto& q : p) {
+            rule.mPoints.push_back({q[0], q[1], 0.0});
+            rule.mWeights.push_back(w);
+        }
+    };
+
+    if (ExactOrder <= 1) {
+        rule.mPoints.push_back({1.0 / 3.0, 1.0 / 3.0, 0.0});
+        rule.mWeights.push_back(0.5);
+        return rule;
+    }
+    if (ExactOrder <= 2) {
+        add_sym3(1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0);
+        return rule;
+    }
+    if (ExactOrder <= 4) {
+        // Dunavant 6-point rule, exact to degree 4, all positive weights.
+        add_sym3(0.44594849091596488632, 0.44594849091596488632, 0.22338158967801146570);
+        add_sym3(0.09157621350977074346, 0.09157621350977074346, 0.10995174365532186764);
+        return rule;
+    }
+    if (ExactOrder <= 5) {
+        // Dunavant 7-point rule, exact to degree 5, all positive weights.
+        rule.mPoints.push_back({1.0 / 3.0, 1.0 / 3.0, 0.0});
+        rule.mWeights.push_back(0.5 * 0.225);
+        add_sym3(0.05971587178976982046, 0.47014206410511508977, 0.13239415278850618074);
+        add_sym3(0.79742698535308732240, 0.10128650732345633880, 0.12593918054482715260);
+        return rule;
+    }
+    if (ExactOrder <= 6) {
+        // Dunavant 12-point rule, exact to degree 6, all positive weights.
+        add_sym3(0.50142650965817915742, 0.24928674517091042129, 0.11678627572637936603);
+        add_sym3(0.87382197101699554332, 0.06308901449150222834, 0.05084490637020681692);
+        add_sym6(0.05314504984481694735, 0.31035245103378440542, 0.08285107561837357519);
+        return rule;
+    }
+    // General higher-order fallback: Duffy transform from [0, 1]^2 with u = (1-a)b, v = a,
+    // Jacobian = (1 - a). Polynomial of degree p in (u,v) has degree <= p+1 in a, <= p in b.
+    const int n = (ExactOrder + 2) / 2 + 1;
+    std::vector<double> gx, gw;
+    gauss_legendre_unit(n, gx, gw);
+    for (int i = 0; i < n; ++i) {
+        const double a = gx[static_cast<std::size_t>(i)];
+        const double wa = gw[static_cast<std::size_t>(i)] * (1.0 - a);
+        for (int j = 0; j < n; ++j) {
+            const double b = gx[static_cast<std::size_t>(j)];
+            rule.mPoints.push_back({(1.0 - a) * b, a, 0.0});
+            rule.mWeights.push_back(wa * gw[static_cast<std::size_t>(j)]);
+        }
+    }
+    return rule;
+}
+
+/// Symmetric tetrahedron quadrature on the unit tet (`u,v,w >= 0, u+v+w <= 1`, volume 1/6).
+inline QuadratureRule quadrature_tetra(int ExactOrder) {
+    QuadratureRule rule;
+    constexpr double kVol = 1.0 / 6.0;
+    const auto add_sym4 = [&](double a, double w_vol_frac) {
+        const double b = 1.0 - 3.0 * a;
+        const double w = kVol * w_vol_frac;
+        rule.mPoints.push_back({a, a, a});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({b, a, a});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({a, b, a});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({a, a, b});
+        rule.mWeights.push_back(w);
+    };
+    const auto add_sym6 = [&](double a, double w_vol_frac) {
+        const double b = 0.5 - a;
+        const double w = kVol * w_vol_frac;
+        const double p[6][3] = {{a, a, b}, {a, b, a}, {b, a, a}, {a, b, b}, {b, a, b}, {b, b, a}};
+        for (const auto& q : p) {
+            rule.mPoints.push_back({q[0], q[1], q[2]});
+            rule.mWeights.push_back(w);
+        }
+    };
+
+    if (ExactOrder <= 1) {
+        rule.mPoints.push_back({0.25, 0.25, 0.25});
+        rule.mWeights.push_back(kVol);
+        return rule;
+    }
+    if (ExactOrder <= 2) {
+        // 4-point Keast rule, exact to degree 2, positive weights.
+        const double a = (5.0 - std::sqrt(5.0)) / 20.0;
+        add_sym4(a, 0.25);
+        return rule;
+    }
+    if (ExactOrder <= 4) {
+        // 11-point Keast / Shunn-Ham rule, exact to degree 4, all positive weights.
+        rule.mPoints.push_back({0.25, 0.25, 0.25});
+        rule.mWeights.push_back(kVol * (-0.07893333333333333));
+        // Note: use 14-point positive-weight rule for degree 4 (Shunn & Ham 2012)
+        // so all weights are strictly positive!
+        rule.mPoints.clear();
+        rule.mWeights.clear();
+        add_sym4(0.09273525031089122640, 0.07349304311636194954);
+        add_sym4(0.31088591926330060980, 0.11268792571801585080);
+        add_sym6(0.04550370412564964949, 0.04254602077708146644);
+        return rule;
+    }
+    // General higher-order fallback: Duffy transform from [0, 1]^3 with
+    // w = a, v = (1 - a) b, u = (1 - a)(1 - b) c, Jacobian = (1 - a)^2 (1 - b).
+    const int n = (ExactOrder + 3) / 2 + 1;
+    std::vector<double> gx, gw;
+    gauss_legendre_unit(n, gx, gw);
+    for (int i = 0; i < n; ++i) {
+        const double a = gx[static_cast<std::size_t>(i)];
+        const double oma = 1.0 - a;
+        const double wa = gw[static_cast<std::size_t>(i)] * oma * oma;
+        for (int j = 0; j < n; ++j) {
+            const double b = gx[static_cast<std::size_t>(j)];
+            const double omb = 1.0 - b;
+            const double wab = wa * gw[static_cast<std::size_t>(j)] * omb;
+            for (int k = 0; k < n; ++k) {
+                const double c = gx[static_cast<std::size_t>(k)];
+                rule.mPoints.push_back({oma * omb * c, oma * b, a});
+                rule.mWeights.push_back(wab * gw[static_cast<std::size_t>(k)]);
+            }
+        }
+    }
+    return rule;
+}
+
+/// Quadrature rule for a base cell family (`CellType`) exact to polynomial degree @p ExactOrder.
+inline QuadratureRule quadrature_rule(CellType Type, int ExactOrder) {
+    const int order = std::max(1, ExactOrder);
+    const int n1d = (order + 2) / 2;  // 2*n1d - 1 >= order
+    QuadratureRule rule;
+    switch (Type) {
+        case CellType::Line:
+        case CellType::Line3:
+        case CellType::VtkLagrangeCurve:
+        case CellType::VtkBezierCurve: {
+            std::vector<double> gx, gw;
+            gauss_legendre_unit(n1d, gx, gw);
+            for (int i = 0; i < n1d; ++i) {
+                rule.mPoints.push_back({gx[static_cast<std::size_t>(i)], 0.0, 0.0});
+                rule.mWeights.push_back(gw[static_cast<std::size_t>(i)]);
+            }
+            return rule;
+        }
+        case CellType::Triangle:
+        case CellType::Triangle6:
+        case CellType::Triangle7:
+        case CellType::VtkLagrangeTriangle:
+        case CellType::VtkBezierTriangle:
+            return quadrature_triangle(order);
+
+        case CellType::Quad:
+        case CellType::Quad8:
+        case CellType::Quad9:
+        case CellType::VtkLagrangeQuadrilateral:
+        case CellType::VtkBezierQuadrilateral: {
+            std::vector<double> gx, gw;
+            gauss_legendre_unit(n1d, gx, gw);
+            for (int j = 0; j < n1d; ++j) {
+                for (int i = 0; i < n1d; ++i) {
+                    rule.mPoints.push_back(
+                        {gx[static_cast<std::size_t>(i)], gx[static_cast<std::size_t>(j)], 0.0});
+                    rule.mWeights.push_back(gw[static_cast<std::size_t>(i)] *
+                                            gw[static_cast<std::size_t>(j)]);
+                }
+            }
+            return rule;
+        }
+        case CellType::Tetra:
+        case CellType::Tetra10:
+        case CellType::VtkLagrangeTetrahedron:
+        case CellType::VtkBezierTetrahedron:
+            return quadrature_tetra(order);
+
+        case CellType::Hexahedron:
+        case CellType::Hexahedron20:
+        case CellType::Hexahedron27:
+        case CellType::VtkLagrangeHexahedron:
+        case CellType::VtkBezierHexahedron: {
+            std::vector<double> gx, gw;
+            gauss_legendre_unit(n1d, gx, gw);
+            for (int k = 0; k < n1d; ++k) {
+                for (int j = 0; j < n1d; ++j) {
+                    for (int i = 0; i < n1d; ++i) {
+                        rule.mPoints.push_back({gx[static_cast<std::size_t>(i)],
+                                                gx[static_cast<std::size_t>(j)],
+                                                gx[static_cast<std::size_t>(k)]});
+                        rule.mWeights.push_back(gw[static_cast<std::size_t>(i)] *
+                                                gw[static_cast<std::size_t>(j)] *
+                                                gw[static_cast<std::size_t>(k)]);
+                    }
+                }
+            }
+            return rule;
+        }
+        case CellType::Wedge:
+        case CellType::Wedge15:
+        case CellType::Wedge18:
+        case CellType::VtkLagrangeWedge:
+        case CellType::VtkBezierWedge: {
+            const QuadratureRule tri = quadrature_triangle(order);
+            std::vector<double> gz, wz;
+            gauss_legendre_unit(n1d, gz, wz);
+            for (int k = 0; k < n1d; ++k) {
+                for (std::size_t t = 0; t < tri.mPoints.size(); ++t) {
+                    rule.mPoints.push_back(
+                        {tri.mPoints[t][0], tri.mPoints[t][1], gz[static_cast<std::size_t>(k)]});
+                    rule.mWeights.push_back(tri.mWeights[t] * wz[static_cast<std::size_t>(k)]);
+                }
+            }
+            return rule;
+        }
+        case CellType::Pyramid:
+        case CellType::Pyramid13:
+        case CellType::Pyramid14:
+        case CellType::VtkLagrangePyramid:
+        case CellType::VtkBezierPyramid: {
+            // Duffy mapping from [0, 1]^3: w = c, u = (1-c)*a, v = (1-c)*b, J = (1-c)^2.
+            const int nz = (order + 4) / 2;
+            std::vector<double> gx, gw, gz, wz;
+            gauss_legendre_unit(n1d, gx, gw);
+            gauss_legendre_unit(nz, gz, wz);
+            for (int k = 0; k < nz; ++k) {
+                const double c = gz[static_cast<std::size_t>(k)];
+                const double omc = 1.0 - c;
+                const double wk = wz[static_cast<std::size_t>(k)] * omc * omc;
+                for (int j = 0; j < n1d; ++j) {
+                    for (int i = 0; i < n1d; ++i) {
+                        rule.mPoints.push_back({omc * gx[static_cast<std::size_t>(i)],
+                                                omc * gx[static_cast<std::size_t>(j)], c});
+                        rule.mWeights.push_back(wk * gw[static_cast<std::size_t>(i)] *
+                                                gw[static_cast<std::size_t>(j)]);
+                    }
+                }
+            }
+            return rule;
+        }
+        default:
+            return rule;
+    }
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/quadrature.hpp =====
 // ===== begin src/cpp/src/detail/raster.hpp =====
 /**
  * @file detail/raster.hpp
@@ -58842,6 +59965,1426 @@ void render_view_angles(const RenderOptions& rOpt, double& rAzimuth, double& rEl
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/raster.hpp =====
+// ===== begin src/cpp/src/detail/reference_element.hpp =====
+/**
+ * @file detail/reference_element.hpp
+ * @brief Shared reference-element shape functions, derivatives, Jacobians,
+ *        arbitrary-order Lagrange lattices, and Bernstein-Lagrange change of
+ *        basis (roadmap 3.4.3 / 15.1 / 15.3).
+ *
+ * Moved from `formats/lagrange_common.hpp`; twin of
+ * `src/python/meshioplusplus/_lagrange.py`.
+ */
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+
+namespace meshioplusplus {
+namespace lagrange {
+
+enum class Shape { Line, Triangle, Quad, Tetra, Hexahedron, Wedge };
+
+inline int shape_dim(Shape S) {
+    switch (S) {
+        case Shape::Line:
+            return 1;
+        case Shape::Triangle:
+        case Shape::Quad:
+            return 2;
+        default:
+            return 3;
+    }
+}
+
+/// Number of nodes of an order-`P` cell.
+inline std::size_t num_nodes(Shape S, int P) {
+    const std::size_t p = static_cast<std::size_t>(P);
+    switch (S) {
+        case Shape::Line:
+            return p + 1;
+        case Shape::Triangle:
+            return (p + 1) * (p + 2) / 2;
+        case Shape::Quad:
+            return (p + 1) * (p + 1);
+        case Shape::Tetra:
+            return (p + 1) * (p + 2) * (p + 3) / 6;
+        case Shape::Hexahedron:
+            return (p + 1) * (p + 1) * (p + 1);
+        case Shape::Wedge:
+            return (p + 1) * (p + 1) * (p + 2) / 2;
+    }
+    return 0;
+}
+
+/// The Gauss-Lobatto points of order `P` on [0, 1], ascending.
+inline std::vector<double> gll_points(int P) {
+    std::vector<double> x(static_cast<std::size_t>(P) + 1);
+    x.front() = 0.0;
+    x.back() = 1.0;
+    // Interior points: the roots of P'_P on [-1, 1], by Newton from the
+    // Chebyshev-Gauss-Lobatto guesses; computed for the lower half and
+    // mirrored, so the set is exactly symmetric.
+    for (int k = 1; 2 * k <= P; ++k) {
+        long double t = -std::cos(3.14159265358979323846264338327950288L * k / P);
+        for (int it = 0; it < 100; ++it) {
+            // Legendre P_P(t), P'_P(t) by recurrence.
+            long double p0 = 1.0L, p1 = t;
+            for (int n = 1; n < P; ++n) {
+                const long double p2 = ((2 * n + 1) * t * p1 - n * p0) / (n + 1);
+                p0 = p1;
+                p1 = p2;
+            }
+            const long double d1 = P * (t * p1 - p0) / (t * t - 1.0L);
+            const long double d2 = (2.0L * t * d1 - P * (P + 1) * p1) / (1.0L - t * t);
+            const long double step = d1 / d2;
+            t -= step;
+            if (std::fabs(static_cast<double>(step)) < 1e-19)
+                break;
+        }
+        const double v = static_cast<double>((1.0L + t) / 2.0L);
+        x[static_cast<std::size_t>(k)] = v;
+        x[static_cast<std::size_t>(P - k)] = 1.0 - v;
+    }
+    if (P % 2 == 0 && P > 0)
+        x[static_cast<std::size_t>(P / 2)] = 0.5;
+    return x;
+}
+
+/// Equispaced points `i/P` on [0, 1].
+inline std::vector<double> uniform_points(int P) {
+    std::vector<double> x(static_cast<std::size_t>(P) + 1);
+    for (int i = 0; i <= P; ++i)
+        x[static_cast<std::size_t>(i)] = static_cast<double>(i) / P;
+    return x;
+}
+
+// --- VTK node order (after MFEM's mesh/vtk.cpp) ---------------------------------------
+
+inline int vtk_triangle_index(int* pB, int Ref) {
+    int max = Ref, min = 0;
+    const int bmin = std::min(std::min(pB[0], pB[1]), pB[2]);
+    int idx = 0;
+    while (bmin > min) {
+        idx += 3 * Ref;
+        max -= 2;
+        ++min;
+        Ref -= 3;
+    }
+    for (int d = 0; d < 3; ++d) {
+        if (pB[(d + 2) % 3] == max)
+            return idx;
+        ++idx;
+    }
+    for (int d = 0; d < 3; ++d) {
+        if (pB[(d + 1) % 3] == min)
+            return idx + pB[d] - (min + 1);
+        idx += max - (min + 1);
+    }
+    return idx;
+}
+
+inline int vtk_tetra_index(int* pB, int Ref) {
+    int idx = 0, max = Ref, min = 0;
+    const int bmin = std::min(std::min(std::min(pB[0], pB[1]), pB[2]), pB[3]);
+    while (bmin > min) {
+        idx += 2 * (Ref * Ref + 1);
+        max -= 3;
+        ++min;
+        Ref -= 4;
+    }
+    static const int kVertexMax[4] = {3, 0, 1, 2};
+    static const int kEdgeMin[6][2] = {{1, 2}, {2, 3}, {0, 2}, {0, 1}, {1, 3}, {0, 3}};
+    static const int kEdgeCount[6] = {0, 1, 3, 2, 2, 2};
+    static const int kFaceMin[4] = {1, 3, 0, 2};
+    static const int kFaceB[4][3] = {{0, 2, 3}, {2, 0, 1}, {2, 1, 3}, {1, 0, 3}};
+    for (int v = 0; v < 4; ++v) {
+        if (pB[kVertexMax[v]] == max)
+            return idx;
+        ++idx;
+    }
+    for (int e = 0; e < 6; ++e) {
+        if (pB[kEdgeMin[e][0]] == min && pB[kEdgeMin[e][1]] == min)
+            return idx + pB[kEdgeCount[e]] - (min + 1);
+        idx += max - (min + 1);
+    }
+    for (int f = 0; f < 4; ++f) {
+        if (pB[kFaceMin[f]] == min) {
+            int projected[3];
+            for (int i = 0; i < 3; ++i)
+                projected[i] = pB[kFaceB[f][i]] - min;
+            return idx + vtk_triangle_index(projected, Ref) - 3 * Ref;
+        }
+        idx += (Ref + 1) * (Ref + 2) / 2 - 3 * Ref;
+    }
+    return idx;
+}
+
+inline int vtk_triangle_offset(int Ref, int I, int J) {
+    return I + Ref * (J - 1) - (J * (J + 1)) / 2;
+}
+
+inline int vtk_wedge_index(int I, int J, int K, int Ref) {
+    const int om1 = Ref - 1;
+    const int ibdr = I == 0, jbdr = J == 0, ijbdr = I + J == Ref, kbdr = K == 0 || K == Ref;
+    const int nbdr = ibdr + jbdr + ijbdr + kbdr;
+    if (nbdr == 3)
+        return (ibdr && jbdr ? 0 : (jbdr && ijbdr ? 1 : 2)) + (K ? 3 : 0);
+    int offset = 6;
+    if (nbdr == 2) {
+        if (!kbdr) {
+            offset += om1 * 6;
+            return offset + (K - 1) + ((ibdr && jbdr) ? 0 : (jbdr && ijbdr ? 1 : 2)) * om1;
+        }
+        offset += K == Ref ? 3 * om1 : 0;
+        if (jbdr)
+            return offset + I - 1;
+        offset += om1;
+        if (ijbdr)
+            return offset + J - 1;
+        offset += om1;
+        return offset + (Ref - J - 1);
+    }
+    offset += 9 * om1;
+    const int ntf = (om1 - 1) * om1 / 2;
+    const int nqf = om1 * om1;
+    if (nbdr == 1) {
+        if (kbdr) {
+            if (K > 0)
+                offset += ntf;
+            return offset + vtk_triangle_offset(Ref, I, J);
+        }
+        offset += 2 * ntf;
+        if (jbdr)
+            return offset + (I - 1) + om1 * (K - 1);
+        offset += nqf;
+        if (ijbdr)
+            return offset + (J - 1) + om1 * (K - 1);
+        offset += nqf;
+        return offset + (Ref - J - 1) + om1 * (K - 1);
+    }
+    offset += 2 * ntf + 3 * nqf;
+    return offset + vtk_triangle_offset(Ref, I, J) + ntf * (K - 1);
+}
+
+inline int vtk_tensor_index(int Idx, int Ref, int Dim) {
+    const int n = Ref + 1;
+    if (Dim == 1) {
+        if (Idx == 0 || Idx == Ref)
+            return Idx ? 1 : 0;
+        return Idx + 1;
+    }
+    if (Dim == 2) {
+        const int i = Idx % n, j = Idx / n;
+        const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref;
+        if (ibdr && jbdr)
+            return i ? (j ? 2 : 1) : (j ? 3 : 0);
+        int offset = 4;
+        if (jbdr)
+            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + offset;
+        if (ibdr)
+            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) + offset;
+        offset += 2 * (Ref - 1 + Ref - 1);
+        return offset + (i - 1) + (Ref - 1) * (j - 1);
+    }
+    const int i = Idx % n, j = (Idx / n) % n, k = Idx / (n * n);
+    const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref, kbdr = k == 0 || k == Ref;
+    const int nbdr = (ibdr ? 1 : 0) + (jbdr ? 1 : 0) + (kbdr ? 1 : 0);
+    if (nbdr == 3)
+        return (i ? (j ? 2 : 1) : (j ? 3 : 0)) + (k ? 4 : 0);
+    int offset = 8;
+    if (nbdr == 2) {
+        if (!ibdr)
+            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + (k ? 2 * (Ref - 1 + Ref - 1) : 0) +
+                   offset;
+        if (!jbdr)
+            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) +
+                   (k ? 2 * (Ref - 1 + Ref - 1) : 0) + offset;
+        offset += 4 * (Ref - 1) + 4 * (Ref - 1);
+        return (k - 1) + (Ref - 1) * (i ? (j ? 2 : 1) : (j ? 3 : 0)) + offset;
+    }
+    offset += 4 * (Ref - 1 + Ref - 1 + Ref - 1);
+    if (nbdr == 1) {
+        if (ibdr)
+            return (j - 1) + (Ref - 1) * (k - 1) + (i ? (Ref - 1) * (Ref - 1) : 0) + offset;
+        offset += 2 * (Ref - 1) * (Ref - 1);
+        if (jbdr)
+            return (i - 1) + (Ref - 1) * (k - 1) + (j ? (Ref - 1) * (Ref - 1) : 0) + offset;
+        offset += 2 * (Ref - 1) * (Ref - 1);
+        return (i - 1) + (Ref - 1) * (j - 1) + (k ? (Ref - 1) * (Ref - 1) : 0) + offset;
+    }
+    offset += 2 * 3 * (Ref - 1) * (Ref - 1);
+    return offset + (i - 1) + (Ref - 1) * ((j - 1) + (Ref - 1) * (k - 1));
+}
+
+/// The nodes of an order-`P` VTK Lagrange cell, in VTK order, as integer
+/// lattice coordinates (`x = i / P`).
+inline std::vector<std::array<int, 3>> vtk_lattice(Shape S, int P) {
+    std::vector<std::array<int, 3>> out(num_nodes(S, P));
+    switch (S) {
+        case Shape::Triangle: {
+            int b[3];
+            for (b[1] = 0; b[1] <= P; ++b[1])
+                for (b[0] = 0; b[0] <= P - b[1]; ++b[0]) {
+                    b[2] = P - b[0] - b[1];
+                    out[static_cast<std::size_t>(vtk_triangle_index(b, P))] = {b[0], b[1], 0};
+                }
+            break;
+        }
+        case Shape::Tetra: {
+            int b[4];
+            for (b[2] = 0; b[2] <= P; ++b[2])
+                for (b[1] = 0; b[1] <= P - b[2]; ++b[1])
+                    for (b[0] = 0; b[0] <= P - b[1] - b[2]; ++b[0]) {
+                        b[3] = P - b[0] - b[1] - b[2];
+                        out[static_cast<std::size_t>(vtk_tetra_index(b, P))] = {b[0], b[1], b[2]};
+                    }
+            break;
+        }
+        case Shape::Wedge:
+            for (int k = 0; k <= P; ++k)
+                for (int j = 0; j <= P; ++j)
+                    for (int i = 0; i <= P - j; ++i)
+                        out[static_cast<std::size_t>(vtk_wedge_index(i, j, k, P))] = {i, j, k};
+            break;
+        default: {
+            const int dim = shape_dim(S);
+            const int n = P + 1;
+            const int total = dim == 1 ? n : (dim == 2 ? n * n : n * n * n);
+            for (int idx = 0; idx < total; ++idx) {
+                const std::array<int, 3> ijk = {idx % n, dim > 1 ? (idx / n) % n : 0,
+                                                dim > 2 ? idx / (n * n) : 0};
+                out[static_cast<std::size_t>(vtk_tensor_index(idx, P, dim))] = ijk;
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+// --- Gmsh's node order (twin of _lagrange.gmsh_lattice) -------------------------------------
+//
+// The fixed-order types beyond VTK's own (triangle10, quad16, tetra20, wedge40,
+// hexahedron64, ...) are held in Gmsh's order: the corners, each edge's
+// interior nodes in the direction listed, each face's interior nodes as an
+// element of the same family (recursively), then the volume's likewise -- a
+// prism's being the inner triangle's nodes, each with its column of nodes
+// along the third direction in Gmsh's line order. Checked against Gmsh 4.15
+// for every order it has (tests/python/test_lagrange_gmsh_order.py).
+
+using LatticeNode = std::array<int, 3>;
+
+inline LatticeNode lattice_add(LatticeNode A, const LatticeNode& rB, int Scale = 1) {
+    for (int k = 0; k < 3; ++k)
+        A[static_cast<std::size_t>(k)] += Scale * rB[static_cast<std::size_t>(k)];
+    return A;
+}
+
+/// One lattice step from `rFrom` towards `rTo` on an order-`P` cell.
+inline LatticeNode lattice_step(const LatticeNode& rFrom, const LatticeNode& rTo, int P) {
+    LatticeNode d;
+    for (std::size_t k = 0; k < 3; ++k)
+        d[k] = (rTo[k] - rFrom[k]) / P;  // exact: corners are P steps apart
+    return d;
+}
+
+inline const std::vector<std::pair<int, int>>& gmsh_edges(Shape S) {
+    static const std::vector<std::pair<int, int>> line = {{0, 1}};
+    static const std::vector<std::pair<int, int>> tri = {{0, 1}, {1, 2}, {2, 0}};
+    static const std::vector<std::pair<int, int>> quad = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
+    static const std::vector<std::pair<int, int>> tet = {{0, 1}, {1, 2}, {2, 0},
+                                                         {3, 0}, {3, 2}, {3, 1}};
+    static const std::vector<std::pair<int, int>> hex = {{0, 1}, {0, 3}, {0, 4}, {1, 2},
+                                                         {1, 5}, {2, 3}, {2, 6}, {3, 7},
+                                                         {4, 5}, {4, 7}, {5, 6}, {6, 7}};
+    static const std::vector<std::pair<int, int>> wedge = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 4},
+                                                           {2, 5}, {3, 4}, {3, 5}, {4, 5}};
+    switch (S) {
+        case Shape::Line:
+            return line;
+        case Shape::Triangle:
+            return tri;
+        case Shape::Quad:
+            return quad;
+        case Shape::Tetra:
+            return tet;
+        case Shape::Hexahedron:
+            return hex;
+        case Shape::Wedge:
+            return wedge;
+    }
+    return line;
+}
+
+inline const std::vector<std::vector<int>>& gmsh_faces(Shape S) {
+    static const std::vector<std::vector<int>> none;
+    static const std::vector<std::vector<int>> tet = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {3, 1, 2}};
+    static const std::vector<std::vector<int>> hex = {{0, 3, 2, 1}, {0, 1, 5, 4}, {0, 4, 7, 3},
+                                                      {1, 2, 6, 5}, {2, 3, 7, 6}, {4, 5, 6, 7}};
+    static const std::vector<std::vector<int>> wedge = {
+        {0, 2, 1}, {3, 4, 5}, {0, 1, 4, 3}, {0, 3, 5, 2}, {1, 2, 5, 4}};
+    switch (S) {
+        case Shape::Tetra:
+            return tet;
+        case Shape::Hexahedron:
+            return hex;
+        case Shape::Wedge:
+            return wedge;
+        default:
+            return none;
+    }
+}
+
+/// Each corner moved one lattice step towards each of its `rAround` corners.
+inline std::vector<LatticeNode> lattice_inset(const std::vector<LatticeNode>& rCorners, int P,
+                                              const std::vector<std::vector<int>>& rAround) {
+    std::vector<LatticeNode> out;
+    for (std::size_t k = 0; k < rCorners.size(); ++k) {
+        LatticeNode c = rCorners[k];
+        for (const int m : rAround[k])
+            c = lattice_add(c, lattice_step(rCorners[k], rCorners[static_cast<std::size_t>(m)], P));
+        out.push_back(c);
+    }
+    return out;
+}
+
+/// The two neighbours of each corner of an `N`-gon.
+inline std::vector<std::vector<int>> lattice_ring(int N) {
+    std::vector<std::vector<int>> out;
+    for (int k = 0; k < N; ++k)
+        out.push_back({(k + 1) % N, (k + N - 1) % N});
+    return out;
+}
+
+inline void gmsh_nodes(Shape S, const std::vector<LatticeNode>& rC, int P,
+                       std::vector<LatticeNode>& rOut) {
+    if (P == 0) {
+        rOut.push_back(rC[0]);
+        return;
+    }
+    rOut.insert(rOut.end(), rC.begin(), rC.end());
+    for (const auto& [a, b] : gmsh_edges(S)) {
+        const auto& ca = rC[static_cast<std::size_t>(a)];
+        const LatticeNode d = lattice_step(ca, rC[static_cast<std::size_t>(b)], P);
+        for (int t = 1; t < P; ++t)
+            rOut.push_back(lattice_add(ca, d, t));
+    }
+    for (const auto& face : gmsh_faces(S)) {
+        std::vector<LatticeNode> v;
+        for (const int i : face)
+            v.push_back(rC[static_cast<std::size_t>(i)]);
+        const int n = static_cast<int>(face.size());
+        const int order = n == 3 ? P - 3 : P - 2;
+        if (order >= 0)
+            gmsh_nodes(n == 3 ? Shape::Triangle : Shape::Quad, lattice_inset(v, P, lattice_ring(n)),
+                       order, rOut);
+    }
+    switch (S) {
+        case Shape::Triangle:
+            if (P >= 3)
+                gmsh_nodes(S, lattice_inset(rC, P, lattice_ring(3)), P - 3, rOut);
+            break;
+        case Shape::Quad:
+            if (P >= 2)
+                gmsh_nodes(S, lattice_inset(rC, P, lattice_ring(4)), P - 2, rOut);
+            break;
+        case Shape::Tetra:
+            if (P >= 4)
+                gmsh_nodes(S, lattice_inset(rC, P, {{1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}}),
+                           P - 4, rOut);
+            break;
+        case Shape::Hexahedron:
+            if (P >= 2)
+                gmsh_nodes(S,
+                           lattice_inset(rC, P,
+                                         {{1, 3, 4},
+                                          {0, 2, 5},
+                                          {1, 3, 6},
+                                          {0, 2, 7},
+                                          {0, 5, 7},
+                                          {1, 4, 6},
+                                          {2, 5, 7},
+                                          {3, 4, 6}}),
+                           P - 2, rOut);
+            break;
+        case Shape::Wedge:
+            if (P >= 3) {
+                std::vector<LatticeNode> flat = {
+                    {rC[0][0], rC[0][1], 0}, {rC[1][0], rC[1][1], 0}, {rC[2][0], rC[2][1], 0}};
+                const LatticeNode dz = lattice_step(rC[0], rC[3], P);
+                std::vector<LatticeNode> column, tri;
+                gmsh_nodes(Shape::Line, {lattice_add(rC[0], dz), lattice_add(rC[3], dz, -1)}, P - 2,
+                           column);
+                gmsh_nodes(Shape::Triangle, lattice_inset(flat, P, lattice_ring(3)), P - 3, tri);
+                for (const auto& t : tri)
+                    for (const auto& z : column)
+                        rOut.push_back({t[0], t[1], z[2]});
+            }
+            break;
+        default:
+            break;
+    }
+}
+
+/// The nodes of an order-`P` cell in Gmsh's order, in `vtk_lattice`'s frame.
+inline std::vector<LatticeNode> gmsh_lattice(Shape S, int P) {
+    std::vector<LatticeNode> c;
+    switch (S) {
+        case Shape::Line:
+            c = {{0, 0, 0}, {P, 0, 0}};
+            break;
+        case Shape::Triangle:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}};
+            break;
+        case Shape::Quad:
+            c = {{0, 0, 0}, {P, 0, 0}, {P, P, 0}, {0, P, 0}};
+            break;
+        case Shape::Tetra:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}, {0, 0, P}};
+            break;
+        case Shape::Hexahedron:
+            c = {{0, 0, 0}, {P, 0, 0}, {P, P, 0}, {0, P, 0},
+                 {0, 0, P}, {P, 0, P}, {P, P, P}, {0, P, P}};
+            break;
+        case Shape::Wedge:
+            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}, {0, 0, P}, {P, 0, P}, {0, P, P}};
+            break;
+    }
+    std::vector<LatticeNode> out;
+    gmsh_nodes(S, c, P, out);
+    return out;
+}
+
+/// `perm` with VTK Lagrange node `j` = Gmsh node `perm[j]` (twin of
+/// `_lagrange.gmsh_to_vtk_order`).
+inline std::vector<int> gmsh_to_vtk_order(Shape S, int P) {
+    const auto gmsh = gmsh_lattice(S, P);
+    const auto vtk = vtk_lattice(S, P);
+    std::vector<int> perm(vtk.size());
+    for (std::size_t j = 0; j < vtk.size(); ++j) {
+        const auto it = std::find(gmsh.begin(), gmsh.end(), vtk[j]);
+        perm[j] = static_cast<int>(it - gmsh.begin());
+    }
+    return perm;
+}
+
+/// A fixed-order type VTK has no id of its own for, written as a VTK
+/// Lagrange cell (twin of `_vtk_common.FIXED_LAGRANGE`).
+struct FixedLagrange {
+    int mVtkType = 0;
+    Shape mShape = Shape::Line;
+    int mOrder = 0;
+};
+
+/// `rType` (`triangle10`, `hexahedron64`, ...) as a VTK Lagrange cell, for
+/// orders 3 and up whose Gmsh order was checked against Gmsh: to 10, the
+/// hexahedron and prism to 9.
+inline bool fixed_lagrange(const std::string& rType, FixedLagrange& rOut) {
+    static const std::pair<const char*, std::pair<Shape, int>> shapes[] = {
+        {"line", {Shape::Line, 68}},
+        {"triangle", {Shape::Triangle, 69}},
+        {"quad", {Shape::Quad, 70}},
+        {"tetra", {Shape::Tetra, 71}},
+        {"hexahedron", {Shape::Hexahedron, 72}},
+        {"wedge", {Shape::Wedge, 73}}};
+    for (const auto& [name, info] : shapes) {
+        const std::string prefix(name);
+        if (rType.size() <= prefix.size() || rType.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        const std::string digits = rType.substr(prefix.size());
+        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 4)
+            return false;
+        const std::size_t count = static_cast<std::size_t>(std::stoi(digits));
+        const int max_order =
+            info.first == Shape::Hexahedron || info.first == Shape::Wedge ? 9 : 10;
+        for (int p = 3; p <= max_order; ++p)
+            if (num_nodes(info.first, p) == count) {
+                rOut = {info.second, info.first, p};
+                return true;
+            }
+        return false;
+    }
+    return false;
+}
+
+/// Corner weights of lattice node `rIjk` of an order-`P` cell, over the common
+/// denominator `P^3`: `(corner, weight)` for every corner with a nonzero one,
+/// by corner. Barycentric on simplices, multilinear on the square and cube,
+/// their product on the prism -- so a node shared by two cells has the same
+/// weights over the corners they share.
+inline std::vector<std::pair<int, std::int64_t>> lattice_weights(Shape S, int P,
+                                                                 const std::array<int, 3>& rIjk) {
+    const std::int64_t p = P, i = rIjk[0], j = rIjk[1], k = rIjk[2];
+    std::vector<std::int64_t> w;
+    switch (S) {
+        case Shape::Line:
+            w = {(p - i) * p * p, i * p * p};
+            break;
+        case Shape::Triangle:
+            w = {(p - i - j) * p * p, i * p * p, j * p * p};
+            break;
+        case Shape::Quad:
+            w = {(p - i) * (p - j) * p, i * (p - j) * p, i * j * p, (p - i) * j * p};
+            break;
+        case Shape::Tetra:
+            w = {(p - i - j - k) * p * p, i * p * p, j * p * p, k * p * p};
+            break;
+        case Shape::Hexahedron:
+            w = {(p - i) * (p - j) * (p - k),
+                 i * (p - j) * (p - k),
+                 i * j * (p - k),
+                 (p - i) * j * (p - k),
+                 (p - i) * (p - j) * k,
+                 i * (p - j) * k,
+                 i * j * k,
+                 (p - i) * j * k};
+            break;
+        case Shape::Wedge:
+            w = {(p - i - j) * (p - k) * p, i * (p - k) * p, j * (p - k) * p,
+                 (p - i - j) * k * p,       i * k * p,       j * k * p};
+            break;
+    }
+    std::vector<std::pair<int, std::int64_t>> out;
+    for (std::size_t c = 0; c < w.size(); ++c)
+        if (w[c] != 0)
+            out.emplace_back(static_cast<int>(c), w[c]);
+    return out;
+}
+
+// --- orthogonal bases ---------------------------------------------------------------
+
+/// Jacobi P_n^{(A,0)}(x) for n = 0..N.
+inline std::vector<double> jacobi(int N, double A, double X) {
+    std::vector<double> v(static_cast<std::size_t>(N) + 1);
+    v[0] = 1.0;
+    if (N >= 1)
+        v[1] = ((A + 2.0) * X + A) / 2.0;
+    for (int n = 1; n < N; ++n) {
+        const double a1 = 2.0 * (n + 1) * (n + A + 1) * (2 * n + A);
+        const double a2 = (2 * n + A + 1) * A * A;
+        const double a3 = (2 * n + A) * (2 * n + A + 1) * (2 * n + A + 2);
+        const double a4 = 2.0 * (n + A) * n * (2 * n + A + 2);
+        v[static_cast<std::size_t>(n) + 1] = ((a2 + a3 * X) * v[static_cast<std::size_t>(n)] -
+                                              a4 * v[static_cast<std::size_t>(n) - 1]) /
+                                             a1;
+    }
+    return v;
+}
+
+/// The orthogonal basis of the cell's order-`P` space at reference point `rX`.
+inline std::vector<double> basis(Shape S, int P, const std::array<double, 3>& rX) {
+    std::vector<double> out;
+    const double r = 2.0 * rX[0] - 1.0, s = 2.0 * rX[1] - 1.0, t = 2.0 * rX[2] - 1.0;
+    switch (S) {
+        case Shape::Line: {
+            out = jacobi(P, 0.0, r);
+            break;
+        }
+        case Shape::Quad: {
+            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s);
+            for (int j = 0; j <= P; ++j)
+                for (int i = 0; i <= P; ++i)
+                    out.push_back(a[static_cast<std::size_t>(i)] * b[static_cast<std::size_t>(j)]);
+            break;
+        }
+        case Shape::Hexahedron: {
+            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s), c = jacobi(P, 0.0, t);
+            for (int k = 0; k <= P; ++k)
+                for (int j = 0; j <= P; ++j)
+                    for (int i = 0; i <= P; ++i)
+                        out.push_back(a[static_cast<std::size_t>(i)] *
+                                      b[static_cast<std::size_t>(j)] *
+                                      c[static_cast<std::size_t>(k)]);
+            break;
+        }
+        case Shape::Triangle:
+        case Shape::Wedge: {
+            const double a = std::fabs(1.0 - s) > 1e-14 ? 2.0 * (1.0 + r) / (1.0 - s) - 1.0 : -1.0;
+            const auto pa = jacobi(P, 0.0, a);
+            std::vector<double> tri;
+            for (int i = 0; i <= P; ++i) {
+                const auto pb = jacobi(P - i, 2.0 * i + 1.0, s);
+                const double f = std::pow((1.0 - s) / 2.0, i);
+                for (int j = 0; i + j <= P; ++j)
+                    tri.push_back(pa[static_cast<std::size_t>(i)] * f *
+                                  pb[static_cast<std::size_t>(j)]);
+            }
+            if (S == Shape::Triangle) {
+                out = std::move(tri);
+            } else {
+                const auto c = jacobi(P, 0.0, t);
+                for (int k = 0; k <= P; ++k)
+                    for (double v : tri)
+                        out.push_back(v * c[static_cast<std::size_t>(k)]);
+            }
+            break;
+        }
+        case Shape::Tetra: {
+            const double a = std::fabs(s + t) > 1e-14 ? 2.0 * (1.0 + r) / (-s - t) - 1.0 : -1.0;
+            const double b = std::fabs(1.0 - t) > 1e-14 ? 2.0 * (1.0 + s) / (1.0 - t) - 1.0 : -1.0;
+            const auto pa = jacobi(P, 0.0, a);
+            for (int i = 0; i <= P; ++i) {
+                const auto pb = jacobi(P - i, 2.0 * i + 1.0, b);
+                const double fb = std::pow((1.0 - b) / 2.0, i);
+                for (int j = 0; i + j <= P; ++j) {
+                    const auto pc = jacobi(P - i - j, 2.0 * (i + j) + 2.0, t);
+                    const double fc = std::pow((1.0 - t) / 2.0, i + j);
+                    for (int k = 0; i + j + k <= P; ++k)
+                        out.push_back(pa[static_cast<std::size_t>(i)] * fb *
+                                      pb[static_cast<std::size_t>(j)] * fc *
+                                      pc[static_cast<std::size_t>(k)]);
+                }
+            }
+            break;
+        }
+    }
+    return out;
+}
+
+/// The matrix (row-major, targets x nodes) mapping values at `rNodes` -- a
+/// unisolvent node set of the order-`P` space -- to values at `rTargets`.
+inline std::vector<double> interpolation_matrix(
+    Shape S, int P, const std::vector<std::array<double, 3>>& rNodes,
+    const std::vector<std::array<double, 3>>& rTargets) {
+    const std::size_t n = rNodes.size();
+    if (n != num_nodes(S, P))
+        throw std::runtime_error("lagrange: node count does not match the space");
+    // A = V^T (n x n): A[b][m] = basis_b(node_m); solve A X = Phi^T for X
+    // (n x targets); the matrix is X^T.
+    std::vector<double> a(n * n);
+    for (std::size_t m = 0; m < n; ++m) {
+        const auto v = basis(S, P, rNodes[m]);
+        for (std::size_t b = 0; b < n; ++b)
+            a[b * n + m] = v[b];
+    }
+    const std::size_t nt = rTargets.size();
+    std::vector<double> x(n * nt);
+    for (std::size_t t = 0; t < nt; ++t) {
+        const auto v = basis(S, P, rTargets[t]);
+        for (std::size_t b = 0; b < n; ++b)
+            x[b * nt + t] = v[b];
+    }
+    // LU with partial pivoting, applied to every right-hand side at once.
+    for (std::size_t c = 0; c < n; ++c) {
+        std::size_t piv = c;
+        for (std::size_t r = c + 1; r < n; ++r)
+            if (std::fabs(a[r * n + c]) > std::fabs(a[piv * n + c]))
+                piv = r;
+        if (std::fabs(a[piv * n + c]) < 1e-300)
+            throw std::runtime_error("lagrange: the node set is not unisolvent");
+        if (piv != c) {
+            for (std::size_t k = 0; k < n; ++k)
+                std::swap(a[c * n + k], a[piv * n + k]);
+            for (std::size_t k = 0; k < nt; ++k)
+                std::swap(x[c * nt + k], x[piv * nt + k]);
+        }
+        for (std::size_t r = c + 1; r < n; ++r) {
+            const double f = a[r * n + c] / a[c * n + c];
+            if (f == 0.0)
+                continue;
+            for (std::size_t k = c; k < n; ++k)
+                a[r * n + k] -= f * a[c * n + k];
+            for (std::size_t k = 0; k < nt; ++k)
+                x[r * nt + k] -= f * x[c * nt + k];
+        }
+    }
+    for (std::size_t c = n; c-- > 0;) {
+        for (std::size_t k = 0; k < nt; ++k) {
+            double v = x[c * nt + k];
+            for (std::size_t q = c + 1; q < n; ++q)
+                v -= a[c * n + q] * x[q * nt + k];
+            x[c * nt + k] = v / a[c * n + c];
+        }
+    }
+    std::vector<double> out(nt * n);
+    for (std::size_t t = 0; t < nt; ++t)
+        for (std::size_t m = 0; m < n; ++m)
+            out[t * n + m] = x[m * nt + t];
+    // Snap exact reproductions (a target that is a node) to 0/1.
+    for (double& v : out)
+        if (std::fabs(v) < 1e-14)
+            v = 0.0;
+        else if (std::fabs(v - 1.0) < 1e-14)
+            v = 1.0;
+    return out;
+}
+
+// --- Bernstein basis & Lagrange <-> Bezier change of basis (roadmap 15.3) ---
+
+/// Binomial coefficient C(n, k) as double.
+inline double binomial(int N, int K) {
+    if (K < 0 || K > N)
+        return 0.0;
+    if (K > N - K)
+        K = N - K;
+    double res = 1.0;
+    for (int i = 1; i <= K; ++i)
+        res = res * static_cast<double>(N - K + i) / static_cast<double>(i);
+    return res;
+}
+
+/// 1-D Bernstein polynomials B_{i,P}(u) and their derivatives dB/du for i=0..P on [0, 1].
+inline void bernstein1d_and_der(int P, double U, std::vector<double>& rVal,
+                                std::vector<double>& rDer) {
+    const std::size_t n = static_cast<std::size_t>(P) + 1;
+    rVal.assign(n, 0.0);
+    rDer.assign(n, 0.0);
+    if (P == 0) {
+        rVal[0] = 1.0;
+        return;
+    }
+    const double om = 1.0 - U;
+    std::vector<double> pu(n, 1.0), pom(n, 1.0);
+    for (int i = 1; i <= P; ++i) {
+        pu[static_cast<std::size_t>(i)] = pu[static_cast<std::size_t>(i - 1)] * U;
+        pom[static_cast<std::size_t>(i)] = pom[static_cast<std::size_t>(i - 1)] * om;
+    }
+    for (int i = 0; i <= P; ++i) {
+        const double c = binomial(P, i);
+        rVal[static_cast<std::size_t>(i)] =
+            c * pu[static_cast<std::size_t>(i)] * pom[static_cast<std::size_t>(P - i)];
+        double d = 0.0;
+        if (i > 0)
+            d += static_cast<double>(i) * pu[static_cast<std::size_t>(i - 1)] *
+                 pom[static_cast<std::size_t>(P - i)];
+        if (i < P)
+            d -= static_cast<double>(P - i) * pu[static_cast<std::size_t>(i)] *
+                 pom[static_cast<std::size_t>(P - i - 1)];
+        rDer[static_cast<std::size_t>(i)] = c * d;
+    }
+}
+
+/// Evaluate Bernstein basis functions and exact reference derivatives in VTK lattice order.
+inline void bernstein_basis_and_ders(Shape S, int P, const std::array<double, 3>& rX,
+                                     std::vector<double>& rVal,
+                                     std::vector<std::array<double, 3>>& rGrad) {
+    const auto lattice = vtk_lattice(S, P);
+    const std::size_t n = lattice.size();
+    rVal.assign(n, 0.0);
+    rGrad.assign(n, {0.0, 0.0, 0.0});
+    if (P == 0) {
+        if (n > 0)
+            rVal[0] = 1.0;
+        return;
+    }
+    const double u = rX[0], v = rX[1], w = rX[2];
+    switch (S) {
+        case Shape::Line: {
+            std::vector<double> bu, dbu;
+            bernstein1d_and_der(P, u, bu, dbu);
+            for (std::size_t m = 0; m < n; ++m) {
+                const auto i = static_cast<std::size_t>(lattice[m][0]);
+                rVal[m] = bu[i];
+                rGrad[m] = {dbu[i], 0.0, 0.0};
+            }
+            break;
+        }
+        case Shape::Quad: {
+            std::vector<double> bu, dbu, bv, dbv;
+            bernstein1d_and_der(P, u, bu, dbu);
+            bernstein1d_and_der(P, v, bv, dbv);
+            for (std::size_t m = 0; m < n; ++m) {
+                const auto i = static_cast<std::size_t>(lattice[m][0]);
+                const auto j = static_cast<std::size_t>(lattice[m][1]);
+                rVal[m] = bu[i] * bv[j];
+                rGrad[m] = {dbu[i] * bv[j], bu[i] * dbv[j], 0.0};
+            }
+            break;
+        }
+        case Shape::Hexahedron: {
+            std::vector<double> bu, dbu, bv, dbv, bw, dbw;
+            bernstein1d_and_der(P, u, bu, dbu);
+            bernstein1d_and_der(P, v, bv, dbv);
+            bernstein1d_and_der(P, w, bw, dbw);
+            for (std::size_t m = 0; m < n; ++m) {
+                const auto i = static_cast<std::size_t>(lattice[m][0]);
+                const auto j = static_cast<std::size_t>(lattice[m][1]);
+                const auto k = static_cast<std::size_t>(lattice[m][2]);
+                rVal[m] = bu[i] * bv[j] * bw[k];
+                rGrad[m] = {dbu[i] * bv[j] * bw[k], bu[i] * dbv[j] * bw[k],
+                            bu[i] * bv[j] * dbw[k]};
+            }
+            break;
+        }
+        case Shape::Triangle: {
+            const double l0 = 1.0 - u - v;
+            std::vector<double> fact(static_cast<std::size_t>(P) + 1, 1.0);
+            for (int k = 1; k <= P; ++k)
+                fact[static_cast<std::size_t>(k)] =
+                    fact[static_cast<std::size_t>(k - 1)] * static_cast<double>(k);
+            const auto pow_int = [](double Base, int Exp) {
+                double r = 1.0;
+                for (int e = 0; e < Exp; ++e)
+                    r *= Base;
+                return r;
+            };
+            for (std::size_t m = 0; m < n; ++m) {
+                const int i = lattice[m][0];
+                const int j = lattice[m][1];
+                const int k = P - i - j;
+                const double c = fact[static_cast<std::size_t>(P)] /
+                                 (fact[static_cast<std::size_t>(i)] *
+                                  fact[static_cast<std::size_t>(j)] *
+                                  fact[static_cast<std::size_t>(k)]);
+                const double pu = pow_int(u, i);
+                const double pv = pow_int(v, j);
+                const double pl = pow_int(l0, k);
+                rVal[m] = c * pu * pv * pl;
+                double du = 0.0, dv = 0.0;
+                if (i > 0)
+                    du += static_cast<double>(i) * pow_int(u, i - 1) * pv * pl;
+                if (k > 0)
+                    du -= static_cast<double>(k) * pu * pv * pow_int(l0, k - 1);
+                if (j > 0)
+                    dv += static_cast<double>(j) * pu * pow_int(v, j - 1) * pl;
+                if (k > 0)
+                    dv -= static_cast<double>(k) * pu * pv * pow_int(l0, k - 1);
+                rGrad[m] = {c * du, c * dv, 0.0};
+            }
+            break;
+        }
+        case Shape::Tetra: {
+            const double l0 = 1.0 - u - v - w;
+            std::vector<double> fact(static_cast<std::size_t>(P) + 1, 1.0);
+            for (int k = 1; k <= P; ++k)
+                fact[static_cast<std::size_t>(k)] =
+                    fact[static_cast<std::size_t>(k - 1)] * static_cast<double>(k);
+            const auto pow_int = [](double Base, int Exp) {
+                double r = 1.0;
+                for (int e = 0; e < Exp; ++e)
+                    r *= Base;
+                return r;
+            };
+            for (std::size_t m = 0; m < n; ++m) {
+                const int i = lattice[m][0];
+                const int j = lattice[m][1];
+                const int k = lattice[m][2];
+                const int l = P - i - j - k;
+                const double c = fact[static_cast<std::size_t>(P)] /
+                                 (fact[static_cast<std::size_t>(i)] *
+                                  fact[static_cast<std::size_t>(j)] *
+                                  fact[static_cast<std::size_t>(k)] *
+                                  fact[static_cast<std::size_t>(l)]);
+                const double pu = pow_int(u, i);
+                const double pv = pow_int(v, j);
+                const double pw = pow_int(w, k);
+                const double pl = pow_int(l0, l);
+                rVal[m] = c * pu * pv * pw * pl;
+                double du = 0.0, dv = 0.0, dw = 0.0;
+                if (i > 0)
+                    du += static_cast<double>(i) * pow_int(u, i - 1) * pv * pw * pl;
+                if (l > 0)
+                    du -= static_cast<double>(l) * pu * pv * pw * pow_int(l0, l - 1);
+                if (j > 0)
+                    dv += static_cast<double>(j) * pu * pow_int(v, j - 1) * pw * pl;
+                if (l > 0)
+                    dv -= static_cast<double>(l) * pu * pv * pw * pow_int(l0, l - 1);
+                if (k > 0)
+                    dw += static_cast<double>(k) * pu * pv * pow_int(w, k - 1) * pl;
+                if (l > 0)
+                    dw -= static_cast<double>(l) * pu * pv * pw * pow_int(l0, l - 1);
+                rGrad[m] = {c * du, c * dv, c * dw};
+            }
+            break;
+        }
+        case Shape::Wedge: {
+            const double l0 = 1.0 - u - v;
+            std::vector<double> fact(static_cast<std::size_t>(P) + 1, 1.0);
+            for (int k = 1; k <= P; ++k)
+                fact[static_cast<std::size_t>(k)] =
+                    fact[static_cast<std::size_t>(k - 1)] * static_cast<double>(k);
+            const auto pow_int = [](double Base, int Exp) {
+                double r = 1.0;
+                for (int e = 0; e < Exp; ++e)
+                    r *= Base;
+                return r;
+            };
+            std::vector<double> bw, dbw;
+            bernstein1d_and_der(P, w, bw, dbw);
+            for (std::size_t m = 0; m < n; ++m) {
+                const int i = lattice[m][0];
+                const int j = lattice[m][1];
+                const int k = lattice[m][2];
+                const int l = P - i - j;
+                const double c = fact[static_cast<std::size_t>(P)] /
+                                 (fact[static_cast<std::size_t>(i)] *
+                                  fact[static_cast<std::size_t>(j)] *
+                                  fact[static_cast<std::size_t>(l)]);
+                const double pu = pow_int(u, i);
+                const double pv = pow_int(v, j);
+                const double pl = pow_int(l0, l);
+                const double tri_v = c * pu * pv * pl;
+                double du = 0.0, dv = 0.0;
+                if (i > 0)
+                    du += static_cast<double>(i) * pow_int(u, i - 1) * pv * pl;
+                if (l > 0)
+                    du -= static_cast<double>(l) * pu * pv * pow_int(l0, l - 1);
+                if (j > 0)
+                    dv += static_cast<double>(j) * pu * pow_int(v, j - 1) * pl;
+                if (l > 0)
+                    dv -= static_cast<double>(l) * pu * pv * pow_int(l0, l - 1);
+                const auto kw = static_cast<std::size_t>(k);
+                rVal[m] = tri_v * bw[kw];
+                rGrad[m] = {c * du * bw[kw], c * dv * bw[kw], tri_v * dbw[kw]};
+            }
+            break;
+        }
+    }
+}
+
+/// Invert a small dense row-major N x N matrix via Gaussian elimination with partial pivoting.
+inline std::vector<double> invert_small_matrix(std::vector<double> A, std::size_t N) {
+    std::vector<double> inv(N * N, 0.0);
+    for (std::size_t i = 0; i < N; ++i)
+        inv[i * N + i] = 1.0;
+    for (std::size_t c = 0; c < N; ++c) {
+        std::size_t piv = c;
+        for (std::size_t r = c + 1; r < N; ++r)
+            if (std::fabs(A[r * N + c]) > std::fabs(A[piv * N + c]))
+                piv = r;
+        if (std::fabs(A[piv * N + c]) < 1e-300)
+            throw std::runtime_error("reference_element: singular change-of-basis matrix");
+        if (piv != c) {
+            for (std::size_t k = 0; k < N; ++k) {
+                std::swap(A[c * N + k], A[piv * N + k]);
+                std::swap(inv[c * N + k], inv[piv * N + k]);
+            }
+        }
+        const double diag = A[c * N + c];
+        for (std::size_t k = 0; k < N; ++k) {
+            A[c * N + k] /= diag;
+            inv[c * N + k] /= diag;
+        }
+        for (std::size_t r = 0; r < N; ++r) {
+            if (r == c)
+                continue;
+            const double f = A[r * N + c];
+            if (f == 0.0)
+                continue;
+            for (std::size_t k = 0; k < N; ++k) {
+                A[r * N + k] -= f * A[c * N + k];
+                inv[r * N + k] -= f * inv[c * N + k];
+            }
+        }
+    }
+    return inv;
+}
+
+/// Row-major N x N matrix mapping Bezier control values -> VTK Lagrange nodal values.
+inline std::vector<double> bezier_to_lagrange_matrix(Shape S, int P) {
+    const auto lattice = vtk_lattice(S, P);
+    const std::size_t n = lattice.size();
+    std::vector<double> m(n * n, 0.0);
+    std::vector<double> bv;
+    std::vector<std::array<double, 3>> bg;
+    const double inv_p = P > 0 ? 1.0 / static_cast<double>(P) : 0.0;
+    for (std::size_t row = 0; row < n; ++row) {
+        const std::array<double, 3> xi{lattice[row][0] * inv_p, lattice[row][1] * inv_p,
+                                       lattice[row][2] * inv_p};
+        bernstein_basis_and_ders(S, P, xi, bv, bg);
+        for (std::size_t col = 0; col < n; ++col)
+            m[row * n + col] = bv[col];
+    }
+    return m;
+}
+
+/// Row-major N x N matrix mapping VTK Lagrange nodal values -> Bezier control values.
+inline std::vector<double> lagrange_to_bezier_matrix(Shape S, int P) {
+    const std::size_t n = num_nodes(S, P);
+    return invert_small_matrix(bezier_to_lagrange_matrix(S, P), n);
+}
+
+/// Evaluate VTK Lagrange shape functions and exact reference derivatives at `rX`.
+inline void lagrange_shape_and_ders(Shape S, int P, const std::array<double, 3>& rX,
+                                    std::vector<double>& rVal,
+                                    std::vector<std::array<double, 3>>& rGrad) {
+    const std::size_t n = num_nodes(S, P);
+    std::vector<double> bv;
+    std::vector<std::array<double, 3>> bg;
+    bernstein_basis_and_ders(S, P, rX, bv, bg);
+    const auto m_inv = lagrange_to_bezier_matrix(S, P);
+    // f(x) = sum_b c_b B_b(x), c = M^{-1} f_nodal => N_j(x) = sum_b (M^{-1})_{b,j} B_b(x).
+    rVal.assign(n, 0.0);
+    rGrad.assign(n, {0.0, 0.0, 0.0});
+    for (std::size_t b = 0; b < n; ++b) {
+        const double bval = bv[b];
+        const auto& bgrd = bg[b];
+        for (std::size_t j = 0; j < n; ++j) {
+            const double w = m_inv[b * n + j];
+            rVal[j] += w * bval;
+            rGrad[j][0] += w * bgrd[0];
+            rGrad[j][1] += w * bgrd[1];
+            rGrad[j][2] += w * bgrd[2];
+        }
+    }
+}
+
+}  // namespace lagrange
+
+namespace detail {
+
+/// Metadata describing a cell type's reference element for shape-function evaluation.
+struct ReferenceElementInfo {
+    lagrange::Shape mShape = lagrange::Shape::Line;
+    int mOrder = 1;
+    int mDim = 1;
+    bool mIsSerendipity = false;
+    bool mIsPyramid = false;
+    bool mIsBezier = false;
+    std::size_t mNumNodes = 0;
+};
+
+/// Infer uniform polynomial order P for a VTK Lagrange / Bezier cell from its node count.
+inline int infer_uniform_order(lagrange::Shape S, std::size_t NumNodes) {
+    for (int p = 1; p <= 10; ++p) {
+        if (lagrange::num_nodes(S, p) == NumNodes)
+            return p;
+    }
+    return 0;
+}
+
+/// Resolve a CellType + node count to its ReferenceElementInfo; returns false if unsupported.
+inline bool reference_element_info(CellType Type, std::size_t NumNodes,
+                                   ReferenceElementInfo& rOut) {
+    rOut = ReferenceElementInfo{};
+    rOut.mNumNodes = NumNodes;
+    switch (Type) {
+        case CellType::Line:
+            rOut.mShape = lagrange::Shape::Line;
+            rOut.mOrder = 1;
+            rOut.mDim = 1;
+            return NumNodes == 2;
+        case CellType::Line3:
+            rOut.mShape = lagrange::Shape::Line;
+            rOut.mOrder = 2;
+            rOut.mDim = 1;
+            return NumNodes == 3;
+        case CellType::Triangle:
+            rOut.mShape = lagrange::Shape::Triangle;
+            rOut.mOrder = 1;
+            rOut.mDim = 2;
+            return NumNodes == 3;
+        case CellType::Triangle6:
+            rOut.mShape = lagrange::Shape::Triangle;
+            rOut.mOrder = 2;
+            rOut.mDim = 2;
+            return NumNodes == 6;
+        case CellType::Quad:
+            rOut.mShape = lagrange::Shape::Quad;
+            rOut.mOrder = 1;
+            rOut.mDim = 2;
+            return NumNodes == 4;
+        case CellType::Quad8:
+            rOut.mShape = lagrange::Shape::Quad;
+            rOut.mOrder = 2;
+            rOut.mDim = 2;
+            rOut.mIsSerendipity = true;
+            return NumNodes == 8;
+        case CellType::Quad9:
+            rOut.mShape = lagrange::Shape::Quad;
+            rOut.mOrder = 2;
+            rOut.mDim = 2;
+            return NumNodes == 9;
+        case CellType::Tetra:
+            rOut.mShape = lagrange::Shape::Tetra;
+            rOut.mOrder = 1;
+            rOut.mDim = 3;
+            return NumNodes == 4;
+        case CellType::Tetra10:
+            rOut.mShape = lagrange::Shape::Tetra;
+            rOut.mOrder = 2;
+            rOut.mDim = 3;
+            return NumNodes == 10;
+        case CellType::Hexahedron:
+            rOut.mShape = lagrange::Shape::Hexahedron;
+            rOut.mOrder = 1;
+            rOut.mDim = 3;
+            return NumNodes == 8;
+        case CellType::Hexahedron20:
+            rOut.mShape = lagrange::Shape::Hexahedron;
+            rOut.mOrder = 2;
+            rOut.mDim = 3;
+            rOut.mIsSerendipity = true;
+            return NumNodes == 20;
+        case CellType::Hexahedron27:
+            rOut.mShape = lagrange::Shape::Hexahedron;
+            rOut.mOrder = 2;
+            rOut.mDim = 3;
+            return NumNodes == 27;
+        case CellType::Wedge:
+            rOut.mShape = lagrange::Shape::Wedge;
+            rOut.mOrder = 1;
+            rOut.mDim = 3;
+            return NumNodes == 6;
+        case CellType::Pyramid:
+            rOut.mShape = lagrange::Shape::Hexahedron;
+            rOut.mOrder = 1;
+            rOut.mDim = 3;
+            rOut.mIsPyramid = true;
+            return NumNodes == 5;
+        case CellType::VtkLagrangeCurve:
+        case CellType::VtkBezierCurve:
+            rOut.mShape = lagrange::Shape::Line;
+            rOut.mDim = 1;
+            rOut.mIsBezier = (Type == CellType::VtkBezierCurve);
+            rOut.mOrder = infer_uniform_order(rOut.mShape, NumNodes);
+            return rOut.mOrder > 0;
+        case CellType::VtkLagrangeTriangle:
+        case CellType::VtkBezierTriangle:
+            rOut.mShape = lagrange::Shape::Triangle;
+            rOut.mDim = 2;
+            rOut.mIsBezier = (Type == CellType::VtkBezierTriangle);
+            rOut.mOrder = infer_uniform_order(rOut.mShape, NumNodes);
+            return rOut.mOrder > 0;
+        case CellType::VtkLagrangeQuadrilateral:
+        case CellType::VtkBezierQuadrilateral:
+            rOut.mShape = lagrange::Shape::Quad;
+            rOut.mDim = 2;
+            rOut.mIsBezier = (Type == CellType::VtkBezierQuadrilateral);
+            rOut.mOrder = infer_uniform_order(rOut.mShape, NumNodes);
+            return rOut.mOrder > 0;
+        case CellType::VtkLagrangeTetrahedron:
+        case CellType::VtkBezierTetrahedron:
+            rOut.mShape = lagrange::Shape::Tetra;
+            rOut.mDim = 3;
+            rOut.mIsBezier = (Type == CellType::VtkBezierTetrahedron);
+            rOut.mOrder = infer_uniform_order(rOut.mShape, NumNodes);
+            return rOut.mOrder > 0;
+        case CellType::VtkLagrangeHexahedron:
+        case CellType::VtkBezierHexahedron:
+            rOut.mShape = lagrange::Shape::Hexahedron;
+            rOut.mDim = 3;
+            rOut.mIsBezier = (Type == CellType::VtkBezierHexahedron);
+            rOut.mOrder = infer_uniform_order(rOut.mShape, NumNodes);
+            return rOut.mOrder > 0;
+        case CellType::VtkLagrangeWedge:
+        case CellType::VtkBezierWedge:
+            rOut.mShape = lagrange::Shape::Wedge;
+            rOut.mDim = 3;
+            rOut.mIsBezier = (Type == CellType::VtkBezierWedge);
+            rOut.mOrder = infer_uniform_order(rOut.mShape, NumNodes);
+            return rOut.mOrder > 0;
+        default: {
+            lagrange::FixedLagrange fl{};
+            if (lagrange::fixed_lagrange(cell_type_name(Type), fl) &&
+                lagrange::num_nodes(fl.mShape, fl.mOrder) == NumNodes) {
+                rOut.mShape = fl.mShape;
+                rOut.mOrder = fl.mOrder;
+                rOut.mDim = lagrange::shape_dim(fl.mShape);
+                return true;
+            }
+            return false;
+        }
+    }
+}
+
+/**
+ * @brief Evaluate shape functions `rVal` and reference derivatives `rGrad` at
+ * `[0, 1]` reference point `rXi` for any supported cell type.
+ */
+inline bool eval_reference_shape(CellType Type, std::size_t NumNodes,
+                                 const std::array<double, 3>& rXi, std::vector<double>& rVal,
+                                 std::vector<std::array<double, 3>>& rGrad) {
+    ReferenceElementInfo info;
+    if (!reference_element_info(Type, NumNodes, info))
+        return false;
+
+    const double u = rXi[0], v = rXi[1], w = rXi[2];
+
+    if (info.mIsPyramid) {
+        // Linear 5-node pyramid on 0 <= w <= 1, 0 <= u,v <= 1-w.
+        const double omw = 1.0 - w;
+        const double denom = std::fabs(omw) > 1e-14 ? omw : 1e-14;
+        const double a = u / denom;
+        const double b = v / denom;
+        rVal = {(1.0 - a) * (1.0 - b) * omw, a * (1.0 - b) * omw, a * b * omw,
+                (1.0 - a) * b * omw, w};
+        // Derivatives via quotient rule: N0 = (1-w-u)(1-w-v)/(1-w), etc.
+        const double du0 = -(1.0 - b), dv0 = -(1.0 - a);
+        const double du1 = (1.0 - b), dv1 = -a;
+        const double du2 = b, dv2 = a;
+        const double du3 = -b, dv3 = (1.0 - a);
+        // dN/dw = d/dw [ f(u/omw, v/omw) * omw ] = -f + (a*df/da + b*df/db)
+        const double dw0 = -(1.0 - a) * (1.0 - b) + a * (-(1.0 - b)) + b * (-(1.0 - a));
+        const double dw1 = -a * (1.0 - b) + a * (1.0 - b) + b * (-a);
+        const double dw2 = -a * b + a * b + b * a;
+        const double dw3 = -(1.0 - a) * b + a * (-b) + b * (1.0 - a);
+        rGrad = {{du0, dv0, dw0}, {du1, dv1, dw1}, {du2, dv2, dw2}, {du3, dv3, dw3}, {0, 0, 1}};
+        return true;
+    }
+
+    if (Type == CellType::Quad8) {
+        // Serendipity 8-node quad on [0, 1]^2 (mapped to r = 2u-1, s = 2v-1 in [-1, 1]^2).
+        const double r = 2.0 * u - 1.0, s = 2.0 * v - 1.0;
+        const double mr = 1.0 - r, pr = 1.0 + r, ms = 1.0 - s, ps = 1.0 + s;
+        rVal = {0.25 * mr * ms * (-r - s - 1.0), 0.25 * pr * ms * (r - s - 1.0),
+                0.25 * pr * ps * (r + s - 1.0),  0.25 * mr * ps * (-r + s - 1.0),
+                0.5 * (1.0 - r * r) * ms,        0.5 * pr * (1.0 - s * s),
+                0.5 * (1.0 - r * r) * ps,        0.5 * mr * (1.0 - s * s)};
+        // dr/du = 2, ds/dv = 2
+        rGrad = {{0.5 * ms * (2.0 * r + s), 0.5 * mr * (r + 2.0 * s), 0.0},
+                 {0.5 * ms * (2.0 * r - s), 0.5 * pr * (-r + 2.0 * s), 0.0},
+                 {0.5 * ps * (2.0 * r + s), 0.5 * pr * (r + 2.0 * s), 0.0},
+                 {0.5 * ps * (2.0 * r - s), 0.5 * mr * (-r + 2.0 * s), 0.0},
+                 {-2.0 * r * ms, -(1.0 - r * r), 0.0},
+                 {(1.0 - s * s), -2.0 * pr * s, 0.0},
+                 {-2.0 * r * ps, (1.0 - r * r), 0.0},
+                 {-(1.0 - s * s), -2.0 * mr * s, 0.0}};
+        return true;
+    }
+
+    if (Type == CellType::Hexahedron20) {
+        // Serendipity 20-node hex on [0, 1]^3 (mapped to r=2u-1, s=2v-1, t=2w-1).
+        const double r = 2.0 * u - 1.0, s = 2.0 * v - 1.0, t = 2.0 * w - 1.0;
+        constexpr double kC[8][3] = {{-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
+                                     {-1, -1, 1},  {1, -1, 1},  {1, 1, 1},  {-1, 1, 1}};
+        // Edge midpoints in meshio/VTK order:
+        // 8..11 bottom, 12..15 top, 16..19 vertical (0-4, 1-5, 2-6, 3-7).
+        constexpr double kE[12][3] = {{0, -1, -1}, {1, 0, -1}, {0, 1, -1}, {-1, 0, -1},
+                                      {0, -1, 1},  {1, 0, 1},  {0, 1, 1},  {-1, 0, 1},
+                                      {-1, -1, 0}, {1, -1, 0}, {1, 1, 0},  {-1, 1, 0}};
+        rVal.resize(20);
+        rGrad.resize(20);
+        for (int i = 0; i < 8; ++i) {
+            const double ri = kC[i][0], si = kC[i][1], ti = kC[i][2];
+            const double fr = 1.0 + ri * r, fs = 1.0 + si * s, ft = 1.0 + ti * t;
+            const double g = ri * r + si * s + ti * t - 2.0;
+            rVal[static_cast<std::size_t>(i)] = 0.125 * fr * fs * ft * g;
+            // d/du = 2 d/dr
+            rGrad[static_cast<std::size_t>(i)] = {
+                0.25 * ri * fs * ft * (g + fr),
+                0.25 * si * fr * ft * (g + fs),
+                0.25 * ti * fr * fs * (g + ft),
+            };
+        }
+        for (int i = 0; i < 12; ++i) {
+            const double ri = kE[i][0], si = kE[i][1], ti = kE[i][2];
+            double val = 0.0, dr = 0.0, ds = 0.0, dt = 0.0;
+            if (ri == 0.0) {
+                const double fs = 1.0 + si * s, ft = 1.0 + ti * t;
+                val = 0.25 * (1.0 - r * r) * fs * ft;
+                dr = -0.5 * r * fs * ft;
+                ds = 0.25 * (1.0 - r * r) * si * ft;
+                dt = 0.25 * (1.0 - r * r) * fs * ti;
+            } else if (si == 0.0) {
+                const double fr = 1.0 + ri * r, ft = 1.0 + ti * t;
+                val = 0.25 * fr * (1.0 - s * s) * ft;
+                dr = 0.25 * ri * (1.0 - s * s) * ft;
+                ds = -0.5 * s * fr * ft;
+                dt = 0.25 * fr * (1.0 - s * s) * ti;
+            } else {
+                const double fr = 1.0 + ri * r, fs = 1.0 + si * s;
+                val = 0.25 * fr * fs * (1.0 - t * t);
+                dr = 0.25 * ri * fs * (1.0 - t * t);
+                ds = 0.25 * fr * si * (1.0 - t * t);
+                dt = -0.5 * t * fr * fs;
+            }
+            rVal[static_cast<std::size_t>(8 + i)] = val;
+            rGrad[static_cast<std::size_t>(8 + i)] = {2.0 * dr, 2.0 * ds, 2.0 * dt};
+        }
+        return true;
+    }
+
+    if (Type == CellType::Hexahedron27) {
+        // Meshio/VTK Hexahedron27 has vertical edges 16..19 in cyclic order (0-4, 1-5, 2-6, 3-7),
+        // whereas VTK_LAGRANGE_HEXAHEDRON (p=2) has nodes 18 and 19 swapped!
+        lagrange::lagrange_shape_and_ders(lagrange::Shape::Hexahedron, 2, rXi, rVal, rGrad);
+        std::swap(rVal[18], rVal[19]);
+        std::swap(rGrad[18], rGrad[19]);
+        return true;
+    }
+
+    if (info.mIsBezier) {
+        lagrange::bernstein_basis_and_ders(info.mShape, info.mOrder, rXi, rVal, rGrad);
+        return true;
+    }
+
+    lagrange::lagrange_shape_and_ders(info.mShape, info.mOrder, rXi, rVal, rGrad);
+    return true;
+}
+
+/// Physical Jacobian measure `|det J|` (or surface area / curve length factor) and
+/// physical shape gradients `nabla_x N_i` at reference point `rXi`.
+inline bool shape_eval_and_jacobian(CellType Type, const std::vector<Vec3>& rCellPoints,
+                                    const std::array<double, 3>& rXi, std::vector<double>& rVal,
+                                    std::vector<Vec3>& rPhysGrad, double& rMeasure) {
+    ReferenceElementInfo info;
+    if (!reference_element_info(Type, rCellPoints.size(), info))
+        return false;
+    std::vector<std::array<double, 3>> dndxi;
+    if (!eval_reference_shape(Type, rCellPoints.size(), rXi, rVal, dndxi))
+        return false;
+
+    const std::size_t n = rCellPoints.size();
+    // Jacobian columns J[:, d] = sum_i x_i * dN_i / dxi_d
+    Vec3 J[3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+    for (std::size_t i = 0; i < n; ++i) {
+        for (int d = 0; d < info.mDim; ++d) {
+            const double g = dndxi[i][static_cast<std::size_t>(d)];
+            J[d][0] += rCellPoints[i][0] * g;
+            J[d][1] += rCellPoints[i][1] * g;
+            J[d][2] += rCellPoints[i][2] * g;
+        }
+    }
+
+    rPhysGrad.assign(n, {0.0, 0.0, 0.0});
+    if (info.mDim == 1) {
+        const double len2 = vec3_norm_sq(J[0]);
+        rMeasure = std::sqrt(len2);
+        if (!(len2 > 1e-30))
+            return false;
+        const Vec3 t = vec3_scale(J[0], 1.0 / len2);
+        for (std::size_t i = 0; i < n; ++i)
+            rPhysGrad[i] = vec3_scale(t, dndxi[i][0]);
+        return true;
+    }
+    if (info.mDim == 2) {
+        const Vec3 normal = vec3_cross(J[0], J[1]);
+        const double area2 = vec3_norm_sq(normal);
+        rMeasure = std::sqrt(area2);
+        if (!(area2 > 1e-30))
+            return false;
+        // Metric tensor G = J^T J (2x2), det(G) = |J0 x J1|^2 = area2
+        const double g00 = vec3_dot(J[0], J[0]);
+        const double g01 = vec3_dot(J[0], J[1]);
+        const double g11 = vec3_dot(J[1], J[1]);
+        const double inv_det = 1.0 / area2;
+        // Dual basis vectors e^0 = (g11 J0 - g01 J1) / det, e^1 = (-g01 J0 + g00 J1) / det
+        const Vec3 e0 = vec3_scale(vec3_sub(vec3_scale(J[0], g11), vec3_scale(J[1], g01)), inv_det);
+        const Vec3 e1 = vec3_scale(vec3_sub(vec3_scale(J[1], g00), vec3_scale(J[0], g01)), inv_det);
+        for (std::size_t i = 0; i < n; ++i) {
+            rPhysGrad[i] = vec3_add(vec3_scale(e0, dndxi[i][0]), vec3_scale(e1, dndxi[i][1]));
+        }
+        return true;
+    }
+    // 3-D volume cell: J = [J[0], J[1], J[2]], det(J) = triple_product(J[0], J[1], J[2]).
+    const double det = triple_product(J[0], J[1], J[2]);
+    rMeasure = std::abs(det);
+    if (!(rMeasure > 1e-30))
+        return false;
+    const double inv_det = 1.0 / det;
+    // Columns of J^{-T} are (J1 x J2)/det, (J2 x J0)/det, (J0 x J1)/det
+    const Vec3 r0 = vec3_scale(vec3_cross(J[1], J[2]), inv_det);
+    const Vec3 r1 = vec3_scale(vec3_cross(J[2], J[0]), inv_det);
+    const Vec3 r2 = vec3_scale(vec3_cross(J[0], J[1]), inv_det);
+    for (std::size_t i = 0; i < n; ++i) {
+        rPhysGrad[i] = {r0[0] * dndxi[i][0] + r1[0] * dndxi[i][1] + r2[0] * dndxi[i][2],
+                        r0[1] * dndxi[i][0] + r1[1] * dndxi[i][1] + r2[1] * dndxi[i][2],
+                        r0[2] * dndxi[i][0] + r1[2] * dndxi[i][1] + r2[2] * dndxi[i][2]};
+    }
+    return true;
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/detail/reference_element.hpp =====
 // ===== begin src/cpp/src/detail/region_field_data.hpp =====
 /**
  * @file detail/region_field_data.hpp
@@ -60793,6 +63336,126 @@ std::int64_t count_tet_overlaps(const std::vector<Vec3>& rPoints,
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/tet_checks.hpp =====
+// ===== begin src/cpp/src/detail/tet_fem.hpp =====
+/**
+ * @file detail/tet_fem.hpp
+ * @brief P1 tetrahedral FEM assembly (stiffness, lumped/consistent mass,
+ *        per-cell gradients) over the uniform mesh API (roadmap 15.2.1).
+ */
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+
+
+namespace meshioplusplus::detail {
+
+struct TetFemCell {
+    std::array<std::int64_t, 4> mNodes;
+    std::array<Vec3, 4> mGrad;
+    double mVolume = 0.0;
+    std::int64_t mIndex = 0;
+};
+
+struct TetFem {
+    std::vector<Vec3> mPoints;
+    std::vector<TetFemCell> mCells;
+    std::int64_t mNumInput = 0;
+    std::int64_t mNumDegenerate = 0;
+};
+
+/// Returns true iff @p rMesh has at least one Tetra block and only Tetra blocks.
+inline bool mesh_is_pure_tetra(const Mesh& rMesh) {
+    bool has_tet = false;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.NumCells() == 0)
+            continue;
+        if (cell_type_from_name(cb.Type()) != CellType::Tetra)
+            return false;
+        has_tet = true;
+    }
+    return has_tet;
+}
+
+/// Build P1 tetrahedral geometry and gradients via `tet_p1_gradients`.
+inline TetFem build_tet_fem(const Mesh& rMesh, const std::string& rOp) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    if (pdim < 3)
+        throw std::invalid_argument("meshio++: " + rOp + ": tetrahedra require 3-D points");
+    const NDArray& pts = rMesh.Points();
+    TetFem out;
+    out.mPoints.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        out.mPoints[i] = {read_double(pts, i * pdim + 0), read_double(pts, i * pdim + 1),
+                          read_double(pts, i * pdim + 2)};
+    }
+    std::int64_t cell_idx = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.NumCells() == 0)
+            continue;
+        if (cell_type_from_name(cb.Type()) != CellType::Tetra)
+            throw std::invalid_argument("meshio++: " + rOp +
+                                        ": mixed cell types are not supported");
+        const NDArray& conn = cb.Conn();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            const std::int64_t id = cell_idx++;
+            const std::array<std::int64_t, 4> nodes = {
+                read_int(conn, c * 4 + 0), read_int(conn, c * 4 + 1),
+                read_int(conn, c * 4 + 2), read_int(conn, c * 4 + 3)};
+            const Vec3 p[4] = {out.mPoints[static_cast<std::size_t>(nodes[0])],
+                               out.mPoints[static_cast<std::size_t>(nodes[1])],
+                               out.mPoints[static_cast<std::size_t>(nodes[2])],
+                               out.mPoints[static_cast<std::size_t>(nodes[3])]};
+            Vec3 grad[4];
+            double vol = 0.0;
+            if (!tet_p1_gradients(p, grad, vol)) {
+                ++out.mNumDegenerate;
+                continue;
+            }
+            TetFemCell tc;
+            tc.mNodes = nodes;
+            for (int k = 0; k < 4; ++k)
+                tc.mGrad[static_cast<std::size_t>(k)] = grad[k];
+            tc.mVolume = vol;
+            tc.mIndex = id;
+            out.mCells.push_back(tc);
+        }
+    }
+    out.mNumInput = cell_idx;
+    if (out.mNumInput == 0)
+        throw std::invalid_argument("meshio++: " + rOp + ": mesh has no tetrahedra");
+    return out;
+}
+
+/// Assemble lumped mass and P1 stiffness triplets on a tetrahedral mesh.
+inline void tet_fem_assemble(const TetFem& rFem, std::vector<double>& rMass,
+                             std::vector<SparseTriplet>& rStiffness) {
+    rMass.assign(rFem.mPoints.size(), 0.0);
+    rStiffness.reserve(rFem.mCells.size() * 16);
+    for (const TetFemCell& tc : rFem.mCells) {
+        const double m_lump = tc.mVolume * 0.25;
+        double K[4][4];
+        tet_p1_stiffness(tc.mGrad.data(), tc.mVolume, K);
+        for (int a = 0; a < 4; ++a) {
+            const auto na = static_cast<std::size_t>(tc.mNodes[static_cast<std::size_t>(a)]);
+            rMass[na] += m_lump;
+            for (int b = 0; b < 4; ++b) {
+                const auto nb = static_cast<std::size_t>(tc.mNodes[static_cast<std::size_t>(b)]);
+                rStiffness.push_back({na, nb, K[a][b]});
+            }
+        }
+    }
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/tet_fem.hpp =====
 // ===== begin src/cpp/src/detail/tet_flips.hpp =====
 /**
  * @file detail/tet_flips.hpp
@@ -62013,773 +64676,9 @@ inline void vtk_hex_swap_stream(std::int64_t* pConn, const std::vector<std::int6
 // ===== begin src/cpp/src/formats/lagrange_common.hpp =====
 /**
  * @file formats/lagrange_common.hpp
- * @brief Arbitrary-order Lagrange cells: the `VTK_LAGRANGE_*` node layout and
- *        nodal interpolation between point sets of one polynomial space.
- *
- * - `vtk_lattice` lists the nodes of a VTK Lagrange cell of order `p` as
- *   integer lattice coordinates (`x = i/p` ...) on the reference cell whose
- *   corners are meshio++'s (and MFEM's): the unit segment, the triangle
- *   (0,0) (1,0) (0,1), the unit square, the tetrahedron at the origin and the
- *   unit axes, the unit cube, and the prism of that triangle over [0, 1]. The
- *   order follows VTK: corners, edges, faces, interior (the hexahedron's
- *   vertical edges in VTK 9.1's order). Ported from MFEM's `mesh/vtk.cpp`
- *   (BSD-3-Clause, Lawrence Livermore National Security), which writes the
- *   files ParaView reads.
- * - `interpolation_matrix` maps values at one set of nodes of the cell's
- *   polynomial space (P_p on simplices, Q_p on the square and cube, P_p x P_p
- *   on the prism) to values at other points, through an orthogonal basis
- *   (Legendre products, Dubiner's collapsed bases) so the Vandermonde solve is
- *   well conditioned.
- * - `lattice_weights` names a lattice node by the corners it is a combination
- *   of, with integer weights on a common denominator `p^3`, so the same node
- *   of two cells sharing an edge or face gets the same key.
- *
- * A **format-private** header, beside the `.cpp` files that use it (MFEM
- * today), in a named namespace for the amalgamation. Twin of
- * `src/python/meshioplusplus/_lagrange.py`.
+ * @brief Forwarding header to `detail/reference_element.hpp` (roadmap 3.4.3).
  */
 
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <stdexcept>
-#include <string>
-#include <utility>
-#include <vector>
-
-namespace meshioplusplus {
-namespace lagrange {
-
-enum class Shape { Line, Triangle, Quad, Tetra, Hexahedron, Wedge };
-
-inline int shape_dim(Shape S) {
-    switch (S) {
-        case Shape::Line:
-            return 1;
-        case Shape::Triangle:
-        case Shape::Quad:
-            return 2;
-        default:
-            return 3;
-    }
-}
-
-/// Number of nodes of an order-`P` cell.
-inline std::size_t num_nodes(Shape S, int P) {
-    const std::size_t p = static_cast<std::size_t>(P);
-    switch (S) {
-        case Shape::Line:
-            return p + 1;
-        case Shape::Triangle:
-            return (p + 1) * (p + 2) / 2;
-        case Shape::Quad:
-            return (p + 1) * (p + 1);
-        case Shape::Tetra:
-            return (p + 1) * (p + 2) * (p + 3) / 6;
-        case Shape::Hexahedron:
-            return (p + 1) * (p + 1) * (p + 1);
-        case Shape::Wedge:
-            return (p + 1) * (p + 1) * (p + 2) / 2;
-    }
-    return 0;
-}
-
-/// The Gauss-Lobatto points of order `P` on [0, 1], ascending.
-inline std::vector<double> gll_points(int P) {
-    std::vector<double> x(static_cast<std::size_t>(P) + 1);
-    x.front() = 0.0;
-    x.back() = 1.0;
-    // Interior points: the roots of P'_P on [-1, 1], by Newton from the
-    // Chebyshev-Gauss-Lobatto guesses; computed for the lower half and
-    // mirrored, so the set is exactly symmetric.
-    for (int k = 1; 2 * k <= P; ++k) {
-        long double t = -std::cos(3.14159265358979323846264338327950288L * k / P);
-        for (int it = 0; it < 100; ++it) {
-            // Legendre P_P(t), P'_P(t) by recurrence.
-            long double p0 = 1.0L, p1 = t;
-            for (int n = 1; n < P; ++n) {
-                const long double p2 = ((2 * n + 1) * t * p1 - n * p0) / (n + 1);
-                p0 = p1;
-                p1 = p2;
-            }
-            const long double d1 = P * (t * p1 - p0) / (t * t - 1.0L);
-            const long double d2 = (2.0L * t * d1 - P * (P + 1) * p1) / (1.0L - t * t);
-            const long double step = d1 / d2;
-            t -= step;
-            if (std::fabs(static_cast<double>(step)) < 1e-19)
-                break;
-        }
-        const double v = static_cast<double>((1.0L + t) / 2.0L);
-        x[static_cast<std::size_t>(k)] = v;
-        x[static_cast<std::size_t>(P - k)] = 1.0 - v;
-    }
-    if (P % 2 == 0 && P > 0)
-        x[static_cast<std::size_t>(P / 2)] = 0.5;
-    return x;
-}
-
-/// Equispaced points `i/P` on [0, 1].
-inline std::vector<double> uniform_points(int P) {
-    std::vector<double> x(static_cast<std::size_t>(P) + 1);
-    for (int i = 0; i <= P; ++i)
-        x[static_cast<std::size_t>(i)] = static_cast<double>(i) / P;
-    return x;
-}
-
-// --- VTK node order (after MFEM's mesh/vtk.cpp) ---------------------------------------
-
-inline int vtk_triangle_index(int* pB, int Ref) {
-    int max = Ref, min = 0;
-    const int bmin = std::min(std::min(pB[0], pB[1]), pB[2]);
-    int idx = 0;
-    while (bmin > min) {
-        idx += 3 * Ref;
-        max -= 2;
-        ++min;
-        Ref -= 3;
-    }
-    for (int d = 0; d < 3; ++d) {
-        if (pB[(d + 2) % 3] == max)
-            return idx;
-        ++idx;
-    }
-    for (int d = 0; d < 3; ++d) {
-        if (pB[(d + 1) % 3] == min)
-            return idx + pB[d] - (min + 1);
-        idx += max - (min + 1);
-    }
-    return idx;
-}
-
-inline int vtk_tetra_index(int* pB, int Ref) {
-    int idx = 0, max = Ref, min = 0;
-    const int bmin = std::min(std::min(std::min(pB[0], pB[1]), pB[2]), pB[3]);
-    while (bmin > min) {
-        idx += 2 * (Ref * Ref + 1);
-        max -= 3;
-        ++min;
-        Ref -= 4;
-    }
-    static const int kVertexMax[4] = {3, 0, 1, 2};
-    static const int kEdgeMin[6][2] = {{1, 2}, {2, 3}, {0, 2}, {0, 1}, {1, 3}, {0, 3}};
-    static const int kEdgeCount[6] = {0, 1, 3, 2, 2, 2};
-    static const int kFaceMin[4] = {1, 3, 0, 2};
-    static const int kFaceB[4][3] = {{0, 2, 3}, {2, 0, 1}, {2, 1, 3}, {1, 0, 3}};
-    for (int v = 0; v < 4; ++v) {
-        if (pB[kVertexMax[v]] == max)
-            return idx;
-        ++idx;
-    }
-    for (int e = 0; e < 6; ++e) {
-        if (pB[kEdgeMin[e][0]] == min && pB[kEdgeMin[e][1]] == min)
-            return idx + pB[kEdgeCount[e]] - (min + 1);
-        idx += max - (min + 1);
-    }
-    for (int f = 0; f < 4; ++f) {
-        if (pB[kFaceMin[f]] == min) {
-            int projected[3];
-            for (int i = 0; i < 3; ++i)
-                projected[i] = pB[kFaceB[f][i]] - min;
-            return idx + vtk_triangle_index(projected, Ref) - 3 * Ref;
-        }
-        idx += (Ref + 1) * (Ref + 2) / 2 - 3 * Ref;
-    }
-    return idx;
-}
-
-inline int vtk_triangle_offset(int Ref, int I, int J) {
-    return I + Ref * (J - 1) - (J * (J + 1)) / 2;
-}
-
-inline int vtk_wedge_index(int I, int J, int K, int Ref) {
-    const int om1 = Ref - 1;
-    const int ibdr = I == 0, jbdr = J == 0, ijbdr = I + J == Ref, kbdr = K == 0 || K == Ref;
-    const int nbdr = ibdr + jbdr + ijbdr + kbdr;
-    if (nbdr == 3)
-        return (ibdr && jbdr ? 0 : (jbdr && ijbdr ? 1 : 2)) + (K ? 3 : 0);
-    int offset = 6;
-    if (nbdr == 2) {
-        if (!kbdr) {
-            offset += om1 * 6;
-            return offset + (K - 1) + ((ibdr && jbdr) ? 0 : (jbdr && ijbdr ? 1 : 2)) * om1;
-        }
-        offset += K == Ref ? 3 * om1 : 0;
-        if (jbdr)
-            return offset + I - 1;
-        offset += om1;
-        if (ijbdr)
-            return offset + J - 1;
-        offset += om1;
-        return offset + (Ref - J - 1);
-    }
-    offset += 9 * om1;
-    const int ntf = (om1 - 1) * om1 / 2;
-    const int nqf = om1 * om1;
-    if (nbdr == 1) {
-        if (kbdr) {
-            if (K > 0)
-                offset += ntf;
-            return offset + vtk_triangle_offset(Ref, I, J);
-        }
-        offset += 2 * ntf;
-        if (jbdr)
-            return offset + (I - 1) + om1 * (K - 1);
-        offset += nqf;
-        if (ijbdr)
-            return offset + (J - 1) + om1 * (K - 1);
-        offset += nqf;
-        return offset + (Ref - J - 1) + om1 * (K - 1);
-    }
-    offset += 2 * ntf + 3 * nqf;
-    return offset + vtk_triangle_offset(Ref, I, J) + ntf * (K - 1);
-}
-
-inline int vtk_tensor_index(int Idx, int Ref, int Dim) {
-    const int n = Ref + 1;
-    if (Dim == 1) {
-        if (Idx == 0 || Idx == Ref)
-            return Idx ? 1 : 0;
-        return Idx + 1;
-    }
-    if (Dim == 2) {
-        const int i = Idx % n, j = Idx / n;
-        const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref;
-        if (ibdr && jbdr)
-            return i ? (j ? 2 : 1) : (j ? 3 : 0);
-        int offset = 4;
-        if (jbdr)
-            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + offset;
-        if (ibdr)
-            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) + offset;
-        offset += 2 * (Ref - 1 + Ref - 1);
-        return offset + (i - 1) + (Ref - 1) * (j - 1);
-    }
-    const int i = Idx % n, j = (Idx / n) % n, k = Idx / (n * n);
-    const bool ibdr = i == 0 || i == Ref, jbdr = j == 0 || j == Ref, kbdr = k == 0 || k == Ref;
-    const int nbdr = (ibdr ? 1 : 0) + (jbdr ? 1 : 0) + (kbdr ? 1 : 0);
-    if (nbdr == 3)
-        return (i ? (j ? 2 : 1) : (j ? 3 : 0)) + (k ? 4 : 0);
-    int offset = 8;
-    if (nbdr == 2) {
-        if (!ibdr)
-            return (i - 1) + (j ? Ref - 1 + Ref - 1 : 0) + (k ? 2 * (Ref - 1 + Ref - 1) : 0) +
-                   offset;
-        if (!jbdr)
-            return (j - 1) + (i ? Ref - 1 : 2 * (Ref - 1) + Ref - 1) +
-                   (k ? 2 * (Ref - 1 + Ref - 1) : 0) + offset;
-        offset += 4 * (Ref - 1) + 4 * (Ref - 1);
-        return (k - 1) + (Ref - 1) * (i ? (j ? 2 : 1) : (j ? 3 : 0)) + offset;
-    }
-    offset += 4 * (Ref - 1 + Ref - 1 + Ref - 1);
-    if (nbdr == 1) {
-        if (ibdr)
-            return (j - 1) + (Ref - 1) * (k - 1) + (i ? (Ref - 1) * (Ref - 1) : 0) + offset;
-        offset += 2 * (Ref - 1) * (Ref - 1);
-        if (jbdr)
-            return (i - 1) + (Ref - 1) * (k - 1) + (j ? (Ref - 1) * (Ref - 1) : 0) + offset;
-        offset += 2 * (Ref - 1) * (Ref - 1);
-        return (i - 1) + (Ref - 1) * (j - 1) + (k ? (Ref - 1) * (Ref - 1) : 0) + offset;
-    }
-    offset += 2 * 3 * (Ref - 1) * (Ref - 1);
-    return offset + (i - 1) + (Ref - 1) * ((j - 1) + (Ref - 1) * (k - 1));
-}
-
-/// The nodes of an order-`P` VTK Lagrange cell, in VTK order, as integer
-/// lattice coordinates (`x = i / P`).
-inline std::vector<std::array<int, 3>> vtk_lattice(Shape S, int P) {
-    std::vector<std::array<int, 3>> out(num_nodes(S, P));
-    switch (S) {
-        case Shape::Triangle: {
-            int b[3];
-            for (b[1] = 0; b[1] <= P; ++b[1])
-                for (b[0] = 0; b[0] <= P - b[1]; ++b[0]) {
-                    b[2] = P - b[0] - b[1];
-                    out[static_cast<std::size_t>(vtk_triangle_index(b, P))] = {b[0], b[1], 0};
-                }
-            break;
-        }
-        case Shape::Tetra: {
-            int b[4];
-            for (b[2] = 0; b[2] <= P; ++b[2])
-                for (b[1] = 0; b[1] <= P - b[2]; ++b[1])
-                    for (b[0] = 0; b[0] <= P - b[1] - b[2]; ++b[0]) {
-                        b[3] = P - b[0] - b[1] - b[2];
-                        out[static_cast<std::size_t>(vtk_tetra_index(b, P))] = {b[0], b[1], b[2]};
-                    }
-            break;
-        }
-        case Shape::Wedge:
-            for (int k = 0; k <= P; ++k)
-                for (int j = 0; j <= P; ++j)
-                    for (int i = 0; i <= P - j; ++i)
-                        out[static_cast<std::size_t>(vtk_wedge_index(i, j, k, P))] = {i, j, k};
-            break;
-        default: {
-            const int dim = shape_dim(S);
-            const int n = P + 1;
-            const int total = dim == 1 ? n : (dim == 2 ? n * n : n * n * n);
-            for (int idx = 0; idx < total; ++idx) {
-                const std::array<int, 3> ijk = {idx % n, dim > 1 ? (idx / n) % n : 0,
-                                                dim > 2 ? idx / (n * n) : 0};
-                out[static_cast<std::size_t>(vtk_tensor_index(idx, P, dim))] = ijk;
-            }
-            break;
-        }
-    }
-    return out;
-}
-
-// --- Gmsh's node order (twin of _lagrange.gmsh_lattice) -------------------------------------
-//
-// The fixed-order types beyond VTK's own (triangle10, quad16, tetra20, wedge40,
-// hexahedron64, ...) are held in Gmsh's order: the corners, each edge's
-// interior nodes in the direction listed, each face's interior nodes as an
-// element of the same family (recursively), then the volume's likewise -- a
-// prism's being the inner triangle's nodes, each with its column of nodes
-// along the third direction in Gmsh's line order. Checked against Gmsh 4.15
-// for every order it has (tests/python/test_lagrange_gmsh_order.py).
-
-using LatticeNode = std::array<int, 3>;
-
-inline LatticeNode lattice_add(LatticeNode A, const LatticeNode& rB, int Scale = 1) {
-    for (int k = 0; k < 3; ++k)
-        A[static_cast<std::size_t>(k)] += Scale * rB[static_cast<std::size_t>(k)];
-    return A;
-}
-
-/// One lattice step from `rFrom` towards `rTo` on an order-`P` cell.
-inline LatticeNode lattice_step(const LatticeNode& rFrom, const LatticeNode& rTo, int P) {
-    LatticeNode d;
-    for (std::size_t k = 0; k < 3; ++k)
-        d[k] = (rTo[k] - rFrom[k]) / P;  // exact: corners are P steps apart
-    return d;
-}
-
-inline const std::vector<std::pair<int, int>>& gmsh_edges(Shape S) {
-    static const std::vector<std::pair<int, int>> line = {{0, 1}};
-    static const std::vector<std::pair<int, int>> tri = {{0, 1}, {1, 2}, {2, 0}};
-    static const std::vector<std::pair<int, int>> quad = {{0, 1}, {1, 2}, {2, 3}, {3, 0}};
-    static const std::vector<std::pair<int, int>> tet = {{0, 1}, {1, 2}, {2, 0},
-                                                         {3, 0}, {3, 2}, {3, 1}};
-    static const std::vector<std::pair<int, int>> hex = {{0, 1}, {0, 3}, {0, 4}, {1, 2},
-                                                         {1, 5}, {2, 3}, {2, 6}, {3, 7},
-                                                         {4, 5}, {4, 7}, {5, 6}, {6, 7}};
-    static const std::vector<std::pair<int, int>> wedge = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 4},
-                                                           {2, 5}, {3, 4}, {3, 5}, {4, 5}};
-    switch (S) {
-        case Shape::Line:
-            return line;
-        case Shape::Triangle:
-            return tri;
-        case Shape::Quad:
-            return quad;
-        case Shape::Tetra:
-            return tet;
-        case Shape::Hexahedron:
-            return hex;
-        case Shape::Wedge:
-            return wedge;
-    }
-    return line;
-}
-
-inline const std::vector<std::vector<int>>& gmsh_faces(Shape S) {
-    static const std::vector<std::vector<int>> none;
-    static const std::vector<std::vector<int>> tet = {{0, 2, 1}, {0, 1, 3}, {0, 3, 2}, {3, 1, 2}};
-    static const std::vector<std::vector<int>> hex = {{0, 3, 2, 1}, {0, 1, 5, 4}, {0, 4, 7, 3},
-                                                      {1, 2, 6, 5}, {2, 3, 7, 6}, {4, 5, 6, 7}};
-    static const std::vector<std::vector<int>> wedge = {
-        {0, 2, 1}, {3, 4, 5}, {0, 1, 4, 3}, {0, 3, 5, 2}, {1, 2, 5, 4}};
-    switch (S) {
-        case Shape::Tetra:
-            return tet;
-        case Shape::Hexahedron:
-            return hex;
-        case Shape::Wedge:
-            return wedge;
-        default:
-            return none;
-    }
-}
-
-/// Each corner moved one lattice step towards each of its `rAround` corners.
-inline std::vector<LatticeNode> lattice_inset(const std::vector<LatticeNode>& rCorners, int P,
-                                              const std::vector<std::vector<int>>& rAround) {
-    std::vector<LatticeNode> out;
-    for (std::size_t k = 0; k < rCorners.size(); ++k) {
-        LatticeNode c = rCorners[k];
-        for (const int m : rAround[k])
-            c = lattice_add(c, lattice_step(rCorners[k], rCorners[static_cast<std::size_t>(m)], P));
-        out.push_back(c);
-    }
-    return out;
-}
-
-/// The two neighbours of each corner of an `N`-gon.
-inline std::vector<std::vector<int>> lattice_ring(int N) {
-    std::vector<std::vector<int>> out;
-    for (int k = 0; k < N; ++k)
-        out.push_back({(k + 1) % N, (k + N - 1) % N});
-    return out;
-}
-
-inline void gmsh_nodes(Shape S, const std::vector<LatticeNode>& rC, int P,
-                       std::vector<LatticeNode>& rOut) {
-    if (P == 0) {
-        rOut.push_back(rC[0]);
-        return;
-    }
-    rOut.insert(rOut.end(), rC.begin(), rC.end());
-    for (const auto& [a, b] : gmsh_edges(S)) {
-        const auto& ca = rC[static_cast<std::size_t>(a)];
-        const LatticeNode d = lattice_step(ca, rC[static_cast<std::size_t>(b)], P);
-        for (int t = 1; t < P; ++t)
-            rOut.push_back(lattice_add(ca, d, t));
-    }
-    for (const auto& face : gmsh_faces(S)) {
-        std::vector<LatticeNode> v;
-        for (const int i : face)
-            v.push_back(rC[static_cast<std::size_t>(i)]);
-        const int n = static_cast<int>(face.size());
-        const int order = n == 3 ? P - 3 : P - 2;
-        if (order >= 0)
-            gmsh_nodes(n == 3 ? Shape::Triangle : Shape::Quad, lattice_inset(v, P, lattice_ring(n)),
-                       order, rOut);
-    }
-    switch (S) {
-        case Shape::Triangle:
-            if (P >= 3)
-                gmsh_nodes(S, lattice_inset(rC, P, lattice_ring(3)), P - 3, rOut);
-            break;
-        case Shape::Quad:
-            if (P >= 2)
-                gmsh_nodes(S, lattice_inset(rC, P, lattice_ring(4)), P - 2, rOut);
-            break;
-        case Shape::Tetra:
-            if (P >= 4)
-                gmsh_nodes(S, lattice_inset(rC, P, {{1, 2, 3}, {0, 2, 3}, {0, 1, 3}, {0, 1, 2}}),
-                           P - 4, rOut);
-            break;
-        case Shape::Hexahedron:
-            if (P >= 2)
-                gmsh_nodes(S,
-                           lattice_inset(rC, P,
-                                         {{1, 3, 4},
-                                          {0, 2, 5},
-                                          {1, 3, 6},
-                                          {0, 2, 7},
-                                          {0, 5, 7},
-                                          {1, 4, 6},
-                                          {2, 5, 7},
-                                          {3, 4, 6}}),
-                           P - 2, rOut);
-            break;
-        case Shape::Wedge:
-            if (P >= 3) {
-                std::vector<LatticeNode> flat = {
-                    {rC[0][0], rC[0][1], 0}, {rC[1][0], rC[1][1], 0}, {rC[2][0], rC[2][1], 0}};
-                const LatticeNode dz = lattice_step(rC[0], rC[3], P);
-                std::vector<LatticeNode> column, tri;
-                gmsh_nodes(Shape::Line, {lattice_add(rC[0], dz), lattice_add(rC[3], dz, -1)}, P - 2,
-                           column);
-                gmsh_nodes(Shape::Triangle, lattice_inset(flat, P, lattice_ring(3)), P - 3, tri);
-                for (const auto& t : tri)
-                    for (const auto& z : column)
-                        rOut.push_back({t[0], t[1], z[2]});
-            }
-            break;
-        default:
-            break;
-    }
-}
-
-/// The nodes of an order-`P` cell in Gmsh's order, in `vtk_lattice`'s frame.
-inline std::vector<LatticeNode> gmsh_lattice(Shape S, int P) {
-    std::vector<LatticeNode> c;
-    switch (S) {
-        case Shape::Line:
-            c = {{0, 0, 0}, {P, 0, 0}};
-            break;
-        case Shape::Triangle:
-            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}};
-            break;
-        case Shape::Quad:
-            c = {{0, 0, 0}, {P, 0, 0}, {P, P, 0}, {0, P, 0}};
-            break;
-        case Shape::Tetra:
-            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}, {0, 0, P}};
-            break;
-        case Shape::Hexahedron:
-            c = {{0, 0, 0}, {P, 0, 0}, {P, P, 0}, {0, P, 0},
-                 {0, 0, P}, {P, 0, P}, {P, P, P}, {0, P, P}};
-            break;
-        case Shape::Wedge:
-            c = {{0, 0, 0}, {P, 0, 0}, {0, P, 0}, {0, 0, P}, {P, 0, P}, {0, P, P}};
-            break;
-    }
-    std::vector<LatticeNode> out;
-    gmsh_nodes(S, c, P, out);
-    return out;
-}
-
-/// `perm` with VTK Lagrange node `j` = Gmsh node `perm[j]` (twin of
-/// `_lagrange.gmsh_to_vtk_order`).
-inline std::vector<int> gmsh_to_vtk_order(Shape S, int P) {
-    const auto gmsh = gmsh_lattice(S, P);
-    const auto vtk = vtk_lattice(S, P);
-    std::vector<int> perm(vtk.size());
-    for (std::size_t j = 0; j < vtk.size(); ++j) {
-        const auto it = std::find(gmsh.begin(), gmsh.end(), vtk[j]);
-        perm[j] = static_cast<int>(it - gmsh.begin());
-    }
-    return perm;
-}
-
-/// A fixed-order type VTK has no id of its own for, written as a VTK
-/// Lagrange cell (twin of `_vtk_common.FIXED_LAGRANGE`).
-struct FixedLagrange {
-    int mVtkType = 0;
-    Shape mShape = Shape::Line;
-    int mOrder = 0;
-};
-
-/// `rType` (`triangle10`, `hexahedron64`, ...) as a VTK Lagrange cell, for
-/// orders 3 and up whose Gmsh order was checked against Gmsh: to 10, the
-/// hexahedron and prism to 9.
-inline bool fixed_lagrange(const std::string& rType, FixedLagrange& rOut) {
-    static const std::pair<const char*, std::pair<Shape, int>> shapes[] = {
-        {"line", {Shape::Line, 68}},
-        {"triangle", {Shape::Triangle, 69}},
-        {"quad", {Shape::Quad, 70}},
-        {"tetra", {Shape::Tetra, 71}},
-        {"hexahedron", {Shape::Hexahedron, 72}},
-        {"wedge", {Shape::Wedge, 73}}};
-    for (const auto& [name, info] : shapes) {
-        const std::string prefix(name);
-        if (rType.size() <= prefix.size() || rType.compare(0, prefix.size(), prefix) != 0)
-            continue;
-        const std::string digits = rType.substr(prefix.size());
-        if (digits.find_first_not_of("0123456789") != std::string::npos || digits.size() > 4)
-            return false;
-        const std::size_t count = static_cast<std::size_t>(std::stoi(digits));
-        const int max_order =
-            info.first == Shape::Hexahedron || info.first == Shape::Wedge ? 9 : 10;
-        for (int p = 3; p <= max_order; ++p)
-            if (num_nodes(info.first, p) == count) {
-                rOut = {info.second, info.first, p};
-                return true;
-            }
-        return false;
-    }
-    return false;
-}
-
-/// Corner weights of lattice node `rIjk` of an order-`P` cell, over the common
-/// denominator `P^3`: `(corner, weight)` for every corner with a nonzero one,
-/// by corner. Barycentric on simplices, multilinear on the square and cube,
-/// their product on the prism -- so a node shared by two cells has the same
-/// weights over the corners they share.
-inline std::vector<std::pair<int, std::int64_t>> lattice_weights(Shape S, int P,
-                                                                 const std::array<int, 3>& rIjk) {
-    const std::int64_t p = P, i = rIjk[0], j = rIjk[1], k = rIjk[2];
-    std::vector<std::int64_t> w;
-    switch (S) {
-        case Shape::Line:
-            w = {(p - i) * p * p, i * p * p};
-            break;
-        case Shape::Triangle:
-            w = {(p - i - j) * p * p, i * p * p, j * p * p};
-            break;
-        case Shape::Quad:
-            w = {(p - i) * (p - j) * p, i * (p - j) * p, i * j * p, (p - i) * j * p};
-            break;
-        case Shape::Tetra:
-            w = {(p - i - j - k) * p * p, i * p * p, j * p * p, k * p * p};
-            break;
-        case Shape::Hexahedron:
-            w = {(p - i) * (p - j) * (p - k),
-                 i * (p - j) * (p - k),
-                 i * j * (p - k),
-                 (p - i) * j * (p - k),
-                 (p - i) * (p - j) * k,
-                 i * (p - j) * k,
-                 i * j * k,
-                 (p - i) * j * k};
-            break;
-        case Shape::Wedge:
-            w = {(p - i - j) * (p - k) * p, i * (p - k) * p, j * (p - k) * p,
-                 (p - i - j) * k * p,       i * k * p,       j * k * p};
-            break;
-    }
-    std::vector<std::pair<int, std::int64_t>> out;
-    for (std::size_t c = 0; c < w.size(); ++c)
-        if (w[c] != 0)
-            out.emplace_back(static_cast<int>(c), w[c]);
-    return out;
-}
-
-// --- orthogonal bases ---------------------------------------------------------------
-
-/// Jacobi P_n^{(A,0)}(x) for n = 0..N.
-inline std::vector<double> jacobi(int N, double A, double X) {
-    std::vector<double> v(static_cast<std::size_t>(N) + 1);
-    v[0] = 1.0;
-    if (N >= 1)
-        v[1] = ((A + 2.0) * X + A) / 2.0;
-    for (int n = 1; n < N; ++n) {
-        const double a1 = 2.0 * (n + 1) * (n + A + 1) * (2 * n + A);
-        const double a2 = (2 * n + A + 1) * A * A;
-        const double a3 = (2 * n + A) * (2 * n + A + 1) * (2 * n + A + 2);
-        const double a4 = 2.0 * (n + A) * n * (2 * n + A + 2);
-        v[static_cast<std::size_t>(n) + 1] = ((a2 + a3 * X) * v[static_cast<std::size_t>(n)] -
-                                              a4 * v[static_cast<std::size_t>(n) - 1]) /
-                                             a1;
-    }
-    return v;
-}
-
-/// The orthogonal basis of the cell's order-`P` space at reference point `rX`.
-inline std::vector<double> basis(Shape S, int P, const std::array<double, 3>& rX) {
-    std::vector<double> out;
-    const double r = 2.0 * rX[0] - 1.0, s = 2.0 * rX[1] - 1.0, t = 2.0 * rX[2] - 1.0;
-    switch (S) {
-        case Shape::Line: {
-            out = jacobi(P, 0.0, r);
-            break;
-        }
-        case Shape::Quad: {
-            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s);
-            for (int j = 0; j <= P; ++j)
-                for (int i = 0; i <= P; ++i)
-                    out.push_back(a[static_cast<std::size_t>(i)] * b[static_cast<std::size_t>(j)]);
-            break;
-        }
-        case Shape::Hexahedron: {
-            const auto a = jacobi(P, 0.0, r), b = jacobi(P, 0.0, s), c = jacobi(P, 0.0, t);
-            for (int k = 0; k <= P; ++k)
-                for (int j = 0; j <= P; ++j)
-                    for (int i = 0; i <= P; ++i)
-                        out.push_back(a[static_cast<std::size_t>(i)] *
-                                      b[static_cast<std::size_t>(j)] *
-                                      c[static_cast<std::size_t>(k)]);
-            break;
-        }
-        case Shape::Triangle:
-        case Shape::Wedge: {
-            const double a = std::fabs(1.0 - s) > 1e-14 ? 2.0 * (1.0 + r) / (1.0 - s) - 1.0 : -1.0;
-            const auto pa = jacobi(P, 0.0, a);
-            std::vector<double> tri;
-            for (int i = 0; i <= P; ++i) {
-                const auto pb = jacobi(P - i, 2.0 * i + 1.0, s);
-                const double f = std::pow((1.0 - s) / 2.0, i);
-                for (int j = 0; i + j <= P; ++j)
-                    tri.push_back(pa[static_cast<std::size_t>(i)] * f *
-                                  pb[static_cast<std::size_t>(j)]);
-            }
-            if (S == Shape::Triangle) {
-                out = std::move(tri);
-            } else {
-                const auto c = jacobi(P, 0.0, t);
-                for (int k = 0; k <= P; ++k)
-                    for (double v : tri)
-                        out.push_back(v * c[static_cast<std::size_t>(k)]);
-            }
-            break;
-        }
-        case Shape::Tetra: {
-            const double a = std::fabs(s + t) > 1e-14 ? 2.0 * (1.0 + r) / (-s - t) - 1.0 : -1.0;
-            const double b = std::fabs(1.0 - t) > 1e-14 ? 2.0 * (1.0 + s) / (1.0 - t) - 1.0 : -1.0;
-            const auto pa = jacobi(P, 0.0, a);
-            for (int i = 0; i <= P; ++i) {
-                const auto pb = jacobi(P - i, 2.0 * i + 1.0, b);
-                const double fb = std::pow((1.0 - b) / 2.0, i);
-                for (int j = 0; i + j <= P; ++j) {
-                    const auto pc = jacobi(P - i - j, 2.0 * (i + j) + 2.0, t);
-                    const double fc = std::pow((1.0 - t) / 2.0, i + j);
-                    for (int k = 0; i + j + k <= P; ++k)
-                        out.push_back(pa[static_cast<std::size_t>(i)] * fb *
-                                      pb[static_cast<std::size_t>(j)] * fc *
-                                      pc[static_cast<std::size_t>(k)]);
-                }
-            }
-            break;
-        }
-    }
-    return out;
-}
-
-/// The matrix (row-major, targets x nodes) mapping values at `rNodes` -- a
-/// unisolvent node set of the order-`P` space -- to values at `rTargets`.
-inline std::vector<double> interpolation_matrix(
-    Shape S, int P, const std::vector<std::array<double, 3>>& rNodes,
-    const std::vector<std::array<double, 3>>& rTargets) {
-    const std::size_t n = rNodes.size();
-    if (n != num_nodes(S, P))
-        throw std::runtime_error("lagrange: node count does not match the space");
-    // A = V^T (n x n): A[b][m] = basis_b(node_m); solve A X = Phi^T for X
-    // (n x targets); the matrix is X^T.
-    std::vector<double> a(n * n);
-    for (std::size_t m = 0; m < n; ++m) {
-        const auto v = basis(S, P, rNodes[m]);
-        for (std::size_t b = 0; b < n; ++b)
-            a[b * n + m] = v[b];
-    }
-    const std::size_t nt = rTargets.size();
-    std::vector<double> x(n * nt);
-    for (std::size_t t = 0; t < nt; ++t) {
-        const auto v = basis(S, P, rTargets[t]);
-        for (std::size_t b = 0; b < n; ++b)
-            x[b * nt + t] = v[b];
-    }
-    // LU with partial pivoting, applied to every right-hand side at once.
-    for (std::size_t c = 0; c < n; ++c) {
-        std::size_t piv = c;
-        for (std::size_t r = c + 1; r < n; ++r)
-            if (std::fabs(a[r * n + c]) > std::fabs(a[piv * n + c]))
-                piv = r;
-        if (std::fabs(a[piv * n + c]) < 1e-300)
-            throw std::runtime_error("lagrange: the node set is not unisolvent");
-        if (piv != c) {
-            for (std::size_t k = 0; k < n; ++k)
-                std::swap(a[c * n + k], a[piv * n + k]);
-            for (std::size_t k = 0; k < nt; ++k)
-                std::swap(x[c * nt + k], x[piv * nt + k]);
-        }
-        for (std::size_t r = c + 1; r < n; ++r) {
-            const double f = a[r * n + c] / a[c * n + c];
-            if (f == 0.0)
-                continue;
-            for (std::size_t k = c; k < n; ++k)
-                a[r * n + k] -= f * a[c * n + k];
-            for (std::size_t k = 0; k < nt; ++k)
-                x[r * nt + k] -= f * x[c * nt + k];
-        }
-    }
-    for (std::size_t c = n; c-- > 0;) {
-        for (std::size_t k = 0; k < nt; ++k) {
-            double v = x[c * nt + k];
-            for (std::size_t q = c + 1; q < n; ++q)
-                v -= a[c * n + q] * x[q * nt + k];
-            x[c * nt + k] = v / a[c * n + c];
-        }
-    }
-    std::vector<double> out(nt * n);
-    for (std::size_t t = 0; t < nt; ++t)
-        for (std::size_t m = 0; m < n; ++m)
-            out[t * n + m] = x[m * nt + t];
-    // Snap exact reproductions (a target that is a node) to 0/1.
-    for (double& v : out)
-        if (std::fabs(v) < 1e-14)
-            v = 0.0;
-        else if (std::fabs(v - 1.0) < 1e-14)
-            v = 1.0;
-    return out;
-}
-
-}  // namespace lagrange
-}  // namespace meshioplusplus
 // ===== end src/cpp/src/formats/lagrange_common.hpp =====
 // ===== begin src/cpp/src/detail/vtk_write_cell.hpp =====
 /**
@@ -67104,6 +69003,10 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"CutLevelSet",
          {"LevelSets", "Planes", "Selection", "IncludeUncut", "Backend", "Degree", "Triangulate",
           "RecordParentIds"}},
+        // Trace streamlines of a point vector field as a 1-D line mesh (doc/streamlines.md).
+        {"Streamlines",
+         {"Array", "Seeds", "Direction", "Integrator", "Step", "MaxLength", "MaxSteps",
+          "TerminalSpeed", "Tolerance"}},
     };
     // clang-format on
     return table;
@@ -250798,6 +252701,344 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/coordinates.cpp =====
+// ===== begin src/cpp/src/operations/critical_points.cpp =====
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+bool cp_in_ref_cell(const detail::ReferenceElementInfo& rInfo, const std::array<double, 3>& rXi,
+                    double Eps = 1e-6) {
+    const double u = rXi[0], v = rXi[1], w = rXi[2];
+    if (u < -Eps || u > 1.0 + Eps)
+        return false;
+    if (rInfo.mDim >= 2 && (v < -Eps || v > 1.0 + Eps))
+        return false;
+    if (rInfo.mDim >= 3 && (w < -Eps || w > 1.0 + Eps))
+        return false;
+    if (rInfo.mShape == lagrange::Shape::Triangle || rInfo.mShape == lagrange::Shape::Wedge) {
+        if (u + v > 1.0 + Eps)
+            return false;
+    } else if (rInfo.mShape == lagrange::Shape::Tetra) {
+        if (u + v + w > 1.0 + Eps)
+            return false;
+    }
+    return true;
+}
+
+std::vector<std::array<double, 3>> cp_seeds(const detail::ReferenceElementInfo& rInfo, int N) {
+    std::vector<std::array<double, 3>> out;
+    const int n = std::max(N, 2);
+    auto coord = [n](int i) { return (static_cast<double>(i) + 0.5) / static_cast<double>(n); };
+    if (rInfo.mDim == 1) {
+        for (int i = 0; i < n; ++i)
+            out.push_back({coord(i), 0.0, 0.0});
+    } else if (rInfo.mDim == 2) {
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j) {
+                const std::array<double, 3> xi{coord(i), coord(j), 0.0};
+                if (cp_in_ref_cell(rInfo, xi, 0.0))
+                    out.push_back(xi);
+            }
+    } else {
+        for (int i = 0; i < n; ++i)
+            for (int j = 0; j < n; ++j)
+                for (int k = 0; k < n; ++k) {
+                    const std::array<double, 3> xi{coord(i), coord(j), coord(k)};
+                    if (cp_in_ref_cell(rInfo, xi, 0.0))
+                        out.push_back(xi);
+                }
+    }
+    return out;
+}
+
+struct CpCandidate {
+    Vec3 mPos;
+    double mValue = 0.0;
+    std::int32_t mType = 3;
+    std::int64_t mCell = -1;
+};
+
+}  // namespace
+
+CriticalPointsResult critical_points(const Mesh& rMesh, const CriticalPointsOptions& rOptions) {
+    if (rOptions.mArray.empty())
+        throw std::invalid_argument("critical_points: array name is required");
+    if (!rMesh.HasPointData(rOptions.mArray))
+        throw std::invalid_argument(
+            data_unknown_key_message(rMesh, DataLocation::Point, rOptions.mArray));
+    const NDArray& pdata = rMesh.PointData(rOptions.mArray);
+    if (data_num_components(pdata) != 1)
+        throw std::invalid_argument("critical_points: array must be scalar (1 component)");
+    if (!(rOptions.mTolerance > 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument("critical_points: tolerance must be > 0");
+
+    const NDArray& pts_in = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    const auto bases = detail::block_bases(rMesh);
+
+    std::vector<CpCandidate> all_cands;
+
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t nc = cb.NumCells();
+        if (nc == 0 || cb.IsRagged())
+            continue;
+        const std::size_t k = cb.NodesPerCell();
+        const CellType ct = cell_type_from_name(cb.Type());
+        const NDArray& conn = cb.Conn();
+        detail::ReferenceElementInfo info;
+        if (!detail::reference_element_info(ct, k, info))
+            continue;
+        if (info.mOrder < 2)
+            continue;  // Linear fields on linear cells have constant gradient (no isolated interior extrema).
+
+        const int dim = info.mDim;
+        const int n_sub = rOptions.mSeedSubdivisions > 0
+                              ? static_cast<int>(rOptions.mSeedSubdivisions)
+                              : std::max(info.mOrder + 1, 2);
+        const auto seeds = cp_seeds(info, n_sub);
+        const std::int64_t base = bases[b];
+
+        std::vector<std::vector<CpCandidate>> per_cell(nc);
+        parallel_for(nc, [&](std::size_t c) {
+            std::vector<Vec3> cpts(k);
+            std::vector<double> fvals(k);
+            for (std::size_t i = 0; i < k; ++i) {
+                const auto u = static_cast<std::size_t>(detail::read_int(conn, c * k + i));
+                cpts[i] = {detail::read_double(pts_in, u * pdim + 0),
+                           pdim > 1 ? detail::read_double(pts_in, u * pdim + 1) : 0.0,
+                           pdim > 2 ? detail::read_double(pts_in, u * pdim + 2) : 0.0};
+                fvals[i] = detail::read_double(pdata, u);
+            }
+
+            auto eval_ref_grad = [&](const std::array<double, 3>& rXi, double& rVal,
+                                     std::array<double, 3>& rGrad) -> bool {
+                std::vector<double> nv;
+                std::vector<std::array<double, 3>> ng;
+                if (!detail::eval_reference_shape(ct, k, rXi, nv, ng))
+                    return false;
+                rVal = 0.0;
+                rGrad = {0.0, 0.0, 0.0};
+                for (std::size_t i = 0; i < k; ++i) {
+                    rVal += nv[i] * fvals[i];
+                    for (int d = 0; d < dim; ++d)
+                        rGrad[static_cast<std::size_t>(d)] +=
+                            ng[i][static_cast<std::size_t>(d)] * fvals[i];
+                }
+                return true;
+            };
+
+            for (const auto& seed : seeds) {
+                std::array<double, 3> xi = seed;
+                double val = 0.0;
+                std::array<double, 3> g{0.0, 0.0, 0.0};
+                bool converged = false;
+
+                for (std::int64_t iter = 0; iter < rOptions.mMaxIterations; ++iter) {
+                    if (!eval_ref_grad(xi, val, g))
+                        break;
+                    double gnorm = 0.0;
+                    for (int d = 0; d < dim; ++d)
+                        gnorm += g[static_cast<std::size_t>(d)] * g[static_cast<std::size_t>(d)];
+                    gnorm = std::sqrt(gnorm);
+                    if (gnorm <= rOptions.mTolerance) {
+                        converged = true;
+                        break;
+                    }
+
+                    // Reference Hessian by central differences of exact reference gradient.
+                    constexpr double h = 1e-6;
+                    std::vector<double> H(static_cast<std::size_t>(dim * dim), 0.0);
+                    for (int j = 0; j < dim; ++j) {
+                        std::array<double, 3> xp = xi, xm = xi;
+                        xp[static_cast<std::size_t>(j)] += h;
+                        xm[static_cast<std::size_t>(j)] -= h;
+                        double vp = 0.0, vm = 0.0;
+                        std::array<double, 3> gp{}, gm{};
+                        if (!eval_ref_grad(xp, vp, gp) || !eval_ref_grad(xm, vm, gm))
+                            break;
+                        for (int i = 0; i < dim; ++i)
+                            H[static_cast<std::size_t>(i * dim + j)] =
+                                (gp[static_cast<std::size_t>(i)] - gm[static_cast<std::size_t>(i)]) /
+                                (2.0 * h);
+                    }
+                    // Symmetrize H and solve H * step = -g.
+                    for (int i = 0; i < dim; ++i)
+                        for (int j = i + 1; j < dim; ++j) {
+                            const double avg =
+                                0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
+                                       H[static_cast<std::size_t>(j * dim + i)]);
+                            H[static_cast<std::size_t>(i * dim + j)] = avg;
+                            H[static_cast<std::size_t>(j * dim + i)] = avg;
+                        }
+                    std::vector<double> rhs(static_cast<std::size_t>(dim));
+                    for (int i = 0; i < dim; ++i)
+                        rhs[static_cast<std::size_t>(i)] = -g[static_cast<std::size_t>(i)];
+                    if (!detail::lsq_solve(H, rhs, static_cast<std::size_t>(dim)))
+                        break;
+
+                    // Damped step to stay well-behaved.
+                    double step_norm = 0.0;
+                    for (int i = 0; i < dim; ++i)
+                        step_norm += rhs[static_cast<std::size_t>(i)] * rhs[static_cast<std::size_t>(i)];
+                    step_norm = std::sqrt(step_norm);
+                    const double scale = step_norm > 0.5 ? (0.5 / step_norm) : 1.0;
+                    for (int i = 0; i < dim; ++i)
+                        xi[static_cast<std::size_t>(i)] += scale * rhs[static_cast<std::size_t>(i)];
+                    if (!cp_in_ref_cell(info, xi, 0.25))
+                        break;
+                }
+
+                if (!converged || !cp_in_ref_cell(info, xi, 1e-5))
+                    continue;
+
+                // Evaluate physical position & classify by reference Hessian eigenvalues
+                // (Sylvester's law of inertia: at a critical point nabla f = 0, the signature of
+                // the physical Hessian J^{-T} H_xi J^{-1} is identical to H_xi's!).
+                std::vector<double> nv;
+                std::vector<std::array<double, 3>> ng;
+                if (!detail::eval_reference_shape(ct, k, xi, nv, ng))
+                    continue;
+                Vec3 pos{0.0, 0.0, 0.0};
+                for (std::size_t i = 0; i < k; ++i) {
+                    pos[0] += nv[i] * cpts[i][0];
+                    pos[1] += nv[i] * cpts[i][1];
+                    pos[2] += nv[i] * cpts[i][2];
+                }
+
+                constexpr double h = 1e-6;
+                std::vector<double> H(static_cast<std::size_t>(dim * dim), 0.0);
+                for (int j = 0; j < dim; ++j) {
+                    std::array<double, 3> xp = xi, xm = xi;
+                    xp[static_cast<std::size_t>(j)] += h;
+                    xm[static_cast<std::size_t>(j)] -= h;
+                    double vp = 0.0, vm = 0.0;
+                    std::array<double, 3> gp{}, gm{};
+                    eval_ref_grad(xp, vp, gp);
+                    eval_ref_grad(xm, vm, gm);
+                    for (int i = 0; i < dim; ++i)
+                        H[static_cast<std::size_t>(i * dim + j)] =
+                            (gp[static_cast<std::size_t>(i)] - gm[static_cast<std::size_t>(i)]) /
+                            (2.0 * h);
+                }
+                for (int i = 0; i < dim; ++i)
+                    for (int j = i + 1; j < dim; ++j) {
+                        const double avg =
+                            0.5 * (H[static_cast<std::size_t>(i * dim + j)] +
+                                   H[static_cast<std::size_t>(j * dim + i)]);
+                        H[static_cast<std::size_t>(i * dim + j)] = avg;
+                        H[static_cast<std::size_t>(j * dim + i)] = avg;
+                    }
+                std::vector<double> evals(static_cast<std::size_t>(dim), 0.0);
+                std::vector<double> evecs(static_cast<std::size_t>(dim * dim), 0.0);
+                detail::jacobi_eigen_sym(H.data(), static_cast<std::size_t>(dim), evals.data(),
+                                         evecs.data(), 1e-12);
+
+                int n_pos = 0, n_neg = 0;
+                const double eig_tol = 1e-8;
+                for (int i = 0; i < dim; ++i) {
+                    if (evals[static_cast<std::size_t>(i)] > eig_tol)
+                        ++n_pos;
+                    else if (evals[static_cast<std::size_t>(i)] < -eig_tol)
+                        ++n_neg;
+                }
+                CriticalPointType ctype = CriticalPointType::Degenerate;
+                if (n_pos == dim)
+                    ctype = CriticalPointType::Minimum;
+                else if (n_neg == dim)
+                    ctype = CriticalPointType::Maximum;
+                else if (n_pos > 0 && n_neg > 0)
+                    ctype = CriticalPointType::Saddle;
+
+                per_cell[c].push_back({pos, val, static_cast<std::int32_t>(ctype),
+                                       base + static_cast<std::int64_t>(c)});
+            }
+        });
+
+        for (auto& vec : per_cell)
+            for (auto& cand : vec)
+                all_cands.push_back(cand);
+    }
+
+    // Spatial deduplication in deterministic cell-order.
+    const double tol2 = rOptions.mMergeTolerance * rOptions.mMergeTolerance;
+    std::vector<CpCandidate> uniq;
+    for (const auto& c : all_cands) {
+        bool dup = false;
+        for (const auto& u : uniq) {
+            if (detail::vec3_norm_sq(detail::vec3_sub(c.mPos, u.mPos)) <= tol2) {
+                dup = true;
+                break;
+            }
+        }
+        if (!dup)
+            uniq.push_back(c);
+    }
+
+    CriticalPointsResult res;
+    const std::size_t nu = uniq.size();
+    Mesh out;
+    NDArray pts(DType::Float64, {nu, std::size_t{3}});
+    NDArray vals(DType::Float64, {nu});
+    NDArray types(DType::Int32, {nu});
+    NDArray cells(DType::Int64, {nu});
+    double* pp = pts.As<double>();
+    double* pv = vals.As<double>();
+    std::int32_t* pt = types.As<std::int32_t>();
+    std::int64_t* pc = cells.As<std::int64_t>();
+    for (std::size_t i = 0; i < nu; ++i) {
+        pp[i * 3 + 0] = uniq[i].mPos[0];
+        pp[i * 3 + 1] = uniq[i].mPos[1];
+        pp[i * 3 + 2] = uniq[i].mPos[2];
+        pv[i] = uniq[i].mValue;
+        pt[i] = uniq[i].mType;
+        pc[i] = uniq[i].mCell;
+        switch (static_cast<CriticalPointType>(uniq[i].mType)) {
+            case CriticalPointType::Minimum:
+                ++res.mNumMinima;
+                break;
+            case CriticalPointType::Maximum:
+                ++res.mNumMaxima;
+                break;
+            case CriticalPointType::Saddle:
+                ++res.mNumSaddles;
+                break;
+            default:
+                ++res.mNumDegenerate;
+                break;
+        }
+    }
+    out.AssignPoints(std::move(pts));
+    if (nu > 0) {
+        NDArray vconn(DType::Int64, {nu, std::size_t{1}});
+        std::int64_t* pvc = vconn.As<std::int64_t>();
+        for (std::size_t i = 0; i < nu; ++i)
+            pvc[i] = static_cast<std::int64_t>(i);
+        out.AddCellBlock(cell_type_name(CellType::Vertex), std::move(vconn));
+    }
+    out.AddPointData(kCriticalValueName, std::move(vals));
+    out.AddPointData(kCriticalTypeName, std::move(types));
+    out.AddPointData(kCriticalCellName, std::move(cells));
+    res.mMesh = std::move(out);
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/critical_points.cpp =====
 // ===== begin src/cpp/src/operations/crop.cpp =====
 #include <array>
 #include <cstddef>
@@ -254526,6 +256767,8 @@ DataArrayInfo data_array_info(const Mesh& rMesh, DataLocation Location, const st
 
 // Project includes
 
+// Project includes (private, not installed)
+
 namespace meshioplusplus {
 
 namespace {
@@ -254708,8 +256951,9 @@ struct DintMode {
     bool mBoundary = false;
     bool mPoint = false;
     bool mFlux = false;
+    bool mQuad = false;
     std::string mBase;
-    bool Plain() const { return !mBoundary && !mPoint && !mFlux; }
+    bool Plain() const { return !mBoundary && !mPoint && !mFlux && !mQuad; }
 };
 
 bool dint_starts_with(const std::string& s, const char* p) {
@@ -254732,19 +256976,178 @@ DintMode dint_parse(const Mesh& rMesh, const std::string& rName) {
     } else if (dint_starts_with(s, "flux:")) {
         m.mFlux = true;
         s = s.substr(5);
+    } else if (dint_starts_with(s, "quad:")) {
+        m.mQuad = true;
+        s = s.substr(5);
     }
     if (m.Plain())
         return m;  // no prefix: the unknown-name error follows
-    if (m.mBoundary && !m.mPoint && !m.mFlux)
+    if (m.mBoundary && !m.mPoint && !m.mFlux && !m.mQuad)
         throw std::invalid_argument(
-            "meshio++: data_integrate: 'boundary:' needs 'point:' or 'flux:' after it (the "
-            "boundary surface carries no cell_data)");
+            "meshio++: data_integrate: 'boundary:' needs 'point:', 'quad:' or 'flux:' after it "
+            "(the boundary surface carries no cell_data)");
     m.mBase = s;
     return m;
 }
 
 [[noreturn]] void dint_fail(const std::string& rMessage) {
     throw std::invalid_argument("meshio++: data_integrate: " + rMessage);
+}
+
+// Integrate a point_data array by Gauss quadrature on each cell's shape functions.
+FieldIntegralArray dint_quad_array(const Mesh& rMesh, const std::string& rBaseName,
+                                   const std::string& rReportName) {
+    if (!rMesh.HasPointData(rBaseName))
+        dint_fail("'quad:" + rBaseName + "' names no point_data array");
+    const NDArray& pdata = rMesh.PointData(rBaseName);
+    const std::size_t comps = data_num_components(pdata);
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const NDArray& points = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+
+    // Per-cell quadrature measure and integral (block-major).
+    std::vector<std::vector<double>> cell_vol(nblocks);
+    std::vector<std::vector<double>> cell_int(nblocks);
+    std::vector<std::vector<std::uint8_t>> cell_nan(nblocks);
+    std::int64_t domain_num_cells = 0;
+    std::int64_t domain_num_skipped = 0;
+
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t nc = cb.NumCells();
+        cell_vol[b].assign(nc, -1.0);
+        cell_int[b].assign(nc * comps, 0.0);
+        cell_nan[b].assign(nc * comps, 0);
+
+        detail::ReferenceElementInfo info;
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (cb.IsRagged() || !detail::reference_element_info(ct, cb.NodesPerCell(), info)) {
+            domain_num_skipped += static_cast<std::int64_t>(nc);
+            continue;
+        }
+        const detail::QuadratureRule rule =
+            detail::quadrature_rule(ct, std::max(2 * info.mOrder + 1, 2));
+        if (rule.mPoints.empty()) {
+            domain_num_skipped += static_cast<std::int64_t>(nc);
+            continue;
+        }
+        const std::size_t n_nodes = cb.NodesPerCell();
+        const NDArray& conn = cb.Conn();
+
+        parallel_for(nc, [&](std::size_t c) {
+            std::vector<detail::Vec3> cpts(n_nodes);
+            std::vector<std::int64_t> cids(n_nodes);
+            for (std::size_t i = 0; i < n_nodes; ++i) {
+                const std::int64_t nid = detail::read_int(conn, c * n_nodes + i);
+                cids[i] = nid;
+                const std::size_t u = static_cast<std::size_t>(nid);
+                cpts[i] = {detail::read_double(points, u * pdim + 0),
+                           pdim > 1 ? detail::read_double(points, u * pdim + 1) : 0.0,
+                           pdim > 2 ? detail::read_double(points, u * pdim + 2) : 0.0};
+            }
+            std::vector<double> vals;
+            std::vector<detail::Vec3> grads;
+            double vol = 0.0;
+            std::vector<double> acc(comps, 0.0);
+            std::vector<std::uint8_t> has_nan(comps, 0);
+            for (std::size_t k = 0; k < comps; ++k) {
+                for (std::size_t i = 0; i < n_nodes; ++i) {
+                    const double fv =
+                        detail::read_double(pdata, static_cast<std::size_t>(cids[i]) * comps + k);
+                    if (!std::isfinite(fv)) {
+                        has_nan[k] = 1;
+                        break;
+                    }
+                }
+            }
+            for (std::size_t q = 0; q < rule.mPoints.size(); ++q) {
+                double meas = 0.0;
+                if (!detail::shape_eval_and_jacobian(ct, cpts, rule.mPoints[q], vals, grads,
+                                                     meas)) {
+                    vol = -1.0;
+                    break;
+                }
+                const double w = rule.mWeights[q] * meas;
+                vol += w;
+                for (std::size_t k = 0; k < comps; ++k) {
+                    if (has_nan[k])
+                        continue;
+                    double fq = 0.0;
+                    for (std::size_t i = 0; i < n_nodes; ++i)
+                        fq += vals[i] * detail::read_double(
+                                            pdata, static_cast<std::size_t>(cids[i]) * comps + k);
+                    acc[k] += w * fq;
+                }
+            }
+            if (std::isfinite(vol) && vol > 0.0) {
+                cell_vol[b][c] = vol;
+                for (std::size_t k = 0; k < comps; ++k) {
+                    cell_int[b][c * comps + k] = acc[k];
+                    cell_nan[b][c * comps + k] = has_nan[k];
+                }
+            }
+        });
+
+        for (std::size_t c = 0; c < nc; ++c) {
+            if (cell_vol[b][c] > 0.0)
+                ++domain_num_cells;
+            else
+                ++domain_num_skipped;
+        }
+    }
+
+    FieldIntegralArray arr;
+    arr.mName = rReportName;
+    arr.mNumComponents = static_cast<std::int64_t>(comps);
+
+    std::vector<detail::WeightedSum> domain_stats(comps);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t nc = cell_vol[b].size();
+        for (std::size_t c = 0; c < nc; ++c) {
+            const double w = cell_vol[b][c];
+            if (!(w > 0.0))
+                continue;
+            for (std::size_t k = 0; k < comps; ++k) {
+                if (cell_nan[b][c * comps + k])
+                    domain_stats[k].Add(std::numeric_limits<double>::quiet_NaN(), w);
+                else
+                    domain_stats[k].Add(cell_int[b][c * comps + k] / w, w);
+            }
+        }
+    }
+    arr.mDomain = dint_build_region("", domain_stats, domain_num_cells, domain_num_skipped, comps);
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    for (const std::string& rname : rMesh.RegionNames()) {
+        const std::size_t idx = rMesh.FindRegion(rname, RegionKind::Cell);
+        if (idx == Mesh::npos)
+            continue;
+        const Region& region = rMesh.Region(idx);
+        std::vector<detail::WeightedSum> rstats(comps);
+        std::int64_t rcells = 0;
+        std::int64_t rskip = 0;
+        const std::int64_t* entries = region.Entries();
+        for (std::size_t e = 0; e < region.NumEntries(); ++e) {
+            const auto [b, row] = detail::global_to_block_row(bases, entries[e]);
+            if (b == static_cast<std::size_t>(-1))
+                continue;
+            const std::size_t c = static_cast<std::size_t>(row);
+            const double w = cell_vol[b][c];
+            if (!(w > 0.0)) {
+                ++rskip;
+                continue;
+            }
+            ++rcells;
+            for (std::size_t k = 0; k < comps; ++k) {
+                if (cell_nan[b][c * comps + k])
+                    rstats[k].Add(std::numeric_limits<double>::quiet_NaN(), w);
+                else
+                    rstats[k].Add(cell_int[b][c * comps + k] / w, w);
+            }
+        }
+        arr.mRegions.push_back(dint_build_region(rname, rstats, rcells, rskip, comps));
+    }
+    return arr;
 }
 
 }  // namespace
@@ -254765,12 +257168,11 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
     Mesh bound;
     bool have_bound = false;
     std::vector<std::string> temp_names(modes.size());
+    std::vector<FieldIntegralArray> quad_results(modes.size());
     for (std::size_t i = 0; i < modes.size(); ++i) {
         const DintMode& m = modes[i];
         if (m.Plain())
             continue;
-        const std::string temp = "\x01integrate" + std::to_string(i);
-        temp_names[i] = temp;
         Mesh* wk = &plain;
         if (m.mBoundary) {
             if (!have_bound) {
@@ -254781,6 +257183,12 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
             }
             wk = &bound;
         }
+        if (m.mQuad) {
+            quad_results[i] = dint_quad_array(*wk, m.mBase, rOptions.mArrayNames[i]);
+            continue;
+        }
+        const std::string temp = "\x01integrate" + std::to_string(i);
+        temp_names[i] = temp;
         const bool as_point = wk->HasPointData(m.mBase);
         const bool as_cell = !m.mPoint && wk->HasCellData(m.mBase);
         if (m.mPoint && !as_point)
@@ -254840,6 +257248,8 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
     DataIntegrateOptions plain_opts;
     DataIntegrateOptions bound_opts;
     for (std::size_t i = 0; i < modes.size(); ++i) {
+        if (modes[i].mQuad)
+            continue;
         if (modes[i].Plain())
             plain_opts.mArrayNames.push_back(rOptions.mArrayNames[i]);
         else if (modes[i].mBoundary)
@@ -254847,13 +257257,18 @@ DataIntegrateReport data_integrate(const Mesh& rMesh, const DataIntegrateOptions
         else
             plain_opts.mArrayNames.push_back(temp_names[i]);
     }
-    const DataIntegrateReport pr = dint_core(plain, plain_opts);
+    const DataIntegrateReport pr =
+        plain_opts.mArrayNames.empty() ? DataIntegrateReport{} : dint_core(plain, plain_opts);
     const DataIntegrateReport br =
         bound_opts.mArrayNames.empty() ? DataIntegrateReport{} : dint_core(bound, bound_opts);
     DataIntegrateReport out;
     std::size_t pi = 0;
     std::size_t bi = 0;
     for (std::size_t i = 0; i < modes.size(); ++i) {
+        if (modes[i].mQuad) {
+            out.mArrays.push_back(std::move(quad_results[i]));
+            continue;
+        }
         FieldIntegralArray arr =
             (!modes[i].Plain() && modes[i].mBoundary) ? br.mArrays[bi++] : pr.mArrays[pi++];
         arr.mName = rOptions.mArrayNames[i];
@@ -256420,6 +258835,818 @@ DecimateVolumeResult decimate_volume(const Mesh& rMesh, const DecimateVolumeOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/decimate_volume.cpp =====
+// ===== begin src/cpp/src/operations/deform.cpp =====
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+std::string df_lower(const std::string& rS) {
+    std::string out = rS;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+std::vector<Vec3> df_read_xyz(const Mesh& rMesh) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    const NDArray& pts = rMesh.Points();
+    std::vector<Vec3> xyz(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        xyz[i] = {detail::read_double(pts, i * pdim + 0),
+                  pdim > 1 ? detail::read_double(pts, i * pdim + 1) : 0.0,
+                  pdim > 2 ? detail::read_double(pts, i * pdim + 2) : 0.0};
+    }
+    return xyz;
+}
+
+std::vector<std::uint8_t> df_region_mask(const Mesh& rMesh, const std::string& rRegion,
+                                         const char* pOp) {
+    const std::size_t n = rMesh.NumPoints();
+    if (rRegion.empty())
+        return std::vector<std::uint8_t>(n, 1);
+    std::vector<std::uint8_t> mask(n, 0);
+    const std::size_t pidx = rMesh.FindRegion(rRegion, RegionKind::Point);
+    if (pidx != Mesh::npos) {
+        const Region& reg = rMesh.Region(pidx);
+        const std::int64_t* e = reg.Entries();
+        for (std::size_t i = 0; i < reg.NumEntries(); ++i)
+            if (e[i] >= 0 && static_cast<std::size_t>(e[i]) < n)
+                mask[static_cast<std::size_t>(e[i])] = 1;
+        return mask;
+    }
+    const std::size_t cidx = rMesh.FindRegion(rRegion, RegionKind::Cell);
+    if (cidx != Mesh::npos) {
+        const auto bases = detail::block_bases(rMesh);
+        const Region& reg = rMesh.Region(cidx);
+        const std::int64_t* e = reg.Entries();
+        for (std::size_t i = 0; i < reg.NumEntries(); ++i) {
+            const auto [b, row] = detail::global_to_block_row(bases, e[i]);
+            if (b == static_cast<std::size_t>(-1))
+                continue;
+            const auto cb = rMesh.Cells(b);
+            if (cb.IsRagged()) {
+                const auto r = static_cast<std::size_t>(row);
+                const std::int64_t* p = cb.Row(r);
+                const std::size_t sz = cb.RowSize(r);
+                for (std::size_t j = 0; j < sz; ++j)
+                    if (p[j] >= 0 && static_cast<std::size_t>(p[j]) < n)
+                        mask[static_cast<std::size_t>(p[j])] = 1;
+            } else {
+                const std::size_t k = cb.NodesPerCell();
+                const NDArray& conn = cb.Conn();
+                for (std::size_t j = 0; j < k; ++j) {
+                    const std::int64_t v = detail::read_int(conn, static_cast<std::size_t>(row) * k + j);
+                    if (v >= 0 && static_cast<std::size_t>(v) < n)
+                        mask[static_cast<std::size_t>(v)] = 1;
+                }
+            }
+        }
+        return mask;
+    }
+    throw std::invalid_argument(std::string(pOp) + ": unknown region '" + rRegion + "'");
+}
+
+std::vector<double> df_clamped_uniform_knots(std::size_t N, int P) {
+    const std::size_t m = N + static_cast<std::size_t>(P) + 1;
+    std::vector<double> knots(m, 0.0);
+    for (std::size_t i = 0; i <= static_cast<std::size_t>(P); ++i)
+        knots[i] = 0.0;
+    const std::size_t n_int = N - static_cast<std::size_t>(P) - 1;
+    for (std::size_t i = 1; i <= n_int; ++i)
+        knots[static_cast<std::size_t>(P) + i] =
+            static_cast<double>(i) / static_cast<double>(n_int + 1);
+    for (std::size_t i = N; i < m; ++i)
+        knots[i] = 1.0;
+    return knots;
+}
+
+std::int64_t df_count_inverted(const Mesh& rMesh) {
+    std::int64_t inverted = 0;
+    const NDArray& pts = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cell_type_dimension(cell_type_from_name(cb.Type())) != 3)
+            continue;
+        detail::CellRings rings;
+        std::vector<Vec3> local_pts;
+        for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+            if (detail::cell_rings(cb, c, pts, pdim, rings, local_pts)) {
+                const detail::PolyMeasure pm = detail::poly_measure(rings, local_pts.data());
+                if (pm.mVolume < 0.0)
+                    ++inverted;
+            }
+        }
+    }
+    return inverted;
+}
+
+DeformResult df_finalize(const Mesh& rMesh, const std::vector<Vec3>& rOrig,
+                         const std::vector<Vec3>& rNew) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    DeformResult res;
+    res.mMesh = detail::clone_mesh(rMesh);
+    NDArray out_pts(DType::Float64, {n, pdim});
+    double* po = out_pts.As<double>();
+    for (std::size_t i = 0; i < n; ++i) {
+        const double d = detail::vec3_norm(detail::vec3_sub(rNew[i], rOrig[i]));
+        if (d > 0.0) {
+            ++res.mNumNodesMoved;
+            res.mMaxDisplacement = std::max(res.mMaxDisplacement, d);
+        }
+        po[i * pdim + 0] = rNew[i][0];
+        if (pdim > 1)
+            po[i * pdim + 1] = rNew[i][1];
+        if (pdim > 2)
+            po[i * pdim + 2] = rNew[i][2];
+    }
+    res.mMesh.AssignPoints(std::move(out_pts));
+    res.mNumInverted = df_count_inverted(res.mMesh);
+    return res;
+}
+
+inline double df_wendland_c2(double R, double Radius) {
+    if (R >= Radius)
+        return 0.0;
+    const double q = R / Radius;
+    const double om = 1.0 - q;
+    const double om2 = om * om;
+    return om2 * om2 * (4.0 * q + 1.0);
+}
+
+inline double df_rbf_eval(RbfKernel Kernel, double R, double Radius) {
+    if (Kernel == RbfKernel::Tps)
+        return R;  // 3-D biharmonic RBF
+    return df_wendland_c2(R, Radius);
+}
+
+}  // namespace
+
+RbfKernel rbf_kernel_from_name(const std::string& rName) {
+    const std::string low = df_lower(rName);
+    if (low == "tps")
+        return RbfKernel::Tps;
+    if (low == "wendland_c2" || low == "wendland-c2" || low == "wendland")
+        return RbfKernel::WendlandC2;
+    throw std::invalid_argument("deform_rbf: unknown kernel '" + rName +
+                                "' (expected 'tps' or 'wendland_c2')");
+}
+
+DeformResult deform_ffd(const Mesh& rMesh, const FfdOptions& rOptions) {
+    const std::size_t npts = rMesh.NumPoints();
+    if (npts == 0)
+        throw std::invalid_argument("deform_ffd: mesh has no points");
+
+    std::array<std::size_t, 3> counts{};
+    std::array<int, 3> degs{};
+    for (int d = 0; d < 3; ++d) {
+        if (rOptions.mGridDims[static_cast<std::size_t>(d)] < 2)
+            throw std::invalid_argument("deform_ffd: grid_dims must be >= 2 in each direction");
+        counts[static_cast<std::size_t>(d)] =
+            static_cast<std::size_t>(rOptions.mGridDims[static_cast<std::size_t>(d)]);
+        const std::int64_t req = rOptions.mDegrees[static_cast<std::size_t>(d)];
+        const int p = req < 0 ? static_cast<int>(counts[static_cast<std::size_t>(d)] - 1)
+                              : static_cast<int>(req);
+        if (p < 1 || static_cast<std::size_t>(p) >= counts[static_cast<std::size_t>(d)])
+            throw std::invalid_argument(
+                "deform_ffd: degree must satisfy 1 <= p <= grid_dims - 1");
+        degs[static_cast<std::size_t>(d)] = p;
+    }
+
+    const std::size_t n_ctrl = counts[0] * counts[1] * counts[2];
+    if (rOptions.mDisplacements.size() != n_ctrl * 3)
+        throw std::invalid_argument("deform_ffd: displacements length must be 3 * nx * ny * nz");
+
+    const std::vector<Vec3> xyz = df_read_xyz(rMesh);
+    const std::vector<std::uint8_t> mask = df_region_mask(rMesh, rOptions.mRegion, "deform_ffd");
+
+    Vec3 lo = rOptions.mBoxMin;
+    Vec3 hi = rOptions.mBoxMax;
+    if (!rOptions.mHasBounds) {
+        const auto bb = detail::BoundingBoxUtils::FromPoints(xyz);
+        lo = bb.mMin;
+        hi = bb.mMax;
+    }
+    Vec3 inv_span{};
+    for (int d = 0; d < 3; ++d) {
+        const double span = hi[static_cast<std::size_t>(d)] - lo[static_cast<std::size_t>(d)];
+        inv_span[static_cast<std::size_t>(d)] = span > 1e-15 ? (1.0 / span) : 0.0;
+    }
+
+    const std::vector<double> kx = df_clamped_uniform_knots(counts[0], degs[0]);
+    const std::vector<double> ky = df_clamped_uniform_knots(counts[1], degs[1]);
+    const std::vector<double> kz = df_clamped_uniform_knots(counts[2], degs[2]);
+
+    detail::IgaEvalNet net;
+    net.mDim = 3;
+    net.mDegrees = degs;
+    net.mKnots = {&kx, &ky, &kz};
+    net.mCounts = counts;
+    net.mValues = rOptions.mDisplacements.data();
+    net.mColumns = 3;
+    net.mWeights = nullptr;
+
+    std::vector<Vec3> out_xyz = xyz;
+    parallel_for(npts, [&](std::size_t i) {
+        if (!mask[i])
+            return;
+        double u[3];
+        std::size_t span[3];
+        for (int d = 0; d < 3; ++d) {
+            const double t =
+                (xyz[i][static_cast<std::size_t>(d)] - lo[static_cast<std::size_t>(d)]) *
+                inv_span[static_cast<std::size_t>(d)];
+            u[d] = std::clamp(t, 0.0, 1.0);
+            span[d] = detail::nurbs_find_span(degs[static_cast<std::size_t>(d)],
+                                              *net.mKnots[static_cast<std::size_t>(d)],
+                                              counts[static_cast<std::size_t>(d)], u[d]);
+        }
+        double disp[3] = {0.0, 0.0, 0.0};
+        detail::iga_eval_point(net, span, u, 0, disp, nullptr);
+        out_xyz[i] = {xyz[i][0] + disp[0], xyz[i][1] + disp[1], xyz[i][2] + disp[2]};
+    });
+
+    return df_finalize(rMesh, xyz, out_xyz);
+}
+
+DeformResult deform_rbf(const Mesh& rMesh, const RbfOptions& rOptions) {
+    const std::size_t npts = rMesh.NumPoints();
+    if (npts == 0)
+        throw std::invalid_argument("deform_rbf: mesh has no points");
+    if (rOptions.mControlPoints.empty() || rOptions.mControlPoints.size() % 3 != 0)
+        throw std::invalid_argument("deform_rbf: control_points must be non-empty flat 3*M");
+    if (rOptions.mDisplacements.size() != rOptions.mControlPoints.size())
+        throw std::invalid_argument(
+            "deform_rbf: displacements must match control_points length");
+    if (!(rOptions.mRegularization >= 0.0) || !std::isfinite(rOptions.mRegularization))
+        throw std::invalid_argument("deform_rbf: regularization must be >= 0 and finite");
+
+    const std::size_t m = rOptions.mControlPoints.size() / 3;
+    std::vector<Vec3> ctrl(m);
+    for (std::size_t i = 0; i < m; ++i) {
+        ctrl[i] = {rOptions.mControlPoints[i * 3 + 0], rOptions.mControlPoints[i * 3 + 1],
+                   rOptions.mControlPoints[i * 3 + 2]};
+    }
+
+    const std::vector<Vec3> xyz = df_read_xyz(rMesh);
+    const std::vector<std::uint8_t> mask = df_region_mask(rMesh, rOptions.mRegion, "deform_rbf");
+
+    double radius = rOptions.mRadius;
+    if (rOptions.mKernel == RbfKernel::WendlandC2 && radius <= 0.0) {
+        const auto bb = detail::BoundingBoxUtils::FromPoints(xyz);
+        radius = 0.5 * detail::BoundingBoxUtils::Diagonal(bb);
+        if (!(radius > 0.0))
+            radius = 1.0;
+    }
+
+    // Solve for RBF weights gamma (m x 3) and optional linear polynomial coeffs poly (4 x 3).
+    std::array<std::vector<double>, 3> gamma;
+    std::array<std::array<double, 4>, 3> poly = {{{0, 0, 0, 0}, {0, 0, 0, 0}, {0, 0, 0, 0}}};
+    for (int d = 0; d < 3; ++d)
+        gamma[static_cast<std::size_t>(d)].assign(m, 0.0);
+
+    const bool use_sparse = (rOptions.mKernel == RbfKernel::WendlandC2 && m > 512);
+    const bool use_poly = rOptions.mPolynomial && m >= 4;
+
+    if (!use_sparse) {
+        const std::size_t k = use_poly ? (m + 4) : m;
+        std::vector<double> mat(k * k, 0.0);
+        for (std::size_t i = 0; i < m; ++i) {
+            mat[i * k + i] =
+                df_rbf_eval(rOptions.mKernel, 0.0, radius) + rOptions.mRegularization;
+            for (std::size_t j = i + 1; j < m; ++j) {
+                const double r = detail::vec3_norm(detail::vec3_sub(ctrl[i], ctrl[j]));
+                const double val = df_rbf_eval(rOptions.mKernel, r, radius);
+                mat[i * k + j] = val;
+                mat[j * k + i] = val;
+            }
+            if (use_poly) {
+                mat[i * k + m + 0] = 1.0;
+                mat[i * k + m + 1] = ctrl[i][0];
+                mat[i * k + m + 2] = ctrl[i][1];
+                mat[i * k + m + 3] = ctrl[i][2];
+                mat[(m + 0) * k + i] = 1.0;
+                mat[(m + 1) * k + i] = ctrl[i][0];
+                mat[(m + 2) * k + i] = ctrl[i][1];
+                mat[(m + 3) * k + i] = ctrl[i][2];
+            }
+        }
+        for (int d = 0; d < 3; ++d) {
+            std::vector<double> a = mat;
+            std::vector<double> b(k, 0.0);
+            for (std::size_t i = 0; i < m; ++i)
+                b[i] = rOptions.mDisplacements[i * 3 + static_cast<std::size_t>(d)];
+            if (!detail::lsq_solve(a, b, k))
+                throw std::invalid_argument(
+                    "deform_rbf: singular RBF system (coincident or coplanar control points; try "
+                    "adding regularization or disabling polynomial reproduction)");
+            for (std::size_t i = 0; i < m; ++i)
+                gamma[static_cast<std::size_t>(d)][i] = b[i];
+            if (use_poly) {
+                for (std::size_t p = 0; p < 4; ++p)
+                    poly[static_cast<std::size_t>(d)][p] = b[m + p];
+            }
+        }
+    } else {
+        // Large Wendland C2: subtract least-squares linear trend if requested, then solve SPD Phi.
+        std::array<std::vector<double>, 3> rhs;
+        for (int d = 0; d < 3; ++d) {
+            rhs[static_cast<std::size_t>(d)].resize(m);
+            for (std::size_t i = 0; i < m; ++i)
+                rhs[static_cast<std::size_t>(d)][i] =
+                    rOptions.mDisplacements[i * 3 + static_cast<std::size_t>(d)];
+        }
+        if (use_poly) {
+            std::vector<double> ata(16, 0.0);
+            for (std::size_t i = 0; i < m; ++i) {
+                const double row[4] = {1.0, ctrl[i][0], ctrl[i][1], ctrl[i][2]};
+                for (std::size_t a = 0; a < 4; ++a)
+                    for (std::size_t b = 0; b < 4; ++b)
+                        ata[a * 4 + b] += row[a] * row[b];
+            }
+            for (int d = 0; d < 3; ++d) {
+                std::vector<double> a = ata;
+                std::vector<double> b(4, 0.0);
+                for (std::size_t i = 0; i < m; ++i) {
+                    const double row[4] = {1.0, ctrl[i][0], ctrl[i][1], ctrl[i][2]};
+                    const double val = rhs[static_cast<std::size_t>(d)][i];
+                    for (std::size_t k = 0; k < 4; ++k)
+                        b[k] += row[k] * val;
+                }
+                if (detail::lsq_solve(a, b, 4)) {
+                    for (std::size_t k = 0; k < 4; ++k)
+                        poly[static_cast<std::size_t>(d)][k] = b[k];
+                    for (std::size_t i = 0; i < m; ++i) {
+                        rhs[static_cast<std::size_t>(d)][i] -=
+                            b[0] + b[1] * ctrl[i][0] + b[2] * ctrl[i][1] + b[3] * ctrl[i][2];
+                    }
+                }
+            }
+        }
+        const detail::PointKnn knn(ctrl, std::max(radius, 1e-12));
+        std::vector<detail::SparseTriplet> triplets;
+        triplets.reserve(m * 16);
+        std::vector<std::pair<double, std::int64_t>> nbrs;
+        for (std::size_t i = 0; i < m; ++i) {
+            knn.WithinRadius(ctrl[i], radius, nbrs);
+            for (const auto& [d2, j] : nbrs) {
+                const double val =
+                    df_wendland_c2(std::sqrt(d2), radius) +
+                    (static_cast<std::size_t>(j) == i ? rOptions.mRegularization : 0.0);
+                if (val != 0.0)
+                    triplets.push_back({i, static_cast<std::size_t>(j), val});
+            }
+        }
+        const detail::SparseCsr phi = detail::csr_from_triplets(m, m, std::move(triplets));
+        detail::CsrIc0 precond;
+        precond.Build(phi);
+        detail::CsrPcgWorkspace ws;
+        const double* rhs_ptrs[3] = {rhs[0].data(), rhs[1].data(), rhs[2].data()};
+        double* x_ptrs[3] = {gamma[0].data(), gamma[1].data(), gamma[2].data()};
+        detail::csr_ic0_pcg_block(phi, precond, 3, rhs_ptrs, x_ptrs, ws, 1e-12, m + 200);
+    }
+
+    // Evaluate displacements in parallel_for.
+    std::vector<Vec3> out_xyz = xyz;
+    if (rOptions.mKernel == RbfKernel::WendlandC2) {
+        const detail::PointKnn knn(ctrl, std::max(radius, 1e-12));
+        parallel_for(npts, [&](std::size_t i) {
+            if (!mask[i])
+                return;
+            std::vector<std::pair<double, std::int64_t>> nbrs;
+            knn.WithinRadius(xyz[i], radius, nbrs);
+            Vec3 disp{0.0, 0.0, 0.0};
+            for (const auto& [d2, j] : nbrs) {
+                const double w = df_wendland_c2(std::sqrt(d2), radius);
+                const auto ju = static_cast<std::size_t>(j);
+                disp[0] += w * gamma[0][ju];
+                disp[1] += w * gamma[1][ju];
+                disp[2] += w * gamma[2][ju];
+            }
+            if (use_poly) {
+                for (int d = 0; d < 3; ++d) {
+                    const auto& p = poly[static_cast<std::size_t>(d)];
+                    disp[static_cast<std::size_t>(d)] +=
+                        p[0] + p[1] * xyz[i][0] + p[2] * xyz[i][1] + p[3] * xyz[i][2];
+                }
+            }
+            out_xyz[i] = {xyz[i][0] + disp[0], xyz[i][1] + disp[1], xyz[i][2] + disp[2]};
+        });
+    } else {
+        parallel_for(npts, [&](std::size_t i) {
+            if (!mask[i])
+                return;
+            Vec3 disp{0.0, 0.0, 0.0};
+            for (std::size_t j = 0; j < m; ++j) {
+                const double r = detail::vec3_norm(detail::vec3_sub(xyz[i], ctrl[j]));
+                disp[0] += r * gamma[0][j];
+                disp[1] += r * gamma[1][j];
+                disp[2] += r * gamma[2][j];
+            }
+            if (use_poly) {
+                for (int d = 0; d < 3; ++d) {
+                    const auto& p = poly[static_cast<std::size_t>(d)];
+                    disp[static_cast<std::size_t>(d)] +=
+                        p[0] + p[1] * xyz[i][0] + p[2] * xyz[i][1] + p[3] * xyz[i][2];
+                }
+            }
+            out_xyz[i] = {xyz[i][0] + disp[0], xyz[i][1] + disp[1], xyz[i][2] + disp[2]};
+        });
+    }
+
+    return df_finalize(rMesh, xyz, out_xyz);
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/deform.cpp =====
+// ===== begin src/cpp/src/operations/denoise_surface.cpp =====
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+std::string dn_lower(const std::string& rS) {
+    std::string out = rS;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+void dn_face_geometry(const detail::SurfaceRings& rRings, const std::vector<Vec3>& rXyz,
+                      std::vector<Vec3>& rCentroids, std::vector<Vec3>& rNormals,
+                      std::vector<double>& rAreas) {
+    const std::size_t nf = rRings.NumFaces();
+    rCentroids.resize(nf);
+    rNormals.resize(nf);
+    rAreas.resize(nf);
+    parallel_for(nf, [&](std::size_t f) {
+        const std::int64_t s = rRings.mStart[f];
+        const std::int64_t e = rRings.mStart[f + 1];
+        const std::size_t k = static_cast<std::size_t>(e - s);
+        Vec3 c{0.0, 0.0, 0.0};
+        for (std::size_t i = 0; i < k; ++i) {
+            const Vec3& p = rXyz[static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i])];
+            c[0] += p[0];
+            c[1] += p[1];
+            c[2] += p[2];
+        }
+        const double inv_k = k > 0 ? 1.0 / static_cast<double>(k) : 0.0;
+        c[0] *= inv_k;
+        c[1] *= inv_k;
+        c[2] *= inv_k;
+        rCentroids[f] = c;
+
+        // Newell normal / area vector.
+        Vec3 n{0.0, 0.0, 0.0};
+        for (std::size_t i = 0; i < k; ++i) {
+            const Vec3& p0 = rXyz[static_cast<std::size_t>(
+                rRings.mNodes[static_cast<std::size_t>(s) + i])];
+            const Vec3& p1 = rXyz[static_cast<std::size_t>(
+                rRings.mNodes[static_cast<std::size_t>(s) + ((i + 1) % k)])];
+            const Vec3 d0 = detail::vec3_sub(p0, c);
+            const Vec3 d1 = detail::vec3_sub(p1, c);
+            const Vec3 cr = detail::vec3_cross(d0, d1);
+            n[0] += cr[0];
+            n[1] += cr[1];
+            n[2] += cr[2];
+        }
+        const double len = detail::vec3_norm(n);
+        rAreas[f] = 0.5 * len;
+        if (len > 1e-30)
+            rNormals[f] = detail::vec3_scale(n, 1.0 / len);
+        else
+            rNormals[f] = {0.0, 0.0, 0.0};
+    });
+}
+
+Vec3 dn_single_face_normal(const detail::SurfaceRings& rRings, std::size_t f,
+                           const std::vector<Vec3>& rXyz, std::size_t OverrideV,
+                           const Vec3& rOverridePos) {
+    const std::int64_t s = rRings.mStart[f];
+    const std::int64_t e = rRings.mStart[f + 1];
+    const std::size_t k = static_cast<std::size_t>(e - s);
+    auto get_p = [&](std::size_t i) -> Vec3 {
+        const auto vid =
+            static_cast<std::size_t>(rRings.mNodes[static_cast<std::size_t>(s) + i]);
+        return vid == OverrideV ? rOverridePos : rXyz[vid];
+    };
+    const Vec3 p0 = get_p(0);
+    Vec3 n{0.0, 0.0, 0.0};
+    for (std::size_t i = 1; i + 1 < k; ++i) {
+        const Vec3 cr =
+            detail::vec3_cross(detail::vec3_sub(get_p(i), p0), detail::vec3_sub(get_p(i + 1), p0));
+        n[0] += cr[0];
+        n[1] += cr[1];
+        n[2] += cr[2];
+    }
+    return n;
+}
+
+}  // namespace
+
+DenoiseMethod denoise_method_from_name(const std::string& rName) {
+    const std::string low = dn_lower(rName);
+    if (low == "bilateral")
+        return DenoiseMethod::Bilateral;
+    if (low == "guided")
+        return DenoiseMethod::Guided;
+    throw std::invalid_argument("denoise_surface: unknown method '" + rName +
+                                "' (expected 'bilateral' or 'guided')");
+}
+
+DenoiseSurfaceResult denoise_surface(const Mesh& rMesh, const DenoiseSurfaceOptions& rOptions) {
+    if (rOptions.mNormalIterations < 0 || rOptions.mVertexIterations < 0)
+        throw std::invalid_argument("denoise_surface: iteration counts must be >= 0");
+    if (!(rOptions.mSigmaSpatial >= 0.0) || !std::isfinite(rOptions.mSigmaSpatial))
+        throw std::invalid_argument("denoise_surface: sigma_spatial must be >= 0 and finite");
+    if (!(rOptions.mSigmaNormal > 0.0) || !std::isfinite(rOptions.mSigmaNormal))
+        throw std::invalid_argument("denoise_surface: sigma_normal must be > 0 and finite");
+
+    const std::size_t npts = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    if (npts == 0)
+        throw std::invalid_argument("denoise_surface: mesh has no points");
+
+    // Resolve optional Cell region selection.
+    const auto bases = detail::block_bases(rMesh);
+    const std::size_t total_cells = bases.empty() ? 0 : static_cast<std::size_t>(bases.back());
+    std::vector<std::uint8_t> selected(total_cells, rOptions.mRegion.empty() ? 1 : 0);
+    if (!rOptions.mRegion.empty()) {
+        const std::size_t ridx = rMesh.FindRegion(rOptions.mRegion, RegionKind::Cell);
+        if (ridx == Mesh::npos)
+            throw std::invalid_argument("denoise_surface: unknown Cell region '" + rOptions.mRegion +
+                                        "'");
+        const Region& reg = rMesh.Region(ridx);
+        const std::int64_t* ent = reg.Entries();
+        for (std::size_t i = 0; i < reg.NumEntries(); ++i)
+            if (ent[i] >= 0 && static_cast<std::size_t>(ent[i]) < total_cells)
+                selected[static_cast<std::size_t>(ent[i])] = 1;
+    }
+
+    const detail::SurfaceRings rings = detail::surface_rings(rMesh, selected, "denoise_surface");
+    const std::size_t nf = rings.NumFaces();
+    if (nf == 0)
+        throw std::invalid_argument("denoise_surface: mesh has no surface faces");
+
+    // Read coordinates.
+    const NDArray& pts_in = rMesh.Points();
+    std::vector<Vec3> xyz(npts);
+    for (std::size_t i = 0; i < npts; ++i) {
+        xyz[i] = {detail::read_double(pts_in, i * pdim + 0),
+                  pdim > 1 ? detail::read_double(pts_in, i * pdim + 1) : 0.0,
+                  pdim > 2 ? detail::read_double(pts_in, i * pdim + 2) : 0.0};
+    }
+    const std::vector<Vec3> xyz_orig = xyz;
+
+    // Build vertex -> incident faces CSR.
+    std::vector<std::vector<std::size_t>> v_faces(npts);
+    for (std::size_t f = 0; f < nf; ++f) {
+        for (std::int64_t p = rings.mStart[f]; p < rings.mStart[f + 1]; ++p) {
+            v_faces[static_cast<std::size_t>(rings.mNodes[static_cast<std::size_t>(p)])].push_back(
+                f);
+        }
+    }
+
+    // Build face -> vertex-adjacent faces (sorted, deduplicated, excluding self)
+    // and identify boundary vertices via crease_edge_uses.
+    std::vector<std::uint8_t> is_boundary(npts, 0);
+    std::vector<std::vector<std::size_t>> edge_adj(nf);
+    {
+        const std::vector<detail::CreaseEdgeUse> uses =
+            detail::crease_edge_uses(rings.mStart, rings.mNodes);
+        std::size_t i = 0;
+        while (i < uses.size()) {
+            std::size_t j = i + 1;
+            while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+                ++j;
+            if (j - i == 1) {
+                is_boundary[static_cast<std::size_t>(uses[i].mLo)] = 1;
+                is_boundary[static_cast<std::size_t>(uses[i].mHi)] = 1;
+            } else if (j - i == 2) {
+                const auto f0 = static_cast<std::size_t>(uses[i].mFace);
+                const auto f1 = static_cast<std::size_t>(uses[i + 1].mFace);
+                edge_adj[f0].push_back(f1);
+                edge_adj[f1].push_back(f0);
+            }
+            i = j;
+        }
+    }
+
+    std::vector<std::vector<std::size_t>> face_nbrs(nf);
+    parallel_for(nf, [&](std::size_t f) {
+        auto& nbrs = face_nbrs[f];
+        for (std::int64_t p = rings.mStart[f]; p < rings.mStart[f + 1]; ++p) {
+            const auto v = static_cast<std::size_t>(rings.mNodes[static_cast<std::size_t>(p)]);
+            for (std::size_t g : v_faces[v])
+                if (g != f)
+                    nbrs.push_back(g);
+        }
+        std::sort(nbrs.begin(), nbrs.end());
+        nbrs.erase(std::unique(nbrs.begin(), nbrs.end()), nbrs.end());
+    });
+
+    // Initial face geometry.
+    std::vector<Vec3> centroids, normals;
+    std::vector<double> areas;
+    dn_face_geometry(rings, xyz, centroids, normals, areas);
+
+    // Determine sigma_spatial automatically if 0.
+    double sigma_c = rOptions.mSigmaSpatial;
+    if (sigma_c <= 0.0) {
+        double sum_d = 0.0;
+        std::size_t cnt = 0;
+        for (std::size_t f = 0; f < nf; ++f) {
+            for (std::size_t g : edge_adj[f]) {
+                if (g > f) {
+                    sum_d += detail::vec3_norm(detail::vec3_sub(centroids[f], centroids[g]));
+                    ++cnt;
+                }
+            }
+        }
+        sigma_c = (cnt > 0 && sum_d > 0.0) ? (sum_d / static_cast<double>(cnt)) : 1.0;
+    }
+    const double inv_2sc2 = 1.0 / (2.0 * sigma_c * sigma_c);
+    const double inv_2ss2 = 1.0 / (2.0 * rOptions.mSigmaNormal * rOptions.mSigmaNormal);
+
+    // Stage 1: Iterative Jacobi normal filtering.
+    std::vector<Vec3> next_normals(nf);
+    std::vector<Vec3> guide_normals;
+    if (rOptions.mMethod == DenoiseMethod::Guided)
+        guide_normals.resize(nf);
+
+    for (std::int64_t iter = 0; iter < rOptions.mNormalIterations; ++iter) {
+        if (rOptions.mMethod == DenoiseMethod::Guided) {
+            // Zhang et al. (2015): compute per-face patch consistency C(P_k) and guidance normal.
+            std::vector<double> patch_cons(nf, 0.0);
+            std::vector<Vec3> patch_avg(nf, {0.0, 0.0, 0.0});
+            parallel_for(nf, [&](std::size_t f) {
+                const auto& nbrs = face_nbrs[f];
+                Vec3 avg = detail::vec3_scale(normals[f], areas[f]);
+                double max_diff = 0.0;
+                for (std::size_t g : nbrs) {
+                    avg = detail::vec3_add(avg, detail::vec3_scale(normals[g], areas[g]));
+                    const double d = detail::vec3_norm(detail::vec3_sub(normals[f], normals[g]));
+                    max_diff = std::max(max_diff, d);
+                }
+                const double len = detail::vec3_norm(avg);
+                patch_avg[f] = len > 1e-30 ? detail::vec3_scale(avg, 1.0 / len) : normals[f];
+                // Consistency = max normal spread in patch * max adjacent edge salience.
+                double max_sal = 0.0;
+                for (std::size_t g : edge_adj[f])
+                    max_sal =
+                        std::max(max_sal, detail::vec3_norm(detail::vec3_sub(normals[f], normals[g])));
+                patch_cons[f] = max_diff * (max_sal + 1e-6);
+            });
+            parallel_for(nf, [&](std::size_t f) {
+                std::size_t best = f;
+                double best_c = patch_cons[f];
+                for (std::size_t g : face_nbrs[f]) {
+                    if (patch_cons[g] < best_c) {
+                        best_c = patch_cons[g];
+                        best = g;
+                    }
+                }
+                guide_normals[f] = patch_avg[best];
+            });
+        }
+
+        const std::vector<Vec3>& ref_normals =
+            (rOptions.mMethod == DenoiseMethod::Guided) ? guide_normals : normals;
+
+        parallel_for(nf, [&](std::size_t f) {
+            Vec3 acc = detail::vec3_scale(normals[f], areas[f]);
+            const Vec3& ci = centroids[f];
+            const Vec3& ri = ref_normals[f];
+            for (std::size_t g : face_nbrs[f]) {
+                const double dc2 = detail::vec3_norm_sq(detail::vec3_sub(ci, centroids[g]));
+                const double dn2 = detail::vec3_norm_sq(detail::vec3_sub(ri, ref_normals[g]));
+                const double w = areas[g] * std::exp(-dc2 * inv_2sc2 - dn2 * inv_2ss2);
+                acc[0] += w * normals[g][0];
+                acc[1] += w * normals[g][1];
+                acc[2] += w * normals[g][2];
+            }
+            const double len = detail::vec3_norm(acc);
+            next_normals[f] = len > 1e-30 ? detail::vec3_scale(acc, 1.0 / len) : normals[f];
+        });
+        normals.swap(next_normals);
+    }
+
+    // Stage 2: Vertex position update (Sun et al. 2007) with optional fold-over guard.
+    std::int64_t skipped_foldover = 0;
+    std::vector<Vec3> next_xyz(npts);
+    std::vector<std::uint8_t> skip_flags(npts, 0);
+
+    for (std::int64_t iter = 0; iter < rOptions.mVertexIterations; ++iter) {
+        // Recompute centroids from current vertex positions.
+        parallel_for(nf, [&](std::size_t f) {
+            const std::int64_t s = rings.mStart[f];
+            const std::int64_t e = rings.mStart[f + 1];
+            const std::size_t k = static_cast<std::size_t>(e - s);
+            Vec3 c{0.0, 0.0, 0.0};
+            for (std::size_t i = 0; i < k; ++i) {
+                const Vec3& p =
+                    xyz[static_cast<std::size_t>(rings.mNodes[static_cast<std::size_t>(s) + i])];
+                c[0] += p[0];
+                c[1] += p[1];
+                c[2] += p[2];
+            }
+            const double inv_k = k > 0 ? 1.0 / static_cast<double>(k) : 0.0;
+            centroids[f] = {c[0] * inv_k, c[1] * inv_k, c[2] * inv_k};
+        });
+
+        std::fill(skip_flags.begin(), skip_flags.end(), 0);
+        parallel_for(npts, [&](std::size_t v) {
+            next_xyz[v] = xyz[v];
+            if (v_faces[v].empty())
+                return;
+            if (rOptions.mFixBoundary && is_boundary[v])
+                return;
+            Vec3 delta{0.0, 0.0, 0.0};
+            for (std::size_t f : v_faces[v]) {
+                const double proj =
+                    detail::vec3_dot(normals[f], detail::vec3_sub(centroids[f], xyz[v]));
+                delta[0] += normals[f][0] * proj;
+                delta[1] += normals[f][1] * proj;
+                delta[2] += normals[f][2] * proj;
+            }
+            const double inv_deg = 1.0 / static_cast<double>(v_faces[v].size());
+            const Vec3 cand{xyz[v][0] + delta[0] * inv_deg, xyz[v][1] + delta[1] * inv_deg,
+                            xyz[v][2] + delta[2] * inv_deg};
+            if (rOptions.mGuardFoldover) {
+                for (std::size_t f : v_faces[v]) {
+                    const Vec3 nf_new = dn_single_face_normal(rings, f, xyz, v, cand);
+                    if (detail::vec3_dot(nf_new, normals[f]) <= 0.0) {
+                        skip_flags[v] = 1;
+                        return;
+                    }
+                }
+            }
+            next_xyz[v] = cand;
+        });
+
+        for (std::uint8_t fl : skip_flags)
+            skipped_foldover += fl;
+        xyz.swap(next_xyz);
+    }
+
+    // Write back to cloned mesh.
+    DenoiseSurfaceResult result;
+    result.mMesh = detail::clone_mesh(rMesh);
+    result.mSigmaSpatialUsed = sigma_c;
+    result.mNumSkippedFoldover = skipped_foldover;
+
+    NDArray out_pts(DType::Float64, {npts, pdim});
+    double* po = out_pts.As<double>();
+    for (std::size_t i = 0; i < npts; ++i) {
+        const double d = detail::vec3_norm(detail::vec3_sub(xyz[i], xyz_orig[i]));
+        if (d > 0.0) {
+            ++result.mNumNodesMoved;
+            result.mMaxDisplacement = std::max(result.mMaxDisplacement, d);
+        }
+        po[i * pdim + 0] = xyz[i][0];
+        if (pdim > 1)
+            po[i * pdim + 1] = xyz[i][1];
+        if (pdim > 2)
+            po[i * pdim + 2] = xyz[i][2];
+    }
+    result.mMesh.AssignPoints(std::move(out_pts));
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/denoise_surface.cpp =====
 // ===== begin src/cpp/src/operations/detect.cpp =====
 #include <algorithm>
 #include <cctype>
@@ -258379,6 +261606,367 @@ ErrorSizeResult error_size(const Mesh& rMesh, const ErrorSizeOptions& rOptions) 
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/error_size.cpp =====
+// ===== begin src/cpp/src/operations/evaluate_cells.cpp =====
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+std::string ec_lower(const std::string& rS) {
+    std::string out = rS;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+CellType ec_target_cell_type(lagrange::Shape S, BasisTarget Target) {
+    if (Target == BasisTarget::Bezier) {
+        switch (S) {
+            case lagrange::Shape::Line:
+                return CellType::VtkBezierCurve;
+            case lagrange::Shape::Triangle:
+                return CellType::VtkBezierTriangle;
+            case lagrange::Shape::Quad:
+                return CellType::VtkBezierQuadrilateral;
+            case lagrange::Shape::Tetra:
+                return CellType::VtkBezierTetrahedron;
+            case lagrange::Shape::Hexahedron:
+                return CellType::VtkBezierHexahedron;
+            case lagrange::Shape::Wedge:
+                return CellType::VtkBezierWedge;
+        }
+    }
+    switch (S) {
+        case lagrange::Shape::Line:
+            return CellType::VtkLagrangeCurve;
+        case lagrange::Shape::Triangle:
+            return CellType::VtkLagrangeTriangle;
+        case lagrange::Shape::Quad:
+            return CellType::VtkLagrangeQuadrilateral;
+        case lagrange::Shape::Tetra:
+            return CellType::VtkLagrangeTetrahedron;
+        case lagrange::Shape::Hexahedron:
+            return CellType::VtkLagrangeHexahedron;
+        case lagrange::Shape::Wedge:
+            return CellType::VtkLagrangeWedge;
+    }
+    return CellType::VtkLagrangeCurve;
+}
+
+}  // namespace
+
+BasisTarget basis_target_from_name(const std::string& rName) {
+    const std::string low = ec_lower(rName);
+    if (low == "bezier" || low == "bézier")
+        return BasisTarget::Bezier;
+    if (low == "lagrange")
+        return BasisTarget::Lagrange;
+    throw std::invalid_argument("change_basis: unknown target '" + rName +
+                                "' (expected 'bezier' or 'lagrange')");
+}
+
+EvaluateCellsResult evaluate_cells(const Mesh& rMesh, const EvaluateCellsOptions& rOptions) {
+    const std::size_t nq = rOptions.mCells.size();
+    if (rOptions.mReferencePoints.size() != nq * 3)
+        throw std::invalid_argument("evaluate_cells: reference_points length must be 3 * len(cells)");
+
+    std::vector<std::string> fields = rOptions.mFields;
+    if (fields.empty()) {
+        fields = rMesh.PointDataNames();
+    } else {
+        for (const std::string& f : fields)
+            if (!rMesh.HasPointData(f))
+                throw std::invalid_argument(data_unknown_key_message(rMesh, DataLocation::Point, f));
+    }
+
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const NDArray& pts_in = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    const double qnan = std::numeric_limits<double>::quiet_NaN();
+
+    EvaluateCellsResult result;
+    result.mPoints = NDArray(DType::Float64, {nq, std::size_t{3}});
+    double* p_out = result.mPoints.As<double>();
+    std::fill(p_out, p_out + nq * 3, qnan);
+
+    std::vector<std::size_t> f_comps(fields.size());
+    std::vector<const NDArray*> f_ptrs(fields.size());
+    result.mValues.reserve(fields.size());
+    if (rOptions.mDerivatives)
+        result.mGradients.reserve(fields.size());
+
+    for (std::size_t fi = 0; fi < fields.size(); ++fi) {
+        const NDArray& arr = rMesh.PointData(fields[fi]);
+        f_ptrs[fi] = &arr;
+        const std::size_t c = data_num_components(arr);
+        f_comps[fi] = c;
+        NDArray v_arr =
+            c == 1 ? NDArray(DType::Float64, {nq}) : NDArray(DType::Float64, {nq, c});
+        std::fill(v_arr.As<double>(), v_arr.As<double>() + v_arr.Size(), qnan);
+        result.mValues.emplace_back(fields[fi], std::move(v_arr));
+        if (rOptions.mDerivatives) {
+            NDArray g_arr = c == 1 ? NDArray(DType::Float64, {nq, std::size_t{3}})
+                                   : NDArray(DType::Float64, {nq, c, std::size_t{3}});
+            std::fill(g_arr.As<double>(), g_arr.As<double>() + g_arr.Size(), qnan);
+            result.mGradients.emplace_back(fields[fi], std::move(g_arr));
+        }
+    }
+
+    std::vector<std::uint8_t> ok_flags(nq, 0);
+    parallel_for(nq, [&](std::size_t q) {
+        const auto [b, row] = detail::global_to_block_row(bases, rOptions.mCells[q]);
+        if (b == static_cast<std::size_t>(-1))
+            return;
+        const auto cb = rMesh.Cells(b);
+        const CellType ct = cell_type_from_name(cb.Type());
+        const std::size_t c = static_cast<std::size_t>(row);
+        std::vector<std::int64_t> nids;
+        if (cb.IsRagged()) {
+            const std::int64_t* r = cb.Row(c);
+            nids.assign(r, r + cb.RowSize(c));
+        } else {
+            const std::size_t k = cb.NodesPerCell();
+            const NDArray& conn = cb.Conn();
+            nids.resize(k);
+            for (std::size_t i = 0; i < k; ++i)
+                nids[i] = detail::read_int(conn, c * k + i);
+        }
+        const std::size_t k = nids.size();
+        std::vector<Vec3> cpts(k);
+        for (std::size_t i = 0; i < k; ++i) {
+            const auto u = static_cast<std::size_t>(nids[i]);
+            cpts[i] = {detail::read_double(pts_in, u * pdim + 0),
+                       pdim > 1 ? detail::read_double(pts_in, u * pdim + 1) : 0.0,
+                       pdim > 2 ? detail::read_double(pts_in, u * pdim + 2) : 0.0};
+        }
+        const std::array<double, 3> xi = {rOptions.mReferencePoints[q * 3 + 0],
+                                          rOptions.mReferencePoints[q * 3 + 1],
+                                          rOptions.mReferencePoints[q * 3 + 2]};
+        std::vector<double> vals;
+        std::vector<Vec3> grads;
+        double meas = 0.0;
+        if (rOptions.mDerivatives) {
+            if (!detail::shape_eval_and_jacobian(ct, cpts, xi, vals, grads, meas))
+                return;
+        } else {
+            std::vector<std::array<double, 3>> dummy;
+            if (!detail::eval_reference_shape(ct, k, xi, vals, dummy))
+                return;
+        }
+
+        // Physical position.
+        Vec3 pos{0.0, 0.0, 0.0};
+        for (std::size_t i = 0; i < k; ++i) {
+            pos[0] += vals[i] * cpts[i][0];
+            pos[1] += vals[i] * cpts[i][1];
+            pos[2] += vals[i] * cpts[i][2];
+        }
+        p_out[q * 3 + 0] = pos[0];
+        p_out[q * 3 + 1] = pos[1];
+        p_out[q * 3 + 2] = pos[2];
+
+        // Field values & optional physical gradients.
+        for (std::size_t fi = 0; fi < fields.size(); ++fi) {
+            const NDArray& src = *f_ptrs[fi];
+            const std::size_t nc = f_comps[fi];
+            double* pv = result.mValues[fi].second.As<double>() + q * nc;
+            for (std::size_t comp = 0; comp < nc; ++comp) {
+                double acc = 0.0;
+                for (std::size_t i = 0; i < k; ++i)
+                    acc += vals[i] *
+                           detail::read_double(src, static_cast<std::size_t>(nids[i]) * nc + comp);
+                pv[comp] = acc;
+            }
+            if (rOptions.mDerivatives) {
+                double* pg = result.mGradients[fi].second.As<double>() + q * nc * 3;
+                for (std::size_t comp = 0; comp < nc; ++comp) {
+                    double gx = 0.0, gy = 0.0, gz = 0.0;
+                    for (std::size_t i = 0; i < k; ++i) {
+                        const double fv = detail::read_double(
+                            src, static_cast<std::size_t>(nids[i]) * nc + comp);
+                        gx += grads[i][0] * fv;
+                        gy += grads[i][1] * fv;
+                        gz += grads[i][2] * fv;
+                    }
+                    pg[comp * 3 + 0] = gx;
+                    pg[comp * 3 + 1] = gy;
+                    pg[comp * 3 + 2] = gz;
+                }
+            }
+        }
+        ok_flags[q] = 1;
+    });
+
+    for (std::uint8_t fl : ok_flags)
+        result.mNumEvaluated += fl;
+    return result;
+}
+
+ChangeBasisResult change_basis(const Mesh& rMesh, const ChangeBasisOptions& rOptions) {
+    const std::size_t pdim = rMesh.PointDim();
+    const NDArray& pts_in = rMesh.Points();
+
+    std::vector<std::string> field_names;
+    std::vector<std::size_t> field_comps;
+    if (rOptions.mTransformFields) {
+        field_names = rMesh.PointDataNames();
+        field_comps.resize(field_names.size());
+        for (std::size_t i = 0; i < field_names.size(); ++i)
+            field_comps[i] = data_num_components(rMesh.PointData(field_names[i]));
+    }
+
+    // Per-cell discontinuous control-point transformation (exact and general for any order),
+    // preserving exact polynomial representation on every cell.
+    std::vector<Vec3> new_pts;
+    std::vector<std::vector<double>> new_fields(field_names.size());
+    Mesh out;
+    std::vector<NDArray> degrees_blocks;
+    std::int64_t num_converted = 0;
+
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t nc = cb.NumCells();
+        if (nc == 0)
+            continue;
+        if (cb.IsRagged())
+            throw std::invalid_argument("change_basis: ragged blocks are not supported");
+        const std::size_t k = cb.NodesPerCell();
+        const CellType ct = cell_type_from_name(cb.Type());
+        const NDArray& in_conn = cb.Conn();
+        detail::ReferenceElementInfo info;
+        if (!detail::reference_element_info(ct, k, info) || info.mIsSerendipity ||
+            info.mIsPyramid)
+            throw std::invalid_argument(
+                "change_basis: unsupported cell type '" + cb.Type() +
+                "' (expected full Lagrange or Bezier cells)");
+
+        const bool same_basis =
+            (info.mIsBezier && rOptions.mTarget == BasisTarget::Bezier) ||
+            (!info.mIsBezier && rOptions.mTarget == BasisTarget::Lagrange);
+
+        std::vector<double> mat;
+        if (!same_basis) {
+            mat = rOptions.mTarget == BasisTarget::Bezier
+                      ? lagrange::lagrange_to_bezier_matrix(info.mShape, info.mOrder)
+                      : lagrange::bezier_to_lagrange_matrix(info.mShape, info.mOrder);
+        }
+
+        const CellType out_type = ec_target_cell_type(info.mShape, rOptions.mTarget);
+        NDArray conn(DType::Int64, {nc, k});
+        std::int64_t* pc = conn.As<std::int64_t>();
+        NDArray deg_arr(DType::Int32, {nc, std::size_t{3}});
+        std::int32_t* pdeg = deg_arr.As<std::int32_t>();
+
+        for (std::size_t c = 0; c < nc; ++c) {
+            const std::size_t base_pt = new_pts.size();
+            std::vector<std::int64_t> nids(k);
+            for (std::size_t i = 0; i < k; ++i)
+                nids[i] = detail::read_int(in_conn, c * k + i);
+            // Fix Hexahedron27 vertical-edge swap (18 <-> 19) to VTK Lagrange lattice order.
+            if (ct == CellType::Hexahedron27)
+                std::swap(nids[18], nids[19]);
+
+            std::vector<Vec3> cpts(k);
+            for (std::size_t i = 0; i < k; ++i) {
+                const auto u = static_cast<std::size_t>(nids[i]);
+                cpts[i] = {detail::read_double(pts_in, u * pdim + 0),
+                           pdim > 1 ? detail::read_double(pts_in, u * pdim + 1) : 0.0,
+                           pdim > 2 ? detail::read_double(pts_in, u * pdim + 2) : 0.0};
+            }
+
+            for (std::size_t row = 0; row < k; ++row) {
+                Vec3 p{0.0, 0.0, 0.0};
+                if (same_basis) {
+                    p = cpts[row];
+                } else {
+                    for (std::size_t col = 0; col < k; ++col) {
+                        const double w = mat[row * k + col];
+                        p[0] += w * cpts[col][0];
+                        p[1] += w * cpts[col][1];
+                        p[2] += w * cpts[col][2];
+                    }
+                }
+                new_pts.push_back(p);
+                pc[c * k + row] = static_cast<std::int64_t>(base_pt + row);
+            }
+
+            for (std::size_t fi = 0; fi < field_names.size(); ++fi) {
+                const NDArray& src = rMesh.PointData(field_names[fi]);
+                const std::size_t ncomp = field_comps[fi];
+                auto& dst = new_fields[fi];
+                for (std::size_t row = 0; row < k; ++row) {
+                    for (std::size_t comp = 0; comp < ncomp; ++comp) {
+                        double val = 0.0;
+                        if (same_basis) {
+                            val = detail::read_double(
+                                src, static_cast<std::size_t>(nids[row]) * ncomp + comp);
+                        } else {
+                            for (std::size_t col = 0; col < k; ++col)
+                                val += mat[row * k + col] *
+                                       detail::read_double(
+                                           src, static_cast<std::size_t>(nids[col]) * ncomp + comp);
+                        }
+                        dst.push_back(val);
+                    }
+                }
+            }
+
+            const std::int32_t ord = static_cast<std::int32_t>(info.mOrder);
+            pdeg[c * 3 + 0] = ord;
+            pdeg[c * 3 + 1] = info.mDim >= 2 ? ord : 0;
+            pdeg[c * 3 + 2] = info.mDim >= 3 ? ord : 0;
+            ++num_converted;
+        }
+        out.AddCellBlock(cell_type_name(out_type), std::move(conn));
+        degrees_blocks.push_back(std::move(deg_arr));
+    }
+
+    NDArray out_pts(DType::Float64, {new_pts.size(), pdim});
+    double* po = out_pts.As<double>();
+    for (std::size_t i = 0; i < new_pts.size(); ++i) {
+        po[i * pdim + 0] = new_pts[i][0];
+        if (pdim > 1)
+            po[i * pdim + 1] = new_pts[i][1];
+        if (pdim > 2)
+            po[i * pdim + 2] = new_pts[i][2];
+    }
+    out.AssignPoints(std::move(out_pts));
+
+    for (std::size_t fi = 0; fi < field_names.size(); ++fi) {
+        const std::size_t ncomp = field_comps[fi];
+        NDArray fa = ncomp == 1 ? NDArray(DType::Float64, {new_pts.size()})
+                                : NDArray(DType::Float64, {new_pts.size(), ncomp});
+        std::copy(new_fields[fi].begin(), new_fields[fi].end(), fa.As<double>());
+        out.AddPointData(field_names[fi], std::move(fa));
+    }
+
+    if (!degrees_blocks.empty())
+        out.AddCellData("HigherOrderDegrees", std::move(degrees_blocks));
+
+    ChangeBasisResult res;
+    res.mMesh = std::move(out);
+    res.mNumConverted = num_converted;
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/evaluate_cells.cpp =====
 // ===== begin src/cpp/src/operations/extrude.cpp =====
 #include <algorithm>
 #include <array>
@@ -264125,6 +267713,278 @@ FlipNormalsResult flip_normals(const Mesh& rMesh, const std::string& rRegion) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/flip_normals.cpp =====
+// ===== begin src/cpp/src/operations/fvm_quality.cpp =====
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+QualityMetricSummary fvm_summarize(const std::vector<double>& rValues) {
+    QualityMetricSummary s{};
+    s.mMin = std::numeric_limits<double>::infinity();
+    s.mMax = -std::numeric_limits<double>::infinity();
+    s.mMean = 0.0;
+    s.mCount = 0;
+    s.mHistogram.fill(0);
+
+    double sum = 0.0;
+    for (double v : rValues) {
+        if (!std::isfinite(v))
+            continue;
+        s.mMin = std::min(s.mMin, v);
+        s.mMax = std::max(s.mMax, v);
+        sum += v;
+        ++s.mCount;
+    }
+    if (s.mCount == 0) {
+        s.mMin = std::numeric_limits<double>::quiet_NaN();
+        s.mMax = std::numeric_limits<double>::quiet_NaN();
+        s.mMean = std::numeric_limits<double>::quiet_NaN();
+        return s;
+    }
+    s.mMean = sum / static_cast<double>(s.mCount);
+    const double span = s.mMax - s.mMin;
+    for (double v : rValues) {
+        if (!std::isfinite(v))
+            continue;
+        int bin = 0;
+        if (span > 0.0) {
+            bin = static_cast<int>(std::floor((v - s.mMin) / span * QualityMetricSummary::K));
+            bin = std::clamp(bin, 0, QualityMetricSummary::K - 1);
+        }
+        ++s.mHistogram[static_cast<std::size_t>(bin)];
+    }
+    return s;
+}
+
+}  // namespace
+
+FvmQualityReport compute_fvm_quality(const Mesh& rMesh) {
+    FvmQualityReport report;
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+    const std::vector<std::int64_t> bases = detail::block_bases(rMesh);
+    const std::size_t total_cells =
+        bases.empty() ? 0 : static_cast<std::size_t>(bases.back());
+
+    // Allocate NaN-initialized per-block output cell arrays for all 4 metrics.
+    const double qnan = std::numeric_limits<double>::quiet_NaN();
+    std::vector<std::vector<double>> cell_nonortho(nblocks);
+    std::vector<std::vector<double>> cell_skew(nblocks);
+    std::vector<std::vector<double>> cell_vratio(nblocks);
+    std::vector<std::vector<double>> cell_pyr(nblocks);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const std::size_t nc = rMesh.Cells(b).NumCells();
+        cell_nonortho[b].assign(nc, qnan);
+        cell_skew[b].assign(nc, qnan);
+        cell_vratio[b].assign(nc, qnan);
+        cell_pyr[b].assign(nc, qnan);
+    }
+
+    const detail::GlobalFaces gf = detail::build_global_faces(rMesh);
+    report.mNumCells = static_cast<std::int64_t>(gf.NumCells());
+    report.mNumFaces = static_cast<std::int64_t>(gf.NumFaces());
+
+    const std::size_t npts = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    const NDArray& pts_arr = rMesh.Points();
+    std::vector<Vec3> xyz(npts);
+    for (std::size_t i = 0; i < npts; ++i) {
+        xyz[i] = {detail::read_double(pts_arr, i * pdim + 0),
+                  pdim > 1 ? detail::read_double(pts_arr, i * pdim + 1) : 0.0,
+                  pdim > 2 ? detail::read_double(pts_arr, i * pdim + 2) : 0.0};
+    }
+
+    // Cell centroids and volumes (global block-major indexing).
+    const std::vector<double> centroids = detail::cell_centroids(rMesh, total_cells);
+    std::vector<double> volumes(total_cells, 0.0);
+    for (std::size_t b = 0; b < nblocks; ++b) {
+        const auto cb = rMesh.Cells(b);
+        const std::size_t base = static_cast<std::size_t>(bases[b]);
+        if (cell_type_dimension(cell_type_from_name(cb.Type())) != 3)
+            continue;
+        parallel_for(cb.NumCells(), [&](std::size_t c) {
+            detail::CellRings rings;
+            std::vector<Vec3> local_pts;
+            if (detail::cell_rings(cb, c, pts_arr, pdim, rings, local_pts)) {
+                const detail::PolyMeasure pm = detail::poly_measure(rings, local_pts.data());
+                volumes[base + c] = std::abs(pm.mVolume);
+            }
+        });
+    }
+
+    // Collect interior face indices.
+    std::vector<std::size_t> interior_faces;
+    interior_faces.reserve(gf.NumFaces());
+    for (std::size_t f = 0; f < gf.NumFaces(); ++f) {
+        if (gf.mNeighbour[f] >= 0)
+            interior_faces.push_back(f);
+    }
+    const std::size_t n_int = interior_faces.size();
+    report.mNumInteriorFaces = static_cast<std::int64_t>(n_int);
+
+    std::vector<double> face_nonortho(n_int, qnan);
+    std::vector<double> face_skew(n_int, qnan);
+    std::vector<double> face_vratio(n_int, qnan);
+    std::vector<double> face_pyr(n_int, qnan);
+
+    constexpr double kRadToDeg = 180.0 / 3.14159265358979323846;
+
+    parallel_for(n_int, [&](std::size_t idx) {
+        const std::size_t f = interior_faces[idx];
+        const std::int64_t o_compact = gf.mOwner[f];
+        const std::int64_t n_compact = gf.mNeighbour[f];
+        const std::size_t o_glob =
+            static_cast<std::size_t>(gf.mCellToGlobal[static_cast<std::size_t>(o_compact)]);
+        const std::size_t n_glob =
+            static_cast<std::size_t>(gf.mCellToGlobal[static_cast<std::size_t>(n_compact)]);
+
+        const Vec3 c_o{centroids[o_glob * 3 + 0], centroids[o_glob * 3 + 1],
+                       centroids[o_glob * 3 + 2]};
+        const Vec3 c_n{centroids[n_glob * 3 + 0], centroids[n_glob * 3 + 1],
+                       centroids[n_glob * 3 + 2]};
+
+        const std::size_t fn = gf.FaceSize(f);
+        const std::int64_t* fids = gf.Face(f);
+        std::vector<Vec3> fpts(fn);
+        std::vector<std::uint32_t> ring(fn);
+        for (std::size_t i = 0; i < fn; ++i) {
+            fpts[i] = xyz[static_cast<std::size_t>(fids[i])];
+            ring[i] = static_cast<std::uint32_t>(i);
+        }
+        const Vec3 area_vec = detail::polygon_area_vector(fpts.data(), fn);
+        const double area = detail::vec3_norm(area_vec);
+        const Vec3 c_f = detail::polygon_centroid(fpts.data(), ring.data(), fn);
+
+        // Face diameter: max pairwise distance among face vertices.
+        double diam2 = 0.0;
+        for (std::size_t i = 0; i < fn; ++i) {
+            const Vec3& pi = xyz[static_cast<std::size_t>(fids[i])];
+            for (std::size_t j = i + 1; j < fn; ++j) {
+                const Vec3& pj = xyz[static_cast<std::size_t>(fids[j])];
+                diam2 = std::max(diam2, detail::vec3_norm_sq(detail::vec3_sub(pj, pi)));
+            }
+        }
+        const double diam = std::sqrt(diam2);
+
+        const Vec3 d = detail::vec3_sub(c_n, c_o);
+        const double d_len = detail::vec3_norm(d);
+
+        if (area > 1e-30 && d_len > 1e-30) {
+            const Vec3 n_hat = detail::vec3_scale(area_vec, 1.0 / area);
+            const Vec3 d_hat = detail::vec3_scale(d, 1.0 / d_len);
+            const double cos_a = std::clamp(detail::vec3_dot(n_hat, d_hat), -1.0, 1.0);
+            face_nonortho[idx] = std::acos(cos_a) * kRadToDeg;
+
+            // Face skewness: intersection of C_O -> C_N with face plane.
+            const double denom = detail::vec3_dot(d, n_hat);
+            const double numer = detail::vec3_dot(detail::vec3_sub(c_f, c_o), n_hat);
+            double skew = 0.0;
+            if (std::abs(denom) > 1e-30 && diam > 1e-30) {
+                const double t = numer / denom;
+                const Vec3 p_i = detail::vec3_add(c_o, detail::vec3_scale(d, t));
+                skew = detail::vec3_norm(detail::vec3_sub(p_i, c_f)) / diam;
+            } else if (diam > 1e-30) {
+                skew = std::numeric_limits<double>::infinity();
+            }
+            face_skew[idx] = skew;
+
+            // Signed pyramid heights from owner and neighbour.
+            const double h_o = detail::vec3_dot(detail::vec3_sub(c_f, c_o), n_hat);
+            const double h_n = detail::vec3_dot(detail::vec3_sub(c_n, c_f), n_hat);
+            face_pyr[idx] = std::min(h_o, h_n);
+        }
+
+        // Adjacent volume growth ratio.
+        const double vo = volumes[o_glob];
+        const double vn = volumes[n_glob];
+        if (vo > 1e-30 && vn > 1e-30)
+            face_vratio[idx] = std::max(vo, vn) / std::min(vo, vn);
+    });
+
+    // Serial deterministic projection onto owner and neighbour cells + severity counts.
+    auto update_max = [](double& rDst, double Val) {
+        if (!std::isfinite(Val))
+            return;
+        if (!std::isfinite(rDst) || Val > rDst)
+            rDst = Val;
+    };
+    auto update_min = [](double& rDst, double Val) {
+        if (!std::isfinite(Val))
+            return;
+        if (!std::isfinite(rDst) || Val < rDst)
+            rDst = Val;
+    };
+
+    for (std::size_t idx = 0; idx < n_int; ++idx) {
+        if (std::isfinite(face_nonortho[idx]) && face_nonortho[idx] > 70.0)
+            ++report.mNumSevereNonOrtho;
+        if (std::isfinite(face_pyr[idx]) && face_pyr[idx] < 0.0)
+            ++report.mNumNegativePyramids;
+
+        const std::size_t f = interior_faces[idx];
+        const std::int64_t g_pair[2] = {
+            gf.mCellToGlobal[static_cast<std::size_t>(gf.mOwner[f])],
+            gf.mCellToGlobal[static_cast<std::size_t>(gf.mNeighbour[f])],
+        };
+        for (std::int64_t g : g_pair) {
+            const auto [b, row] = detail::global_to_block_row(bases, g);
+            if (b == static_cast<std::size_t>(-1))
+                continue;
+            const std::size_t c = static_cast<std::size_t>(row);
+            update_max(cell_nonortho[b][c], face_nonortho[idx]);
+            update_max(cell_skew[b][c], face_skew[idx]);
+            update_max(cell_vratio[b][c], face_vratio[idx]);
+            update_min(cell_pyr[b][c], face_pyr[idx]);
+        }
+    }
+
+    report.mMetrics.emplace_back(kFvmNonOrthogonalityName, fvm_summarize(face_nonortho));
+    report.mMetrics.emplace_back(kFvmFaceSkewnessName, fvm_summarize(face_skew));
+    report.mMetrics.emplace_back(kFvmVolumeRatioName, fvm_summarize(face_vratio));
+    report.mMetrics.emplace_back(kFvmMinPyramidHeightName, fvm_summarize(face_pyr));
+
+    auto to_arrays = [&](const std::vector<std::vector<double>>& rBlocks) {
+        std::vector<NDArray> out;
+        out.reserve(nblocks);
+        for (std::size_t b = 0; b < nblocks; ++b) {
+            NDArray a(DType::Float64, {rBlocks[b].size()});
+            std::copy(rBlocks[b].begin(), rBlocks[b].end(), a.As<double>());
+            out.push_back(std::move(a));
+        }
+        return out;
+    };
+
+    report.mCellArrays.emplace_back(kFvmNonOrthogonalityName, to_arrays(cell_nonortho));
+    report.mCellArrays.emplace_back(kFvmFaceSkewnessName, to_arrays(cell_skew));
+    report.mCellArrays.emplace_back(kFvmVolumeRatioName, to_arrays(cell_vratio));
+    report.mCellArrays.emplace_back(kFvmMinPyramidHeightName, to_arrays(cell_pyr));
+
+    return report;
+}
+
+Mesh attach_fvm_quality(const Mesh& rMesh) {
+    FvmQualityReport rep = compute_fvm_quality(rMesh);
+    Mesh out = detail::clone_mesh(rMesh);
+    for (auto& [name, blocks] : rep.mCellArrays)
+        out.AddCellData(name, std::move(blocks));
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/fvm_quality.cpp =====
 // ===== begin src/cpp/src/operations/geodesic.cpp =====
 #include <algorithm>
 #include <array>
@@ -265159,11 +269019,83 @@ GradientArrayResult gradient_array(const Mesh& rMesh, const GradientOptions& rOp
         std::vector<std::uint8_t> flag_fallback(ncells, 0);
 
         if (!eligible[b]) {
-            for (std::size_t i = 0; i < ncells * out_comp; ++i)
-                pdst[i] = std::nan("");
-            skipped += static_cast<std::int64_t>(ncells);
-            blocks.push_back(std::move(dst));
-            continue;
+            // High-order / VTK Lagrange & Bezier cells (roadmap 15.3.1): evaluate
+            // exact physical gradient at the reference centroid instead of NaN.
+            bool ho_handled = false;
+            if (!cb.IsPolyhedron() && ncells > 0) {
+                const CellType ct = cell_type_from_name(cb.Type());
+                const std::size_t k0 = cb.IsRagged() ? cb.RowSize(0) : cb.NodesPerCell();
+                detail::ReferenceElementInfo info;
+                if (detail::reference_element_info(ct, k0, info) && info.mDim == dim) {
+                    ho_handled = true;
+                    std::array<double, 3> xi_c = {0.5, 0.5, 0.5};
+                    if (info.mShape == lagrange::Shape::Triangle)
+                        xi_c = {1.0 / 3.0, 1.0 / 3.0, 0.0};
+                    else if (info.mShape == lagrange::Shape::Tetra)
+                        xi_c = {0.25, 0.25, 0.25};
+                    else if (info.mShape == lagrange::Shape::Wedge)
+                        xi_c = {1.0 / 3.0, 1.0 / 3.0, 0.5};
+                    else if (info.mShape == lagrange::Shape::Line)
+                        xi_c = {0.5, 0.0, 0.0};
+                    else if (info.mShape == lagrange::Shape::Quad)
+                        xi_c = {0.5, 0.5, 0.0};
+
+                    const NDArray* p_conn = cb.IsRagged() ? nullptr : &cb.Conn();
+                    parallel_for(ncells, [&](std::size_t c) {
+                        std::vector<std::int64_t> nids;
+                        if (cb.IsRagged()) {
+                            const std::int64_t* row = cb.Row(c);
+                            nids.assign(row, row + cb.RowSize(c));
+                        } else {
+                            nids.resize(k0);
+                            for (std::size_t i = 0; i < k0; ++i)
+                                nids[i] = detail::read_int(*p_conn, c * k0 + i);
+                        }
+                        const std::size_t k = nids.size();
+                        std::vector<detail::Vec3> cpts(k);
+                        for (std::size_t i = 0; i < k; ++i) {
+                            const auto u = static_cast<std::size_t>(nids[i]);
+                            cpts[i] = {points_v.Data()[u * pdim + 0],
+                                       pdim > 1 ? points_v.Data()[u * pdim + 1] : 0.0,
+                                       pdim > 2 ? points_v.Data()[u * pdim + 2] : 0.0};
+                        }
+                        std::vector<double> vals;
+                        std::vector<detail::Vec3> grads;
+                        double meas = 0.0;
+                        if (!detail::shape_eval_and_jacobian(ct, cpts, xi_c, vals, grads, meas)) {
+                            for (std::size_t i = 0; i < out_comp; ++i)
+                                pdst[c * out_comp + i] = std::nan("");
+                            flag_skipped[c] = 1;
+                            return;
+                        }
+                        std::vector<double> grad(work_comp * 3, 0.0);
+                        std::vector<double> val0(work_comp, 0.0);
+                        for (std::size_t comp = 0; comp < work_comp; ++comp) {
+                            for (std::size_t i = 0; i < k; ++i) {
+                                const double fv =
+                                    pwork[static_cast<std::size_t>(nids[i]) * work_comp + comp];
+                                val0[comp] += vals[i] * fv;
+                                grad[comp * 3 + 0] += grads[i][0] * fv;
+                                grad[comp * 3 + 1] += grads[i][1] * fv;
+                                grad[comp * 3 + 2] += grads[i][2] * fv;
+                            }
+                        }
+                        grad_apply_operator(rOptions.mOperator, grad.data(), val0.data(), work_comp,
+                                            pdst + c * out_comp);
+                    });
+                    for (std::size_t c = 0; c < ncells; ++c)
+                        skipped += flag_skipped[c];
+                    blocks.push_back(std::move(dst));
+                    continue;
+                }
+            }
+            if (!ho_handled) {
+                for (std::size_t i = 0; i < ncells * out_comp; ++i)
+                    pdst[i] = std::nan("");
+                skipped += static_cast<std::int64_t>(ncells);
+                blocks.push_back(std::move(dst));
+                continue;
+            }
         }
 
         const std::size_t base = static_cast<std::size_t>(bases[b]);
@@ -270023,8 +273955,225 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
     std::sort(isovalues.begin(), isovalues.end());
     isovalues.erase(std::unique(isovalues.begin(), isovalues.end()), isovalues.end());
 
+    // High-order field isocontours (roadmap 15.3.4): when the mesh contains
+    // order >= 2 cells, subdivide them on a fine reference lattice (sampling
+    // geometry and fields via the exact high-order shape functions) so the
+    // level set follows the true polynomial field rather than the linear corners.
+    bool has_high_order = false;
+    int max_ho_order = 1;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.NumCells() == 0 || cb.IsRagged())
+            continue;
+        detail::ReferenceElementInfo info;
+        if (detail::reference_element_info(cell_type_from_name(cb.Type()), cb.NodesPerCell(),
+                                           info) &&
+            info.mOrder >= 2) {
+            has_high_order = true;
+            max_ho_order = std::max(max_ho_order, info.mOrder);
+        }
+    }
+
+    Mesh ho_work;
+    const Mesh* p_source = &rMesh;
+    if (has_high_order) {
+        // Subdivide every high-order block into linear sub-cells via reference_element.
+        const int n_sub = std::max(2 * max_ho_order, 4);
+        const NDArray& pts_in = rMesh.Points();
+        const std::size_t pdim = rMesh.PointDim();
+        const NDArray& arr_in = rMesh.PointData(rOptions.mArrayName);
+        const std::size_t arr_rows = detail::rows(arr_in);
+        const std::size_t arr_comp = arr_rows == 0 ? 0 : arr_in.Size() / arr_rows;
+
+        std::vector<detail::Vec3> sub_pts;
+        std::vector<double> sub_field;
+        std::vector<std::int64_t> sub_tris;
+        std::vector<std::int64_t> sub_tets;
+        const double inv_n = 1.0 / static_cast<double>(n_sub);
+
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            if (cb.NumCells() == 0 || cb.IsRagged())
+                continue;
+            const std::size_t k = cb.NodesPerCell();
+            const CellType ct = cell_type_from_name(cb.Type());
+            const NDArray& conn = cb.Conn();
+            detail::ReferenceElementInfo info;
+            if (!detail::reference_element_info(ct, k, info))
+                continue;
+
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                std::vector<std::int64_t> nids(k);
+                std::vector<detail::Vec3> cpts(k);
+                std::vector<double> cvals(k * arr_comp);
+                for (std::size_t i = 0; i < k; ++i) {
+                    nids[i] = detail::read_int(conn, c * k + i);
+                    const auto u = static_cast<std::size_t>(nids[i]);
+                    cpts[i] = {detail::read_double(pts_in, u * pdim + 0),
+                               pdim > 1 ? detail::read_double(pts_in, u * pdim + 1) : 0.0,
+                               pdim > 2 ? detail::read_double(pts_in, u * pdim + 2) : 0.0};
+                    for (std::size_t comp = 0; comp < arr_comp; ++comp)
+                        cvals[i * arr_comp + comp] =
+                            detail::read_double(arr_in, u * arr_comp + comp);
+                }
+
+                auto add_node = [&](const std::array<double, 3>& rXi) -> std::int64_t {
+                    std::vector<double> nv;
+                    std::vector<std::array<double, 3>> ng;
+                    detail::eval_reference_shape(ct, k, rXi, nv, ng);
+                    detail::Vec3 p{0.0, 0.0, 0.0};
+                    for (std::size_t i = 0; i < k; ++i) {
+                        p[0] += nv[i] * cpts[i][0];
+                        p[1] += nv[i] * cpts[i][1];
+                        p[2] += nv[i] * cpts[i][2];
+                    }
+                    const auto id = static_cast<std::int64_t>(sub_pts.size());
+                    sub_pts.push_back(p);
+                    for (std::size_t comp = 0; comp < arr_comp; ++comp) {
+                        double v = 0.0;
+                        for (std::size_t i = 0; i < k; ++i)
+                            v += nv[i] * cvals[i * arr_comp + comp];
+                        sub_field.push_back(v);
+                    }
+                    return id;
+                };
+
+                if (info.mShape == lagrange::Shape::Quad) {
+                    std::vector<std::int64_t> grid(static_cast<std::size_t>((n_sub + 1) * (n_sub + 1)));
+                    for (int j = 0; j <= n_sub; ++j)
+                        for (int i = 0; i <= n_sub; ++i)
+                            grid[static_cast<std::size_t>(j * (n_sub + 1) + i)] =
+                                add_node({i * inv_n, j * inv_n, 0.0});
+                    for (int j = 0; j < n_sub; ++j) {
+                        for (int i = 0; i < n_sub; ++i) {
+                            const std::int64_t v00 = grid[static_cast<std::size_t>(j * (n_sub + 1) + i)];
+                            const std::int64_t v10 = grid[static_cast<std::size_t>(j * (n_sub + 1) + i + 1)];
+                            const std::int64_t v11 = grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i + 1)];
+                            const std::int64_t v01 = grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i)];
+                            sub_tris.insert(sub_tris.end(), {v00, v10, v11, v00, v11, v01});
+                        }
+                    }
+                } else if (info.mShape == lagrange::Shape::Triangle) {
+                    std::vector<std::vector<std::int64_t>> row_ids(static_cast<std::size_t>(n_sub + 1));
+                    for (int j = 0; j <= n_sub; ++j) {
+                        row_ids[static_cast<std::size_t>(j)].resize(static_cast<std::size_t>(n_sub - j + 1));
+                        for (int i = 0; i <= n_sub - j; ++i)
+                            row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] =
+                                add_node({i * inv_n, j * inv_n, 0.0});
+                    }
+                    for (int j = 0; j < n_sub; ++j) {
+                        for (int i = 0; i < n_sub - j; ++i) {
+                            const std::int64_t a = row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)];
+                            const std::int64_t b = row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i + 1)];
+                            const std::int64_t d = row_ids[static_cast<std::size_t>(j + 1)][static_cast<std::size_t>(i)];
+                            sub_tris.insert(sub_tris.end(), {a, b, d});
+                            if (i + 1 < n_sub - j) {
+                                const std::int64_t e = row_ids[static_cast<std::size_t>(j + 1)][static_cast<std::size_t>(i + 1)];
+                                sub_tris.insert(sub_tris.end(), {b, e, d});
+                            }
+                        }
+                    }
+                } else if (info.mShape == lagrange::Shape::Hexahedron) {
+                    const int s = n_sub + 1;
+                    std::vector<std::int64_t> grid(static_cast<std::size_t>(s * s * s));
+                    for (int kk = 0; kk <= n_sub; ++kk)
+                        for (int j = 0; j <= n_sub; ++j)
+                            for (int i = 0; i <= n_sub; ++i)
+                                grid[static_cast<std::size_t>((kk * s + j) * s + i)] =
+                                    add_node({i * inv_n, j * inv_n, kk * inv_n});
+                    for (int kk = 0; kk < n_sub; ++kk) {
+                        for (int j = 0; j < n_sub; ++j) {
+                            for (int i = 0; i < n_sub; ++i) {
+                                auto at = [&](int di, int dj, int dk) {
+                                    return grid[static_cast<std::size_t>(((kk + dk) * s + (j + dj)) * s + (i + di))];
+                                };
+                                const std::int64_t v0 = at(0, 0, 0), v1 = at(1, 0, 0),
+                                                   v2 = at(1, 1, 0), v3 = at(0, 1, 0),
+                                                   v4 = at(0, 0, 1), v5 = at(1, 0, 1),
+                                                   v6 = at(1, 1, 1), v7 = at(0, 1, 1);
+                                // Kuhn 6-tet decomposition of the sub-cube.
+                                sub_tets.insert(sub_tets.end(),
+                                                {v0, v1, v2, v6, v0, v2, v3, v6, v0, v3, v7, v6,
+                                                 v0, v7, v4, v6, v0, v4, v5, v6, v0, v5, v1, v6});
+                            }
+                        }
+                    }
+                } else if (info.mShape == lagrange::Shape::Tetra) {
+                    // Recursive Kuhn subdivision of the reference tet via integer lattice.
+                    const int s = n_sub + 1;
+                    std::vector<std::int64_t> grid(static_cast<std::size_t>(s * s * s), -1);
+                    for (int kk = 0; kk <= n_sub; ++kk)
+                        for (int j = 0; j <= n_sub - kk; ++j)
+                            for (int i = 0; i <= n_sub - kk - j; ++i)
+                                grid[static_cast<std::size_t>((kk * s + j) * s + i)] =
+                                    add_node({i * inv_n, j * inv_n, kk * inv_n});
+                    auto at = [&](int i, int j, int kk) {
+                        return grid[static_cast<std::size_t>((kk * s + j) * s + i)];
+                    };
+                    for (int kk = 0; kk < n_sub; ++kk) {
+                        for (int j = 0; j < n_sub - kk; ++j) {
+                            for (int i = 0; i < n_sub - kk - j; ++i) {
+                                // Corner upright tet
+                                sub_tets.insert(sub_tets.end(),
+                                                {at(i, j, kk), at(i + 1, j, kk), at(i, j + 1, kk),
+                                                 at(i, j, kk + 1)});
+                                // Octahedron inside tet (4 tets) when i+j+kk <= n_sub - 2
+                                if (i + j + kk <= n_sub - 2) {
+                                    const std::int64_t a = at(i + 1, j, kk);
+                                    const std::int64_t b0 = at(i, j + 1, kk);
+                                    const std::int64_t c0 = at(i, j, kk + 1);
+                                    const std::int64_t d = at(i + 1, j + 1, kk);
+                                    const std::int64_t e = at(i + 1, j, kk + 1);
+                                    const std::int64_t f = at(i, j + 1, kk + 1);
+                                    sub_tets.insert(sub_tets.end(),
+                                                    {a, d, b0, e, b0, d, f, e, b0, f, c0, e, a, b0,
+                                                     c0, e});
+                                }
+                                // Inverted tet when i+j+kk <= n_sub - 3
+                                if (i + j + kk <= n_sub - 3) {
+                                    sub_tets.insert(sub_tets.end(),
+                                                    {at(i + 1, j + 1, kk), at(i + 1, j, kk + 1),
+                                                     at(i, j + 1, kk + 1),
+                                                     at(i + 1, j + 1, kk + 1)});
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!sub_pts.empty() && (!sub_tris.empty() || !sub_tets.empty())) {
+            NDArray sp(DType::Float64, {sub_pts.size(), pdim});
+            double* psp = sp.As<double>();
+            for (std::size_t i = 0; i < sub_pts.size(); ++i) {
+                psp[i * pdim + 0] = sub_pts[i][0];
+                if (pdim > 1)
+                    psp[i * pdim + 1] = sub_pts[i][1];
+                if (pdim > 2)
+                    psp[i * pdim + 2] = sub_pts[i][2];
+            }
+            ho_work.AssignPoints(std::move(sp));
+            if (!sub_tris.empty()) {
+                NDArray tc(DType::Int64, {sub_tris.size() / 3, std::size_t{3}});
+                std::copy(sub_tris.begin(), sub_tris.end(), tc.As<std::int64_t>());
+                ho_work.AddCellBlock(cell_type_name(CellType::Triangle), std::move(tc));
+            }
+            if (!sub_tets.empty()) {
+                NDArray tc(DType::Int64, {sub_tets.size() / 4, std::size_t{4}});
+                std::copy(sub_tets.begin(), sub_tets.end(), tc.As<std::int64_t>());
+                ho_work.AddCellBlock(cell_type_name(CellType::Tetra), std::move(tc));
+            }
+            NDArray sf = arr_comp == 1 ? NDArray(DType::Float64, {sub_pts.size()})
+                                       : NDArray(DType::Float64, {sub_pts.size(), arr_comp});
+            std::copy(sub_field.begin(), sub_field.end(), sf.As<double>());
+            ho_work.AddPointData(rOptions.mArrayName, std::move(sf));
+            p_source = &ho_work;
+        }
+    }
+
     // Simplexify once; every isovalue is cut against the same prepared input.
-    const detail::MarchingInput input = detail::marching_prepare(rMesh);
+    const detail::MarchingInput input = detail::marching_prepare(*p_source);
     const Mesh& simp = input.Simp();
     const std::size_t nnodes = simp.NumPoints();
     const std::size_t dim = simp.PointDim();
@@ -279062,6 +283211,63 @@ namespace meshioplusplus {
 MeshOperatorResult mesh_operator(const Mesh& rMesh, const MeshOperatorOptions& rOptions) {
     using detail::SparseTriplet;
     using detail::Vec3;
+
+    if (detail::mesh_is_pure_tetra(rMesh)) {
+        const detail::TetFem fem = detail::build_tet_fem(rMesh, "mesh_operator");
+        const std::size_t n = fem.mPoints.size();
+        std::size_t rows = n;
+        std::vector<SparseTriplet> triplets;
+        switch (rOptions.mKind) {
+            case MeshOperatorKind::Laplacian: {
+                std::vector<double> mass;
+                detail::tet_fem_assemble(fem, mass, triplets);
+                break;
+            }
+            case MeshOperatorKind::MassLumped: {
+                std::vector<double> mass;
+                std::vector<SparseTriplet> stiffness;
+                detail::tet_fem_assemble(fem, mass, stiffness);
+                for (std::size_t i = 0; i < n; ++i)
+                    if (mass[i] != 0.0)
+                        triplets.push_back({i, i, mass[i]});
+                break;
+            }
+            case MeshOperatorKind::MassConsistent: {
+                double M[4][4];
+                for (const detail::TetFemCell& tc : fem.mCells) {
+                    detail::tet_p1_mass_consistent(tc.mVolume, M);
+                    for (std::size_t a = 0; a < 4; ++a)
+                        for (std::size_t b = 0; b < 4; ++b)
+                            triplets.push_back({static_cast<std::size_t>(tc.mNodes[a]),
+                                                static_cast<std::size_t>(tc.mNodes[b]), M[a][b]});
+                }
+                break;
+            }
+            case MeshOperatorKind::Gradient: {
+                rows = 3 * static_cast<std::size_t>(fem.mNumInput);
+                for (const detail::TetFemCell& tc : fem.mCells) {
+                    for (std::size_t a = 0; a < 4; ++a)
+                        for (std::size_t k = 0; k < 3; ++k)
+                            triplets.push_back({3 * static_cast<std::size_t>(tc.mIndex) + k,
+                                                static_cast<std::size_t>(tc.mNodes[a]),
+                                                tc.mGrad[a][k]});
+                }
+                break;
+            }
+            default:
+                throw std::invalid_argument("mesh_operator: unknown kind");
+        }
+        const detail::SparseCsr csr = detail::csr_from_triplets(rows, n, std::move(triplets));
+        MeshOperatorResult out;
+        out.mRows = static_cast<std::int64_t>(csr.mRows);
+        out.mCols = static_cast<std::int64_t>(csr.mCols);
+        out.mIndptr.assign(csr.mStart.begin(), csr.mStart.end());
+        out.mIndices.assign(csr.mCol.begin(), csr.mCol.end());
+        out.mValues = csr.mValue;
+        out.mNumDegenerate = fem.mNumDegenerate;
+        return out;
+    }
+
     const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "mesh_operator");
     const std::size_t n = fem.mPoints.size();
 
@@ -289184,6 +293390,39 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         return std::move(r.mMesh);
     }
 
+    if (op == "Streamlines") {
+        StreamlinesOptions o;
+        o.mArray = pipe_text(rStep, "Array", "");
+        o.mSeeds = static_cast<std::int64_t>(pipe_number(rStep, "Seeds", 40.0));
+        const std::string dir = pipe_text(rStep, "Direction", "both");
+        if (dir == "both")
+            o.mDirection = StreamlineDirection::Both;
+        else if (dir == "forward")
+            o.mDirection = StreamlineDirection::Forward;
+        else if (dir == "backward")
+            o.mDirection = StreamlineDirection::Backward;
+        else
+            throw std::invalid_argument(
+                pipe_err(rStep, "'Direction' must be 'both', 'forward' or 'backward'"));
+        const std::string integ = pipe_text(rStep, "Integrator", "rk4");
+        if (integ == "rk4")
+            o.mIntegrator = StreamlineIntegrator::RK4;
+        else if (integ == "rk45")
+            o.mIntegrator = StreamlineIntegrator::RK45;
+        else
+            throw std::invalid_argument(pipe_err(rStep, "'Integrator' must be 'rk4' or 'rk45'"));
+        o.mStep = pipe_number(rStep, "Step", 0.0);
+        o.mMaxLength = pipe_number(rStep, "MaxLength", 0.5);
+        o.mMaxSteps = static_cast<std::int64_t>(pipe_number(rStep, "MaxSteps", 0.0));
+        o.mTerminalSpeed = pipe_number(rStep, "TerminalSpeed", 0.0);
+        o.mTolerance = pipe_number(rStep, "Tolerance", 1e-6);
+        StreamlinesResult r = streamlines(mesh, o);
+        pipe_push_step(rReport, rStep,
+                       {{"NumLines", static_cast<double>(r.mNumLines)},
+                        {"NumSeedsOutside", static_cast<double>(r.mNumSeedsOutside)}});
+        return std::move(r.mMesh);
+    }
+
     if (op == "ProjectToCad") {
         BrepInfo owned;
         const BrepInfo* p_brep = nullptr;
@@ -297512,7 +301751,23 @@ const char* const kQgMetrics[] = {
     "quality:diagonal_ratio",
 };
 
+const char* const kQgFvmMetrics[] = {
+    "fvm:non_orthogonality",
+    "fvm:face_skewness",
+    "fvm:volume_ratio",
+    "fvm:min_pyramid_height",
+};
+
+bool qg_is_fvm(const std::string& rMetric) {
+    return rMetric.rfind("fvm:", 0) == 0;
+}
+
 std::string qg_full_name(const std::string& rMetric) {
+    if (qg_is_fvm(rMetric)) {
+        for (const char* m : kQgFvmMetrics)
+            if (rMetric == m)
+                return rMetric;
+    }
     const std::string full = rMetric.rfind("quality:", 0) == 0 ? rMetric : "quality:" + rMetric;
     for (const char* m : kQgMetrics)
         if (full == m)
@@ -297520,6 +301775,8 @@ std::string qg_full_name(const std::string& rMetric) {
     std::string names;
     for (const char* m : kQgMetrics)
         names += (names.empty() ? "" : ", ") + std::string(m + 8);
+    for (const char* m : kQgFvmMetrics)
+        names += ", " + std::string(m);
     throw std::invalid_argument(std::string(kQgPrefix) + "unknown metric '" + rMetric +
                                 "' (expected one of " + names + ")");
 }
@@ -297545,7 +301802,8 @@ std::string qg_g(double v) {
 }
 
 std::string qg_name(const std::string& rMetric, double Min, double Max, double Fraction) {
-    const std::string m = rMetric.substr(8);
+    const std::string m =
+        rMetric.rfind("quality:", 0) == 0 ? rMetric.substr(8) : rMetric;
     std::string s;
     if (!std::isnan(Min) && !std::isnan(Max))
         s = qg_g(Min) + " <= " + m + " <= " + qg_g(Max);
@@ -297615,6 +301873,9 @@ QualityGateResult check_quality(const Mesh& rMesh, const QualityGateOptions& rOp
     result.mReport = compute_quality(rMesh);
     const QualityReport& rep = result.mReport;
 
+    bool have_fvm = false;
+    FvmQualityReport fvm_rep;
+
     for (const QualityThreshold& t : rOptions.mThresholds) {
         QualityCheck c;
         c.mMetric = qg_full_name(t.mMetric);
@@ -297630,9 +301891,19 @@ QualityGateResult check_quality(const Mesh& rMesh, const QualityGateOptions& rOp
         c.mName = qg_name(c.mMetric, t.mMin, t.mMax, t.mMaxFraction);
 
         const std::vector<NDArray>* arrays = nullptr;
-        for (const auto& kv : rep.mCellArrays)
-            if (kv.first == c.mMetric)
-                arrays = &kv.second;
+        if (qg_is_fvm(c.mMetric)) {
+            if (!have_fvm) {
+                fvm_rep = compute_fvm_quality(rMesh);
+                have_fvm = true;
+            }
+            for (const auto& kv : fvm_rep.mCellArrays)
+                if (kv.first == c.mMetric)
+                    arrays = &kv.second;
+        } else {
+            for (const auto& kv : rep.mCellArrays)
+                if (kv.first == c.mMetric)
+                    arrays = &kv.second;
+        }
         // The margin by which a value clears the bound (negative: violates it).
         auto margin = [&](double v) {
             double m = std::numeric_limits<double>::infinity();
@@ -297705,7 +301976,7 @@ std::string quality_gate_summary(const QualityGateResult& rResult) {
         s += std::string("  ") + (c.mPassed ? "pass" : "FAIL") + "  " + c.mName + ": " +
              std::to_string(c.mViolations) + " of " + std::to_string(c.mEvaluated) +
              " cells violate";
-        if (c.mMetric.rfind("quality:", 0) == 0 && c.mWorstCell >= 0)
+        if ((c.mMetric.rfind("quality:", 0) == 0 || qg_is_fvm(c.mMetric)) && c.mWorstCell >= 0)
             s += ", worst " + qg_g(c.mWorst) + " at cell " + std::to_string(c.mWorstCell);
         s += "\n";
     }
@@ -312399,6 +316670,710 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/sequence.cpp =====
+// ===== begin src/cpp/src/operations/shortest_path.cpp =====
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <queue>
+#include <stdexcept>
+#include <string>
+#include <tuple>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+std::string sp_lower(const std::string& rS) {
+    std::string out = rS;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+std::vector<Vec3> sp_read_xyz(const Mesh& rMesh) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    const NDArray& pts = rMesh.Points();
+    std::vector<Vec3> xyz(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        xyz[i] = {detail::read_double(pts, i * pdim + 0),
+                  pdim > 1 ? detail::read_double(pts, i * pdim + 1) : 0.0,
+                  pdim > 2 ? detail::read_double(pts, i * pdim + 2) : 0.0};
+    }
+    return xyz;
+}
+
+std::int64_t sp_nearest_vertex(const std::vector<Vec3>& rXyz, const Vec3& rP) {
+    double best = std::numeric_limits<double>::infinity();
+    std::int64_t best_id = -1;
+    for (std::size_t i = 0; i < rXyz.size(); ++i) {
+        const double d2 = detail::vec3_norm_sq(detail::vec3_sub(rXyz[i], rP));
+        if (d2 < best) {
+            best = d2;
+            best_id = static_cast<std::int64_t>(i);
+        }
+    }
+    return best_id;
+}
+
+Mesh sp_build_line_mesh(const std::vector<Vec3>& rPts, const std::vector<double>& rDists,
+                        const std::vector<std::int64_t>& rSrcCells) {
+    Mesh m;
+    const std::size_t n = rPts.size();
+    NDArray pts(DType::Float64, {n, std::size_t{3}});
+    double* pp = pts.As<double>();
+    for (std::size_t i = 0; i < n; ++i) {
+        pp[i * 3 + 0] = rPts[i][0];
+        pp[i * 3 + 1] = rPts[i][1];
+        pp[i * 3 + 2] = rPts[i][2];
+    }
+    m.AssignPoints(std::move(pts));
+
+    const std::size_t nseg = n >= 2 ? n - 1 : 0;
+    if (nseg > 0) {
+        NDArray conn(DType::Int64, {nseg, std::size_t{2}});
+        std::int64_t* pc = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < nseg; ++i) {
+            pc[i * 2 + 0] = static_cast<std::int64_t>(i);
+            pc[i * 2 + 1] = static_cast<std::int64_t>(i + 1);
+        }
+        m.AddCellBlock(cell_type_name(CellType::Line), std::move(conn));
+
+        NDArray sc(DType::Int64, {nseg});
+        std::int64_t* psc = sc.As<std::int64_t>();
+        for (std::size_t i = 0; i < nseg; ++i)
+            psc[i] = i < rSrcCells.size() ? rSrcCells[i] : -1;
+        m.AddCellData(kPathSourceCellName, {std::move(sc)});
+    }
+
+    NDArray da(DType::Float64, {n});
+    std::copy(rDists.begin(), rDists.end(), da.As<double>());
+    m.AddPointData(kPathDistanceName, std::move(da));
+    return m;
+}
+
+// Lookup an incident global cell id for edge (u, v) using a sorted edge->cell table.
+std::int64_t sp_find_edge_cell(const Mesh& rMesh, std::int64_t U, std::int64_t V,
+                               const std::vector<std::pair<std::uint64_t, std::int64_t>>& rMap) {
+    const std::int64_t lo = std::min(U, V);
+    const std::int64_t hi = std::max(U, V);
+    const std::uint64_t key =
+        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(lo)) << 32) |
+        static_cast<std::uint64_t>(static_cast<std::uint32_t>(hi));
+    auto it = std::lower_bound(rMap.begin(), rMap.end(), key,
+                               [](const auto& rP, std::uint64_t K) { return rP.first < K; });
+    if (it != rMap.end() && it->first == key)
+        return it->second;
+    (void)rMesh;
+    return -1;
+}
+
+std::vector<std::pair<std::uint64_t, std::int64_t>> sp_build_edge_cell_map(const Mesh& rMesh) {
+    std::vector<std::pair<std::uint64_t, std::int64_t>> out;
+    std::int64_t gcell = 0;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.IsRagged()) {
+            gcell += static_cast<std::int64_t>(cb.NumCells());
+            continue;
+        }
+        const std::size_t k = cb.NodesPerCell();
+        const NDArray& conn = cb.Conn();
+        for (std::size_t c = 0; c < cb.NumCells(); ++c, ++gcell) {
+            for (std::size_t i = 0; i < k; ++i) {
+                const std::int64_t u = detail::read_int(conn, c * k + i);
+                const std::int64_t v = detail::read_int(conn, c * k + ((i + 1) % k));
+                if (u == v)
+                    continue;
+                const std::int64_t lo = std::min(u, v);
+                const std::int64_t hi = std::max(u, v);
+                const std::uint64_t key =
+                    (static_cast<std::uint64_t>(static_cast<std::uint32_t>(lo)) << 32) |
+                    static_cast<std::uint64_t>(static_cast<std::uint32_t>(hi));
+                out.emplace_back(key, gcell);
+            }
+        }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end(),
+                          [](const auto& a, const auto& b) { return a.first == b.first; }),
+              out.end());
+    return out;
+}
+
+}  // namespace
+
+ShortestPathMethod shortest_path_method_from_name(const std::string& rName) {
+    const std::string low = sp_lower(rName);
+    if (low == "dijkstra")
+        return ShortestPathMethod::Dijkstra;
+    if (low == "heat_trace" || low == "heat-trace" || low == "heattrace")
+        return ShortestPathMethod::HeatTrace;
+    throw std::invalid_argument("shortest_path: unknown method '" + rName +
+                                "' (expected 'dijkstra' or 'heat_trace')");
+}
+
+ShortestPathResult shortest_path(const Mesh& rMesh, const ShortestPathOptions& rOptions) {
+    const std::size_t n = rMesh.NumPoints();
+    if (n == 0)
+        throw std::invalid_argument("shortest_path: mesh has no points");
+    const std::vector<Vec3> xyz = sp_read_xyz(rMesh);
+
+    const std::int64_t src =
+        rOptions.mHasSourcePoint ? sp_nearest_vertex(xyz, rOptions.mSourcePoint) : rOptions.mSource;
+    const std::int64_t dst =
+        rOptions.mHasTargetPoint ? sp_nearest_vertex(xyz, rOptions.mTargetPoint) : rOptions.mTarget;
+    if (src < 0 || static_cast<std::size_t>(src) >= n)
+        throw std::invalid_argument("shortest_path: source vertex out of range");
+    if (dst < 0 || static_cast<std::size_t>(dst) >= n)
+        throw std::invalid_argument("shortest_path: target vertex out of range");
+
+    ShortestPathResult result;
+    result.mSourceVertex = src;
+    result.mTargetVertex = dst;
+
+    if (src == dst) {
+        result.mReached = true;
+        result.mTotalLength = 0.0;
+        result.mNumSegments = 0;
+        result.mMesh = sp_build_line_mesh({xyz[static_cast<std::size_t>(src)]}, {0.0}, {});
+        return result;
+    }
+
+    if (rOptions.mMethod == ShortestPathMethod::HeatTrace) {
+        // Run heat geodesic_distance from src, then back-trace -grad(d) across triangles.
+        GeodesicOptions gopt;
+        gopt.mSources = {src};
+        gopt.mTimeFactor = rOptions.mTimeFactor;
+        const GeodesicResult gres = geodesic_distance(rMesh, gopt);
+        const NDArray& d_arr = gres.mMesh.PointData(kGeodesicDistanceName);
+        const double* pd = d_arr.As<double>();
+        if (!std::isfinite(pd[static_cast<std::size_t>(dst)])) {
+            result.mReached = false;
+            result.mTotalLength = std::numeric_limits<double>::quiet_NaN();
+            return result;
+        }
+
+        // Build triangle rings and face-edge adjacency.
+        const auto bases = detail::block_bases(rMesh);
+        const std::size_t total_cells = bases.empty() ? 0 : static_cast<std::size_t>(bases.back());
+        const detail::SurfaceRings rings = detail::surface_rings(
+            rMesh, std::vector<std::uint8_t>(total_cells, 1), "shortest_path");
+        const std::size_t nf = rings.NumFaces();
+        std::vector<std::vector<std::size_t>> v_faces(n);
+        for (std::size_t f = 0; f < nf; ++f) {
+            for (std::int64_t p = rings.mStart[f]; p < rings.mStart[f + 1]; ++p)
+                v_faces[static_cast<std::size_t>(rings.mNodes[static_cast<std::size_t>(p)])]
+                    .push_back(f);
+        }
+        // Map undirected edge -> opposite face for triangles.
+        std::vector<std::array<std::int64_t, 3>> opp_face(nf, {-1, -1, -1});
+        {
+            const auto uses = detail::crease_edge_uses(rings.mStart, rings.mNodes);
+            std::size_t i = 0;
+            while (i < uses.size()) {
+                std::size_t j = i + 1;
+                while (j < uses.size() && uses[j].mLo == uses[i].mLo && uses[j].mHi == uses[i].mHi)
+                    ++j;
+                if (j - i == 2) {
+                    const auto f0 = static_cast<std::size_t>(uses[i].mFace);
+                    const auto f1 = static_cast<std::size_t>(uses[i + 1].mFace);
+                    auto set_opp = [&](std::size_t f, std::int64_t lo, std::int64_t hi,
+                                       std::size_t other) {
+                        const std::int64_t s = rings.mStart[f];
+                        if (rings.mStart[f + 1] - s != 3)
+                            return;
+                        for (int e = 0; e < 3; ++e) {
+                            const std::int64_t a = rings.mNodes[static_cast<std::size_t>(s + e)];
+                            const std::int64_t b =
+                                rings.mNodes[static_cast<std::size_t>(s + ((e + 1) % 3))];
+                            if (std::min(a, b) == lo && std::max(a, b) == hi)
+                                opp_face[f][static_cast<std::size_t>(e)] =
+                                    static_cast<std::int64_t>(other);
+                        }
+                    };
+                    set_opp(f0, uses[i].mLo, uses[i].mHi, f1);
+                    set_opp(f1, uses[i].mLo, uses[i].mHi, f0);
+                }
+                i = j;
+            }
+        }
+
+        // Back-trace from dst -> src along -grad(d).
+        std::vector<Vec3> rev_pts;
+        std::vector<std::int64_t> rev_cells;
+        Vec3 cur_pos = xyz[static_cast<std::size_t>(dst)];
+        double cur_d = pd[static_cast<std::size_t>(dst)];
+        std::int64_t cur_v = dst;
+        std::int64_t cur_f = -1;
+        rev_pts.push_back(cur_pos);
+
+        const std::size_t max_steps = std::max<std::size_t>(nf * 4, 1000);
+        for (std::size_t step = 0; step < max_steps; ++step) {
+            if (cur_v == src)
+                break;
+
+            // If at a vertex, pick the incident triangle with steepest descent in -grad(d).
+            if (cur_v >= 0) {
+                const auto& vf = v_faces[static_cast<std::size_t>(cur_v)];
+                std::int64_t best_f = -1;
+                double best_slope = 0.0;
+                Vec3 best_exit = cur_pos;
+                std::int64_t best_next_v = -1;
+                std::int64_t best_next_f = -1;
+                double best_next_d = cur_d;
+
+                for (std::size_t f : vf) {
+                    const std::int64_t s = rings.mStart[f];
+                    if (rings.mStart[f + 1] - s != 3)
+                        continue;
+                    std::int64_t v[3] = {rings.mNodes[static_cast<std::size_t>(s)],
+                                         rings.mNodes[static_cast<std::size_t>(s + 1)],
+                                         rings.mNodes[static_cast<std::size_t>(s + 2)]};
+                    int k = (v[0] == cur_v) ? 0 : (v[1] == cur_v ? 1 : 2);
+                    const std::int64_t va = v[k];
+                    const std::int64_t vb = v[(k + 1) % 3];
+                    const std::int64_t vc = v[(k + 2) % 3];
+                    if (vb == src || vc == src) {
+                        best_f = static_cast<std::int64_t>(f);
+                        best_exit = xyz[static_cast<std::size_t>(src)];
+                        best_next_v = src;
+                        best_next_f = -1;
+                        best_next_d = 0.0;
+                        best_slope = std::numeric_limits<double>::infinity();
+                        break;
+                    }
+                    // Compute in-plane gradient of d on triangle (va, vb, vc).
+                    const Vec3 p0 = xyz[static_cast<std::size_t>(va)];
+                    const Vec3 p1 = xyz[static_cast<std::size_t>(vb)];
+                    const Vec3 p2 = xyz[static_cast<std::size_t>(vc)];
+                    const Vec3 e1 = detail::vec3_sub(p1, p0);
+                    const Vec3 e2 = detail::vec3_sub(p2, p0);
+                    const Vec3 nrm = detail::vec3_cross(e1, e2);
+                    const double a2 = detail::vec3_norm_sq(nrm);
+                    if (a2 > 1e-30) {
+                        const double inv_a2 = 1.0 / a2;
+                        const Vec3 g1 = detail::vec3_scale(detail::vec3_cross(nrm, e2), -inv_a2);
+                        const Vec3 g2 = detail::vec3_scale(detail::vec3_cross(nrm, e1), inv_a2);
+                        const double d1 = pd[static_cast<std::size_t>(vb)] -
+                                          pd[static_cast<std::size_t>(va)];
+                        const double d2 = pd[static_cast<std::size_t>(vc)] -
+                                          pd[static_cast<std::size_t>(va)];
+                        const Vec3 dir = detail::vec3_scale(
+                            detail::vec3_add(detail::vec3_scale(g1, d1),
+                                             detail::vec3_scale(g2, d2)),
+                            -1.0);
+                        // Express dir in (e1, e2) coordinates: dir = alpha e1 + beta e2.
+                        const double alpha = detail::vec3_dot(dir, g1);
+                        const double beta = detail::vec3_dot(dir, g2);
+                        if (alpha > 1e-12 && beta > 1e-12) {
+                            const double t = 1.0 / (alpha + beta);
+                            const double u = beta * t;  // fraction along edge (vb, vc)
+                            const Vec3 exit_p =
+                                detail::vec3_add(p1, detail::vec3_scale(detail::vec3_sub(p2, p1), u));
+                            const double exit_d =
+                                (1.0 - u) * pd[static_cast<std::size_t>(vb)] +
+                                u * pd[static_cast<std::size_t>(vc)];
+                            const double seg_l = detail::vec3_norm(detail::vec3_sub(exit_p, p0));
+                            const double slope =
+                                seg_l > 1e-15 ? (cur_d - exit_d) / seg_l : 0.0;
+                            if (slope > best_slope) {
+                                best_slope = slope;
+                                best_f = static_cast<std::int64_t>(f);
+                                best_exit = exit_p;
+                                best_next_v = -1;
+                                best_next_f = opp_face[f][static_cast<std::size_t>((k + 1) % 3)];
+                                best_next_d = exit_d;
+                            }
+                        }
+                    }
+                    // Also consider descending along edges (va->vb) and (va->vc).
+                    for (std::int64_t nb : {vb, vc}) {
+                        const double dn = pd[static_cast<std::size_t>(nb)];
+                        const double elen =
+                            detail::vec3_norm(detail::vec3_sub(xyz[static_cast<std::size_t>(nb)], p0));
+                        const double slope = elen > 1e-15 ? (cur_d - dn) / elen : 0.0;
+                        if (slope > best_slope) {
+                            best_slope = slope;
+                            best_f = static_cast<std::int64_t>(f);
+                            best_exit = xyz[static_cast<std::size_t>(nb)];
+                            best_next_v = nb;
+                            best_next_f = -1;
+                            best_next_d = dn;
+                        }
+                    }
+                }
+                if (best_f < 0)
+                    break;
+                rev_pts.push_back(best_exit);
+                rev_cells.push_back(rings.mCell[static_cast<std::size_t>(best_f)]);
+                cur_pos = best_exit;
+                cur_d = best_next_d;
+                cur_v = best_next_v;
+                cur_f = best_next_f;
+                if (cur_v < 0 && cur_f < 0) {
+                    // Hit boundary edge: snap to lower-distance vertex of the triangle.
+                    const std::int64_t s = rings.mStart[static_cast<std::size_t>(best_f)];
+                    std::int64_t best_bv = rings.mNodes[static_cast<std::size_t>(s)];
+                    for (int e = 1; e < 3; ++e) {
+                        const std::int64_t cand = rings.mNodes[static_cast<std::size_t>(s + e)];
+                        if (pd[static_cast<std::size_t>(cand)] <
+                            pd[static_cast<std::size_t>(best_bv)])
+                            best_bv = cand;
+                    }
+                    cur_v = best_bv;
+                    cur_pos = xyz[static_cast<std::size_t>(cur_v)];
+                    cur_d = pd[static_cast<std::size_t>(cur_v)];
+                    rev_pts.push_back(cur_pos);
+                    rev_cells.push_back(rings.mCell[static_cast<std::size_t>(best_f)]);
+                }
+            } else {
+                // Inside triangle cur_f at an edge point cur_pos; trace -grad(d) to exit edge.
+                const std::size_t f = static_cast<std::size_t>(cur_f);
+                const std::int64_t s = rings.mStart[f];
+                if (rings.mStart[f + 1] - s != 3)
+                    break;
+                std::int64_t v[3] = {rings.mNodes[static_cast<std::size_t>(s)],
+                                     rings.mNodes[static_cast<std::size_t>(s + 1)],
+                                     rings.mNodes[static_cast<std::size_t>(s + 2)]};
+                // If src is a vertex of this triangle, step directly to src.
+                bool hit_src = false;
+                for (int e = 0; e < 3; ++e) {
+                    if (v[e] == src) {
+                        rev_pts.push_back(xyz[static_cast<std::size_t>(src)]);
+                        rev_cells.push_back(rings.mCell[f]);
+                        cur_v = src;
+                        hit_src = true;
+                        break;
+                    }
+                }
+                if (hit_src)
+                    break;
+
+                const Vec3 p[3] = {xyz[static_cast<std::size_t>(v[0])],
+                                   xyz[static_cast<std::size_t>(v[1])],
+                                   xyz[static_cast<std::size_t>(v[2])]};
+                const Vec3 e1 = detail::vec3_sub(p[1], p[0]);
+                const Vec3 e2 = detail::vec3_sub(p[2], p[0]);
+                const Vec3 nrm = detail::vec3_cross(e1, e2);
+                const double a2 = detail::vec3_norm_sq(nrm);
+                bool advanced = false;
+                if (a2 > 1e-30) {
+                    const double inv_a2 = 1.0 / a2;
+                    const Vec3 g1 = detail::vec3_scale(detail::vec3_cross(nrm, e2), -inv_a2);
+                    const Vec3 g2 = detail::vec3_scale(detail::vec3_cross(nrm, e1), inv_a2);
+                    const Vec3 rel = detail::vec3_sub(cur_pos, p[0]);
+                    const double b1 = detail::vec3_dot(rel, g1);
+                    const double b2 = detail::vec3_dot(rel, g2);
+                    const double b0 = 1.0 - b1 - b2;
+                    const double d1 =
+                        pd[static_cast<std::size_t>(v[1])] - pd[static_cast<std::size_t>(v[0])];
+                    const double d2 =
+                        pd[static_cast<std::size_t>(v[2])] - pd[static_cast<std::size_t>(v[0])];
+                    const Vec3 dir = detail::vec3_scale(
+                        detail::vec3_add(detail::vec3_scale(g1, d1), detail::vec3_scale(g2, d2)),
+                        -1.0);
+                    const double db1 = detail::vec3_dot(dir, g1);
+                    const double db2 = detail::vec3_dot(dir, g2);
+                    const double db0 = -(db1 + db2);
+                    const double b[3] = {b0, b1, b2};
+                    const double db[3] = {db0, db1, db2};
+                    double best_t = std::numeric_limits<double>::infinity();
+                    int exit_opp = -1;
+                    for (int k = 0; k < 3; ++k) {
+                        if (db[k] < -1e-12) {
+                            const double t = -b[k] / db[k];
+                            if (t > 1e-9 && t < best_t) {
+                                best_t = t;
+                                exit_opp = k;
+                            }
+                        }
+                    }
+                    if (exit_opp >= 0 && std::isfinite(best_t)) {
+                        const double nb[3] = {b[0] + best_t * db[0], b[1] + best_t * db[1],
+                                              b[2] + best_t * db[2]};
+                        const Vec3 next_p = {
+                            nb[0] * p[0][0] + nb[1] * p[1][0] + nb[2] * p[2][0],
+                            nb[0] * p[0][1] + nb[1] * p[1][1] + nb[2] * p[2][1],
+                            nb[0] * p[0][2] + nb[1] * p[1][2] + nb[2] * p[2][2],
+                        };
+                        const double next_d =
+                            nb[0] * pd[static_cast<std::size_t>(v[0])] +
+                            nb[1] * pd[static_cast<std::size_t>(v[1])] +
+                            nb[2] * pd[static_cast<std::size_t>(v[2])];
+                        if (next_d < cur_d - 1e-14) {
+                            rev_pts.push_back(next_p);
+                            rev_cells.push_back(rings.mCell[f]);
+                            cur_pos = next_p;
+                            cur_d = next_d;
+                            // Edge opposite vertex exit_opp is edge ((exit_opp + 1) % 3).
+                            const int edge_idx = (exit_opp + 1) % 3;
+                            const std::int64_t nf_next =
+                                opp_face[f][static_cast<std::size_t>(edge_idx)];
+                            if (nf_next >= 0) {
+                                cur_f = nf_next;
+                                cur_v = -1;
+                            } else {
+                                // Boundary edge: snap to lower-distance endpoint.
+                                const std::int64_t ea = v[edge_idx];
+                                const std::int64_t eb = v[(edge_idx + 1) % 3];
+                                cur_v = pd[static_cast<std::size_t>(ea)] <=
+                                                pd[static_cast<std::size_t>(eb)]
+                                            ? ea
+                                            : eb;
+                                cur_f = -1;
+                            }
+                            advanced = true;
+                        }
+                    }
+                }
+                if (!advanced) {
+                    // Fallback: step to lowest-distance vertex of cur_f.
+                    std::int64_t best_bv = v[0];
+                    for (int e = 1; e < 3; ++e)
+                        if (pd[static_cast<std::size_t>(v[e])] <
+                            pd[static_cast<std::size_t>(best_bv)])
+                            best_bv = v[e];
+                    if (pd[static_cast<std::size_t>(best_bv)] >= cur_d - 1e-14)
+                        break;
+                    cur_v = best_bv;
+                    cur_pos = xyz[static_cast<std::size_t>(cur_v)];
+                    cur_d = pd[static_cast<std::size_t>(cur_v)];
+                    cur_f = -1;
+                    rev_pts.push_back(cur_pos);
+                    rev_cells.push_back(rings.mCell[f]);
+                }
+            }
+        }
+
+        if (cur_v == src) {
+            std::reverse(rev_pts.begin(), rev_pts.end());
+            std::reverse(rev_cells.begin(), rev_cells.end());
+            std::vector<double> cum(rev_pts.size(), 0.0);
+            for (std::size_t i = 1; i < rev_pts.size(); ++i)
+                cum[i] = cum[i - 1] + detail::vec3_norm(detail::vec3_sub(rev_pts[i], rev_pts[i - 1]));
+            result.mReached = true;
+            result.mTotalLength = cum.back();
+            result.mNumSegments = static_cast<std::int64_t>(rev_pts.size() - 1);
+            result.mMesh = sp_build_line_mesh(rev_pts, cum, rev_cells);
+            return result;
+        }
+        // If heat_trace stalled before reaching src, fall through to deterministic Dijkstra.
+    }
+
+    // Deterministic edge-graph Dijkstra.
+    const detail::NodeAdjacency adj =
+        detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    std::vector<double> dist(n, kInf);
+    std::vector<std::int64_t> parent(n, -1);
+
+    using State = std::pair<double, std::int64_t>;
+    std::priority_queue<State, std::vector<State>, std::greater<State>> pq;
+    dist[static_cast<std::size_t>(src)] = 0.0;
+    pq.push({0.0, src});
+
+    while (!pq.empty()) {
+        const auto [du, u] = pq.top();
+        pq.pop();
+        if (du > dist[static_cast<std::size_t>(u)])
+            continue;
+        if (u == dst)
+            break;
+        const std::int64_t beg = adj.mXadj[static_cast<std::size_t>(u)];
+        const std::int64_t end = adj.mXadj[static_cast<std::size_t>(u) + 1];
+        for (std::int64_t e = beg; e < end; ++e) {
+            const std::int64_t v = adj.mAdj[static_cast<std::size_t>(e)];
+            const double w = detail::vec3_norm(
+                detail::vec3_sub(xyz[static_cast<std::size_t>(v)], xyz[static_cast<std::size_t>(u)]));
+            const double nd = du + w;
+            const std::size_t vu = static_cast<std::size_t>(v);
+            if (nd < dist[vu] || (nd == dist[vu] && (parent[vu] < 0 || u < parent[vu]))) {
+                dist[vu] = nd;
+                parent[vu] = u;
+                pq.push({nd, v});
+            }
+        }
+    }
+
+    if (!std::isfinite(dist[static_cast<std::size_t>(dst)])) {
+        result.mReached = false;
+        result.mTotalLength = std::numeric_limits<double>::quiet_NaN();
+        return result;
+    }
+
+    std::vector<std::int64_t> path_ids;
+    for (std::int64_t v = dst; v >= 0; v = parent[static_cast<std::size_t>(v)]) {
+        path_ids.push_back(v);
+        if (v == src)
+            break;
+    }
+    std::reverse(path_ids.begin(), path_ids.end());
+
+    const auto edge_map = sp_build_edge_cell_map(rMesh);
+    std::vector<Vec3> path_pts;
+    std::vector<double> path_d;
+    std::vector<std::int64_t> src_cells;
+    path_pts.reserve(path_ids.size());
+    path_d.reserve(path_ids.size());
+    for (std::size_t i = 0; i < path_ids.size(); ++i) {
+        const auto vid = static_cast<std::size_t>(path_ids[i]);
+        path_pts.push_back(xyz[vid]);
+        path_d.push_back(dist[vid]);
+        if (i + 1 < path_ids.size())
+            src_cells.push_back(sp_find_edge_cell(rMesh, path_ids[i], path_ids[i + 1], edge_map));
+    }
+
+    result.mReached = true;
+    result.mTotalLength = path_d.back();
+    result.mNumSegments = static_cast<std::int64_t>(path_ids.size() - 1);
+    result.mMesh = sp_build_line_mesh(path_pts, path_d, src_cells);
+    return result;
+}
+
+GeodesicVoronoiResult geodesic_voronoi(const Mesh& rMesh, const GeodesicVoronoiOptions& rOptions) {
+    const std::size_t n = rMesh.NumPoints();
+    if (n == 0)
+        throw std::invalid_argument("geodesic_voronoi: mesh has no points");
+    if (rOptions.mSeedPoints.size() % 3 != 0)
+        throw std::invalid_argument("geodesic_voronoi: seed_points length must be a multiple of 3");
+
+    const std::vector<Vec3> xyz = sp_read_xyz(rMesh);
+    std::vector<std::int64_t> seeds;
+    seeds.reserve(rOptions.mSources.size() + rOptions.mSeedPoints.size() / 3);
+    for (std::int64_t s : rOptions.mSources) {
+        if (s < 0 || static_cast<std::size_t>(s) >= n)
+            throw std::invalid_argument("geodesic_voronoi: source vertex out of range");
+        seeds.push_back(s);
+    }
+    for (std::size_t i = 0; i < rOptions.mSeedPoints.size(); i += 3) {
+        const Vec3 p{rOptions.mSeedPoints[i], rOptions.mSeedPoints[i + 1],
+                     rOptions.mSeedPoints[i + 2]};
+        seeds.push_back(sp_nearest_vertex(xyz, p));
+    }
+    if (seeds.empty())
+        throw std::invalid_argument("geodesic_voronoi: at least one source or seed_point is required");
+
+    const detail::NodeAdjacency adj =
+        detail::build_node_adjacency(rMesh, n, detail::NodeAdjacencyKind::Edge);
+    constexpr double kInf = std::numeric_limits<double>::infinity();
+    std::vector<double> dist(n, kInf);
+    std::vector<std::int64_t> label(n, -1);
+
+    // Priority tuple: (distance, seed_label, vertex_id) for strict determinism.
+    using State = std::tuple<double, std::int64_t, std::int64_t>;
+    std::priority_queue<State, std::vector<State>, std::greater<State>> pq;
+    for (std::size_t sidx = 0; sidx < seeds.size(); ++sidx) {
+        const auto v = static_cast<std::size_t>(seeds[sidx]);
+        if (dist[v] > 0.0) {
+            dist[v] = 0.0;
+            label[v] = static_cast<std::int64_t>(sidx);
+            pq.push({0.0, static_cast<std::int64_t>(sidx), seeds[sidx]});
+        }
+    }
+
+    while (!pq.empty()) {
+        const auto [du, su, u] = pq.top();
+        pq.pop();
+        const auto uu = static_cast<std::size_t>(u);
+        if (du > dist[uu] || (du == dist[uu] && su > label[uu]))
+            continue;
+        const std::int64_t beg = adj.mXadj[uu];
+        const std::int64_t end = adj.mXadj[uu + 1];
+        for (std::int64_t e = beg; e < end; ++e) {
+            const std::int64_t v = adj.mAdj[static_cast<std::size_t>(e)];
+            const auto vu = static_cast<std::size_t>(v);
+            const double w = detail::vec3_norm(detail::vec3_sub(xyz[vu], xyz[uu]));
+            const double nd = du + w;
+            if (nd < dist[vu] || (nd == dist[vu] && (label[vu] < 0 || su < label[vu]))) {
+                dist[vu] = nd;
+                label[vu] = su;
+                pq.push({nd, su, v});
+            }
+        }
+    }
+
+    GeodesicVoronoiResult result;
+    result.mNumSources = static_cast<std::int64_t>(seeds.size());
+    result.mMesh = detail::clone_mesh(rMesh);
+
+    NDArray d_arr(DType::Float64, {n});
+    NDArray l_arr(DType::Int64, {n});
+    double* pd = d_arr.As<double>();
+    std::int64_t* pl = l_arr.As<std::int64_t>();
+    for (std::size_t i = 0; i < n; ++i) {
+        if (std::isfinite(dist[i])) {
+            pd[i] = dist[i];
+            pl[i] = label[i];
+            result.mMaxDistance = std::max(result.mMaxDistance, dist[i]);
+        } else {
+            pd[i] = std::numeric_limits<double>::quiet_NaN();
+            pl[i] = -1;
+            ++result.mNumUnreached;
+        }
+    }
+    result.mMesh.AddPointData(kGeodesicDistanceName, std::move(d_arr));
+    result.mMesh.AddPointData(kGeodesicNearestSourceName, std::move(l_arr));
+
+    if (rOptions.mAttachCellLabels && rMesh.NumCellBlocks() > 0) {
+        std::vector<NDArray> cell_labels;
+        cell_labels.reserve(rMesh.NumCellBlocks());
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            NDArray cl(DType::Int64, {cb.NumCells()});
+            std::int64_t* pcl = cl.As<std::int64_t>();
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                std::int64_t best_lbl = -1;
+                double best_d = kInf;
+                if (cb.IsRagged()) {
+                    const std::int64_t* row = cb.Row(c);
+                    const std::size_t sz = cb.RowSize(c);
+                    for (std::size_t i = 0; i < sz; ++i) {
+                        const auto vid = static_cast<std::size_t>(row[i]);
+                        if (label[vid] >= 0 &&
+                            (dist[vid] < best_d ||
+                             (dist[vid] == best_d && (best_lbl < 0 || label[vid] < best_lbl)))) {
+                            best_d = dist[vid];
+                            best_lbl = label[vid];
+                        }
+                    }
+                } else {
+                    const std::size_t k = cb.NodesPerCell();
+                    const NDArray& conn = cb.Conn();
+                    for (std::size_t i = 0; i < k; ++i) {
+                        const auto vid = static_cast<std::size_t>(detail::read_int(conn, c * k + i));
+                        if (label[vid] >= 0 &&
+                            (dist[vid] < best_d ||
+                             (dist[vid] == best_d && (best_lbl < 0 || label[vid] < best_lbl)))) {
+                            best_d = dist[vid];
+                            best_lbl = label[vid];
+                        }
+                    }
+                }
+                pcl[c] = best_lbl;
+            }
+            cell_labels.push_back(std::move(cl));
+        }
+        result.mMesh.AddCellData(kGeodesicNearestSourceName, std::move(cell_labels));
+    }
+
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/shortest_path.cpp =====
 // ===== begin src/cpp/src/operations/shrinkwrap.cpp =====
 #include <cmath>
 #include <cstddef>
@@ -312927,6 +317902,463 @@ SilhouetteResult silhouette(const Mesh& rMesh, const SilhouetteOptions& rOptions
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/silhouette.cpp =====
+// ===== begin src/cpp/src/operations/skeleton.cpp =====
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <numeric>
+#include <queue>
+#include <set>
+#include <stdexcept>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+double sk_signed_volume(const std::vector<Vec3>& rPts,
+                        const std::vector<std::array<std::int64_t, 3>>& rTris) {
+    double vol6 = 0.0;
+    for (const auto& t : rTris) {
+        const Vec3& a = rPts[static_cast<std::size_t>(t[0])];
+        const Vec3& b = rPts[static_cast<std::size_t>(t[1])];
+        const Vec3& c = rPts[static_cast<std::size_t>(t[2])];
+        vol6 += detail::triple_product(a, b, c);
+    }
+    return vol6 / 6.0;
+}
+
+void sk_assemble_cot_laplacian(const std::vector<Vec3>& rPts,
+                               const std::vector<std::array<std::int64_t, 3>>& rTris,
+                               std::vector<double>& rArea,
+                               std::vector<detail::SparseTriplet>& rLap) {
+    const std::size_t n = rPts.size();
+    rArea.assign(n, 0.0);
+    rLap.clear();
+    rLap.reserve(rTris.size() * 9);
+    for (const auto& t : rTris) {
+        const auto i0 = static_cast<std::size_t>(t[0]);
+        const auto i1 = static_cast<std::size_t>(t[1]);
+        const auto i2 = static_cast<std::size_t>(t[2]);
+        const Vec3 p[3] = {rPts[i0], rPts[i1], rPts[i2]};
+        const Vec3 e0 = detail::vec3_sub(p[2], p[1]);
+        const Vec3 e1 = detail::vec3_sub(p[0], p[2]);
+        const Vec3 e2 = detail::vec3_sub(p[1], p[0]);
+        const double dbl_area = detail::vec3_norm(detail::vec3_cross(e2, detail::vec3_scale(e1, -1.0)));
+        if (!(dbl_area > 1e-18))
+            continue;
+        const double a_third = dbl_area / 6.0;
+        rArea[i0] += a_third;
+        rArea[i1] += a_third;
+        rArea[i2] += a_third;
+
+        // Clamp cotangent weights to [0, 1e4] for unconditional SPD stability during contraction.
+        auto cot_w = [&](const Vec3& rU, const Vec3& rV) {
+            const double c = detail::vec3_dot(rU, rV) / dbl_area;
+            return std::clamp(0.5 * c, 0.0, 1e4);
+        };
+        const double w0 = cot_w(detail::vec3_sub(p[1], p[0]), detail::vec3_sub(p[2], p[0]));  // opp (1,2)
+        const double w1 = cot_w(detail::vec3_sub(p[2], p[1]), detail::vec3_sub(p[0], p[1]));  // opp (2,0)
+        const double w2 = cot_w(detail::vec3_sub(p[0], p[2]), detail::vec3_sub(p[1], p[2]));  // opp (0,1)
+
+        const std::size_t idx[3] = {i0, i1, i2};
+        const double w[3] = {w0, w1, w2};
+        for (int k = 0; k < 3; ++k) {
+            const std::size_t a = idx[(k + 1) % 3];
+            const std::size_t b = idx[(k + 2) % 3];
+            const double wk = w[k];
+            if (wk > 0.0) {
+                rLap.push_back({a, a, wk});
+                rLap.push_back({b, b, wk});
+                rLap.push_back({a, b, -wk});
+                rLap.push_back({b, a, -wk});
+            }
+        }
+    }
+}
+
+struct SkUf {
+    std::vector<std::int64_t> mParent;
+    explicit SkUf(std::size_t N) : mParent(N) { std::iota(mParent.begin(), mParent.end(), 0); }
+    std::int64_t Find(std::int64_t X) {
+        while (mParent[static_cast<std::size_t>(X)] != X) {
+            mParent[static_cast<std::size_t>(X)] =
+                mParent[static_cast<std::size_t>(mParent[static_cast<std::size_t>(X)])];
+            X = mParent[static_cast<std::size_t>(X)];
+        }
+        return X;
+    }
+    void UniteInto(std::int64_t Keep, std::int64_t Kill) {
+        Keep = Find(Keep);
+        Kill = Find(Kill);
+        if (Keep != Kill)
+            mParent[static_cast<std::size_t>(Kill)] = Keep;
+    }
+};
+
+}  // namespace
+
+SkeletonResult extract_skeleton(const Mesh& rMesh, const SkeletonOptions& rOptions) {
+    if (rOptions.mMaxIterations < 1)
+        throw std::invalid_argument("extract_skeleton: max_iterations must be >= 1");
+    if (!(rOptions.mContractionWeight > 0.0) || !std::isfinite(rOptions.mContractionWeight))
+        throw std::invalid_argument("extract_skeleton: contraction_weight must be > 0");
+    if (!(rOptions.mAttractionWeight > 0.0) || !std::isfinite(rOptions.mAttractionWeight))
+        throw std::invalid_argument("extract_skeleton: attraction_weight must be > 0");
+    if (!(rOptions.mVolumeTolerance > 0.0) || !std::isfinite(rOptions.mVolumeTolerance))
+        throw std::invalid_argument("extract_skeleton: volume_tolerance must be > 0");
+
+    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "extract_skeleton");
+    const std::size_t n = fem.mPoints.size();
+    std::vector<std::array<std::int64_t, 3>> tris;
+    tris.reserve(fem.mTriangles.size());
+    for (const auto& t : fem.mTriangles)
+        tris.push_back(t.mNodes);
+    if (tris.empty())
+        throw std::invalid_argument("extract_skeleton: mesh has no valid triangles");
+
+    const std::vector<Vec3> orig_xyz = fem.mPoints;
+    std::vector<Vec3> xyz = orig_xyz;
+
+    const double vol0 = std::abs(sk_signed_volume(orig_xyz, tris));
+    std::vector<double> area0, area_cur;
+    std::vector<detail::SparseTriplet> lap_trip;
+    sk_assemble_cot_laplacian(orig_xyz, tris, area0, lap_trip);
+
+    // 1. Implicit mean-curvature flow contraction: (diag(w_H * M) + w_L * L) X' = diag(w_H * M) X.
+    double w_l = rOptions.mContractionWeight * fem.mMeanEdge * fem.mMeanEdge;
+    double vol_ratio = 1.0;
+    std::int64_t iters_run = 0;
+
+    for (std::int64_t iter = 0; iter < rOptions.mMaxIterations; ++iter) {
+        sk_assemble_cot_laplacian(xyz, tris, area_cur, lap_trip);
+        std::vector<detail::SparseTriplet> sys;
+        sys.reserve(lap_trip.size() + n);
+        for (const auto& t : lap_trip)
+            sys.push_back({t.mRow, t.mCol, w_l * t.mValue});
+
+        std::array<std::vector<double>, 3> rhs;
+        std::array<std::vector<double>, 3> sol;
+        for (int d = 0; d < 3; ++d) {
+            rhs[static_cast<std::size_t>(d)].resize(n);
+            sol[static_cast<std::size_t>(d)].resize(n);
+        }
+
+        for (std::size_t i = 0; i < n; ++i) {
+            const double a0 = std::max(area0[i], 1e-18);
+            const double ac = std::max(area_cur[i], 1e-18);
+            // Medial-axis attraction increases as local area collapses.
+            const double wh = rOptions.mAttractionWeight * std::min(std::sqrt(a0 / ac), 1e3);
+            const double diag_m = (area0[i] > 0.0) ? (wh * ac) : 1.0;
+            sys.push_back({i, i, diag_m});
+            for (int d = 0; d < 3; ++d) {
+                rhs[static_cast<std::size_t>(d)][i] = diag_m * xyz[i][static_cast<std::size_t>(d)];
+                sol[static_cast<std::size_t>(d)][i] = xyz[i][static_cast<std::size_t>(d)];
+            }
+        }
+
+        const detail::SparseCsr a_csr = detail::csr_from_triplets(n, n, std::move(sys));
+        detail::CsrLdlt ldlt;
+        const double* rhs_ptrs[3] = {rhs[0].data(), rhs[1].data(), rhs[2].data()};
+        double* sol_ptrs[3] = {sol[0].data(), sol[1].data(), sol[2].data()};
+        if (ldlt.Factor(a_csr)) {
+            ldlt.SolveBlock(3, rhs_ptrs, sol_ptrs);
+        } else {
+            detail::CsrIc0 precond;
+            precond.Build(a_csr);
+            detail::CsrPcgWorkspace ws;
+            detail::csr_ic0_pcg_block(a_csr, precond, 3, rhs_ptrs, sol_ptrs, ws, 1e-10, n + 200);
+        }
+
+        for (std::size_t i = 0; i < n; ++i)
+            xyz[i] = {sol[0][i], sol[1][i], sol[2][i]};
+
+        ++iters_run;
+        const double vol_cur = std::abs(sk_signed_volume(xyz, tris));
+        vol_ratio = vol0 > 1e-30 ? (vol_cur / vol0) : 0.0;
+        if (vol_ratio <= rOptions.mVolumeTolerance)
+            break;
+        w_l *= 2.0;
+    }
+
+    // 2. Connectivity thinning: collapse shortest triangle edges until 0 live triangles remain.
+    SkUf uf(n);
+    std::vector<std::uint8_t> tri_alive(tris.size(), 1);
+    std::vector<std::vector<std::size_t>> v_tris(n);
+    for (std::size_t f = 0; f < tris.size(); ++f)
+        for (int k = 0; k < 3; ++k)
+            v_tris[static_cast<std::size_t>(tris[f][static_cast<std::size_t>(k)])].push_back(f);
+
+    // Deterministic min-heap: (edge_length, u, v, version_u, version_v).
+    using HeapItem = std::tuple<double, std::int64_t, std::int64_t, std::uint32_t, std::uint32_t>;
+    std::priority_queue<HeapItem, std::vector<HeapItem>, std::greater<HeapItem>> pq;
+    std::vector<std::uint32_t> ver(n, 0);
+
+    auto push_edge = [&](std::int64_t a, std::int64_t b) {
+        a = uf.Find(a);
+        b = uf.Find(b);
+        if (a == b)
+            return;
+        if (a > b)
+            std::swap(a, b);
+        const double len = detail::vec3_norm(
+            detail::vec3_sub(xyz[static_cast<std::size_t>(a)], xyz[static_cast<std::size_t>(b)]));
+        pq.push({len, a, b, ver[static_cast<std::size_t>(a)], ver[static_cast<std::size_t>(b)]});
+    };
+
+    for (std::size_t f = 0; f < tris.size(); ++f) {
+        push_edge(tris[f][0], tris[f][1]);
+        push_edge(tris[f][1], tris[f][2]);
+        push_edge(tris[f][2], tris[f][0]);
+    }
+
+    // Track 1-D graph edges created when triangles collapse.
+    std::set<std::pair<std::int64_t, std::int64_t>> graph_edges;
+    for (const auto& t : tris) {
+        for (int k = 0; k < 3; ++k) {
+            std::int64_t a = t[static_cast<std::size_t>(k)];
+            std::int64_t b = t[static_cast<std::size_t>((k + 1) % 3)];
+            if (a > b)
+                std::swap(a, b);
+            graph_edges.insert({a, b});
+        }
+    }
+
+    std::size_t live_tris = tris.size();
+    while (!pq.empty() && live_tris > 0) {
+        const auto [len, u0, v0, vu, vv] = pq.top();
+        pq.pop();
+        (void)len;
+        const std::int64_t u = uf.Find(u0);
+        const std::int64_t v = uf.Find(v0);
+        if (u == v || u != u0 || v != v0)
+            continue;
+        if (ver[static_cast<std::size_t>(u)] != vu || ver[static_cast<std::size_t>(v)] != vv)
+            continue;
+
+        // Only collapse if edge (u, v) belongs to at least one live triangle.
+        bool in_live_tri = false;
+        for (std::size_t f : v_tris[static_cast<std::size_t>(u)]) {
+            if (!tri_alive[f])
+                continue;
+            const std::int64_t a = uf.Find(tris[f][0]);
+            const std::int64_t b = uf.Find(tris[f][1]);
+            const std::int64_t c = uf.Find(tris[f][2]);
+            if ((a == u || b == u || c == u) && (a == v || b == v || c == v)) {
+                in_live_tri = true;
+                break;
+            }
+        }
+        if (!in_live_tri)
+            continue;
+
+        // Collapse v -> u, midpoint placement.
+        xyz[static_cast<std::size_t>(u)] = detail::vec3_scale(
+            detail::vec3_add(xyz[static_cast<std::size_t>(u)], xyz[static_cast<std::size_t>(v)]),
+            0.5);
+        uf.UniteInto(u, v);
+        ++ver[static_cast<std::size_t>(u)];
+
+        // Migrate v's triangles to u, killing degenerate ones.
+        auto& ut = v_tris[static_cast<std::size_t>(u)];
+        for (std::size_t f : v_tris[static_cast<std::size_t>(v)]) {
+            if (!tri_alive[f])
+                continue;
+            const std::int64_t a = uf.Find(tris[f][0]);
+            const std::int64_t b = uf.Find(tris[f][1]);
+            const std::int64_t c = uf.Find(tris[f][2]);
+            if (a == b || b == c || c == a) {
+                tri_alive[f] = 0;
+                --live_tris;
+            } else {
+                ut.push_back(f);
+            }
+        }
+        v_tris[static_cast<std::size_t>(v)].clear();
+
+        // Re-check u's triangles and push updated edges.
+        for (std::size_t f : ut) {
+            if (!tri_alive[f])
+                continue;
+            const std::int64_t a = uf.Find(tris[f][0]);
+            const std::int64_t b = uf.Find(tris[f][1]);
+            const std::int64_t c = uf.Find(tris[f][2]);
+            if (a == b || b == c || c == a) {
+                tri_alive[f] = 0;
+                --live_tris;
+            } else {
+                push_edge(a, b);
+                push_edge(b, c);
+                push_edge(c, a);
+            }
+        }
+    }
+
+    // 3. Optional short-edge merge on the 1-D graph.
+    const double merge_tol =
+        rOptions.mMergeTolerance > 0.0 ? rOptions.mMergeTolerance : 0.25 * fem.mMeanEdge;
+    if (merge_tol > 0.0) {
+        bool merged = true;
+        while (merged) {
+            merged = false;
+            std::set<std::pair<std::int64_t, std::int64_t>> remapped;
+            for (const auto& [a0, b0] : graph_edges) {
+                std::int64_t a = uf.Find(a0);
+                std::int64_t b = uf.Find(b0);
+                if (a == b)
+                    continue;
+                if (a > b)
+                    std::swap(a, b);
+                remapped.insert({a, b});
+            }
+            graph_edges.swap(remapped);
+            for (const auto& [a, b] : graph_edges) {
+                const double len = detail::vec3_norm(detail::vec3_sub(
+                    xyz[static_cast<std::size_t>(a)], xyz[static_cast<std::size_t>(b)]));
+                if (len < merge_tol) {
+                    xyz[static_cast<std::size_t>(a)] = detail::vec3_scale(
+                        detail::vec3_add(xyz[static_cast<std::size_t>(a)],
+                                         xyz[static_cast<std::size_t>(b)]),
+                        0.5);
+                    uf.UniteInto(a, b);
+                    merged = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // 4. Compact surviving skeleton vertices & edges.
+    std::vector<std::int64_t> old_to_new(n, -1);
+    std::vector<Vec3> sk_pts;
+    std::vector<std::pair<std::int64_t, std::int64_t>> sk_edges;
+
+    // Collect deduplicated edges over canonical roots.
+    std::set<std::pair<std::int64_t, std::int64_t>> final_edges;
+    for (const auto& [a0, b0] : graph_edges) {
+        std::int64_t a = uf.Find(a0);
+        std::int64_t b = uf.Find(b0);
+        if (a == b)
+            continue;
+        if (a > b)
+            std::swap(a, b);
+        final_edges.insert({a, b});
+    }
+
+    auto ensure_node = [&](std::int64_t root) -> std::int64_t {
+        const auto ru = static_cast<std::size_t>(root);
+        if (old_to_new[ru] < 0) {
+            old_to_new[ru] = static_cast<std::int64_t>(sk_pts.size());
+            sk_pts.push_back(xyz[ru]);
+        }
+        return old_to_new[ru];
+    };
+
+    for (const auto& [a, b] : final_edges) {
+        const std::int64_t na = ensure_node(a);
+        const std::int64_t nb = ensure_node(b);
+        sk_edges.emplace_back(na, nb);
+    }
+    // Ensure every input vertex maps to a skeleton node (even if isolated / collapsed to 1 point).
+    for (std::size_t i = 0; i < n; ++i)
+        ensure_node(uf.Find(static_cast<std::int64_t>(i)));
+
+    const std::size_t n_sk = sk_pts.size();
+    std::vector<std::int64_t> surf_map(n);
+    for (std::size_t i = 0; i < n; ++i)
+        surf_map[i] = old_to_new[static_cast<std::size_t>(uf.Find(static_cast<std::int64_t>(i)))];
+
+    // 5. Optional recentering & inscribed radius via DistanceQuery on original surface.
+    const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, "");
+    const detail::DistanceQuery dq =
+        detail::build_distance_query(soup, SurfaceDistanceOptions{});
+    if (rOptions.mRecenter && n_sk > 0) {
+        std::vector<Vec3> sum_p(n_sk, {0.0, 0.0, 0.0});
+        std::vector<std::size_t> cnt_p(n_sk, 0);
+        for (std::size_t i = 0; i < n; ++i) {
+            const auto sid = static_cast<std::size_t>(surf_map[i]);
+            sum_p[sid] = detail::vec3_add(sum_p[sid], orig_xyz[i]);
+            ++cnt_p[sid];
+        }
+        for (std::size_t s = 0; s < n_sk; ++s) {
+            if (cnt_p[s] > 0) {
+                const Vec3 avg = detail::vec3_scale(sum_p[s], 1.0 / static_cast<double>(cnt_p[s]));
+                // Recenter to the centroid of the mapped original surface ring (Au et al. 2008).
+                sk_pts[s] = avg;
+            }
+        }
+    }
+
+    const std::vector<detail::ClosestPointHit> hits = detail::query_closest_points(dq, sk_pts);
+
+    // 6. Compute degrees and build output 1-D line Mesh.
+    std::vector<std::int64_t> deg(n_sk, 0);
+    for (const auto& [a, b] : sk_edges) {
+        ++deg[static_cast<std::size_t>(a)];
+        ++deg[static_cast<std::size_t>(b)];
+    }
+
+    SkeletonResult result;
+    result.mContractionIterations = iters_run;
+    result.mVolumeRatio = vol_ratio;
+    result.mNumNodes = static_cast<std::int64_t>(n_sk);
+    result.mNumSegments = static_cast<std::int64_t>(sk_edges.size());
+    for (std::int64_t d : deg) {
+        if (d == 1)
+            ++result.mNumEndpoints;
+        else if (d >= 3)
+            ++result.mNumBranches;
+    }
+
+    Mesh out;
+    NDArray pts_arr(DType::Float64, {n_sk, std::size_t{3}});
+    double* pp = pts_arr.As<double>();
+    for (std::size_t i = 0; i < n_sk; ++i) {
+        pp[i * 3 + 0] = sk_pts[i][0];
+        pp[i * 3 + 1] = sk_pts[i][1];
+        pp[i * 3 + 2] = sk_pts[i][2];
+    }
+    out.AssignPoints(std::move(pts_arr));
+
+    if (!sk_edges.empty()) {
+        NDArray conn(DType::Int64, {sk_edges.size(), std::size_t{2}});
+        std::int64_t* pc = conn.As<std::int64_t>();
+        for (std::size_t i = 0; i < sk_edges.size(); ++i) {
+            pc[i * 2 + 0] = sk_edges[i].first;
+            pc[i * 2 + 1] = sk_edges[i].second;
+        }
+        out.AddCellBlock(cell_type_name(CellType::Line), std::move(conn));
+    }
+
+    NDArray rad_arr(DType::Float64, {n_sk});
+    double* pr = rad_arr.As<double>();
+    for (std::size_t i = 0; i < n_sk; ++i)
+        pr[i] = hits[i].mFound ? hits[i].mDistance : 0.0;
+    out.AddPointData(kSkeletonRadiusName, std::move(rad_arr));
+
+    NDArray deg_arr(DType::Int64, {n_sk});
+    std::copy(deg.begin(), deg.end(), deg_arr.As<std::int64_t>());
+    out.AddPointData(kSkeletonDegreeName, std::move(deg_arr));
+
+    NDArray map_arr(DType::Int64, {n});
+    std::copy(surf_map.begin(), surf_map.end(), map_arr.As<std::int64_t>());
+    out.AddFieldData(kSkeletonSurfaceMapName, std::move(map_arr));
+
+    result.mMesh = std::move(out);
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/skeleton.cpp =====
 // ===== begin src/cpp/src/operations/slice.cpp =====
 #include <cmath>
 #include <cstddef>
@@ -314510,15 +319942,23 @@ SmoothFieldResult smooth_field(const Mesh& rMesh, const SmoothFieldOptions& rOpt
         fail("'" + rOptions.mArray + "' has " + std::to_string(detail::rows(field)) +
              " rows on a mesh of " + std::to_string(n) + " points");
 
-    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "smooth_field");
     std::vector<double> mass;
     std::vector<detail::SparseTriplet> triplets;
-    detail::surface_fem_assemble(fem, mass, triplets);
+    std::int64_t num_degenerate = 0;
+    if (detail::mesh_is_pure_tetra(rMesh)) {
+        const detail::TetFem fem = detail::build_tet_fem(rMesh, "smooth_field");
+        detail::tet_fem_assemble(fem, mass, triplets);
+        num_degenerate = fem.mNumDegenerate;
+    } else {
+        const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "smooth_field");
+        detail::surface_fem_assemble(fem, mass, triplets);
+        num_degenerate = fem.mNumDegenerate;
+    }
     const double l2 = rOptions.mLength * rOptions.mLength;
     for (detail::SparseTriplet& t : triplets)
         t.mValue *= l2;
     for (std::size_t i = 0; i < n; ++i)
-        // A point in no triangle has no mass and no stiffness: an identity row keeps it.
+        // A point in no cell has no mass and no stiffness: an identity row keeps it.
         triplets.push_back({i, i, mass[i] > 0.0 ? mass[i] : 1.0});
     const detail::SparseCsr a = detail::csr_from_triplets(n, n, std::move(triplets));
 
@@ -314551,7 +319991,7 @@ SmoothFieldResult smooth_field(const Mesh& rMesh, const SmoothFieldOptions& rOpt
         for (std::size_t i = 0; i < n; ++i)
             po[i * comps + c] = x_cols[c][i];
     }
-    result.mNumDegenerate = fem.mNumDegenerate;
+    result.mNumDegenerate = num_degenerate;
     result.mMesh = detail::clone_mesh(rMesh);
     result.mMesh.AddPointData(
         rOptions.mOutput.empty() ? rOptions.mArray + kSmoothFieldSuffix : rOptions.mOutput,
@@ -315713,6 +321153,216 @@ SobolevResult sobolev_deform(const Mesh& rMesh, const SobolevOptions& rOptions) 
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/sobolev_deform.cpp =====
+// ===== begin src/cpp/src/operations/spectral_descriptors.cpp =====
+
+#include <algorithm>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+
+namespace meshioplusplus {
+
+namespace {
+
+std::string sd_lower(const std::string& rS) {
+    std::string out = rS;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+}  // namespace
+
+SpectralDescriptorKind spectral_descriptor_kind_from_name(const std::string& rName) {
+    const std::string low = sd_lower(rName);
+    if (low == "hks")
+        return SpectralDescriptorKind::Hks;
+    if (low == "wks")
+        return SpectralDescriptorKind::Wks;
+    throw std::invalid_argument("spectral_descriptors: unknown kind '" + rName +
+                                "' (expected 'hks' or 'wks')");
+}
+
+SpectralDescriptorsResult spectral_descriptors(const Mesh& rMesh,
+                                               const SpectralDescriptorsOptions& rOptions) {
+    if (rOptions.mNumScales < 1)
+        throw std::invalid_argument("spectral_descriptors: num_scales must be >= 1");
+    if (rOptions.mWksVariance < 0.0 || !std::isfinite(rOptions.mWksVariance))
+        throw std::invalid_argument("spectral_descriptors: wks_variance must be >= 0 and finite");
+
+    const std::size_t n_pts = rMesh.NumPoints();
+    SpectralDescriptorsResult result;
+
+    // 1. Obtain eigenmodes (reuse precomputed if present and requested).
+    std::vector<double> eigvals;
+    std::vector<double> modes_flat;
+    std::size_t n_modes = 0;
+
+    if (rOptions.mReuseEigenmodes && rMesh.HasPointData(kLaplacianModesName) &&
+        rMesh.HasFieldData(kLaplacianEigenvaluesName)) {
+        const NDArray& modes_arr = rMesh.PointData(kLaplacianModesName);
+        const NDArray& vals_arr = rMesh.FieldData(kLaplacianEigenvaluesName);
+        if (modes_arr.Shape().size() == 2 && modes_arr.Shape()[0] == n_pts &&
+            vals_arr.Size() == modes_arr.Shape()[1] && vals_arr.Size() >= 2 &&
+            modes_arr.Dtype() == DType::Float64 && vals_arr.Dtype() == DType::Float64) {
+            n_modes = vals_arr.Size();
+            const double* pv = vals_arr.As<double>();
+            const double* pm = modes_arr.As<double>();
+            eigvals.assign(pv, pv + n_modes);
+            modes_flat.assign(pm, pm + n_pts * n_modes);
+            result.mMesh = detail::clone_mesh(rMesh);
+            result.mReusedEigenmodes = true;
+        }
+    }
+
+    if (!result.mReusedEigenmodes) {
+        if (rOptions.mNumModes < 2)
+            throw std::invalid_argument(
+                "spectral_descriptors: num_modes must be >= 2 to span positive eigenvalues");
+        EigenmodeOptions eopt;
+        eopt.mNumModes = rOptions.mNumModes;
+        eopt.mTolerance = rOptions.mTolerance;
+        eopt.mMaxIterations = rOptions.mMaxIterations;
+        EigenmodeResult eres = laplacian_eigenmodes(rMesh, eopt);
+        eigvals = std::move(eres.mEigenvalues);
+        n_modes = eigvals.size();
+        const NDArray& modes_arr = eres.mMesh.PointData(kLaplacianModesName);
+        const double* pm = modes_arr.As<double>();
+        modes_flat.assign(pm, pm + n_pts * n_modes);
+        result.mMesh = std::move(eres.mMesh);
+    }
+
+    // 2. Filter strictly positive eigenvalues (skip constant nullspace mode(s)).
+    double lam_max = 0.0;
+    for (double l : eigvals)
+        if (std::isfinite(l) && l > lam_max)
+            lam_max = l;
+    const double cutoff = 1e-10 * lam_max;
+    std::vector<std::size_t> pos_idx;
+    pos_idx.reserve(n_modes);
+    for (std::size_t k = 0; k < n_modes; ++k) {
+        if (std::isfinite(eigvals[k]) && eigvals[k] > cutoff)
+            pos_idx.push_back(k);
+    }
+    if (pos_idx.empty())
+        throw std::invalid_argument(
+            "spectral_descriptors: no positive eigenvalues available (increase num_modes)");
+
+    const double lam_min = eigvals[pos_idx.front()];
+    lam_max = eigvals[pos_idx.back()];
+    result.mNumModesUsed = static_cast<std::int64_t>(pos_idx.size());
+
+    // 3. Build log-spaced scales and per-(scale, mode) kernel weights W[s * m + j].
+    const std::size_t n_scales = static_cast<std::size_t>(rOptions.mNumScales);
+    const std::size_t m_used = pos_idx.size();
+    result.mScales.resize(n_scales);
+    std::vector<double> weights(n_scales * m_used, 0.0);
+
+    if (rOptions.mKind == SpectralDescriptorKind::Hks) {
+        // Sun, Ovsjanikov & Guibas (2009): t in [4 ln 10 / lam_max, 4 ln 10 / lam_min]
+        const double c = 4.0 * std::log(10.0);
+        const double t_min = c / lam_max;
+        const double t_max = c / lam_min;
+        const double log_min = std::log(t_min);
+        const double log_max = std::log(t_max);
+        for (std::size_t s = 0; s < n_scales; ++s) {
+            const double alpha =
+                n_scales > 1 ? static_cast<double>(s) / static_cast<double>(n_scales - 1) : 0.5;
+            const double t = std::exp(log_min + alpha * (log_max - log_min));
+            result.mScales[s] = t;
+            double trace = 0.0;
+            for (std::size_t j = 0; j < m_used; ++j) {
+                const double w = std::exp(-eigvals[pos_idx[j]] * t);
+                weights[s * m_used + j] = w;
+                trace += w;
+            }
+            if (rOptions.mScaleInvariant && trace > 0.0) {
+                const double inv = 1.0 / trace;
+                for (std::size_t j = 0; j < m_used; ++j)
+                    weights[s * m_used + j] *= inv;
+            }
+        }
+    } else {
+        // Aubry, Schlickewei & Cremers (2011): WKS on log-energy e in [log(lam_min), log(lam_max)]
+        const double e_min = std::log(lam_min);
+        const double e_max = std::log(lam_max);
+        const double span = std::max(e_max - e_min, 1e-6);
+        const double sigma =
+            rOptions.mWksVariance > 0.0
+                ? rOptions.mWksVariance
+                : 7.0 * span / static_cast<double>(std::max<std::size_t>(n_scales, 2));
+        const double inv_2s2 = 1.0 / (2.0 * sigma * sigma);
+        const double lo = e_min + 2.0 * sigma * (span > 4.0 * sigma ? 1.0 : 0.0);
+        const double hi = e_max - 2.0 * sigma * (span > 4.0 * sigma ? 1.0 : 0.0);
+        const double e_lo = (hi > lo) ? lo : e_min;
+        const double e_hi = (hi > lo) ? hi : e_max;
+
+        std::vector<double> log_lam(m_used);
+        for (std::size_t j = 0; j < m_used; ++j)
+            log_lam[j] = std::log(eigvals[pos_idx[j]]);
+
+        for (std::size_t s = 0; s < n_scales; ++s) {
+            const double alpha =
+                n_scales > 1 ? static_cast<double>(s) / static_cast<double>(n_scales - 1) : 0.5;
+            const double e = e_lo + alpha * (e_hi - e_lo);
+            result.mScales[s] = e;
+            double c_e = 0.0;
+            for (std::size_t j = 0; j < m_used; ++j) {
+                const double diff = e - log_lam[j];
+                const double w = std::exp(-diff * diff * inv_2s2);
+                weights[s * m_used + j] = w;
+                c_e += w;
+            }
+            if (c_e > 0.0) {
+                const double inv = 1.0 / c_e;
+                for (std::size_t j = 0; j < m_used; ++j)
+                    weights[s * m_used + j] *= inv;
+            }
+        }
+    }
+
+    // 4. Evaluate descriptors per vertex in parallel_for (deterministic across backends).
+    NDArray out(DType::Float64, {n_pts, n_scales});
+    double* p_out = out.As<double>();
+    parallel_for(n_pts, [&](std::size_t v) {
+        const double* row = modes_flat.data() + v * n_modes;
+        // Propagate NaN for points not belonging to any triangle.
+        if (!std::isfinite(row[pos_idx[0]])) {
+            for (std::size_t s = 0; s < n_scales; ++s)
+                p_out[v * n_scales + s] = std::numeric_limits<double>::quiet_NaN();
+            return;
+        }
+        for (std::size_t s = 0; s < n_scales; ++s) {
+            const double* w_row = weights.data() + s * m_used;
+            double acc = 0.0;
+            for (std::size_t j = 0; j < m_used; ++j) {
+                const double phi = row[pos_idx[j]];
+                acc += w_row[j] * phi * phi;
+            }
+            p_out[v * n_scales + s] = acc;
+        }
+    });
+
+    const std::string out_name =
+        !rOptions.mOutput.empty()
+            ? rOptions.mOutput
+            : (rOptions.mKind == SpectralDescriptorKind::Hks ? kSpectralHksName : kSpectralWksName);
+    result.mMesh.AddPointData(out_name, std::move(out));
+
+    NDArray scales_arr(DType::Float64, {n_scales});
+    std::copy(result.mScales.begin(), result.mScales.end(), scales_arr.As<double>());
+    result.mMesh.AddFieldData(kSpectralScalesName, std::move(scales_arr));
+
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/spectral_descriptors.cpp =====
 // ===== begin src/cpp/src/operations/split.cpp =====
 #include <cstddef>
 #include <cstdint>
@@ -320760,6 +326410,312 @@ ThicknessResult thickness(const Mesh& rMesh, const Mesh& rTarget,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/thickness.cpp =====
+// ===== begin src/cpp/src/operations/transfer_operator.cpp =====
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+
+
+namespace meshioplusplus {
+
+namespace {
+
+using detail::Vec3;
+
+std::string to_lower_copy(const std::string& rS) {
+    std::string out = rS;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+std::vector<Vec3> read_xyz_vec3(const Mesh& rMesh) {
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    const NDArray& pts = rMesh.Points();
+    std::vector<Vec3> out(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        out[i] = {detail::read_double(pts, i * pdim + 0),
+                  pdim > 1 ? detail::read_double(pts, i * pdim + 1) : 0.0,
+                  pdim > 2 ? detail::read_double(pts, i * pdim + 2) : 0.0};
+    }
+    return out;
+}
+
+// Recursively resolve a fine node's coarse weights from `refine:entity`.
+// Returns false if a node cannot be resolved strictly to [0, n_coarse).
+bool to_resolve_nested(std::int64_t Id, std::size_t NCoarse, const std::int64_t* pEnt,
+                       std::size_t NFine, double Scale,
+                       std::vector<std::pair<std::size_t, double>>& rWeights, int Depth) {
+    if (Depth > 16 || Id < 0 || static_cast<std::size_t>(Id) >= NFine)
+        return false;
+    if (static_cast<std::size_t>(Id) < NCoarse) {
+        rWeights.emplace_back(static_cast<std::size_t>(Id), Scale);
+        return true;
+    }
+    const std::int64_t* e = pEnt + static_cast<std::size_t>(Id) * 4;
+    if (e[0] < 0 && e[1] < 0 && e[2] >= 0 && e[3] >= 0) {
+        return to_resolve_nested(e[2], NCoarse, pEnt, NFine, Scale * 0.5, rWeights, Depth + 1) &&
+               to_resolve_nested(e[3], NCoarse, pEnt, NFine, Scale * 0.5, rWeights, Depth + 1);
+    }
+    if (e[0] >= 0 && e[1] >= 0 && e[2] >= 0 && e[3] >= 0) {
+        for (int k = 0; k < 4; ++k) {
+            if (!to_resolve_nested(e[k], NCoarse, pEnt, NFine, Scale * 0.25, rWeights, Depth + 1))
+                return false;
+        }
+        return true;
+    }
+    return false;
+}
+
+bool to_is_surface_in_3d(const Mesh& rMesh) {
+    bool has_2d = false;
+    bool has_3d = false;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.NumCells() == 0)
+            continue;
+        const int dim = cell_type_dimension(cell_type_from_name(cb.Type()));
+        if (dim == 3)
+            has_3d = true;
+        else if (dim == 2)
+            has_2d = true;
+    }
+    if (has_3d || !has_2d)
+        return false;
+    // Check if z varies across points; if planar z == const, 2-D PointLocator works directly.
+    if (rMesh.PointDim() < 3 || rMesh.NumPoints() == 0)
+        return false;
+    const NDArray& pts = rMesh.Points();
+    const std::size_t pdim = rMesh.PointDim();
+    const double z0 = detail::read_double(pts, 2);
+    for (std::size_t i = 1; i < rMesh.NumPoints(); ++i) {
+        if (std::abs(detail::read_double(pts, i * pdim + 2) - z0) > 1e-12)
+            return true;
+    }
+    return false;
+}
+
+}  // namespace
+
+TransferOperatorMode transfer_operator_mode_from_name(const std::string& rName) {
+    const std::string low = to_lower_copy(rName);
+    if (low == "auto")
+        return TransferOperatorMode::Auto;
+    if (low == "nested")
+        return TransferOperatorMode::Nested;
+    if (low == "barycentric")
+        return TransferOperatorMode::Barycentric;
+    throw std::invalid_argument("transfer_operator: unknown mode '" + rName +
+                                "' (expected 'auto', 'nested', or 'barycentric')");
+}
+
+MeshOperatorResult transfer_operator(const Mesh& rCoarse, const Mesh& rFine,
+                                     const TransferOperatorOptions& rOptions) {
+    if (!(rOptions.mTolerance >= 0.0) || !std::isfinite(rOptions.mTolerance))
+        throw std::invalid_argument("transfer_operator: tolerance must be finite and >= 0");
+    const std::size_t n_coarse = rCoarse.NumPoints();
+    const std::size_t n_fine = rFine.NumPoints();
+    if (n_coarse == 0 || n_fine == 0)
+        throw std::invalid_argument("transfer_operator: meshes must be non-empty");
+
+    const std::vector<Vec3> coarse_xyz = read_xyz_vec3(rCoarse);
+    const std::vector<Vec3> fine_xyz = read_xyz_vec3(rFine);
+
+    // Per-fine-point list of (coarse_col, weight).
+    std::vector<std::vector<std::pair<std::size_t, double>>> rows_w(n_fine);
+    std::vector<std::uint8_t> resolved(n_fine, 0);
+
+    // 1. Try nested refine:entity path if Auto or Nested.
+    bool has_entity = false;
+    if (rOptions.mMode != TransferOperatorMode::Barycentric &&
+        rFine.HasPointData(kRefineEntityName)) {
+        const NDArray& ent = rFine.PointData(kRefineEntityName);
+        if (ent.Dtype() == DType::Int64 && ent.Shape().size() == 2 && ent.Shape()[0] == n_fine &&
+            ent.Shape()[1] == 4 && n_fine >= n_coarse) {
+            // Verify leading coarse points match coordinates within tolerance.
+            bool coords_match = true;
+            const double tol2 = std::max(rOptions.mTolerance, 1e-9) *
+                                std::max(rOptions.mTolerance, 1e-9);
+            for (std::size_t i = 0; i < n_coarse; ++i) {
+                const Vec3 d = detail::vec3_sub(fine_xyz[i], coarse_xyz[i]);
+                if (detail::vec3_norm_sq(d) > tol2) {
+                    coords_match = false;
+                    break;
+                }
+            }
+            if (coords_match) {
+                has_entity = true;
+                const std::int64_t* p_ent = ent.As<std::int64_t>();
+                for (std::size_t i = 0; i < n_fine; ++i) {
+                    std::vector<std::pair<std::size_t, double>> w;
+                    if (to_resolve_nested(static_cast<std::int64_t>(i), n_coarse, p_ent, n_fine,
+                                          1.0, w, 0)) {
+                        rows_w[i] = std::move(w);
+                        resolved[i] = 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if (rOptions.mMode == TransferOperatorMode::Nested && !has_entity)
+        throw std::invalid_argument(
+            "transfer_operator: mode='nested' requires a compatible 'refine:entity' array on fine");
+
+    // 2. Locate any remaining unresolved points geometrically.
+    bool any_unresolved = false;
+    for (std::uint8_t r : resolved)
+        if (!r) {
+            any_unresolved = true;
+            break;
+        }
+
+    std::int64_t num_unlocated = 0;
+    if (any_unresolved) {
+        if (to_is_surface_in_3d(rCoarse)) {
+            // 3-D curved surface: project onto nearest triangle via DistanceQuery.
+            const detail::TriangleSoup soup = detail::build_triangle_soup(rCoarse, "");
+            const detail::DistanceQuery dq =
+                detail::build_distance_query(soup, SurfaceDistanceOptions{});
+            std::vector<std::size_t> todo;
+            std::vector<Vec3> qpts;
+            for (std::size_t i = 0; i < n_fine; ++i) {
+                if (!resolved[i]) {
+                    todo.push_back(i);
+                    qpts.push_back(fine_xyz[i]);
+                }
+            }
+            const std::vector<detail::SurfaceProjection> hits =
+                detail::query_surface_projections(dq, qpts);
+            parallel_for(todo.size(), [&](std::size_t idx) {
+                const std::size_t fi = todo[idx];
+                const detail::SurfaceProjection& hit = hits[idx];
+                if (!hit.mFound || hit.mTriangle < 0)
+                    return;
+                const auto& tri = soup.mVertices[static_cast<std::size_t>(hit.mTriangle)];
+                const Vec3 p0 = soup.mPoints[static_cast<std::size_t>(tri[0])];
+                const Vec3 p1 = soup.mPoints[static_cast<std::size_t>(tri[1])];
+                const Vec3 p2 = soup.mPoints[static_cast<std::size_t>(tri[2])];
+                const Vec3& q = hit.mPoint;
+                const Vec3 v0 = detail::vec3_sub(p1, p0);
+                const Vec3 v1 = detail::vec3_sub(p2, p0);
+                const Vec3 v2 = detail::vec3_sub(q, p0);
+                const double d00 = detail::vec3_dot(v0, v0);
+                const double d01 = detail::vec3_dot(v0, v1);
+                const double d11 = detail::vec3_dot(v1, v1);
+                const double d20 = detail::vec3_dot(v2, v0);
+                const double d21 = detail::vec3_dot(v2, v1);
+                const double denom = d00 * d11 - d01 * d01;
+                double b1 = 0.0, b2 = 0.0;
+                if (std::abs(denom) > 1e-30) {
+                    b1 = (d11 * d20 - d01 * d21) / denom;
+                    b2 = (d00 * d21 - d01 * d20) / denom;
+                }
+                const double b0 = 1.0 - b1 - b2;
+                rows_w[fi] = {{static_cast<std::size_t>(tri[0]), b0},
+                              {static_cast<std::size_t>(tri[1]), b1},
+                              {static_cast<std::size_t>(tri[2]), b2}};
+                resolved[fi] = 1;
+            });
+        } else {
+            // Volume or 2-D planar mesh: simplexify + PointLocator.
+            ConvertCellsOptions copt;
+            copt.mMode = ConvertCellsMode::Simplexify;
+            const auto simp_res = convert_cells(rCoarse, copt);
+            const detail::PointLocator locator(simp_res.mMesh, rOptions.mTolerance, "transfer_operator");
+            const std::size_t k = locator.NodesPerSimplex();
+            const std::vector<std::int64_t>& conn = locator.Connectivity();
+
+            parallel_for(n_fine, [&](std::size_t i) {
+                if (resolved[i])
+                    return;
+                double w[4] = {0.0, 0.0, 0.0, 0.0};
+                const std::int64_t sid = locator.Locate(fine_xyz[i], w);
+                if (sid >= 0) {
+                    rows_w[i].reserve(k);
+                    for (std::size_t a = 0; a < k; ++a) {
+                        rows_w[i].emplace_back(
+                            static_cast<std::size_t>(conn[static_cast<std::size_t>(sid) * k + a]),
+                            w[a]);
+                    }
+                    resolved[i] = 1;
+                }
+            });
+        }
+    }
+
+    // 3. Optional nearest-vertex fallback for any still-unlocated points.
+    std::vector<std::size_t> missing;
+    for (std::size_t i = 0; i < n_fine; ++i)
+        if (!resolved[i])
+            missing.push_back(i);
+
+    if (!missing.empty()) {
+        if (rOptions.mFallbackNearest) {
+            Vec3 lo = coarse_xyz[0], hi = coarse_xyz[0];
+            for (const Vec3& p : coarse_xyz)
+                for (int d = 0; d < 3; ++d) {
+                    lo[d] = std::min(lo[d], p[d]);
+                    hi[d] = std::max(hi[d], p[d]);
+                }
+            const double diag = detail::vec3_norm(detail::vec3_sub(hi, lo));
+            const double h =
+                diag > 0.0 ? diag / std::cbrt(static_cast<double>(n_coarse) + 1.0) : 1.0;
+            const detail::PointKnn knn(coarse_xyz, std::max(h, 1e-12));
+            parallel_for(missing.size(), [&](std::size_t idx) {
+                const std::size_t fi = missing[idx];
+                const std::int64_t nid = knn.Nearest(fine_xyz[fi]);
+                if (nid >= 0) {
+                    rows_w[fi] = {{static_cast<std::size_t>(nid), 1.0}};
+                    resolved[fi] = 1;
+                }
+            });
+        } else {
+            num_unlocated = static_cast<std::int64_t>(missing.size());
+        }
+    }
+
+    // 4. Assemble CSR (prolongation P or transposed restriction R = P^T).
+    std::vector<detail::SparseTriplet> triplets;
+    triplets.reserve(n_fine * 4);
+    for (std::size_t i = 0; i < n_fine; ++i) {
+        for (const auto& [col, val] : rows_w[i]) {
+            if (std::abs(val) <= 1e-15)
+                continue;
+            if (rOptions.mTranspose)
+                triplets.push_back({col, i, val});
+            else
+                triplets.push_back({i, col, val});
+        }
+    }
+
+    const std::size_t out_rows = rOptions.mTranspose ? n_coarse : n_fine;
+    const std::size_t out_cols = rOptions.mTranspose ? n_fine : n_coarse;
+    const detail::SparseCsr csr =
+        detail::csr_from_triplets(out_rows, out_cols, std::move(triplets));
+
+    MeshOperatorResult out;
+    out.mRows = static_cast<std::int64_t>(csr.mRows);
+    out.mCols = static_cast<std::int64_t>(csr.mCols);
+    out.mIndptr.assign(csr.mStart.begin(), csr.mStart.end());
+    out.mIndices.assign(csr.mCol.begin(), csr.mCol.end());
+    out.mValues = csr.mValue;
+    out.mNumDegenerate = num_unlocated;
+    return out;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/transfer_operator.cpp =====
 // ===== begin src/cpp/src/operations/transform.cpp =====
 #include <array>
 #include <cmath>

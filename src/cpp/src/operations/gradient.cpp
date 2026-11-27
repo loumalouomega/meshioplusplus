@@ -50,6 +50,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "../detail/field_recovery.hpp"
 #include "../detail/math_utils.hpp"
+#include "../detail/reference_element.hpp"
 #include "../detail/typed_view.hpp"
 #include "meshioplusplus/operations/data_average.hpp"
 #include "meshioplusplus/operations/data_manage.hpp"
@@ -796,11 +797,83 @@ GradientArrayResult gradient_array(const Mesh& rMesh, const GradientOptions& rOp
         std::vector<std::uint8_t> flag_fallback(ncells, 0);
 
         if (!eligible[b]) {
-            for (std::size_t i = 0; i < ncells * out_comp; ++i)
-                pdst[i] = std::nan("");
-            skipped += static_cast<std::int64_t>(ncells);
-            blocks.push_back(std::move(dst));
-            continue;
+            // High-order / VTK Lagrange & Bezier cells (roadmap 15.3.1): evaluate
+            // exact physical gradient at the reference centroid instead of NaN.
+            bool ho_handled = false;
+            if (!cb.IsPolyhedron() && ncells > 0) {
+                const CellType ct = cell_type_from_name(cb.Type());
+                const std::size_t k0 = cb.IsRagged() ? cb.RowSize(0) : cb.NodesPerCell();
+                detail::ReferenceElementInfo info;
+                if (detail::reference_element_info(ct, k0, info) && info.mDim == dim) {
+                    ho_handled = true;
+                    std::array<double, 3> xi_c = {0.5, 0.5, 0.5};
+                    if (info.mShape == lagrange::Shape::Triangle)
+                        xi_c = {1.0 / 3.0, 1.0 / 3.0, 0.0};
+                    else if (info.mShape == lagrange::Shape::Tetra)
+                        xi_c = {0.25, 0.25, 0.25};
+                    else if (info.mShape == lagrange::Shape::Wedge)
+                        xi_c = {1.0 / 3.0, 1.0 / 3.0, 0.5};
+                    else if (info.mShape == lagrange::Shape::Line)
+                        xi_c = {0.5, 0.0, 0.0};
+                    else if (info.mShape == lagrange::Shape::Quad)
+                        xi_c = {0.5, 0.5, 0.0};
+
+                    const NDArray* p_conn = cb.IsRagged() ? nullptr : &cb.Conn();
+                    parallel_for(ncells, [&](std::size_t c) {
+                        std::vector<std::int64_t> nids;
+                        if (cb.IsRagged()) {
+                            const std::int64_t* row = cb.Row(c);
+                            nids.assign(row, row + cb.RowSize(c));
+                        } else {
+                            nids.resize(k0);
+                            for (std::size_t i = 0; i < k0; ++i)
+                                nids[i] = detail::read_int(*p_conn, c * k0 + i);
+                        }
+                        const std::size_t k = nids.size();
+                        std::vector<detail::Vec3> cpts(k);
+                        for (std::size_t i = 0; i < k; ++i) {
+                            const auto u = static_cast<std::size_t>(nids[i]);
+                            cpts[i] = {points_v.Data()[u * pdim + 0],
+                                       pdim > 1 ? points_v.Data()[u * pdim + 1] : 0.0,
+                                       pdim > 2 ? points_v.Data()[u * pdim + 2] : 0.0};
+                        }
+                        std::vector<double> vals;
+                        std::vector<detail::Vec3> grads;
+                        double meas = 0.0;
+                        if (!detail::shape_eval_and_jacobian(ct, cpts, xi_c, vals, grads, meas)) {
+                            for (std::size_t i = 0; i < out_comp; ++i)
+                                pdst[c * out_comp + i] = std::nan("");
+                            flag_skipped[c] = 1;
+                            return;
+                        }
+                        std::vector<double> grad(work_comp * 3, 0.0);
+                        std::vector<double> val0(work_comp, 0.0);
+                        for (std::size_t comp = 0; comp < work_comp; ++comp) {
+                            for (std::size_t i = 0; i < k; ++i) {
+                                const double fv =
+                                    pwork[static_cast<std::size_t>(nids[i]) * work_comp + comp];
+                                val0[comp] += vals[i] * fv;
+                                grad[comp * 3 + 0] += grads[i][0] * fv;
+                                grad[comp * 3 + 1] += grads[i][1] * fv;
+                                grad[comp * 3 + 2] += grads[i][2] * fv;
+                            }
+                        }
+                        grad_apply_operator(rOptions.mOperator, grad.data(), val0.data(), work_comp,
+                                            pdst + c * out_comp);
+                    });
+                    for (std::size_t c = 0; c < ncells; ++c)
+                        skipped += flag_skipped[c];
+                    blocks.push_back(std::move(dst));
+                    continue;
+                }
+            }
+            if (!ho_handled) {
+                for (std::size_t i = 0; i < ncells * out_comp; ++i)
+                    pdst[i] = std::nan("");
+                skipped += static_cast<std::int64_t>(ncells);
+                blocks.push_back(std::move(dst));
+                continue;
+            }
         }
 
         const std::size_t base = static_cast<std::size_t>(bases[b]);

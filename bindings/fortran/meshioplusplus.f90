@@ -98,6 +98,8 @@ module meshioplusplus
     public :: mio_quad_remesher_name, mio_remesh_quads_backend_name
     public :: mio_cut_level_set, mio_cut_quadrature, mio_cut_report, mio_has_cutcells
     public :: mio_cut_backend_name
+    public :: mio_mesh_operator, mio_smooth_field, mio_streamlines
+    public :: mio_transfer_operator, mio_attach_fvm_quality
     public :: mio_has_mmg, mio_has_mmg_elas, mio_mmg_index_bits
     public :: mio_adapt, mio_mmg_report, mio_metric_from_hessian
     public :: mio_discretize_levelset, mio_mesh_domain, mio_move
@@ -1715,6 +1717,47 @@ module meshioplusplus
     end type
 
     !> Interop mirror of C `mio_eigenmode_opts`. Field order/types are ABI.
+    type, bind(c) :: mio_smooth_field_opts_t
+        type(c_ptr) :: array = c_null_ptr
+        type(c_ptr) :: output = c_null_ptr
+        real(c_double) :: length = 0.0_c_double
+        real(c_double) :: tolerance = 1.0e-12_c_double
+        integer(c_int64_t) :: max_iterations = 0_c_int64_t
+        integer(c_int64_t) :: reserved(3) = 0_c_int64_t
+    end type
+
+    type, bind(c) :: mio_smooth_field_report_t
+        integer(c_int64_t) :: num_degenerate = 0_c_int64_t
+        integer(c_int64_t) :: iterations = 0_c_int64_t
+        integer(c_int32_t) :: converged = 0_c_int32_t
+        integer(c_int32_t) :: reserved0 = 0_c_int32_t
+        integer(c_int64_t) :: reserved(3) = 0_c_int64_t
+    end type
+
+    type, bind(c) :: mio_streamlines_opts_t
+        type(c_ptr) :: array = c_null_ptr
+        integer(c_int64_t) :: seeds = 40_c_int64_t
+        type(c_ptr) :: seed_points = c_null_ptr
+        integer(c_int64_t) :: num_seed_points = 0_c_int64_t
+        integer(c_int32_t) :: direction = 0_c_int32_t
+        integer(c_int32_t) :: integrator = 0_c_int32_t
+        real(c_double) :: step = 0.0_c_double
+        real(c_double) :: max_length = 0.5_c_double
+        integer(c_int64_t) :: max_steps = 0_c_int64_t
+        real(c_double) :: terminal_speed = 0.0_c_double
+        real(c_double) :: tolerance = 1.0e-6_c_double
+        integer(c_int64_t) :: reserved(4) = 0_c_int64_t
+    end type
+
+    type, bind(c) :: mio_transfer_operator_opts_t
+        integer(c_int32_t) :: mode = 0_c_int32_t
+        integer(c_int32_t) :: transpose = 0_c_int32_t
+        real(c_double) :: tolerance = 1.0e-12_c_double
+        integer(c_int32_t) :: fallback_nearest = 0_c_int32_t
+        integer(c_int32_t) :: reserved0 = 0_c_int32_t
+        integer(c_int64_t) :: reserved(3) = 0_c_int64_t
+    end type
+
     type, bind(c) :: mio_eigenmode_opts_t
         integer(c_int64_t) :: num_modes = 10
         real(c_double) :: tolerance = 1.0e-8_c_double
@@ -4722,6 +4765,92 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_eigenmode_opts_t), intent(in) :: opts
             type(mio_eigenmode_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_sparse_operator_free(op) bind(c, name="mio_sparse_operator_free")
+            import :: c_ptr
+            type(c_ptr), value :: op
+        end subroutine
+
+        function c_mio_sparse_operator_rows(op) bind(c, name="mio_sparse_operator_rows") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: op
+            integer(c_int64_t) :: r
+        end function
+
+        function c_mio_sparse_operator_cols(op) bind(c, name="mio_sparse_operator_cols") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: op
+            integer(c_int64_t) :: r
+        end function
+
+        function c_mio_sparse_operator_nnz(op) bind(c, name="mio_sparse_operator_nnz") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: op
+            integer(c_int64_t) :: r
+        end function
+
+        function c_mio_sparse_operator_indptr(op, n) bind(c, name="mio_sparse_operator_indptr") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: op
+            integer(c_int64_t), intent(out) :: n
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_sparse_operator_indices(op, n) bind(c, name="mio_sparse_operator_indices") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: op
+            integer(c_int64_t), intent(out) :: n
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_sparse_operator_values(op, n) bind(c, name="mio_sparse_operator_values") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: op
+            integer(c_int64_t), intent(out) :: n
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_mesh_operator(h, kind) bind(c, name="mio_mesh_operator") result(r)
+            import :: c_ptr, c_int32_t
+            type(c_ptr), value :: h
+            integer(c_int32_t), value :: kind
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_smooth_field(h, opts, report) bind(c, name="mio_smooth_field") result(r)
+            import :: c_ptr, mio_smooth_field_opts_t, mio_smooth_field_report_t
+            type(c_ptr), value :: h
+            type(mio_smooth_field_opts_t), intent(in) :: opts
+            type(mio_smooth_field_report_t), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_streamlines(h, opts, report) bind(c, name="mio_streamlines") result(r)
+            import :: c_ptr, mio_streamlines_opts_t
+            type(c_ptr), value :: h
+            type(mio_streamlines_opts_t), intent(in) :: opts
+            type(c_ptr), intent(out) :: report
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_streamlines_report_free(rep) bind(c, name="mio_streamlines_report_free")
+            import :: c_ptr
+            type(c_ptr), value :: rep
+        end subroutine
+
+        function c_mio_transfer_operator(coarse, fine, opts) &
+                bind(c, name="mio_transfer_operator") result(r)
+            import :: c_ptr, mio_transfer_operator_opts_t
+            type(c_ptr), value :: coarse, fine
+            type(mio_transfer_operator_opts_t), intent(in) :: opts
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_attach_fvm_quality(h) bind(c, name="mio_attach_fvm_quality") result(r)
+            import :: c_ptr
+            type(c_ptr), value :: h
             type(c_ptr) :: r
         end function
 
@@ -20929,6 +21058,149 @@ contains
             pc = c_loc(c(1:1))
         end if
         depth = int(c_mio_detect_color_depth(pa, pb, pc))
+    end function
+
+    subroutine unpack_sparse_op(op, nrows, ncols, indptr, indices, values, stat, errmsg)
+        type(c_ptr), intent(in) :: op
+        integer(int64), intent(out) :: nrows, ncols
+        integer(int64), allocatable, intent(out) :: indptr(:), indices(:)
+        real(real64), allocatable, intent(out) :: values(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int64_t) :: n_ip, n_ix, n_vl
+        type(c_ptr) :: pip, pix, pvl
+        integer(c_int64_t), pointer :: fip(:), fix(:)
+        real(c_double), pointer :: fvl(:)
+        if (.not. c_associated(op)) then
+            call report_error("sparse operator failed", stat, errmsg)
+            return
+        end if
+        nrows = c_mio_sparse_operator_rows(op)
+        ncols = c_mio_sparse_operator_cols(op)
+        pip = c_mio_sparse_operator_indptr(op, n_ip)
+        pix = c_mio_sparse_operator_indices(op, n_ix)
+        pvl = c_mio_sparse_operator_values(op, n_vl)
+        if (n_ip > 0) then
+            call c_f_pointer(pip, fip, [int(n_ip)])
+            indptr = fip
+        else
+            allocate(indptr(0))
+        end if
+        if (n_ix > 0) then
+            call c_f_pointer(pix, fix, [int(n_ix)])
+            indices = fix
+        else
+            allocate(indices(0))
+        end if
+        if (n_vl > 0) then
+            call c_f_pointer(pvl, fvl, [int(n_vl)])
+            values = fvl
+        else
+            allocate(values(0))
+        end if
+        call c_mio_sparse_operator_free(op)
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    subroutine mio_mesh_operator(mesh, kind, nrows, ncols, indptr, indices, values, stat, errmsg)
+        type(mio_mesh), intent(in) :: mesh
+        integer, intent(in) :: kind
+        integer(int64), intent(out) :: nrows, ncols
+        integer(int64), allocatable, intent(out) :: indptr(:), indices(:)
+        real(real64), allocatable, intent(out) :: values(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(c_ptr) :: op
+        op = c_mio_mesh_operator(mesh%handle, int(kind, c_int32_t))
+        call unpack_sparse_op(op, nrows, ncols, indptr, indices, values, stat, errmsg)
+    end subroutine
+
+    function mio_smooth_field(mesh, array, length, output, tolerance, max_iterations, &
+                              stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: array
+        real(real64), intent(in), optional :: length, tolerance
+        character(*), intent(in), optional :: output
+        integer(int64), intent(in), optional :: max_iterations
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_smooth_field_opts_t) :: opts
+        type(mio_smooth_field_report_t) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: arr_c, out_c
+        arr_c = trim(array)//c_null_char
+        opts%array = c_loc(arr_c(1:1))
+        if (present(output)) then
+            out_c = trim(output)//c_null_char
+            opts%output = c_loc(out_c(1:1))
+        end if
+        if (present(length)) opts%length = length
+        if (present(tolerance)) opts%tolerance = tolerance
+        if (present(max_iterations)) opts%max_iterations = max_iterations
+        out%handle = c_mio_smooth_field(mesh%handle, opts, rep)
+        if (.not. c_associated(out%handle)) then
+            call report_error("mio_smooth_field failed", stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    function mio_streamlines(mesh, array, seeds, max_length, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in) :: array
+        integer(int64), intent(in), optional :: seeds
+        real(real64), intent(in), optional :: max_length
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_streamlines_opts_t) :: opts
+        type(c_ptr) :: rep
+        character(kind=c_char, len=STRBUF_LEN), target :: arr_c
+        arr_c = trim(array)//c_null_char
+        opts%array = c_loc(arr_c(1:1))
+        if (present(seeds)) opts%seeds = seeds
+        if (present(max_length)) opts%max_length = max_length
+        rep = c_null_ptr
+        out%handle = c_mio_streamlines(mesh%handle, opts, rep)
+        if (c_associated(rep)) call c_mio_streamlines_report_free(rep)
+        if (.not. c_associated(out%handle)) then
+            call report_error("mio_streamlines failed", stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    subroutine mio_transfer_operator(coarse, fine, nrows, ncols, indptr, indices, values, &
+                                     mode, transpose, stat, errmsg)
+        type(mio_mesh), intent(in) :: coarse, fine
+        integer(int64), intent(out) :: nrows, ncols
+        integer(int64), allocatable, intent(out) :: indptr(:), indices(:)
+        real(real64), allocatable, intent(out) :: values(:)
+        integer, intent(in), optional :: mode
+        logical, intent(in), optional :: transpose
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_transfer_operator_opts_t) :: opts
+        type(c_ptr) :: op
+        if (present(mode)) opts%mode = int(mode, c_int32_t)
+        if (present(transpose)) then
+            if (transpose) opts%transpose = 1_c_int32_t
+        end if
+        op = c_mio_transfer_operator(coarse%handle, fine%handle, opts)
+        call unpack_sparse_op(op, nrows, ncols, indptr, indices, values, stat, errmsg)
+    end subroutine
+
+    function mio_attach_fvm_quality(mesh, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: mesh
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out%handle = c_mio_attach_fvm_quality(mesh%handle)
+        if (.not. c_associated(out%handle)) then
+            call report_error("mio_attach_fvm_quality failed", stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
     end function
 
 end module meshioplusplus

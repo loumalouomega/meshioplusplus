@@ -75,6 +75,11 @@ extern SEXP R_mio_register_landmarks(SEXP, SEXP, SEXP);
 extern SEXP R_mio_find_symmetry_plane(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_auto_align(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_laplacian_eigenmodes(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_mesh_operator(SEXP, SEXP);
+extern SEXP R_mio_smooth_field(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_streamlines(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_transfer_operator(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_attach_fvm_quality(SEXP);
 extern SEXP R_mio_morph(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_untangle(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_prepare_metric(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -371,6 +376,11 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_find_symmetry_plane, 6),
                                               CALLDEF(R_mio_auto_align, 5),
                                               CALLDEF(R_mio_laplacian_eigenmodes, 4),
+                                              CALLDEF(R_mio_mesh_operator, 2),
+                                              CALLDEF(R_mio_smooth_field, 6),
+                                              CALLDEF(R_mio_streamlines, 9),
+                                              CALLDEF(R_mio_transfer_operator, 6),
+                                              CALLDEF(R_mio_attach_fvm_quality, 1),
                                               CALLDEF(R_mio_morph, 7),
                                               CALLDEF(R_mio_untangle, 5),
                                               CALLDEF(R_mio_prepare_metric, 8),

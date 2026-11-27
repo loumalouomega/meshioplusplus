@@ -9711,3 +9711,161 @@ TEST(CApi, FilterPointsRemovesAnOutlierAndMapsPoints) {
     EXPECT_EQ(mio_filter_points(nullptr, nullptr, nullptr, nullptr), nullptr);
     mio_mesh_free(m);
 }
+
+TEST(CApi, Roadmap9And15Operations) {
+    // 1. mio_mesh_operator + mio_smooth_field on tet mesh (15.2)
+    mio_mesh* tet = build_tet_mesh();
+    mio_sparse_operator* L = mio_mesh_operator(tet, 0);
+    ASSERT_NE(L, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_sparse_operator_rows(L), 5);
+    EXPECT_EQ(mio_sparse_operator_cols(L), 5);
+    EXPECT_GT(mio_sparse_operator_nnz(L), 0);
+    int64_t n_indptr = 0, n_indices = 0, n_vals = 0;
+    ASSERT_NE(mio_sparse_operator_indptr(L, &n_indptr), nullptr);
+    EXPECT_EQ(n_indptr, 6);
+    ASSERT_NE(mio_sparse_operator_indices(L, &n_indices), nullptr);
+    ASSERT_NE(mio_sparse_operator_values(L, &n_vals), nullptr);
+    EXPECT_EQ(n_indices, n_vals);
+    mio_sparse_operator_free(L);
+
+    const std::vector<double> scalar = {0.0, 1.0, 2.0, 3.0, 4.0};
+    const int64_t s_shape[1] = {5};
+    ASSERT_EQ(mio_mesh_add_point_data(tet, "u", MIO_FLOAT64, 1, s_shape, scalar.data()), MIO_OK);
+    mio_smooth_field_opts sf_opts;
+    mio_smooth_field_opts_init(&sf_opts);
+    sf_opts.array = "u";
+    sf_opts.length = 0.2;
+    mio_smooth_field_report sf_rep{};
+    mio_mesh* sf_out = mio_smooth_field(tet, &sf_opts, &sf_rep);
+    ASSERT_NE(sf_out, nullptr) << mio_last_error();
+    EXPECT_EQ(sf_rep.converged, 1);
+    mio_mesh_free(sf_out);
+
+    // 2. mio_streamlines (15.4)
+    const std::vector<double> vel = {1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0,
+                                     0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+    const int64_t v_shape[2] = {5, 3};
+    ASSERT_EQ(mio_mesh_add_point_data(tet, "v", MIO_FLOAT64, 2, v_shape, vel.data()), MIO_OK);
+    mio_streamlines_opts sl_opts;
+    mio_streamlines_opts_init(&sl_opts);
+    sl_opts.array = "v";
+    const double seed[3] = {0.5, 0.5, 0.5};
+    sl_opts.seed_points = seed;
+    sl_opts.num_seed_points = 1;
+    mio_streamlines_report* sl_rep = nullptr;
+    mio_mesh* sl_out = mio_streamlines(tet, &sl_opts, &sl_rep);
+    ASSERT_NE(sl_out, nullptr) << mio_last_error();
+    ASSERT_NE(sl_rep, nullptr);
+    EXPECT_GE(mio_streamlines_report_num_lines(sl_rep), 0);
+    mio_streamlines_report_free(sl_rep);
+    mio_mesh_free(sl_out);
+
+    // 3. mio_attach_fvm_quality (9.11)
+    mio_mesh* fvm_out = mio_attach_fvm_quality(tet);
+    ASSERT_NE(fvm_out, nullptr) << mio_last_error();
+    mio_mesh_free(fvm_out);
+
+    // 4. mio_transfer_operator (15.5)
+    mio_transfer_operator_opts tr_opts;
+    mio_transfer_operator_opts_init(&tr_opts);
+    mio_sparse_operator* P = mio_transfer_operator(tet, tet, &tr_opts);
+    ASSERT_NE(P, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_sparse_operator_rows(P), 5);
+    EXPECT_EQ(mio_sparse_operator_cols(P), 5);
+    mio_sparse_operator_free(P);
+
+    // 5. mio_deform_ffd & mio_deform_rbf (9.15)
+    mio_deform_ffd_opts ffd_opts;
+    mio_deform_ffd_opts_init(&ffd_opts);
+    std::vector<double> ffd_disp(2 * 2 * 2 * 3, 0.0);
+    for (std::size_t i = 0; i < 8; ++i)
+        ffd_disp[i * 3] = 0.1;
+    ffd_opts.displacements = ffd_disp.data();
+    ffd_opts.num_displacements = static_cast<int64_t>(ffd_disp.size());
+    int64_t n_inv = -1;
+    double max_d = 0.0;
+    mio_mesh* ffd_out = mio_deform_ffd(tet, &ffd_opts, &n_inv, &max_d);
+    ASSERT_NE(ffd_out, nullptr) << mio_last_error();
+    EXPECT_NEAR(max_d, 0.1, 1e-9);
+    mio_mesh_free(ffd_out);
+
+    mio_deform_rbf_opts rbf_opts;
+    mio_deform_rbf_opts_init(&rbf_opts);
+    const double ctrl[12] = {0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1};
+    const double disp[12] = {0.05, 0, 0, 0.05, 0, 0, 0.05, 0, 0, 0.05, 0, 0};
+    rbf_opts.control_points = ctrl;
+    rbf_opts.displacements = disp;
+    rbf_opts.num_control_points = 4;
+    mio_mesh* rbf_out = mio_deform_rbf(tet, &rbf_opts, &n_inv, &max_d);
+    ASSERT_NE(rbf_out, nullptr) << mio_last_error();
+    EXPECT_NEAR(max_d, 0.05, 1e-6);
+    mio_mesh_free(rbf_out);
+
+    // 6. Surface ops on sphere: denoise, skeleton, shortest_path, geodesic_voronoi, spectral_descriptors
+    mio_gen_opts gopts;
+    mio_gen_opts_init(&gopts);
+    gopts.radius = 1.0;
+    gopts.counts[0] = 2;
+    mio_mesh* sph = mio_icosa_sphere(&gopts);
+    ASSERT_NE(sph, nullptr) << mio_last_error();
+
+    mio_denoise_surface_opts dn_opts;
+    mio_denoise_surface_opts_init(&dn_opts);
+    dn_opts.normal_iterations = 2;
+    mio_mesh* dn_out = mio_denoise_surface(sph, &dn_opts, nullptr, nullptr);
+    ASSERT_NE(dn_out, nullptr) << mio_last_error();
+    mio_mesh_free(dn_out);
+
+    mio_skeleton_opts sk_opts;
+    mio_skeleton_opts_init(&sk_opts);
+    sk_opts.max_iterations = 3;
+    int64_t n_nodes = 0, n_segs = 0;
+    mio_mesh* sk_out = mio_extract_skeleton(sph, &sk_opts, &n_nodes, &n_segs);
+    ASSERT_NE(sk_out, nullptr) << mio_last_error();
+    mio_mesh_free(sk_out);
+
+    mio_shortest_path_opts sp_opts;
+    mio_shortest_path_opts_init(&sp_opts);
+    sp_opts.source = 0;
+    sp_opts.target = 10;
+    double plen = 0.0;
+    int32_t reached = 0;
+    mio_mesh* sp_out = mio_shortest_path(sph, &sp_opts, &plen, &reached);
+    ASSERT_NE(sp_out, nullptr) << mio_last_error();
+    EXPECT_EQ(reached, 1);
+    EXPECT_GT(plen, 0.0);
+    mio_mesh_free(sp_out);
+
+    const int64_t seeds[2] = {0, 10};
+    mio_mesh* gv_out = mio_geodesic_voronoi(sph, seeds, 2, nullptr, 0, 1, nullptr, nullptr);
+    ASSERT_NE(gv_out, nullptr) << mio_last_error();
+    mio_mesh_free(gv_out);
+
+    mio_spectral_descriptors_opts sd_opts;
+    mio_spectral_descriptors_opts_init(&sd_opts);
+    sd_opts.num_modes = 8;
+    sd_opts.num_scales = 4;
+    mio_mesh* sd_out = mio_spectral_descriptors(sph, &sd_opts, nullptr, nullptr);
+    ASSERT_NE(sd_out, nullptr) << mio_last_error();
+    mio_mesh_free(sd_out);
+
+    // 7. mio_change_basis & mio_critical_points (15.3)
+    int64_t n_conv = -1;
+    mio_mesh* cb_out = mio_change_basis(tet, 1, 1, &n_conv);
+    ASSERT_NE(cb_out, nullptr) << mio_last_error();
+    EXPECT_EQ(n_conv, 2);  // 2 linear tets converted to VTK_BEZIER_TETRAHEDRON
+    mio_mesh_free(cb_out);
+
+    mio_critical_points_opts cp_opts;
+    mio_critical_points_opts_init(&cp_opts);
+    cp_opts.array = "u";
+    int64_t nmin = -1, nmax = -1, nsad = -1;
+    mio_mesh* cp_out = mio_critical_points(tet, &cp_opts, &nmin, &nmax, &nsad);
+    ASSERT_NE(cp_out, nullptr) << mio_last_error();
+    EXPECT_GE(nmin, 0);
+    mio_mesh_free(cp_out);
+
+    mio_mesh_free(sph);
+    mio_mesh_free(tet);
+}
+

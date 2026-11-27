@@ -119,6 +119,18 @@
 #include "meshioplusplus/operations/data_manage.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
 #include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/critical_points.hpp"
+#include "meshioplusplus/operations/deform.hpp"
+#include "meshioplusplus/operations/denoise_surface.hpp"
+#include "meshioplusplus/operations/evaluate_cells.hpp"
+#include "meshioplusplus/operations/fvm_quality.hpp"
+#include "meshioplusplus/operations/mesh_operator.hpp"
+#include "meshioplusplus/operations/shortest_path.hpp"
+#include "meshioplusplus/operations/skeleton.hpp"
+#include "meshioplusplus/operations/smooth_field.hpp"
+#include "meshioplusplus/operations/spectral_descriptors.hpp"
+#include "meshioplusplus/operations/streamlines.hpp"
+#include "meshioplusplus/operations/transfer_operator.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/formats/med.hpp"
@@ -13011,6 +13023,526 @@ int64_t mio_filter_points_warnings(char* buf, int64_t buflen) {
         if (buflen < 0)
             throw std::invalid_argument("meshio++: negative warnings buffer length");
         return copy_string(capi_filter_points_warnings(), buf, buflen);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Roadmap 9.11-9.15 & 15.2.2-15.6 C API implementations
+// ---------------------------------------------------------------------------
+
+struct mio_sparse_operator {
+    meshioplusplus::MeshOperatorResult mRes;
+};
+
+struct mio_streamlines_report {
+    int64_t mNumLines = 0;
+    int64_t mNumSeedsOutside = 0;
+    int32_t mDim = 0;
+    std::vector<int64_t> mSeedIds;
+    std::vector<int32_t> mEndBackward;
+    std::vector<int32_t> mEndForward;
+};
+
+static_assert(sizeof(mio_smooth_field_opts) == 64, "mio_smooth_field_opts size changed");
+static_assert(sizeof(mio_smooth_field_report) == 48, "mio_smooth_field_report size changed");
+static_assert(sizeof(mio_streamlines_opts) == 112, "mio_streamlines_opts size changed");
+static_assert(sizeof(mio_transfer_operator_opts) == 48, "mio_transfer_operator_opts size changed");
+static_assert(sizeof(mio_spectral_descriptors_opts) == 96,
+              "mio_spectral_descriptors_opts size changed");
+static_assert(sizeof(mio_denoise_surface_opts) == 88, "mio_denoise_surface_opts size changed");
+static_assert(sizeof(mio_skeleton_opts) == 80, "mio_skeleton_opts size changed");
+static_assert(sizeof(mio_shortest_path_opts) == 112, "mio_shortest_path_opts size changed");
+static_assert(sizeof(mio_deform_ffd_opts) == 144, "mio_deform_ffd_opts size changed");
+static_assert(sizeof(mio_deform_rbf_opts) == 88, "mio_deform_rbf_opts size changed");
+static_assert(sizeof(mio_critical_points_opts) == 72, "mio_critical_points_opts size changed");
+
+void mio_sparse_operator_free(mio_sparse_operator* op) {
+    delete op;
+}
+int64_t mio_sparse_operator_rows(const mio_sparse_operator* op) {
+    return op ? op->mRes.mRows : 0;
+}
+int64_t mio_sparse_operator_cols(const mio_sparse_operator* op) {
+    return op ? op->mRes.mCols : 0;
+}
+int64_t mio_sparse_operator_nnz(const mio_sparse_operator* op) {
+    return op ? static_cast<int64_t>(op->mRes.mValues.size()) : 0;
+}
+int64_t mio_sparse_operator_num_degenerate(const mio_sparse_operator* op) {
+    return op ? op->mRes.mNumDegenerate : 0;
+}
+const int64_t* mio_sparse_operator_indptr(const mio_sparse_operator* op, int64_t* count) {
+    if (!op) {
+        if (count)
+            *count = 0;
+        return nullptr;
+    }
+    if (count)
+        *count = static_cast<int64_t>(op->mRes.mIndptr.size());
+    return op->mRes.mIndptr.data();
+}
+const int64_t* mio_sparse_operator_indices(const mio_sparse_operator* op, int64_t* count) {
+    if (!op) {
+        if (count)
+            *count = 0;
+        return nullptr;
+    }
+    if (count)
+        *count = static_cast<int64_t>(op->mRes.mIndices.size());
+    return op->mRes.mIndices.data();
+}
+const double* mio_sparse_operator_values(const mio_sparse_operator* op, int64_t* count) {
+    if (!op) {
+        if (count)
+            *count = 0;
+        return nullptr;
+    }
+    if (count)
+        *count = static_cast<int64_t>(op->mRes.mValues.size());
+    return op->mRes.mValues.data();
+}
+
+mio_sparse_operator* mio_mesh_operator(const mio_mesh* mesh, int32_t kind) {
+    return guarded_ptr(static_cast<mio_sparse_operator*>(nullptr), [&]() -> mio_sparse_operator* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        meshioplusplus::MeshOperatorOptions o;
+        o.mKind = static_cast<meshioplusplus::MeshOperatorKind>(kind);
+        return new mio_sparse_operator{meshioplusplus::mesh_operator(mesh->mMesh, o)};
+    });
+}
+
+void mio_smooth_field_opts_init(mio_smooth_field_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_smooth_field_opts{};
+    opts->tolerance = 1e-12;
+}
+
+mio_mesh* mio_smooth_field(const mio_mesh* mesh, const mio_smooth_field_opts* opts,
+                           mio_smooth_field_report* report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        capi_require(opts, "meshio++: smooth_field: opts is NULL");
+        capi_require(opts->array, "meshio++: smooth_field: array is required");
+        meshioplusplus::SmoothFieldOptions o;
+        o.mArray = opts->array;
+        if (opts->output)
+            o.mOutput = opts->output;
+        o.mLength = opts->length;
+        o.mTolerance = opts->tolerance > 0.0 ? opts->tolerance : 1e-12;
+        o.mMaxIterations = opts->max_iterations;
+        auto r = meshioplusplus::smooth_field(mesh->mMesh, o);
+        if (report) {
+            *report = mio_smooth_field_report{};
+            report->num_degenerate = r.mNumDegenerate;
+            report->iterations = r.mIterations;
+            report->converged = r.mConverged ? 1 : 0;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_streamlines_opts_init(mio_streamlines_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_streamlines_opts{};
+    opts->seeds = 40;
+    opts->max_length = 0.5;
+    opts->tolerance = 1e-6;
+}
+
+mio_mesh* mio_streamlines(const mio_mesh* mesh, const mio_streamlines_opts* opts,
+                          mio_streamlines_report** report) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        capi_require(opts, "meshio++: streamlines: opts is NULL");
+        capi_require(opts->array, "meshio++: streamlines: array is required");
+        meshioplusplus::StreamlinesOptions o;
+        o.mArray = opts->array;
+        o.mSeeds = opts->seeds;
+        if (opts->seed_points && opts->num_seed_points > 0) {
+            o.mSeedPoints.assign(opts->seed_points,
+                                 opts->seed_points + opts->num_seed_points * 3);
+        }
+        o.mDirection = static_cast<meshioplusplus::StreamlineDirection>(opts->direction);
+        o.mIntegrator = static_cast<meshioplusplus::StreamlineIntegrator>(opts->integrator);
+        o.mStep = opts->step;
+        o.mMaxLength = opts->max_length;
+        o.mMaxSteps = opts->max_steps;
+        o.mTerminalSpeed = opts->terminal_speed;
+        o.mTolerance = opts->tolerance > 0.0 ? opts->tolerance : 1e-6;
+        auto r = meshioplusplus::streamlines(mesh->mMesh, o);
+        if (report) {
+            auto* rep = new mio_streamlines_report{};
+            rep->mNumLines = r.mNumLines;
+            rep->mNumSeedsOutside = r.mNumSeedsOutside;
+            rep->mDim = r.mDim;
+            rep->mSeedIds = std::move(r.mSeedIds);
+            rep->mEndBackward = std::move(r.mEndBackward);
+            rep->mEndForward = std::move(r.mEndForward);
+            *report = rep;
+        }
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_streamlines_report_free(mio_streamlines_report* report) {
+    delete report;
+}
+int64_t mio_streamlines_report_num_lines(const mio_streamlines_report* report) {
+    return report ? report->mNumLines : 0;
+}
+int64_t mio_streamlines_report_num_seeds_outside(const mio_streamlines_report* report) {
+    return report ? report->mNumSeedsOutside : 0;
+}
+int32_t mio_streamlines_report_dim(const mio_streamlines_report* report) {
+    return report ? report->mDim : 0;
+}
+const int64_t* mio_streamlines_report_seed_ids(const mio_streamlines_report* report,
+                                               int64_t* count) {
+    if (!report) {
+        if (count)
+            *count = 0;
+        return nullptr;
+    }
+    if (count)
+        *count = static_cast<int64_t>(report->mSeedIds.size());
+    return report->mSeedIds.data();
+}
+const int32_t* mio_streamlines_report_end_backward(const mio_streamlines_report* report,
+                                                   int64_t* count) {
+    if (!report) {
+        if (count)
+            *count = 0;
+        return nullptr;
+    }
+    if (count)
+        *count = static_cast<int64_t>(report->mEndBackward.size());
+    return report->mEndBackward.data();
+}
+const int32_t* mio_streamlines_report_end_forward(const mio_streamlines_report* report,
+                                                  int64_t* count) {
+    if (!report) {
+        if (count)
+            *count = 0;
+        return nullptr;
+    }
+    if (count)
+        *count = static_cast<int64_t>(report->mEndForward.size());
+    return report->mEndForward.data();
+}
+
+void mio_transfer_operator_opts_init(mio_transfer_operator_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_transfer_operator_opts{};
+    opts->tolerance = 1e-12;
+}
+
+mio_sparse_operator* mio_transfer_operator(const mio_mesh* coarse, const mio_mesh* fine,
+                                           const mio_transfer_operator_opts* opts) {
+    return guarded_ptr(static_cast<mio_sparse_operator*>(nullptr), [&]() -> mio_sparse_operator* {
+        capi_require(coarse, "meshio++: transfer_operator: coarse is NULL");
+        capi_require(fine, "meshio++: transfer_operator: fine is NULL");
+        mio_transfer_operator_opts o;
+        mio_transfer_operator_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::TransferOperatorOptions cpp;
+        cpp.mMode = static_cast<meshioplusplus::TransferOperatorMode>(o.mode);
+        cpp.mTranspose = o.transpose != 0;
+        cpp.mTolerance = o.tolerance;
+        cpp.mFallbackNearest = o.fallback_nearest != 0;
+        return new mio_sparse_operator{
+            meshioplusplus::transfer_operator(coarse->mMesh, fine->mMesh, cpp)};
+    });
+}
+
+void mio_spectral_descriptors_opts_init(mio_spectral_descriptors_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_spectral_descriptors_opts{};
+    opts->num_modes = 32;
+    opts->num_scales = 16;
+    opts->reuse_eigenmodes = 1;
+    opts->tolerance = 1e-8;
+}
+
+mio_mesh* mio_spectral_descriptors(const mio_mesh* mesh, const mio_spectral_descriptors_opts* opts,
+                                   int64_t* num_modes_used, int32_t* reused_eigenmodes) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        mio_spectral_descriptors_opts o;
+        mio_spectral_descriptors_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::SpectralDescriptorsOptions cpp;
+        cpp.mKind = static_cast<meshioplusplus::SpectralDescriptorKind>(o.kind);
+        cpp.mScaleInvariant = o.scale_invariant != 0;
+        cpp.mNumModes = o.num_modes;
+        cpp.mNumScales = o.num_scales;
+        cpp.mReuseEigenmodes = o.reuse_eigenmodes != 0;
+        cpp.mWksVariance = o.wks_variance;
+        cpp.mTolerance = o.tolerance;
+        cpp.mMaxIterations = o.max_iterations;
+        if (o.output)
+            cpp.mOutput = o.output;
+        auto r = meshioplusplus::spectral_descriptors(mesh->mMesh, cpp);
+        if (num_modes_used)
+            *num_modes_used = r.mNumModesUsed;
+        if (reused_eigenmodes)
+            *reused_eigenmodes = r.mReusedEigenmodes ? 1 : 0;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_attach_fvm_quality(const mio_mesh* mesh) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        return new mio_mesh{meshioplusplus::attach_fvm_quality(mesh->mMesh)};
+    });
+}
+
+void mio_denoise_surface_opts_init(mio_denoise_surface_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_denoise_surface_opts{};
+    opts->fix_boundary = 1;
+    opts->normal_iterations = 10;
+    opts->vertex_iterations = 10;
+    opts->sigma_normal = 0.35;
+    opts->guard_foldover = 1;
+}
+
+mio_mesh* mio_denoise_surface(const mio_mesh* mesh, const mio_denoise_surface_opts* opts,
+                              int64_t* num_nodes_moved, double* max_displacement) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        mio_denoise_surface_opts o;
+        mio_denoise_surface_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::DenoiseSurfaceOptions cpp;
+        cpp.mMethod = static_cast<meshioplusplus::DenoiseMethod>(o.method);
+        cpp.mFixBoundary = o.fix_boundary != 0;
+        cpp.mNormalIterations = o.normal_iterations;
+        cpp.mVertexIterations = o.vertex_iterations;
+        cpp.mSigmaSpatial = o.sigma_spatial;
+        cpp.mSigmaNormal = o.sigma_normal;
+        cpp.mGuardFoldover = o.guard_foldover != 0;
+        if (o.region)
+            cpp.mRegion = o.region;
+        auto r = meshioplusplus::denoise_surface(mesh->mMesh, cpp);
+        if (num_nodes_moved)
+            *num_nodes_moved = r.mNumNodesMoved;
+        if (max_displacement)
+            *max_displacement = r.mMaxDisplacement;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_skeleton_opts_init(mio_skeleton_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_skeleton_opts{};
+    opts->max_iterations = 10;
+    opts->contraction_weight = 1.0;
+    opts->attraction_weight = 1.0;
+    opts->volume_tolerance = 1e-4;
+    opts->recenter = 1;
+}
+
+mio_mesh* mio_extract_skeleton(const mio_mesh* mesh, const mio_skeleton_opts* opts,
+                               int64_t* num_nodes, int64_t* num_segments) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        mio_skeleton_opts o;
+        mio_skeleton_opts_init(&o);
+        if (opts)
+            o = *opts;
+        meshioplusplus::SkeletonOptions cpp;
+        cpp.mMaxIterations = o.max_iterations;
+        cpp.mContractionWeight = o.contraction_weight;
+        cpp.mAttractionWeight = o.attraction_weight;
+        cpp.mVolumeTolerance = o.volume_tolerance;
+        cpp.mMergeTolerance = o.merge_tolerance;
+        cpp.mRecenter = o.recenter != 0;
+        auto r = meshioplusplus::extract_skeleton(mesh->mMesh, cpp);
+        if (num_nodes)
+            *num_nodes = r.mNumNodes;
+        if (num_segments)
+            *num_segments = r.mNumSegments;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_shortest_path_opts_init(mio_shortest_path_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_shortest_path_opts{};
+    opts->source = -1;
+    opts->target = -1;
+    opts->time_factor = 1.0;
+}
+
+mio_mesh* mio_shortest_path(const mio_mesh* mesh, const mio_shortest_path_opts* opts,
+                            double* total_length, int32_t* reached) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        capi_require(opts, "meshio++: shortest_path: opts is NULL");
+        meshioplusplus::ShortestPathOptions cpp;
+        cpp.mSource = opts->source;
+        cpp.mTarget = opts->target;
+        cpp.mHasSourcePoint = opts->has_source_point != 0;
+        cpp.mHasTargetPoint = opts->has_target_point != 0;
+        for (int k = 0; k < 3; ++k) {
+            cpp.mSourcePoint[static_cast<std::size_t>(k)] = opts->source_point[k];
+            cpp.mTargetPoint[static_cast<std::size_t>(k)] = opts->target_point[k];
+        }
+        cpp.mMethod = static_cast<meshioplusplus::ShortestPathMethod>(opts->method);
+        cpp.mTimeFactor = opts->time_factor;
+        auto r = meshioplusplus::shortest_path(mesh->mMesh, cpp);
+        if (total_length)
+            *total_length = r.mTotalLength;
+        if (reached)
+            *reached = r.mReached ? 1 : 0;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_geodesic_voronoi(const mio_mesh* mesh, const int64_t* sources, int64_t num_sources,
+                               const double* seed_points, int64_t num_seed_points,
+                               int32_t attach_cell_labels, int64_t* num_unreached,
+                               double* max_distance) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        meshioplusplus::GeodesicVoronoiOptions cpp;
+        if (sources && num_sources > 0)
+            cpp.mSources.assign(sources, sources + num_sources);
+        if (seed_points && num_seed_points > 0)
+            cpp.mSeedPoints.assign(seed_points, seed_points + num_seed_points * 3);
+        cpp.mAttachCellLabels = attach_cell_labels != 0;
+        auto r = meshioplusplus::geodesic_voronoi(mesh->mMesh, cpp);
+        if (num_unreached)
+            *num_unreached = r.mNumUnreached;
+        if (max_distance)
+            *max_distance = r.mMaxDistance;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_deform_ffd_opts_init(mio_deform_ffd_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_deform_ffd_opts{};
+    opts->grid_dims[0] = opts->grid_dims[1] = opts->grid_dims[2] = 2;
+    opts->degrees[0] = opts->degrees[1] = opts->degrees[2] = -1;
+}
+
+mio_mesh* mio_deform_ffd(const mio_mesh* mesh, const mio_deform_ffd_opts* opts,
+                         int64_t* num_inverted, double* max_displacement) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: deform_ffd: mesh is NULL");
+        capi_require(opts, "meshio++: deform_ffd: opts is NULL");
+        meshioplusplus::FfdOptions cpp;
+        for (int k = 0; k < 3; ++k) {
+            cpp.mGridDims[static_cast<std::size_t>(k)] = opts->grid_dims[k];
+            cpp.mDegrees[static_cast<std::size_t>(k)] = opts->degrees[k];
+            cpp.mBoxMin[static_cast<std::size_t>(k)] = opts->box_min[k];
+            cpp.mBoxMax[static_cast<std::size_t>(k)] = opts->box_max[k];
+        }
+        cpp.mHasBounds = opts->has_bounds != 0;
+        if (opts->displacements && opts->num_displacements > 0)
+            cpp.mDisplacements.assign(opts->displacements,
+                                      opts->displacements + opts->num_displacements);
+        if (opts->region)
+            cpp.mRegion = opts->region;
+        auto r = meshioplusplus::deform_ffd(mesh->mMesh, cpp);
+        if (num_inverted)
+            *num_inverted = r.mNumInverted;
+        if (max_displacement)
+            *max_displacement = r.mMaxDisplacement;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_deform_rbf_opts_init(mio_deform_rbf_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_deform_rbf_opts{};
+    opts->polynomial = 1;
+}
+
+mio_mesh* mio_deform_rbf(const mio_mesh* mesh, const mio_deform_rbf_opts* opts,
+                         int64_t* num_inverted, double* max_displacement) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: deform_rbf: mesh is NULL");
+        capi_require(opts, "meshio++: deform_rbf: opts is NULL");
+        meshioplusplus::RbfOptions cpp;
+        if (opts->control_points && opts->num_control_points > 0)
+            cpp.mControlPoints.assign(opts->control_points,
+                                      opts->control_points + opts->num_control_points * 3);
+        if (opts->displacements && opts->num_control_points > 0)
+            cpp.mDisplacements.assign(opts->displacements,
+                                      opts->displacements + opts->num_control_points * 3);
+        cpp.mKernel = static_cast<meshioplusplus::RbfKernel>(opts->kernel);
+        cpp.mPolynomial = opts->polynomial != 0;
+        cpp.mRadius = opts->radius;
+        cpp.mRegularization = opts->regularization;
+        if (opts->region)
+            cpp.mRegion = opts->region;
+        auto r = meshioplusplus::deform_rbf(mesh->mMesh, cpp);
+        if (num_inverted)
+            *num_inverted = r.mNumInverted;
+        if (max_displacement)
+            *max_displacement = r.mMaxDisplacement;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+mio_mesh* mio_change_basis(const mio_mesh* mesh, int32_t target, int32_t transform_fields,
+                           int64_t* num_converted) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: mesh is NULL");
+        meshioplusplus::ChangeBasisOptions cpp;
+        cpp.mTarget = static_cast<meshioplusplus::BasisTarget>(target);
+        cpp.mTransformFields = transform_fields != 0;
+        auto r = meshioplusplus::change_basis(mesh->mMesh, cpp);
+        if (num_converted)
+            *num_converted = r.mNumConverted;
+        return new mio_mesh{std::move(r.mMesh)};
+    });
+}
+
+void mio_critical_points_opts_init(mio_critical_points_opts* opts) {
+    if (!opts)
+        return;
+    *opts = mio_critical_points_opts{};
+    opts->tolerance = 1e-10;
+    opts->max_iterations = 30;
+    opts->merge_tolerance = 1e-6;
+}
+
+mio_mesh* mio_critical_points(const mio_mesh* mesh, const mio_critical_points_opts* opts,
+                              int64_t* num_minima, int64_t* num_maxima, int64_t* num_saddles) {
+    return capi_guarded_mesh([&]() -> mio_mesh* {
+        capi_require(mesh, "meshio++: critical_points: mesh is NULL");
+        capi_require(opts, "meshio++: critical_points: opts is NULL");
+        capi_require(opts->array, "meshio++: critical_points: array is required");
+        meshioplusplus::CriticalPointsOptions cpp;
+        cpp.mArray = opts->array;
+        cpp.mTolerance = opts->tolerance;
+        cpp.mMaxIterations = opts->max_iterations;
+        cpp.mMergeTolerance = opts->merge_tolerance;
+        cpp.mSeedSubdivisions = opts->seed_subdivisions;
+        auto r = meshioplusplus::critical_points(mesh->mMesh, cpp);
+        if (num_minima)
+            *num_minima = r.mNumMinima;
+        if (num_maxima)
+            *num_maxima = r.mNumMaxima;
+        if (num_saddles)
+            *num_saddles = r.mNumSaddles;
+        return new mio_mesh{std::move(r.mMesh)};
     });
 }
 

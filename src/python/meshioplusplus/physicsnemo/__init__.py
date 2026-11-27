@@ -47,6 +47,7 @@ from ._temporal import (
     window_stats,
 )
 from ._train import TrainSpec, default_spec, load_spec
+from ._transfer import transfer_matrix
 
 __all__ = [
     "GraphSample",
@@ -85,6 +86,7 @@ __all__ = [
     "predict",
     "predict_mesh",
     "predict_file",
+    "transfer_matrix",
 ]
 
 # Version 2 (v9.30.0): the schema gained `target_offset`/`target_delta` --

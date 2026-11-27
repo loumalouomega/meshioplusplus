@@ -155,6 +155,17 @@
 #include "meshioplusplus/operations/profile_solid.hpp"
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
+#include "meshioplusplus/operations/mesh_operator.hpp"
+#include "meshioplusplus/operations/streamlines.hpp"
+#include "meshioplusplus/operations/transfer_operator.hpp"
+#include "meshioplusplus/operations/spectral_descriptors.hpp"
+#include "meshioplusplus/operations/fvm_quality.hpp"
+#include "meshioplusplus/operations/denoise_surface.hpp"
+#include "meshioplusplus/operations/skeleton.hpp"
+#include "meshioplusplus/operations/shortest_path.hpp"
+#include "meshioplusplus/operations/deform.hpp"
+#include "meshioplusplus/operations/evaluate_cells.hpp"
+#include "meshioplusplus/operations/critical_points.hpp"
 #include "meshioplusplus/operations/morph.hpp"
 #include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/metric.hpp"
@@ -8301,6 +8312,408 @@ val laplacian_eigenmodes_js(const val& rMeshObj, const val& rOptions) {
     });
 }
 
+namespace {
+
+val sparse_op_to_val(const meshioplusplus::MeshOperatorResult& rOp) {
+    val out = val::object();
+    out.set("rows", static_cast<double>(rOp.mRows));
+    out.set("cols", static_cast<double>(rOp.mCols));
+    out.set("nnz", static_cast<double>(rOp.mValues.size()));
+    val indptr = val::array();
+    for (std::int64_t v : rOp.mIndptr)
+        indptr.call<void>("push", static_cast<double>(v));
+    val indices = val::array();
+    for (std::int64_t v : rOp.mIndices)
+        indices.call<void>("push", static_cast<double>(v));
+    val values = val::array();
+    for (double v : rOp.mValues)
+        values.call<void>("push", v);
+    out.set("indptr", indptr);
+    out.set("indices", indices);
+    out.set("values", values);
+    return out;
+}
+
+}  // namespace
+
+val mesh_operator_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MeshOperatorOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("kind"))
+                options.mKind = meshioplusplus::mesh_operator_kind_from_name(
+                    rOptions["kind"].as<std::string>());
+        }
+        return sparse_op_to_val(meshioplusplus::mesh_operator(val_to_mesh(rMeshObj), options));
+    });
+}
+
+val smooth_field_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SmoothFieldOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("array"))
+                options.mArray = rOptions["array"].as<std::string>();
+            if (rOptions.hasOwnProperty("output"))
+                options.mOutput = rOptions["output"].as<std::string>();
+            if (rOptions.hasOwnProperty("length"))
+                options.mLength = rOptions["length"].as<double>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+        }
+        auto r = meshioplusplus::smooth_field(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numDegenerate", static_cast<double>(r.mNumDegenerate));
+        out.set("iterations", static_cast<double>(r.mIterations));
+        out.set("converged", r.mConverged);
+        return out;
+    });
+}
+
+val streamlines_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::StreamlinesOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("array"))
+                options.mArray = rOptions["array"].as<std::string>();
+            if (rOptions.hasOwnProperty("seeds"))
+                options.mSeeds = static_cast<std::int64_t>(rOptions["seeds"].as<double>());
+            if (rOptions.hasOwnProperty("seedPoints")) {
+                val arr = rOptions["seedPoints"];
+                const std::size_t n = arr["length"].as<std::size_t>();
+                options.mSeedPoints.resize(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    options.mSeedPoints[i] = arr[i].as<double>();
+            }
+            if (rOptions.hasOwnProperty("direction"))
+                options.mDirection = meshioplusplus::streamline_direction_from_name(
+                    rOptions["direction"].as<std::string>());
+            if (rOptions.hasOwnProperty("integrator"))
+                options.mIntegrator = meshioplusplus::streamline_integrator_from_name(
+                    rOptions["integrator"].as<std::string>());
+            if (rOptions.hasOwnProperty("maxLength"))
+                options.mMaxLength = rOptions["maxLength"].as<double>();
+            if (rOptions.hasOwnProperty("stepSize"))
+                options.mStepSize = rOptions["stepSize"].as<double>();
+            if (rOptions.hasOwnProperty("maxSteps"))
+                options.mMaxSteps = static_cast<std::int64_t>(rOptions["maxSteps"].as<double>());
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+        }
+        auto r = meshioplusplus::streamlines(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numLines", static_cast<double>(r.mNumLines));
+        out.set("numSeeds", static_cast<double>(r.mNumSeeds));
+        out.set("numDropped", static_cast<double>(r.mNumDropped));
+        return out;
+    });
+}
+
+val transfer_operator_js(const val& rCoarseObj, const val& rFineObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::TransferOperatorOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("mode"))
+                options.mMode = meshioplusplus::transfer_operator_mode_from_name(
+                    rOptions["mode"].as<std::string>());
+            if (rOptions.hasOwnProperty("transpose"))
+                options.mTranspose = rOptions["transpose"].as<bool>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("fallbackNearest"))
+                options.mFallbackNearest = rOptions["fallbackNearest"].as<bool>();
+        }
+        return sparse_op_to_val(
+            meshioplusplus::transfer_operator(val_to_mesh(rCoarseObj), val_to_mesh(rFineObj), options));
+    });
+}
+
+val spectral_descriptors_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SpectralDescriptorsOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("kind"))
+                options.mKind = meshioplusplus::spectral_descriptor_kind_from_name(
+                    rOptions["kind"].as<std::string>());
+            if (rOptions.hasOwnProperty("numModes"))
+                options.mNumModes = static_cast<std::int64_t>(rOptions["numModes"].as<double>());
+            if (rOptions.hasOwnProperty("numScales"))
+                options.mNumScales = static_cast<std::int64_t>(rOptions["numScales"].as<double>());
+            if (rOptions.hasOwnProperty("scaleInvariant"))
+                options.mScaleInvariant = rOptions["scaleInvariant"].as<bool>();
+            if (rOptions.hasOwnProperty("reuseEigenmodes"))
+                options.mReuseEigenmodes = rOptions["reuseEigenmodes"].as<bool>();
+            if (rOptions.hasOwnProperty("wksVariance"))
+                options.mWksVariance = rOptions["wksVariance"].as<double>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+            if (rOptions.hasOwnProperty("output"))
+                options.mOutput = rOptions["output"].as<std::string>();
+        }
+        auto r = meshioplusplus::spectral_descriptors(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numModesUsed", static_cast<double>(r.mNumModesUsed));
+        out.set("reusedEigenmodes", r.mReusedEigenmodes);
+        val scales = val::array();
+        for (double s : r.mScales)
+            scales.call<void>("push", s);
+        out.set("scales", scales);
+        return out;
+    });
+}
+
+val attach_fvm_quality_js(const val& rMeshObj) {
+    return with_js_errors([&]() -> val {
+        auto r = meshioplusplus::attach_fvm_quality(val_to_mesh(rMeshObj));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numInteriorFaces", static_cast<double>(r.mReport.mNumInteriorFaces));
+        out.set("numCells", static_cast<double>(r.mReport.mNumCells));
+        out.set("numNegativePyramids", static_cast<double>(r.mReport.mNumNegativePyramids));
+        return out;
+    });
+}
+
+val denoise_surface_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::DenoiseSurfaceOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("method"))
+                options.mMethod = meshioplusplus::denoise_method_from_name(
+                    rOptions["method"].as<std::string>());
+            if (rOptions.hasOwnProperty("normalIterations"))
+                options.mNormalIterations =
+                    static_cast<std::int64_t>(rOptions["normalIterations"].as<double>());
+            if (rOptions.hasOwnProperty("vertexIterations"))
+                options.mVertexIterations =
+                    static_cast<std::int64_t>(rOptions["vertexIterations"].as<double>());
+            if (rOptions.hasOwnProperty("sigmaSpatial"))
+                options.mSigmaSpatial = rOptions["sigmaSpatial"].as<double>();
+            if (rOptions.hasOwnProperty("sigmaNormal"))
+                options.mSigmaNormal = rOptions["sigmaNormal"].as<double>();
+            if (rOptions.hasOwnProperty("fixBoundary"))
+                options.mFixBoundary = rOptions["fixBoundary"].as<bool>();
+            if (rOptions.hasOwnProperty("guardFoldover"))
+                options.mGuardFoldover = rOptions["guardFoldover"].as<bool>();
+            if (rOptions.hasOwnProperty("region"))
+                options.mRegion = rOptions["region"].as<std::string>();
+        }
+        auto r = meshioplusplus::denoise_surface(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numNodesMoved", static_cast<double>(r.mNumNodesMoved));
+        out.set("maxDisplacement", r.mMaxDisplacement);
+        out.set("numSkippedFoldover", static_cast<double>(r.mNumSkippedFoldover));
+        out.set("sigmaSpatialUsed", r.mSigmaSpatialUsed);
+        return out;
+    });
+}
+
+val extract_skeleton_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SkeletonOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+            if (rOptions.hasOwnProperty("contractionWeight"))
+                options.mContractionWeight = rOptions["contractionWeight"].as<double>();
+            if (rOptions.hasOwnProperty("attractionWeight"))
+                options.mAttractionWeight = rOptions["attractionWeight"].as<double>();
+            if (rOptions.hasOwnProperty("volumeTolerance"))
+                options.mVolumeTolerance = rOptions["volumeTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("mergeTolerance"))
+                options.mMergeTolerance = rOptions["mergeTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("recenter"))
+                options.mRecenter = rOptions["recenter"].as<bool>();
+        }
+        auto r = meshioplusplus::extract_skeleton(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("contractionIterations", static_cast<double>(r.mContractionIterations));
+        out.set("volumeRatio", r.mVolumeRatio);
+        out.set("numNodes", static_cast<double>(r.mNumNodes));
+        out.set("numSegments", static_cast<double>(r.mNumSegments));
+        out.set("numBranches", static_cast<double>(r.mNumBranches));
+        return out;
+    });
+}
+
+val shortest_path_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ShortestPathOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("source"))
+                options.mSource = static_cast<std::int64_t>(rOptions["source"].as<double>());
+            if (rOptions.hasOwnProperty("target"))
+                options.mTarget = static_cast<std::int64_t>(rOptions["target"].as<double>());
+            if (rOptions.hasOwnProperty("method"))
+                options.mMethod = meshioplusplus::shortest_path_method_from_name(
+                    rOptions["method"].as<std::string>());
+            if (rOptions.hasOwnProperty("timeFactor"))
+                options.mTimeFactor = rOptions["timeFactor"].as<double>();
+            if (rOptions.hasOwnProperty("maxSteps"))
+                options.mMaxSteps = static_cast<std::int64_t>(rOptions["maxSteps"].as<double>());
+        }
+        auto r = meshioplusplus::shortest_path(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("totalLength", r.mTotalLength);
+        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("reached", r.mReached);
+        return out;
+    });
+}
+
+val geodesic_voronoi_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::GeodesicVoronoiOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("sources")) {
+                val arr = rOptions["sources"];
+                const std::size_t n = arr["length"].as<std::size_t>();
+                options.mSources.resize(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    options.mSources[i] = static_cast<std::int64_t>(arr[i].as<double>());
+            }
+            if (rOptions.hasOwnProperty("maxDistance"))
+                options.mMaxDistance = rOptions["maxDistance"].as<double>();
+        }
+        auto r = meshioplusplus::geodesic_voronoi(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numSources", static_cast<double>(r.mNumSources));
+        out.set("numUnreached", static_cast<double>(r.mNumUnreached));
+        return out;
+    });
+}
+
+val deform_ffd_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FfdOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("gridDims")) {
+                val arr = rOptions["gridDims"];
+                for (std::size_t k = 0; k < 3; ++k)
+                    options.mGridDims[k] = static_cast<std::int64_t>(arr[k].as<double>());
+            }
+            if (rOptions.hasOwnProperty("degrees")) {
+                val arr = rOptions["degrees"];
+                for (std::size_t k = 0; k < 3; ++k)
+                    options.mDegrees[k] = static_cast<std::int64_t>(arr[k].as<double>());
+            }
+            if (rOptions.hasOwnProperty("displacements")) {
+                val arr = rOptions["displacements"];
+                const std::size_t n = arr["length"].as<std::size_t>();
+                options.mDisplacements.resize(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    options.mDisplacements[i] = arr[i].as<double>();
+            }
+            if (rOptions.hasOwnProperty("region"))
+                options.mRegion = rOptions["region"].as<std::string>();
+        }
+        auto r = meshioplusplus::deform_ffd(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numInverted", static_cast<double>(r.mNumInverted));
+        out.set("maxDisplacement", r.mMaxDisplacement);
+        return out;
+    });
+}
+
+val deform_rbf_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::RbfOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("controlPoints")) {
+                val arr = rOptions["controlPoints"];
+                const std::size_t n = arr["length"].as<std::size_t>();
+                options.mControlPoints.resize(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    options.mControlPoints[i] = arr[i].as<double>();
+            }
+            if (rOptions.hasOwnProperty("displacements")) {
+                val arr = rOptions["displacements"];
+                const std::size_t n = arr["length"].as<std::size_t>();
+                options.mDisplacements.resize(n);
+                for (std::size_t i = 0; i < n; ++i)
+                    options.mDisplacements[i] = arr[i].as<double>();
+            }
+            if (rOptions.hasOwnProperty("kernel"))
+                options.mKernel =
+                    meshioplusplus::rbf_kernel_from_name(rOptions["kernel"].as<std::string>());
+            if (rOptions.hasOwnProperty("polynomial"))
+                options.mPolynomial = rOptions["polynomial"].as<bool>();
+            if (rOptions.hasOwnProperty("radius"))
+                options.mRadius = rOptions["radius"].as<double>();
+            if (rOptions.hasOwnProperty("regularization"))
+                options.mRegularization = rOptions["regularization"].as<double>();
+            if (rOptions.hasOwnProperty("region"))
+                options.mRegion = rOptions["region"].as<std::string>();
+        }
+        auto r = meshioplusplus::deform_rbf(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numInverted", static_cast<double>(r.mNumInverted));
+        out.set("maxDisplacement", r.mMaxDisplacement);
+        return out;
+    });
+}
+
+val change_basis_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ChangeBasisOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("target"))
+                options.mTarget =
+                    meshioplusplus::basis_target_from_name(rOptions["target"].as<std::string>());
+            if (rOptions.hasOwnProperty("transformFields"))
+                options.mTransformFields = rOptions["transformFields"].as<bool>();
+        }
+        auto r = meshioplusplus::change_basis(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numConverted", static_cast<double>(r.mNumConverted));
+        return out;
+    });
+}
+
+val critical_points_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::CriticalPointsOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            if (rOptions.hasOwnProperty("array"))
+                options.mArray = rOptions["array"].as<std::string>();
+            if (rOptions.hasOwnProperty("tolerance"))
+                options.mTolerance = rOptions["tolerance"].as<double>();
+            if (rOptions.hasOwnProperty("maxIterations"))
+                options.mMaxIterations =
+                    static_cast<std::int64_t>(rOptions["maxIterations"].as<double>());
+            if (rOptions.hasOwnProperty("mergeTolerance"))
+                options.mMergeTolerance = rOptions["mergeTolerance"].as<double>();
+            if (rOptions.hasOwnProperty("seedSubdivisions"))
+                options.mSeedSubdivisions =
+                    static_cast<std::int64_t>(rOptions["seedSubdivisions"].as<double>());
+        }
+        auto r = meshioplusplus::critical_points(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numMinima", static_cast<double>(r.mNumMinima));
+        out.set("numMaxima", static_cast<double>(r.mNumMaxima));
+        out.set("numSaddles", static_cast<double>(r.mNumSaddles));
+        return out;
+    });
+}
+
 /**
  * @brief Rigid registration by iterative closest points. @p rOptions is
  * `{method, maxIterations, tolerance, maxDistance, initial}`, every key
@@ -11513,6 +11926,20 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("untangle", &untangle_js);
     emscripten::function("morph", &morph_js);
     emscripten::function("laplacianEigenmodes", &laplacian_eigenmodes_js);
+    emscripten::function("meshOperator", &mesh_operator_js);
+    emscripten::function("smoothField", &smooth_field_js);
+    emscripten::function("streamlines", &streamlines_js);
+    emscripten::function("transferOperator", &transfer_operator_js);
+    emscripten::function("spectralDescriptors", &spectral_descriptors_js);
+    emscripten::function("attachFvmQuality", &attach_fvm_quality_js);
+    emscripten::function("denoiseSurface", &denoise_surface_js);
+    emscripten::function("extractSkeleton", &extract_skeleton_js);
+    emscripten::function("shortestPath", &shortest_path_js);
+    emscripten::function("geodesicVoronoi", &geodesic_voronoi_js);
+    emscripten::function("deformFfd", &deform_ffd_js);
+    emscripten::function("deformRbf", &deform_rbf_js);
+    emscripten::function("changeBasis", &change_basis_js);
+    emscripten::function("criticalPoints", &critical_points_js);
     emscripten::function("registerRigid", &register_rigid_js);
     emscripten::function("registerLandmarks", &register_landmarks_js);
     emscripten::function("findSymmetryPlane", &find_symmetry_plane_js);
