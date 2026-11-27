@@ -506,8 +506,8 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
                 if (rest_line.compare(0, kind.size(), kind) != 0)
                     continue;
                 const std::string kind_str(kind.substr(0, kind.size() - 1));  // drop trailing ':'
-                std::vector<std::string> toks = ensight_tokens_after_leading_ints(
-                    std::string(rest_line.substr(kind.size())));
+                std::vector<std::string> toks =
+                    ensight_tokens_after_leading_ints(std::string(rest_line.substr(kind.size())));
                 if (is_complex) {
                     // EnSight Gold syntax: `[ts] [fs] <name> <real_file> <imag_file> [frequency]`.
                     if (toks.size() >= 4) {
@@ -2028,9 +2028,9 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
                         vars[it->second].mPerNode == v.mPerNode) {
                         emitted[i] = true;
                         emitted[it->second] = true;
-                        out += "complex " + v.mKind + " per " +
-                               (v.mPerNode ? "node" : "element") + ": " + pair->mBase + " " +
-                               pair->mReal + "." + ext + " " + pair->mImag + "." + ext + " 0\n";
+                        out += "complex " + v.mKind + " per " + (v.mPerNode ? "node" : "element") +
+                               ": " + pair->mBase + " " + pair->mReal + "." + ext + " " +
+                               pair->mImag + "." + ext + " 0\n";
                         continue;
                     }
                 }

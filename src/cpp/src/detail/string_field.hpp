@@ -28,7 +28,8 @@
  *     - `field_data[name]`           = `UInt8` 1-D array of concatenated UTF-8 bytes
  *     - `field_data[name:offsets]`   = `Int64` 1-D array of shape `{k + 1}` holding CSR offsets
  * - Boolean array `name` at location `loc` (`"point"`, `"cell"`, `"field"`):
- *     - stored as `UInt8` (`0`/`1`), marked by `field_data["meshio:bool:<loc>:<name>"] = UInt8[1] { 1 }`
+ *     - stored as `UInt8` (`0`/`1`), marked by `field_data["meshio:bool:<loc>:<name>"] = UInt8[1] {
+ * 1 }`
  *
  * Decoding reads byte/bool payloads via `DType::UInt8` fast path or `read_int`
  * fallback so it works identically on MESHIO, NATIVE, and KRATOS backends
@@ -194,8 +195,8 @@ inline std::optional<std::vector<std::string>> get_field_strings(const Mesh& rMe
         const std::int64_t b = read_int(offs, i + 1);
         if (a < 0 || b < a || static_cast<std::size_t>(b) > bytes.Size())
             return std::nullopt;
-        out.push_back(decode_utf8_slice(bytes, static_cast<std::size_t>(a),
-                                        static_cast<std::size_t>(b)));
+        out.push_back(
+            decode_utf8_slice(bytes, static_cast<std::size_t>(a), static_cast<std::size_t>(b)));
     }
     return out;
 }

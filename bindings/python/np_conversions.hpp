@@ -578,8 +578,8 @@ inline py::array ensure_contiguous_maybe_bool(py::handle obj, PyMeshRefs& rRefs,
     if (py::isinstance<py::bool_>(obj)) {
         rIsBool = true;
         py::object np = py::module_::import("numpy");
-        py::array arr =
-            np.attr("ascontiguousarray")(obj, py::arg("dtype") = np.attr("uint8")).cast<py::array>();
+        py::array arr = np.attr("ascontiguousarray")(obj, py::arg("dtype") = np.attr("uint8"))
+                            .cast<py::array>();
         rRefs.mKeep.push_back(arr);
         return arr;
     }
@@ -588,9 +588,8 @@ inline py::array ensure_contiguous_maybe_bool(py::handle obj, PyMeshRefs& rRefs,
         if (arr.dtype().kind() == 'b') {
             rIsBool = true;
             py::object np = py::module_::import("numpy");
-            py::array u8 =
-                np.attr("ascontiguousarray")(arr, py::arg("dtype") = np.attr("uint8"))
-                    .cast<py::array>();
+            py::array u8 = np.attr("ascontiguousarray")(arr, py::arg("dtype") = np.attr("uint8"))
+                               .cast<py::array>();
             rRefs.mKeep.push_back(u8);
             return u8;
         }

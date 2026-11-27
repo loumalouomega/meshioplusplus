@@ -64,8 +64,8 @@ inline bool is_structured_key(std::string_view rName) {
 }
 
 /// Annotate block `BlockIdx` with structured point counts `[Ni, Nj, Nk]`.
-inline void set_structured_dims(Mesh& rMesh, std::size_t BlockIdx, std::int64_t Ni,
-                                std::int64_t Nj, std::int64_t Nk) {
+inline void set_structured_dims(Mesh& rMesh, std::size_t BlockIdx, std::int64_t Ni, std::int64_t Nj,
+                                std::int64_t Nk) {
     if (Ni <= 0 || Nj <= 0 || Nk <= 0)
         return;
     NDArray arr(DType::Int64, {3});
@@ -150,16 +150,14 @@ inline bool validate_structured_single_block(const Mesh& rMesh,
     // Spot-check first and last cell connectivity (i fastest, VTK hex order).
     const Int64View conn(cb.Conn());
     const auto idx = [&](std::size_t i, std::size_t j, std::size_t k) -> std::int64_t {
-        return static_cast<std::int64_t>((k * static_cast<std::size_t>(nj) + j) *
-                                             static_cast<std::size_t>(ni) +
-                                         i);
+        return static_cast<std::int64_t>(
+            (k * static_cast<std::size_t>(nj) + j) * static_cast<std::size_t>(ni) + i);
     };
     auto check_cell = [&](std::size_t i, std::size_t j, std::size_t k) -> bool {
         const std::size_t c = (k * ny + j) * nx + i;
         const std::int64_t want[8] = {
-            idx(i, j, k),         idx(i + 1, j, k),     idx(i + 1, j + 1, k),
-            idx(i, j + 1, k),     idx(i, j, k + 1),     idx(i + 1, j, k + 1),
-            idx(i + 1, j + 1, k + 1), idx(i, j + 1, k + 1),
+            idx(i, j, k),     idx(i + 1, j, k),     idx(i + 1, j + 1, k),     idx(i, j + 1, k),
+            idx(i, j, k + 1), idx(i + 1, j, k + 1), idx(i + 1, j + 1, k + 1), idx(i, j + 1, k + 1),
         };
         for (std::size_t m = 0; m < 8; ++m)
             if (conn[c * 8 + m] != want[m])

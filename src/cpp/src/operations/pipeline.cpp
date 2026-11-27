@@ -4050,11 +4050,11 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
                    rOp == "Gradient" || rOp == "Hessian" || rOp == "TensorInvariants" ||
                    rOp == "SmoothField" || rOp == "Colorize" || rOp == "Transform" ||
                    rOp == "Regions" || rOp == "Quality" || rOp == "FvmQuality" ||
-                   rOp == "CheckConformity" || rOp == "CheckTetrahedra" ||
-                   rOp == "EstimateError" || rOp == "ErrorSize" || rOp == "SurfaceDistance" ||
-                   rOp == "Deviation" || rOp == "Thickness" || rOp == "ComputeCurvature" ||
-                   rOp == "ComputeNormals" || rOp == "ComputePointNormals" ||
-                   rOp == "CriticalPoints" || rOp == "Eigenmodes" || rOp == "SpectralDescriptors";
+                   rOp == "CheckConformity" || rOp == "CheckTetrahedra" || rOp == "EstimateError" ||
+                   rOp == "ErrorSize" || rOp == "SurfaceDistance" || rOp == "Deviation" ||
+                   rOp == "Thickness" || rOp == "ComputeCurvature" || rOp == "ComputeNormals" ||
+                   rOp == "ComputePointNormals" || rOp == "CriticalPoints" || rOp == "Eigenmodes" ||
+                   rOp == "SpectralDescriptors";
         };
         if (!pipe_preserves_structured(step.mOp)) {
             std::vector<std::string> drop_keys;

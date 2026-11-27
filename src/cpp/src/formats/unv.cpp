@@ -2054,8 +2054,8 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
             f << rName << "\n";
             for (int i = 0; i < 4; ++i)
                 f << "NONE\n";
-            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, dtype,
-                          nc);
+            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0,
+                          dtype, nc);
             f << buf;
             std::vector<std::int64_t> ints;
             std::vector<double> reals;
@@ -2105,8 +2105,8 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
             f << buf;
             for (int i = 0; i < 5; ++i)
                 f << "NONE\n";
-            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, dtype,
-                          nc);
+            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0,
+                          dtype, nc);
             f << buf;
             std::int64_t r10[8] = {0, 0, 0, 0, 0, 0, 0, 0};
             double r12[12] = {0.0};

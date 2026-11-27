@@ -93,10 +93,8 @@ Mesh ip_clone_mesh(const Mesh& rMesh, const std::set<std::string>& rSkipPointDat
 
 void ip_collect_layout_keys(const std::string& rName, std::set<std::string>& rSkipField) {
     const std::string prefixes[] = {
-        detail::kIpLayoutPrefix,
-        "abaqus:layout:",
-        "lsdyna_d3plot:layout:",
-        "gid:gauss_points:",
+        detail::kIpLayoutPrefix,         "abaqus:layout:",
+        "lsdyna_d3plot:layout:",         "gid:gauss_points:",
         "gmsh:element_node_components:",
     };
     for (const std::string& pre : prefixes)
@@ -270,8 +268,7 @@ IpOpResult ip_to_points(const Mesh& rMesh, const IpToPointsOptions& rOptions) {
                     double mean = 0.0;
                     std::size_t n_fin = 0;
                     for (std::size_t q = 0; q < n_ip; ++q) {
-                        const double v =
-                            detail::read_double(arr, r * total_cols + q * width + c);
+                        const double v = detail::read_double(arr, r * total_cols + q * width + c);
                         ip_vals[q] = v;
                         if (std::isfinite(v)) {
                             mean += v;
@@ -351,9 +348,8 @@ IpOpResult ip_to_cells(const Mesh& rMesh, const IpToCellsOptions& rOptions) {
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
             const std::size_t n_cells = cb.NumCells();
-            std::vector<std::size_t> shape = width == 1
-                                                 ? std::vector<std::size_t>{n_cells}
-                                                 : std::vector<std::size_t>{n_cells, width};
+            std::vector<std::size_t> shape = width == 1 ? std::vector<std::size_t>{n_cells}
+                                                        : std::vector<std::size_t>{n_cells, width};
             NDArray cd(DType::Float64, shape);
             double* dst = cd.As<double>();
             std::fill_n(dst, cd.Size(), nan);

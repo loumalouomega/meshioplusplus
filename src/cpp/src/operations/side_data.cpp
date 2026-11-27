@@ -175,9 +175,10 @@ SidesToCellsResult sides_to_cells(const Mesh& rMesh, const SidesToCellsOptions& 
         for (std::size_t i = 0; i < n; ++i) {
             CellType ftype = CellType::Triangle;
             if (!side_extract_facet_nodes(rMesh, bases, e[2 * i], e[2 * i + 1], ftype, nodes)) {
-                res.mWarnings.push_back("sides_to_cells: skipped unsupported or out-of-range side "
-                                        "entry in region '" +
-                                        reg.mName + "'");
+                res.mWarnings.push_back(
+                    "sides_to_cells: skipped unsupported or out-of-range side "
+                    "entry in region '" +
+                    reg.mName + "'");
                 continue;
             }
             auto it = by_type.find(ftype);
@@ -231,8 +232,8 @@ SidesToCellsResult sides_to_cells(const Mesh& rMesh, const SidesToCellsOptions& 
             blocks.push_back(detail::data_owned_copy(rMesh.CellData(name, b)));
         for (std::size_t b = orig_blocks; b < total_blocks; ++b) {
             const std::size_t nf = res.mMesh.Cells(b).NumCells();
-            NDArray pad(dt, nc == 1 ? std::vector<std::size_t>{nf}
-                                    : std::vector<std::size_t>{nf, nc});
+            NDArray pad(dt,
+                        nc == 1 ? std::vector<std::size_t>{nf} : std::vector<std::size_t>{nf, nc});
             if (dt == DType::Float64)
                 std::fill(pad.As<double>(), pad.As<double>() + pad.Size(),
                           std::numeric_limits<double>::quiet_NaN());
@@ -397,7 +398,8 @@ CellsToSidesResult cells_to_sides(const Mesh& rMesh, const CellsToSidesOptions& 
         if (rOptions.mDropFacetBlocks && reg.mKind == RegionKind::Cell && reg.NumEntries() > 0) {
             bool drop = false;
             for (std::size_t b = 0; b < nblocks; ++b)
-                if (is_side_block[b] && reg.Entries()[0] >= bases[b] && reg.Entries()[0] < bases[b + 1])
+                if (is_side_block[b] && reg.Entries()[0] >= bases[b] &&
+                    reg.Entries()[0] < bases[b + 1])
                     drop = true;
             if (drop)
                 continue;

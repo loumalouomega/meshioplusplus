@@ -695,9 +695,9 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
         std::string im_name;
         if (!detail::find_complex_pair_for_base(rMesh, location, base, re_name, im_name)) {
             if (t == CalcNodeType::Phase)
-                calc_fail_at("'phase' requires a complex pair '" + base + "_real' and '" + base +
-                                 "_imag'",
-                             rPool[i].mPos);
+                calc_fail_at(
+                    "'phase' requires a complex pair '" + base + "_real' and '" + base + "_imag'",
+                    rPool[i].mPos);
             continue;
         }
         CalcNode partner;

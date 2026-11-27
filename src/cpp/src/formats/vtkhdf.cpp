@@ -923,8 +923,7 @@ bool vtkhdf_walk_assembly(hid_t Node, const std::string& rPrefix, std::vector<Vt
             Hid child(H5Gopen2(Node, name.c_str(), H5P_DEFAULT), H5Gclose);
             if (child.Valid()) {
                 const std::string sub_path = rPrefix + name;
-                const bool sub =
-                    vtkhdf_walk_assembly(child, sub_path + "/", rOut, rEmptyGroups);
+                const bool sub = vtkhdf_walk_assembly(child, sub_path + "/", rOut, rEmptyGroups);
                 if (!sub)
                     rEmptyGroups.push_back(sub_path);
                 found_any = found_any || sub;

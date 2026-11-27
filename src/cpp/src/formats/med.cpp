@@ -960,8 +960,8 @@ void med_reject_or_skip(const std::string& rWhat, bool Lenient, MedInfo* pInfo) 
 }
 
 /// Named profiles use one-based entity indices and NaN on uncovered rows.
-NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents,
-                              std::size_t rows, std::int64_t* pNgaOut = nullptr) {
+NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents, std::size_t rows,
+                              std::int64_t* pNgaOut = nullptr) {
     std::string profile_name = read_attr_bytes(support, "PFL");
     if (profile_name.empty())
         profile_name = kProfile;
@@ -1170,9 +1170,9 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             const bool is_mai = (supp.rfind("MAI.", 0) == 0);
             const bool is_noe_el = (supp.rfind("NOE.", 0) == 0);
             if (!is_mai && !is_noe_el) {
-                med_reject_or_skip("field '" + field_name + "' support '" + supp +
-                                       "' (unsupported support kind)",
-                                   Lenient, pInfo);
+                med_reject_or_skip(
+                    "field '" + field_name + "' support '" + supp + "' (unsupported support kind)",
+                    Lenient, pInfo);
                 skip_field = true;
                 break;
             }
@@ -1188,8 +1188,8 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             const std::size_t b = bit->second;
             h5::Hid grp = h5::open_group(ts, supp);
             std::int64_t block_nga = 1;
-            per_block[b] =
-                read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells(), &block_nga);
+            per_block[b] = read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells(),
+                                                 &block_nga);
             if (block_nga > field_nga)
                 field_nga = block_nga;
             if (is_noe_el)
@@ -1213,9 +1213,9 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             const std::size_t ncells = rMesh.Cells(b).NumCells();
             const std::size_t total_cols =
                 static_cast<std::size_t>(field_nga) * static_cast<std::size_t>(ncomponents);
-            std::vector<std::size_t> shape =
-                total_cols > 1 ? std::vector<std::size_t>{ncells, total_cols}
-                               : std::vector<std::size_t>{ncells};
+            std::vector<std::size_t> shape = total_cols > 1
+                                                 ? std::vector<std::size_t>{ncells, total_cols}
+                                                 : std::vector<std::size_t>{ncells};
             per_block[b] = NDArray(DType::Float64, shape);
         }
         rMesh.AddCellData(field_name, std::move(per_block));

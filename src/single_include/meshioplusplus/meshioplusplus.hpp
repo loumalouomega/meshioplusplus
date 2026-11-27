@@ -61956,7 +61956,8 @@ std::vector<RegionSummary> region_summaries_from_field_names(
  *     - `field_data[name]`           = `UInt8` 1-D array of concatenated UTF-8 bytes
  *     - `field_data[name:offsets]`   = `Int64` 1-D array of shape `{k + 1}` holding CSR offsets
  * - Boolean array `name` at location `loc` (`"point"`, `"cell"`, `"field"`):
- *     - stored as `UInt8` (`0`/`1`), marked by `field_data["meshio:bool:<loc>:<name>"] = UInt8[1] { 1 }`
+ *     - stored as `UInt8` (`0`/`1`), marked by `field_data["meshio:bool:<loc>:<name>"] = UInt8[1] {
+ * 1 }`
  *
  * Decoding reads byte/bool payloads via `DType::UInt8` fast path or `read_int`
  * fallback so it works identically on MESHIO, NATIVE, and KRATOS backends
@@ -62119,8 +62120,8 @@ inline std::optional<std::vector<std::string>> get_field_strings(const Mesh& rMe
         const std::int64_t b = read_int(offs, i + 1);
         if (a < 0 || b < a || static_cast<std::size_t>(b) > bytes.Size())
             return std::nullopt;
-        out.push_back(decode_utf8_slice(bytes, static_cast<std::size_t>(a),
-                                        static_cast<std::size_t>(b)));
+        out.push_back(
+            decode_utf8_slice(bytes, static_cast<std::size_t>(a), static_cast<std::size_t>(b)));
     }
     return out;
 }
@@ -63716,8 +63717,8 @@ inline bool is_structured_key(std::string_view rName) {
 }
 
 /// Annotate block `BlockIdx` with structured point counts `[Ni, Nj, Nk]`.
-inline void set_structured_dims(Mesh& rMesh, std::size_t BlockIdx, std::int64_t Ni,
-                                std::int64_t Nj, std::int64_t Nk) {
+inline void set_structured_dims(Mesh& rMesh, std::size_t BlockIdx, std::int64_t Ni, std::int64_t Nj,
+                                std::int64_t Nk) {
     if (Ni <= 0 || Nj <= 0 || Nk <= 0)
         return;
     NDArray arr(DType::Int64, {3});
@@ -63802,16 +63803,14 @@ inline bool validate_structured_single_block(const Mesh& rMesh,
     // Spot-check first and last cell connectivity (i fastest, VTK hex order).
     const Int64View conn(cb.Conn());
     const auto idx = [&](std::size_t i, std::size_t j, std::size_t k) -> std::int64_t {
-        return static_cast<std::int64_t>((k * static_cast<std::size_t>(nj) + j) *
-                                             static_cast<std::size_t>(ni) +
-                                         i);
+        return static_cast<std::int64_t>(
+            (k * static_cast<std::size_t>(nj) + j) * static_cast<std::size_t>(ni) + i);
     };
     auto check_cell = [&](std::size_t i, std::size_t j, std::size_t k) -> bool {
         const std::size_t c = (k * ny + j) * nx + i;
         const std::int64_t want[8] = {
-            idx(i, j, k),         idx(i + 1, j, k),     idx(i + 1, j + 1, k),
-            idx(i, j + 1, k),     idx(i, j, k + 1),     idx(i + 1, j, k + 1),
-            idx(i + 1, j + 1, k + 1), idx(i, j + 1, k + 1),
+            idx(i, j, k),     idx(i + 1, j, k),     idx(i + 1, j + 1, k),     idx(i, j + 1, k),
+            idx(i, j, k + 1), idx(i + 1, j, k + 1), idx(i + 1, j + 1, k + 1), idx(i, j + 1, k + 1),
         };
         for (std::size_t m = 0; m < 8; ++m)
             if (conn[c * 8 + m] != want[m])
@@ -154237,8 +154236,8 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
                 if (rest_line.compare(0, kind.size(), kind) != 0)
                     continue;
                 const std::string kind_str(kind.substr(0, kind.size() - 1));  // drop trailing ':'
-                std::vector<std::string> toks = ensight_tokens_after_leading_ints(
-                    std::string(rest_line.substr(kind.size())));
+                std::vector<std::string> toks =
+                    ensight_tokens_after_leading_ints(std::string(rest_line.substr(kind.size())));
                 if (is_complex) {
                     // EnSight Gold syntax: `[ts] [fs] <name> <real_file> <imag_file> [frequency]`.
                     if (toks.size() >= 4) {
@@ -155759,9 +155758,9 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
                         vars[it->second].mPerNode == v.mPerNode) {
                         emitted[i] = true;
                         emitted[it->second] = true;
-                        out += "complex " + v.mKind + " per " +
-                               (v.mPerNode ? "node" : "element") + ": " + pair->mBase + " " +
-                               pair->mReal + "." + ext + " " + pair->mImag + "." + ext + " 0\n";
+                        out += "complex " + v.mKind + " per " + (v.mPerNode ? "node" : "element") +
+                               ": " + pair->mBase + " " + pair->mReal + "." + ext + " " +
+                               pair->mImag + "." + ext + " 0\n";
                         continue;
                     }
                 }
@@ -187280,8 +187279,8 @@ void med_reject_or_skip(const std::string& rWhat, bool Lenient, MedInfo* pInfo) 
 }
 
 /// Named profiles use one-based entity indices and NaN on uncovered rows.
-NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents,
-                              std::size_t rows, std::int64_t* pNgaOut = nullptr) {
+NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents, std::size_t rows,
+                              std::int64_t* pNgaOut = nullptr) {
     std::string profile_name = read_attr_bytes(support, "PFL");
     if (profile_name.empty())
         profile_name = kProfile;
@@ -187490,9 +187489,9 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             const bool is_mai = (supp.rfind("MAI.", 0) == 0);
             const bool is_noe_el = (supp.rfind("NOE.", 0) == 0);
             if (!is_mai && !is_noe_el) {
-                med_reject_or_skip("field '" + field_name + "' support '" + supp +
-                                       "' (unsupported support kind)",
-                                   Lenient, pInfo);
+                med_reject_or_skip(
+                    "field '" + field_name + "' support '" + supp + "' (unsupported support kind)",
+                    Lenient, pInfo);
                 skip_field = true;
                 break;
             }
@@ -187508,8 +187507,8 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             const std::size_t b = bit->second;
             h5::Hid grp = h5::open_group(ts, supp);
             std::int64_t block_nga = 1;
-            per_block[b] =
-                read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells(), &block_nga);
+            per_block[b] = read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells(),
+                                                 &block_nga);
             if (block_nga > field_nga)
                 field_nga = block_nga;
             if (is_noe_el)
@@ -187533,9 +187532,9 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             const std::size_t ncells = rMesh.Cells(b).NumCells();
             const std::size_t total_cols =
                 static_cast<std::size_t>(field_nga) * static_cast<std::size_t>(ncomponents);
-            std::vector<std::size_t> shape =
-                total_cols > 1 ? std::vector<std::size_t>{ncells, total_cols}
-                               : std::vector<std::size_t>{ncells};
+            std::vector<std::size_t> shape = total_cols > 1
+                                                 ? std::vector<std::size_t>{ncells, total_cols}
+                                                 : std::vector<std::size_t>{ncells};
             per_block[b] = NDArray(DType::Float64, shape);
         }
         rMesh.AddCellData(field_name, std::move(per_block));
@@ -232776,8 +232775,8 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
             f << rName << "\n";
             for (int i = 0; i < 4; ++i)
                 f << "NONE\n";
-            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, dtype,
-                          nc);
+            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0,
+                          dtype, nc);
             f << buf;
             std::vector<std::int64_t> ints;
             std::vector<double> reals;
@@ -232827,8 +232826,8 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
             f << buf;
             for (int i = 0; i < 5; ++i)
                 f << "NONE\n";
-            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, dtype,
-                          nc);
+            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0,
+                          dtype, nc);
             f << buf;
             std::int64_t r10[8] = {0, 0, 0, 0, 0, 0, 0, 0};
             double r12[12] = {0.0};
@@ -234977,8 +234976,7 @@ bool vtkhdf_walk_assembly(hid_t Node, const std::string& rPrefix, std::vector<Vt
             Hid child(H5Gopen2(Node, name.c_str(), H5P_DEFAULT), H5Gclose);
             if (child.Valid()) {
                 const std::string sub_path = rPrefix + name;
-                const bool sub =
-                    vtkhdf_walk_assembly(child, sub_path + "/", rOut, rEmptyGroups);
+                const bool sub = vtkhdf_walk_assembly(child, sub_path + "/", rOut, rEmptyGroups);
                 if (!sub)
                     rEmptyGroups.push_back(sub_path);
                 found_any = found_any || sub;
@@ -236658,7 +236656,8 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
             std::unordered_map<std::string, VtmTreeNode> mChildren;
         };
         VtmTreeNode root_node;
-        auto ensure_group = [&](const std::vector<std::string>& rSegs, std::size_t Depth) -> VtmTreeNode* {
+        auto ensure_group = [&](const std::vector<std::string>& rSegs,
+                                std::size_t Depth) -> VtmTreeNode* {
             VtmTreeNode* cur = &root_node;
             for (std::size_t d = 0; d < Depth; ++d) {
                 const std::string& seg = rSegs[d];
@@ -257098,9 +257097,9 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
         std::string im_name;
         if (!detail::find_complex_pair_for_base(rMesh, location, base, re_name, im_name)) {
             if (t == CalcNodeType::Phase)
-                calc_fail_at("'phase' requires a complex pair '" + base + "_real' and '" + base +
-                                 "_imag'",
-                             rPool[i].mPos);
+                calc_fail_at(
+                    "'phase' requires a complex pair '" + base + "_real' and '" + base + "_imag'",
+                    rPool[i].mPos);
             continue;
         }
         CalcNode partner;
@@ -275310,10 +275309,8 @@ Mesh ip_clone_mesh(const Mesh& rMesh, const std::set<std::string>& rSkipPointDat
 
 void ip_collect_layout_keys(const std::string& rName, std::set<std::string>& rSkipField) {
     const std::string prefixes[] = {
-        detail::kIpLayoutPrefix,
-        "abaqus:layout:",
-        "lsdyna_d3plot:layout:",
-        "gid:gauss_points:",
+        detail::kIpLayoutPrefix,         "abaqus:layout:",
+        "lsdyna_d3plot:layout:",         "gid:gauss_points:",
         "gmsh:element_node_components:",
     };
     for (const std::string& pre : prefixes)
@@ -275487,8 +275484,7 @@ IpOpResult ip_to_points(const Mesh& rMesh, const IpToPointsOptions& rOptions) {
                     double mean = 0.0;
                     std::size_t n_fin = 0;
                     for (std::size_t q = 0; q < n_ip; ++q) {
-                        const double v =
-                            detail::read_double(arr, r * total_cols + q * width + c);
+                        const double v = detail::read_double(arr, r * total_cols + q * width + c);
                         ip_vals[q] = v;
                         if (std::isfinite(v)) {
                             mean += v;
@@ -275568,9 +275564,8 @@ IpOpResult ip_to_cells(const Mesh& rMesh, const IpToCellsOptions& rOptions) {
         for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
             const auto cb = rMesh.Cells(b);
             const std::size_t n_cells = cb.NumCells();
-            std::vector<std::size_t> shape = width == 1
-                                                 ? std::vector<std::size_t>{n_cells}
-                                                 : std::vector<std::size_t>{n_cells, width};
+            std::vector<std::size_t> shape = width == 1 ? std::vector<std::size_t>{n_cells}
+                                                        : std::vector<std::size_t>{n_cells, width};
             NDArray cd(DType::Float64, shape);
             double* dst = cd.As<double>();
             std::fill_n(dst, cd.Size(), nan);
@@ -298267,11 +298262,11 @@ PipelineReport run_pipeline(const Pipeline& rPipeline) {
                    rOp == "Gradient" || rOp == "Hessian" || rOp == "TensorInvariants" ||
                    rOp == "SmoothField" || rOp == "Colorize" || rOp == "Transform" ||
                    rOp == "Regions" || rOp == "Quality" || rOp == "FvmQuality" ||
-                   rOp == "CheckConformity" || rOp == "CheckTetrahedra" ||
-                   rOp == "EstimateError" || rOp == "ErrorSize" || rOp == "SurfaceDistance" ||
-                   rOp == "Deviation" || rOp == "Thickness" || rOp == "ComputeCurvature" ||
-                   rOp == "ComputeNormals" || rOp == "ComputePointNormals" ||
-                   rOp == "CriticalPoints" || rOp == "Eigenmodes" || rOp == "SpectralDescriptors";
+                   rOp == "CheckConformity" || rOp == "CheckTetrahedra" || rOp == "EstimateError" ||
+                   rOp == "ErrorSize" || rOp == "SurfaceDistance" || rOp == "Deviation" ||
+                   rOp == "Thickness" || rOp == "ComputeCurvature" || rOp == "ComputeNormals" ||
+                   rOp == "ComputePointNormals" || rOp == "CriticalPoints" || rOp == "Eigenmodes" ||
+                   rOp == "SpectralDescriptors";
         };
         if (!pipe_preserves_structured(step.mOp)) {
             std::vector<std::string> drop_keys;
@@ -319829,9 +319824,10 @@ SidesToCellsResult sides_to_cells(const Mesh& rMesh, const SidesToCellsOptions& 
         for (std::size_t i = 0; i < n; ++i) {
             CellType ftype = CellType::Triangle;
             if (!side_extract_facet_nodes(rMesh, bases, e[2 * i], e[2 * i + 1], ftype, nodes)) {
-                res.mWarnings.push_back("sides_to_cells: skipped unsupported or out-of-range side "
-                                        "entry in region '" +
-                                        reg.mName + "'");
+                res.mWarnings.push_back(
+                    "sides_to_cells: skipped unsupported or out-of-range side "
+                    "entry in region '" +
+                    reg.mName + "'");
                 continue;
             }
             auto it = by_type.find(ftype);
@@ -319885,8 +319881,8 @@ SidesToCellsResult sides_to_cells(const Mesh& rMesh, const SidesToCellsOptions& 
             blocks.push_back(detail::data_owned_copy(rMesh.CellData(name, b)));
         for (std::size_t b = orig_blocks; b < total_blocks; ++b) {
             const std::size_t nf = res.mMesh.Cells(b).NumCells();
-            NDArray pad(dt, nc == 1 ? std::vector<std::size_t>{nf}
-                                    : std::vector<std::size_t>{nf, nc});
+            NDArray pad(dt,
+                        nc == 1 ? std::vector<std::size_t>{nf} : std::vector<std::size_t>{nf, nc});
             if (dt == DType::Float64)
                 std::fill(pad.As<double>(), pad.As<double>() + pad.Size(),
                           std::numeric_limits<double>::quiet_NaN());
@@ -320051,7 +320047,8 @@ CellsToSidesResult cells_to_sides(const Mesh& rMesh, const CellsToSidesOptions& 
         if (rOptions.mDropFacetBlocks && reg.mKind == RegionKind::Cell && reg.NumEntries() > 0) {
             bool drop = false;
             for (std::size_t b = 0; b < nblocks; ++b)
-                if (is_side_block[b] && reg.Entries()[0] >= bases[b] && reg.Entries()[0] < bases[b + 1])
+                if (is_side_block[b] && reg.Entries()[0] >= bases[b] &&
+                    reg.Entries()[0] < bases[b + 1])
                     drop = true;
             if (drop)
                 continue;

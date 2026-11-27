@@ -11559,8 +11559,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         "sides_to_cells",
         [](py::handle pymesh, const std::string& region) {
             meshioplusplus_py::PyMeshRefs refs;
-            auto m = meshioplusplus_py::py_to_mesh(
-                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            auto m = meshioplusplus_py::py_to_mesh(pymesh, refs, /*lenient_field_data=*/true,
+                                                   /*allow_ragged=*/true);
             meshioplusplus::SidesToCellsOptions opts;
             opts.mRegion = region;
             auto res = core_nogil([&] { return meshioplusplus::sides_to_cells(m, opts); });
@@ -11575,8 +11575,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         "cells_to_sides",
         [](py::handle pymesh, const std::string& region_name, bool drop_facet_blocks) {
             meshioplusplus_py::PyMeshRefs refs;
-            auto m = meshioplusplus_py::py_to_mesh(
-                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            auto m = meshioplusplus_py::py_to_mesh(pymesh, refs, /*lenient_field_data=*/true,
+                                                   /*allow_ragged=*/true);
             meshioplusplus::CellsToSidesOptions opts;
             opts.mRegionName = region_name;
             opts.mDropFacetBlocks = drop_facet_blocks;
@@ -11592,8 +11592,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         "ip_to_points",
         [](py::handle pymesh, const std::vector<std::string>& arrays, bool drop_source) {
             meshioplusplus_py::PyMeshRefs refs;
-            auto m = meshioplusplus_py::py_to_mesh(
-                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            auto m = meshioplusplus_py::py_to_mesh(pymesh, refs, /*lenient_field_data=*/true,
+                                                   /*allow_ragged=*/true);
             meshioplusplus::IpToPointsOptions opts;
             opts.mArrays = arrays;
             opts.mDropSource = drop_source;
@@ -11610,8 +11610,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         "ip_to_cells",
         [](py::handle pymesh, const std::vector<std::string>& arrays, bool drop_metadata) {
             meshioplusplus_py::PyMeshRefs refs;
-            auto m = meshioplusplus_py::py_to_mesh(
-                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            auto m = meshioplusplus_py::py_to_mesh(pymesh, refs, /*lenient_field_data=*/true,
+                                                   /*allow_ragged=*/true);
             meshioplusplus::IpToCellsOptions opts;
             opts.mArrays = arrays;
             opts.mDropMetadata = drop_metadata;
@@ -11629,8 +11629,8 @@ data. Usable as a context manager; ``__exit__`` finalizes.
         [](py::handle pymesh, const std::vector<std::string>& arrays, std::int64_t rule_id,
            bool drop_source) {
             meshioplusplus_py::PyMeshRefs refs;
-            auto m = meshioplusplus_py::py_to_mesh(
-                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            auto m = meshioplusplus_py::py_to_mesh(pymesh, refs, /*lenient_field_data=*/true,
+                                                   /*allow_ragged=*/true);
             meshioplusplus::PointsToIpOptions opts;
             opts.mArrays = arrays;
             opts.mRuleId = rule_id;

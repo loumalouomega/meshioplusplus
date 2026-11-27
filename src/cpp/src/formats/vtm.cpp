@@ -263,7 +263,8 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
             std::unordered_map<std::string, VtmTreeNode> mChildren;
         };
         VtmTreeNode root_node;
-        auto ensure_group = [&](const std::vector<std::string>& rSegs, std::size_t Depth) -> VtmTreeNode* {
+        auto ensure_group = [&](const std::vector<std::string>& rSegs,
+                                std::size_t Depth) -> VtmTreeNode* {
             VtmTreeNode* cur = &root_node;
             for (std::size_t d = 0; d < Depth; ++d) {
                 const std::string& seg = rSegs[d];
