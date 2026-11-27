@@ -295,7 +295,7 @@ def test_an_array_with_the_prefixed_name_wins(engine):
 @pytest.mark.parametrize(
     "name,needle",
     [
-        ("boundary:T", "needs 'point:' or 'flux:'"),
+        ("boundary:T", "needs 'point:'.*or 'flux:'"),
         ("point:nothing", "names no point_data array"),
         ("flux:T", "3-component"),
     ],

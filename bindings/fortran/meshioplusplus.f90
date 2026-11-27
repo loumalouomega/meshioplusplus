@@ -21072,7 +21072,7 @@ contains
         integer(c_int64_t), pointer :: fip(:), fix(:)
         real(c_double), pointer :: fvl(:)
         if (.not. c_associated(op)) then
-            call report_error("sparse operator failed", stat, errmsg)
+            call handle_failure('unpack_sparse_op', mio_error_message(), stat, errmsg)
             return
         end if
         nrows = c_mio_sparse_operator_rows(op)
@@ -21139,7 +21139,7 @@ contains
         if (present(max_iterations)) opts%max_iterations = max_iterations
         out%handle = c_mio_smooth_field(mesh%handle, opts, rep)
         if (.not. c_associated(out%handle)) then
-            call report_error("mio_smooth_field failed", stat, errmsg)
+            call handle_failure('mio_smooth_field', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)
@@ -21164,7 +21164,7 @@ contains
         out%handle = c_mio_streamlines(mesh%handle, opts, rep)
         if (c_associated(rep)) call c_mio_streamlines_report_free(rep)
         if (.not. c_associated(out%handle)) then
-            call report_error("mio_streamlines failed", stat, errmsg)
+            call handle_failure('mio_streamlines', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)
@@ -21197,7 +21197,7 @@ contains
         type(mio_mesh) :: out
         out%handle = c_mio_attach_fvm_quality(mesh%handle)
         if (.not. c_associated(out%handle)) then
-            call report_error("mio_attach_fvm_quality failed", stat, errmsg)
+            call handle_failure('mio_attach_fvm_quality', mio_error_message(), stat, errmsg)
             return
         end if
         call clear_status(stat, errmsg)

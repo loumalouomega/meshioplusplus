@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 import meshioplusplus as mio
 from meshioplusplus import physicsnemo
@@ -175,16 +176,25 @@ def test_data_integrate_quadrature():
 
 def test_tet_mesh_operator_and_smooth_field():
     tet = _unit_tet_mesh()
-    L = mio.mesh_operator(tet, kind="laplacian", sparse=True)
-    assert L.shape == (len(tet.points), len(tet.points))
-    assert L.nnz > 0
+    indptr, indices, values, shape = mio.mesh_operator(
+        tet, kind="laplacian", sparse=False
+    )
+    assert shape == (len(tet.points), len(tet.points))
+    assert len(values) > 0
 
-    M = mio.mesh_operator(tet, kind="mass_lumped", sparse=True)
-    assert abs(float(M.sum()) - 1.0) < 1e-9
+    _, _, m_vals, _ = mio.mesh_operator(tet, kind="mass_lumped", sparse=False)
+    assert abs(float(np.sum(m_vals)) - 1.0) < 1e-9
 
     tet.point_data["u"] = tet.points[:, 0] ** 2 + np.sin(5.0 * tet.points[:, 1])
     out = mio.smooth_field(tet, array="u", length=0.2)
     assert "u" in out.point_data
+
+    pytest.importorskip("scipy")
+    L = mio.mesh_operator(tet, kind="laplacian", sparse=True)
+    assert L.shape == (len(tet.points), len(tet.points))
+    assert L.nnz > 0
+    M = mio.mesh_operator(tet, kind="mass_lumped", sparse=True)
+    assert abs(float(M.sum()) - 1.0) < 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -280,17 +290,33 @@ def test_transfer_operator_and_physicsnemo():
     coarse = mio.rectangle(dims=(2, 2), cell_type="triangle")
     fine = mio.refine(coarse, levels=1, record_parent_ids=True)
 
-    P = mio.transfer_operator(coarse, fine, mode="auto", sparse=True)
-    assert P.shape == (len(fine.points), len(coarse.points))
+    indptr, indices, values, shape = mio.transfer_operator(
+        coarse, fine, mode="auto", sparse=False
+    )
+    assert shape == (len(fine.points), len(coarse.points))
     # Linear field f(x, y) = 2x + 3y transfers exactly
     fc = 2.0 * coarse.points[:, 0] + 3.0 * coarse.points[:, 1]
     ff_exact = 2.0 * fine.points[:, 0] + 3.0 * fine.points[:, 1]
+    ff_csr = np.array(
+        [
+            sum(values[k] * fc[indices[k]] for k in range(indptr[i], indptr[i + 1]))
+            for i in range(shape[0])
+        ]
+    )
+    assert np.allclose(ff_csr, ff_exact, atol=1e-10)
+
+    # Transpose restriction matrix (dense/CSR tuple)
+    _, _, _, r_shape = mio.transfer_operator(coarse, fine, transpose=True, sparse=False)
+    assert r_shape == (len(coarse.points), len(fine.points))
+
+    pytest.importorskip("scipy")
+    P = mio.transfer_operator(coarse, fine, mode="auto", sparse=True)
+    assert P.shape == (len(fine.points), len(coarse.points))
 
     sp = physicsnemo.transfer_matrix(coarse, fine, format="scipy")
     ff_interp = sp @ fc
     assert np.allclose(ff_interp, ff_exact, atol=1e-10)
 
-    # Transpose restriction matrix
     R = mio.transfer_operator(coarse, fine, transpose=True, sparse=True)
     assert R.shape == (len(coarse.points), len(fine.points))
 

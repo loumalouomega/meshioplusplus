@@ -304,7 +304,7 @@ TEST(Roadmap15, TransferOperatorNestedAndBarycentric) {
 
 TEST(Roadmap15, SpectralDescriptorsRigidInvariance) {
     Mesh s1 = icosa_sphere(1.0, 2);
-    Mesh s2 = s1;
+    Mesh s2 = icosa_sphere(1.0, 2);
     {
         NDArray pts = s2.Points();
         pts.MakeOwned();
@@ -361,7 +361,7 @@ TEST(Roadmap9, FvmQualityAndGate) {
     EXPECT_TRUE(gres.mPassed);
 
     // Shear the hex mesh by x' = x + 1.5*z to create > 45 deg non-orthogonality.
-    Mesh skewed = hex;
+    Mesh skewed = box({2, 2, 2}, {1.0, 1.0, 1.0}, {0.0, 0.0, 0.0}, "hexahedron");
     NDArray pts = skewed.Points();
     pts.MakeOwned();
     double* pp = pts.As<double>();
@@ -376,7 +376,7 @@ TEST(Roadmap9, FvmQualityAndGate) {
 
 TEST(Roadmap9, DenoiseSurfaceReducesNoise) {
     Mesh clean = icosa_sphere(1.0, 2);
-    Mesh noisy = clean;
+    Mesh noisy = icosa_sphere(1.0, 2);
     NDArray pts = noisy.Points();
     pts.MakeOwned();
     double* pp = pts.As<double>();
