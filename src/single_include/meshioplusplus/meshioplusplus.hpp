@@ -34301,6 +34301,81 @@ MESHIOPLUSPLUS_API Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, co
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/interpolate.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/ip_ops.hpp =====
+/**
+ * @file operations/ip_ops.hpp
+ * @brief Integration-point data operations: `ip_to_points`, `ip_to_cells`,
+ *        and `points_to_ip` (roadmap 8.3).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Options for `ip_to_points`.
+struct IpToPointsOptions {
+    /// Specific integration-point `cell_data` array names to extrapolate.
+    /// Empty means all `cell_data` arrays that carry an integration-point layout.
+    std::vector<std::string> mArrays;
+    /// When true, drop the converted `cell_data` arrays and their `meshio:ip:` metadata.
+    bool mDropSource = false;
+};
+
+/// Options for `ip_to_cells`.
+struct IpToCellsOptions {
+    /// Specific integration-point `cell_data` array names to average per cell.
+    /// Empty means all `cell_data` arrays that carry an integration-point layout.
+    std::vector<std::string> mArrays;
+    /// When true, drop the `meshio:ip:` metadata after replacing the cell array.
+    bool mDropMetadata = true;
+};
+
+/// Options for `points_to_ip`.
+struct PointsToIpOptions {
+    /// Specific `point_data` array names to sample at integration points.
+    /// Empty means all numeric `point_data` arrays.
+    std::vector<std::string> mArrays;
+    /// Quadrature rule id (`0` = element-nodal, `>= 1` = Gauss exactness order).
+    std::int64_t mRuleId = 2;
+    /// When true, drop the source `point_data` arrays after sampling.
+    bool mDropSource = false;
+};
+
+/// Result returned by `ip_to_points`, `ip_to_cells`, and `points_to_ip`.
+struct IpOpResult {
+    Mesh mMesh;
+    std::vector<std::string> mConverted;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Extrapolate integration-point `cell_data` arrays to `point_data` using
+ *        element shape functions (least-squares when `n_ip != n_nodes`) and
+ *        nodal averaging across incident cells.
+ */
+MESHIOPLUSPLUS_API IpOpResult ip_to_points(const Mesh& rMesh,
+                                           const IpToPointsOptions& rOptions = {});
+
+/**
+ * @brief Average integration-point `cell_data` arrays to one value per cell
+ *        using quadrature weights when known (or uniform weights otherwise).
+ */
+MESHIOPLUSPLUS_API IpOpResult ip_to_cells(const Mesh& rMesh, const IpToCellsOptions& rOptions = {});
+
+/**
+ * @brief Evaluate `point_data` arrays at element integration points and attach
+ *        them as `cell_data` with `field_data["meshio:ip:<name>"]`.
+ */
+MESHIOPLUSPLUS_API IpOpResult points_to_ip(const Mesh& rMesh,
+                                           const PointsToIpOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/ip_ops.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/isosurface.hpp =====
 /**
  * @file isosurface.hpp
@@ -56129,6 +56204,570 @@ void warn_integer_precision(const std::string& rFormat, const Mesh& rMesh);
 
 #endif  // MESHIOPLUSPLUS_DETAIL_INTEGER_PRECISION_HPP
 // ===== end src/cpp/src/detail/integer_precision.hpp =====
+// ===== begin src/cpp/src/detail/quadrature.hpp =====
+/**
+ * @file detail/quadrature.hpp
+ * @brief Shared Gauss quadrature rules on reference elements (roadmap 3.4.3 / 15.1).
+ *
+ * All element rules live in the `[0, 1]` reference coordinates used by
+ * `detail/reference_element.hpp` (`lagrange::vtk_lattice`):
+ *   - Line: `[0, 1]`, measure 1.
+ *   - Triangle: `u, v >= 0, u + v <= 1`, measure 1/2.
+ *   - Quad: `[0, 1]^2`, measure 1.
+ *   - Tetra: `u, v, w >= 0, u + v + w <= 1`, measure 1/6.
+ *   - Hexahedron: `[0, 1]^3`, measure 1.
+ *   - Wedge: `Triangle x [0, 1]`, measure 1/2.
+ *   - Pyramid: `0 <= w <= 1, 0 <= u, v <= 1 - w`, measure 1/3.
+ *
+ * Weights sum to the reference element's measure so that
+ * `sum_q w_q * |det J(xi_q)| * f(xi_q)` approximates `\int_K f dK`.
+ */
+
+// System includes
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+/// A quadrature rule in `[0, 1]` reference coordinates.
+struct QuadratureRule {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<double> mWeights;
+};
+
+/**
+ * @brief @p N-point Gauss-Legendre nodes and weights on `[-1, 1]`, sorted
+ * ascending by node. Exact for polynomials of degree `2N - 1`.
+ */
+inline void gauss_legendre_1d(int N, std::vector<double>& rNodes, std::vector<double>& rWeights) {
+    rNodes.resize(static_cast<std::size_t>(N));
+    rWeights.resize(static_cast<std::size_t>(N));
+    if (N <= 0)
+        return;
+    constexpr double kPi = 3.14159265358979323846;
+    const int m = (N + 1) / 2;
+    for (int i = 0; i < m; ++i) {
+        double z = std::cos(kPi * (static_cast<double>(i) + 0.75) / (static_cast<double>(N) + 0.5));
+        double pp = 0.0;
+        for (int iter = 0; iter < 50; ++iter) {
+            double p1 = 1.0;
+            double p2 = 0.0;
+            for (int j = 1; j <= N; ++j) {
+                const double p3 = p2;
+                p2 = p1;
+                p1 = ((2.0 * j - 1.0) * z * p2 - (j - 1.0) * p3) / static_cast<double>(j);
+            }
+            pp = static_cast<double>(N) * (z * p1 - p2) / (z * z - 1.0);
+            const double dz = p1 / pp;
+            z -= dz;
+            if (std::abs(dz) <= 1e-16)
+                break;
+        }
+        const double w = 2.0 / ((1.0 - z * z) * pp * pp);
+        rNodes[static_cast<std::size_t>(i)] = -z;
+        rNodes[static_cast<std::size_t>(N - 1 - i)] = z;
+        rWeights[static_cast<std::size_t>(i)] = w;
+        rWeights[static_cast<std::size_t>(N - 1 - i)] = w;
+    }
+}
+
+/// @p N-point Gauss-Legendre nodes and weights mapped to `[0, 1]`.
+inline void gauss_legendre_unit(int N, std::vector<double>& rNodes, std::vector<double>& rWeights) {
+    gauss_legendre_1d(N, rNodes, rWeights);
+    for (std::size_t i = 0; i < rNodes.size(); ++i) {
+        rNodes[i] = 0.5 * (rNodes[i] + 1.0);
+        rWeights[i] *= 0.5;
+    }
+}
+
+/// Symmetric triangle quadrature on the unit triangle (`u, v >= 0, u+v <= 1`, area 0.5).
+inline QuadratureRule quadrature_triangle(int ExactOrder) {
+    QuadratureRule rule;
+    const auto add_sym3 = [&](double a, double b, double w_area_frac) {
+        const double w = 0.5 * w_area_frac;
+        const double c = 1.0 - a - b;
+        rule.mPoints.push_back({a, b, 0.0});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({b, c, 0.0});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({c, a, 0.0});
+        rule.mWeights.push_back(w);
+    };
+    const auto add_sym6 = [&](double a, double b, double w_area_frac) {
+        const double w = 0.5 * w_area_frac;
+        const double c = 1.0 - a - b;
+        const double p[6][2] = {{a, b}, {b, a}, {b, c}, {c, b}, {c, a}, {a, c}};
+        for (const auto& q : p) {
+            rule.mPoints.push_back({q[0], q[1], 0.0});
+            rule.mWeights.push_back(w);
+        }
+    };
+
+    if (ExactOrder <= 1) {
+        rule.mPoints.push_back({1.0 / 3.0, 1.0 / 3.0, 0.0});
+        rule.mWeights.push_back(0.5);
+        return rule;
+    }
+    if (ExactOrder <= 2) {
+        add_sym3(1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0);
+        return rule;
+    }
+    if (ExactOrder <= 4) {
+        // Dunavant 6-point rule, exact to degree 4, all positive weights.
+        add_sym3(0.44594849091596488632, 0.44594849091596488632, 0.22338158967801146570);
+        add_sym3(0.09157621350977074346, 0.09157621350977074346, 0.10995174365532186764);
+        return rule;
+    }
+    if (ExactOrder <= 5) {
+        // Dunavant 7-point rule, exact to degree 5, all positive weights.
+        rule.mPoints.push_back({1.0 / 3.0, 1.0 / 3.0, 0.0});
+        rule.mWeights.push_back(0.5 * 0.225);
+        add_sym3(0.05971587178976982046, 0.47014206410511508977, 0.13239415278850618074);
+        add_sym3(0.79742698535308732240, 0.10128650732345633880, 0.12593918054482715260);
+        return rule;
+    }
+    if (ExactOrder <= 6) {
+        // Dunavant 12-point rule, exact to degree 6, all positive weights.
+        add_sym3(0.50142650965817915742, 0.24928674517091042129, 0.11678627572637936603);
+        add_sym3(0.87382197101699554332, 0.06308901449150222834, 0.05084490637020681692);
+        add_sym6(0.05314504984481694735, 0.31035245103378440542, 0.08285107561837357519);
+        return rule;
+    }
+    // General higher-order fallback: Duffy transform from [0, 1]^2 with u = (1-a)b, v = a,
+    // Jacobian = (1 - a). Polynomial of degree p in (u,v) has degree <= p+1 in a, <= p in b.
+    const int n = (ExactOrder + 2) / 2 + 1;
+    std::vector<double> gx, gw;
+    gauss_legendre_unit(n, gx, gw);
+    for (int i = 0; i < n; ++i) {
+        const double a = gx[static_cast<std::size_t>(i)];
+        const double wa = gw[static_cast<std::size_t>(i)] * (1.0 - a);
+        for (int j = 0; j < n; ++j) {
+            const double b = gx[static_cast<std::size_t>(j)];
+            rule.mPoints.push_back({(1.0 - a) * b, a, 0.0});
+            rule.mWeights.push_back(wa * gw[static_cast<std::size_t>(j)]);
+        }
+    }
+    return rule;
+}
+
+/// Symmetric tetrahedron quadrature on the unit tet (`u,v,w >= 0, u+v+w <= 1`, volume 1/6).
+inline QuadratureRule quadrature_tetra(int ExactOrder) {
+    QuadratureRule rule;
+    constexpr double kVol = 1.0 / 6.0;
+    const auto add_sym4 = [&](double a, double w_vol_frac) {
+        const double b = 1.0 - 3.0 * a;
+        const double w = kVol * w_vol_frac;
+        rule.mPoints.push_back({a, a, a});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({b, a, a});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({a, b, a});
+        rule.mWeights.push_back(w);
+        rule.mPoints.push_back({a, a, b});
+        rule.mWeights.push_back(w);
+    };
+    const auto add_sym6 = [&](double a, double w_vol_frac) {
+        const double b = 0.5 - a;
+        const double w = kVol * w_vol_frac;
+        const double p[6][3] = {{a, a, b}, {a, b, a}, {b, a, a}, {a, b, b}, {b, a, b}, {b, b, a}};
+        for (const auto& q : p) {
+            rule.mPoints.push_back({q[0], q[1], q[2]});
+            rule.mWeights.push_back(w);
+        }
+    };
+
+    if (ExactOrder <= 1) {
+        rule.mPoints.push_back({0.25, 0.25, 0.25});
+        rule.mWeights.push_back(kVol);
+        return rule;
+    }
+    if (ExactOrder <= 2) {
+        // 4-point Keast rule, exact to degree 2, positive weights.
+        const double a = (5.0 - std::sqrt(5.0)) / 20.0;
+        add_sym4(a, 0.25);
+        return rule;
+    }
+    if (ExactOrder <= 4) {
+        // 11-point Keast / Shunn-Ham rule, exact to degree 4, all positive weights.
+        rule.mPoints.push_back({0.25, 0.25, 0.25});
+        rule.mWeights.push_back(kVol * (-0.07893333333333333));
+        // Note: use 14-point positive-weight rule for degree 4 (Shunn & Ham 2012)
+        // so all weights are strictly positive!
+        rule.mPoints.clear();
+        rule.mWeights.clear();
+        add_sym4(0.09273525031089122640, 0.07349304311636194954);
+        add_sym4(0.31088591926330060980, 0.11268792571801585080);
+        add_sym6(0.04550370412564964949, 0.04254602077708146644);
+        return rule;
+    }
+    // General higher-order fallback: Duffy transform from [0, 1]^3 with
+    // w = a, v = (1 - a) b, u = (1 - a)(1 - b) c, Jacobian = (1 - a)^2 (1 - b).
+    const int n = (ExactOrder + 3) / 2 + 1;
+    std::vector<double> gx, gw;
+    gauss_legendre_unit(n, gx, gw);
+    for (int i = 0; i < n; ++i) {
+        const double a = gx[static_cast<std::size_t>(i)];
+        const double oma = 1.0 - a;
+        const double wa = gw[static_cast<std::size_t>(i)] * oma * oma;
+        for (int j = 0; j < n; ++j) {
+            const double b = gx[static_cast<std::size_t>(j)];
+            const double omb = 1.0 - b;
+            const double wab = wa * gw[static_cast<std::size_t>(j)] * omb;
+            for (int k = 0; k < n; ++k) {
+                const double c = gx[static_cast<std::size_t>(k)];
+                rule.mPoints.push_back({oma * omb * c, oma * b, a});
+                rule.mWeights.push_back(wab * gw[static_cast<std::size_t>(k)]);
+            }
+        }
+    }
+    return rule;
+}
+
+/// Quadrature rule for a base cell family (`CellType`) exact to polynomial degree @p ExactOrder.
+inline QuadratureRule quadrature_rule(CellType Type, int ExactOrder) {
+    const int order = std::max(1, ExactOrder);
+    const int n1d = (order + 2) / 2;  // 2*n1d - 1 >= order
+    QuadratureRule rule;
+    switch (Type) {
+        case CellType::Line:
+        case CellType::Line3:
+        case CellType::VtkLagrangeCurve:
+        case CellType::VtkBezierCurve: {
+            std::vector<double> gx, gw;
+            gauss_legendre_unit(n1d, gx, gw);
+            for (int i = 0; i < n1d; ++i) {
+                rule.mPoints.push_back({gx[static_cast<std::size_t>(i)], 0.0, 0.0});
+                rule.mWeights.push_back(gw[static_cast<std::size_t>(i)]);
+            }
+            return rule;
+        }
+        case CellType::Triangle:
+        case CellType::Triangle6:
+        case CellType::Triangle7:
+        case CellType::VtkLagrangeTriangle:
+        case CellType::VtkBezierTriangle:
+            return quadrature_triangle(order);
+
+        case CellType::Quad:
+        case CellType::Quad8:
+        case CellType::Quad9:
+        case CellType::VtkLagrangeQuadrilateral:
+        case CellType::VtkBezierQuadrilateral: {
+            std::vector<double> gx, gw;
+            gauss_legendre_unit(n1d, gx, gw);
+            for (int j = 0; j < n1d; ++j) {
+                for (int i = 0; i < n1d; ++i) {
+                    rule.mPoints.push_back(
+                        {gx[static_cast<std::size_t>(i)], gx[static_cast<std::size_t>(j)], 0.0});
+                    rule.mWeights.push_back(gw[static_cast<std::size_t>(i)] *
+                                            gw[static_cast<std::size_t>(j)]);
+                }
+            }
+            return rule;
+        }
+        case CellType::Tetra:
+        case CellType::Tetra10:
+        case CellType::VtkLagrangeTetrahedron:
+        case CellType::VtkBezierTetrahedron:
+            return quadrature_tetra(order);
+
+        case CellType::Hexahedron:
+        case CellType::Hexahedron20:
+        case CellType::Hexahedron27:
+        case CellType::VtkLagrangeHexahedron:
+        case CellType::VtkBezierHexahedron: {
+            std::vector<double> gx, gw;
+            gauss_legendre_unit(n1d, gx, gw);
+            for (int k = 0; k < n1d; ++k) {
+                for (int j = 0; j < n1d; ++j) {
+                    for (int i = 0; i < n1d; ++i) {
+                        rule.mPoints.push_back({gx[static_cast<std::size_t>(i)],
+                                                gx[static_cast<std::size_t>(j)],
+                                                gx[static_cast<std::size_t>(k)]});
+                        rule.mWeights.push_back(gw[static_cast<std::size_t>(i)] *
+                                                gw[static_cast<std::size_t>(j)] *
+                                                gw[static_cast<std::size_t>(k)]);
+                    }
+                }
+            }
+            return rule;
+        }
+        case CellType::Wedge:
+        case CellType::Wedge15:
+        case CellType::Wedge18:
+        case CellType::VtkLagrangeWedge:
+        case CellType::VtkBezierWedge: {
+            const QuadratureRule tri = quadrature_triangle(order);
+            std::vector<double> gz, wz;
+            gauss_legendre_unit(n1d, gz, wz);
+            for (int k = 0; k < n1d; ++k) {
+                for (std::size_t t = 0; t < tri.mPoints.size(); ++t) {
+                    rule.mPoints.push_back(
+                        {tri.mPoints[t][0], tri.mPoints[t][1], gz[static_cast<std::size_t>(k)]});
+                    rule.mWeights.push_back(tri.mWeights[t] * wz[static_cast<std::size_t>(k)]);
+                }
+            }
+            return rule;
+        }
+        case CellType::Pyramid:
+        case CellType::Pyramid13:
+        case CellType::Pyramid14:
+        case CellType::VtkLagrangePyramid:
+        case CellType::VtkBezierPyramid: {
+            // Duffy mapping from [0, 1]^3: w = c, u = (1-c)*a, v = (1-c)*b, J = (1-c)^2.
+            const int nz = (order + 4) / 2;
+            std::vector<double> gx, gw, gz, wz;
+            gauss_legendre_unit(n1d, gx, gw);
+            gauss_legendre_unit(nz, gz, wz);
+            for (int k = 0; k < nz; ++k) {
+                const double c = gz[static_cast<std::size_t>(k)];
+                const double omc = 1.0 - c;
+                const double wk = wz[static_cast<std::size_t>(k)] * omc * omc;
+                for (int j = 0; j < n1d; ++j) {
+                    for (int i = 0; i < n1d; ++i) {
+                        rule.mPoints.push_back({omc * gx[static_cast<std::size_t>(i)],
+                                                omc * gx[static_cast<std::size_t>(j)], c});
+                        rule.mWeights.push_back(wk * gw[static_cast<std::size_t>(i)] *
+                                                gw[static_cast<std::size_t>(j)]);
+                    }
+                }
+            }
+            return rule;
+        }
+        default:
+            return rule;
+    }
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/quadrature.hpp =====
+// ===== begin src/cpp/src/detail/integration_points.hpp =====
+/**
+ * @file detail/integration_points.hpp
+ * @brief Unified integration-point (Gauss-point and element-nodal) metadata
+ *        convention in `field_data` (roadmap 8.3).
+ *
+ * A per-integration-point cell array is stored as a 2-D `cell_data` array of
+ * shape `(num_cells, points * width)` in point-major order (all `width`
+ * components of integration point `0`, then point `1`, ...). Its layout is
+ * recorded in:
+ *
+ *   `field_data["meshio:ip:<name>"] = Int64[3] { points, width, rule_id }`
+ *
+ * where `rule_id` identifies the point locations in `[0, 1]` reference
+ * coordinates:
+ *   - `-1`: unknown / format-defined order (uniform averaging for `ip_to_cells`,
+ *           mean extrapolation for `ip_to_points`).
+ *   - `0`: element-nodal data (one sample per cell node in connectivity order).
+ *   - `>= 1`: exactness order passed to `detail::quadrature_rule(type, rule_id)`.
+ *
+ * Custom reference coordinates and weights may also be attached per cell type:
+ *   `field_data["meshio:ip_coords:<name>:<cell_type>"] = Float64[points, dim]`
+ *   `field_data["meshio:ip_weights:<name>:<cell_type>"] = Float64[points]`
+ *
+ * For backward compatibility, `get_ip_layout` also recognises the legacy
+ * format-specific keys `abaqus:layout:<name>`, `lsdyna_d3plot:layout:<name>`,
+ * `gid:gauss_points:<name>`, and `gmsh:element_node_components:<name>`.
+ */
+
+// System includes
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+inline constexpr const char* kIpLayoutPrefix = "meshio:ip:";
+inline constexpr const char* kIpCoordsPrefix = "meshio:ip_coords:";
+inline constexpr const char* kIpWeightsPrefix = "meshio:ip_weights:";
+
+/// Parsed integration-point layout for a cell_data array.
+struct IpLayout {
+    std::int64_t mPoints = 0;
+    std::int64_t mWidth = 0;
+    std::int64_t mRuleId = -1;
+    bool mValid = false;
+};
+
+/// Build the `meshio:ip:<name>` field_data key.
+inline std::string ip_layout_key(const std::string& rName) {
+    return std::string(kIpLayoutPrefix) + rName;
+}
+
+/// Build the `meshio:ip_coords:<name>:<cell_type>` field_data key.
+inline std::string ip_coords_key(const std::string& rName, const std::string& rCellType) {
+    return std::string(kIpCoordsPrefix) + rName + ":" + rCellType;
+}
+
+/// Build the `meshio:ip_weights:<name>:<cell_type>` field_data key.
+inline std::string ip_weights_key(const std::string& rName, const std::string& rCellType) {
+    return std::string(kIpWeightsPrefix) + rName + ":" + rCellType;
+}
+
+/// Attach or overwrite `field_data["meshio:ip:<name>"] = [points, width, rule_id]`.
+inline void set_ip_layout(Mesh& rMesh, const std::string& rName, std::int64_t Points,
+                          std::int64_t Width, std::int64_t RuleId = -1) {
+    NDArray arr(DType::Int64, {3});
+    auto* p = arr.As<std::int64_t>();
+    p[0] = Points;
+    p[1] = Width;
+    p[2] = RuleId;
+    rMesh.AddFieldData(ip_layout_key(rName), std::move(arr));
+}
+
+/// Infer the smallest `quadrature_rule` exactness order (1..6) whose point count
+/// equals `NumPoints` for `Type`, or `-1` if none matches.
+inline std::int64_t infer_ip_rule_id(CellType Type, std::int64_t NumPoints) {
+    if (NumPoints < 1)
+        return -1;
+    for (int order = 1; order <= 6; ++order) {
+        const QuadratureRule rule = quadrature_rule(Type, order);
+        if (static_cast<std::int64_t>(rule.mPoints.size()) == NumPoints)
+            return static_cast<std::int64_t>(order);
+    }
+    return -1;
+}
+
+/// Read integration-point layout for `cell_data[rName]`, checking `meshio:ip:`
+/// first and falling back to legacy per-format layout keys.
+inline IpLayout get_ip_layout(const Mesh& rMesh, const std::string& rName) {
+    IpLayout out;
+    const std::string unified = ip_layout_key(rName);
+    if (rMesh.HasFieldData(unified)) {
+        const NDArray& a = rMesh.FieldData(unified);
+        if (a.Size() >= 2) {
+            out.mPoints = read_int(a, 0);
+            out.mWidth = read_int(a, 1);
+            out.mRuleId = a.Size() >= 3 ? read_int(a, 2) : -1;
+            out.mValid = (out.mPoints >= 1 && out.mWidth >= 1);
+            return out;
+        }
+    }
+
+    // Legacy 2-element `[points, width]` keys.
+    for (const char* pPrefix : {"abaqus:layout:", "lsdyna_d3plot:layout:"}) {
+        const std::string key = std::string(pPrefix) + rName;
+        if (rMesh.HasFieldData(key)) {
+            const NDArray& a = rMesh.FieldData(key);
+            if (a.Size() >= 2) {
+                out.mPoints = read_int(a, 0);
+                out.mWidth = read_int(a, 1);
+                out.mRuleId = -1;
+                out.mValid = (out.mPoints >= 1 && out.mWidth >= 1);
+                return out;
+            }
+        }
+    }
+
+    // Helper: inspect first non-empty block column count for single-number legacy keys.
+    auto first_cols = [&]() -> std::size_t {
+        if (!rMesh.HasCellData(rName))
+            return 0;
+        const std::size_t nb = rMesh.CellDataNumBlocks(rName);
+        for (std::size_t b = 0; b < nb; ++b) {
+            const NDArray& arr = rMesh.CellData(rName, b);
+            if (rows(arr) > 0)
+                return cols(arr);
+        }
+        return 0;
+    };
+
+    const std::string gid_key = "gid:gauss_points:" + rName;
+    if (rMesh.HasFieldData(gid_key)) {
+        const NDArray& a = rMesh.FieldData(gid_key);
+        if (a.Size() >= 1) {
+            const std::int64_t g = static_cast<std::int64_t>(read_double(a, 0));
+            const std::size_t c = first_cols();
+            if (g >= 1 && c > 0 && c % static_cast<std::size_t>(g) == 0) {
+                out.mPoints = g;
+                out.mWidth = static_cast<std::int64_t>(c / static_cast<std::size_t>(g));
+                out.mRuleId = -1;
+                out.mValid = true;
+                return out;
+            }
+        }
+    }
+
+    const std::string gmsh_key = "gmsh:element_node_components:" + rName;
+    if (rMesh.HasFieldData(gmsh_key)) {
+        const NDArray& a = rMesh.FieldData(gmsh_key);
+        if (a.Size() >= 1) {
+            const std::int64_t w = read_int(a, 0);
+            const std::size_t c = first_cols();
+            if (w >= 1 && c > 0 && c % static_cast<std::size_t>(w) == 0) {
+                out.mPoints = static_cast<std::int64_t>(c / static_cast<std::size_t>(w));
+                out.mWidth = w;
+                out.mRuleId = 0;
+                out.mValid = true;
+                return out;
+            }
+        }
+    }
+
+    return out;
+}
+
+/// Resolve the quadrature rule (`mPoints` in `[0, 1]` reference coordinates and
+/// `mWeights`) for `(rName, Type)` given `rLayout`. Returns true when a rule
+/// matching `rLayout.mPoints` is found.
+inline bool resolve_ip_quadrature(const Mesh& rMesh, const std::string& rName, CellType Type,
+                                  const IpLayout& rLayout, QuadratureRule& rRule) {
+    rRule = QuadratureRule{};
+    if (!rLayout.mValid || rLayout.mPoints < 1)
+        return false;
+
+    const std::string ct_name = cell_type_name(Type);
+    const std::string ckey = ip_coords_key(rName, ct_name);
+    if (rMesh.HasFieldData(ckey)) {
+        const NDArray& coords = rMesh.FieldData(ckey);
+        const std::size_t npts = rows(coords);
+        const std::size_t dim = cols(coords);
+        if (static_cast<std::int64_t>(npts) == rLayout.mPoints && dim >= 1 && dim <= 3) {
+            rRule.mPoints.resize(npts, {0.0, 0.0, 0.0});
+            for (std::size_t i = 0; i < npts; ++i) {
+                for (std::size_t d = 0; d < dim; ++d)
+                    rRule.mPoints[i][d] = read_double(coords, i * dim + d);
+            }
+            const std::string wkey = ip_weights_key(rName, ct_name);
+            if (rMesh.HasFieldData(wkey) && rMesh.FieldData(wkey).Size() == npts) {
+                const NDArray& w = rMesh.FieldData(wkey);
+                rRule.mWeights.resize(npts);
+                for (std::size_t i = 0; i < npts; ++i)
+                    rRule.mWeights[i] = read_double(w, i);
+            } else {
+                rRule.mWeights.assign(npts, 1.0 / static_cast<double>(npts));
+            }
+            return true;
+        }
+    }
+
+    if (rLayout.mRuleId >= 1) {
+        QuadratureRule q = quadrature_rule(Type, static_cast<int>(rLayout.mRuleId));
+        if (static_cast<std::int64_t>(q.mPoints.size()) == rLayout.mPoints) {
+            rRule = std::move(q);
+            return true;
+        }
+        // Fallback: check if another exactness order matches `rLayout.mPoints`.
+        const std::int64_t inferred = infer_ip_rule_id(Type, rLayout.mPoints);
+        if (inferred >= 1) {
+            rRule = quadrature_rule(Type, static_cast<int>(inferred));
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/integration_points.hpp =====
 // ===== begin src/cpp/src/detail/isosurface_stuffing.hpp =====
 /**
  * @file detail/isosurface_stuffing.hpp
@@ -59667,348 +60306,6 @@ QuadRecombineResult quad_recombine(
 
 }  // namespace meshioplusplus::detail
 // ===== end src/cpp/src/detail/quad_recombine.hpp =====
-// ===== begin src/cpp/src/detail/quadrature.hpp =====
-/**
- * @file detail/quadrature.hpp
- * @brief Shared Gauss quadrature rules on reference elements (roadmap 3.4.3 / 15.1).
- *
- * All element rules live in the `[0, 1]` reference coordinates used by
- * `detail/reference_element.hpp` (`lagrange::vtk_lattice`):
- *   - Line: `[0, 1]`, measure 1.
- *   - Triangle: `u, v >= 0, u + v <= 1`, measure 1/2.
- *   - Quad: `[0, 1]^2`, measure 1.
- *   - Tetra: `u, v, w >= 0, u + v + w <= 1`, measure 1/6.
- *   - Hexahedron: `[0, 1]^3`, measure 1.
- *   - Wedge: `Triangle x [0, 1]`, measure 1/2.
- *   - Pyramid: `0 <= w <= 1, 0 <= u, v <= 1 - w`, measure 1/3.
- *
- * Weights sum to the reference element's measure so that
- * `sum_q w_q * |det J(xi_q)| * f(xi_q)` approximates `\int_K f dK`.
- */
-
-// System includes
-#include <algorithm>
-#include <array>
-#include <cmath>
-#include <cstddef>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus::detail {
-
-/// A quadrature rule in `[0, 1]` reference coordinates.
-struct QuadratureRule {
-    std::vector<std::array<double, 3>> mPoints;
-    std::vector<double> mWeights;
-};
-
-/**
- * @brief @p N-point Gauss-Legendre nodes and weights on `[-1, 1]`, sorted
- * ascending by node. Exact for polynomials of degree `2N - 1`.
- */
-inline void gauss_legendre_1d(int N, std::vector<double>& rNodes, std::vector<double>& rWeights) {
-    rNodes.resize(static_cast<std::size_t>(N));
-    rWeights.resize(static_cast<std::size_t>(N));
-    if (N <= 0)
-        return;
-    constexpr double kPi = 3.14159265358979323846;
-    const int m = (N + 1) / 2;
-    for (int i = 0; i < m; ++i) {
-        double z = std::cos(kPi * (static_cast<double>(i) + 0.75) / (static_cast<double>(N) + 0.5));
-        double pp = 0.0;
-        for (int iter = 0; iter < 50; ++iter) {
-            double p1 = 1.0;
-            double p2 = 0.0;
-            for (int j = 1; j <= N; ++j) {
-                const double p3 = p2;
-                p2 = p1;
-                p1 = ((2.0 * j - 1.0) * z * p2 - (j - 1.0) * p3) / static_cast<double>(j);
-            }
-            pp = static_cast<double>(N) * (z * p1 - p2) / (z * z - 1.0);
-            const double dz = p1 / pp;
-            z -= dz;
-            if (std::abs(dz) <= 1e-16)
-                break;
-        }
-        const double w = 2.0 / ((1.0 - z * z) * pp * pp);
-        rNodes[static_cast<std::size_t>(i)] = -z;
-        rNodes[static_cast<std::size_t>(N - 1 - i)] = z;
-        rWeights[static_cast<std::size_t>(i)] = w;
-        rWeights[static_cast<std::size_t>(N - 1 - i)] = w;
-    }
-}
-
-/// @p N-point Gauss-Legendre nodes and weights mapped to `[0, 1]`.
-inline void gauss_legendre_unit(int N, std::vector<double>& rNodes, std::vector<double>& rWeights) {
-    gauss_legendre_1d(N, rNodes, rWeights);
-    for (std::size_t i = 0; i < rNodes.size(); ++i) {
-        rNodes[i] = 0.5 * (rNodes[i] + 1.0);
-        rWeights[i] *= 0.5;
-    }
-}
-
-/// Symmetric triangle quadrature on the unit triangle (`u, v >= 0, u+v <= 1`, area 0.5).
-inline QuadratureRule quadrature_triangle(int ExactOrder) {
-    QuadratureRule rule;
-    const auto add_sym3 = [&](double a, double b, double w_area_frac) {
-        const double w = 0.5 * w_area_frac;
-        const double c = 1.0 - a - b;
-        rule.mPoints.push_back({a, b, 0.0});
-        rule.mWeights.push_back(w);
-        rule.mPoints.push_back({b, c, 0.0});
-        rule.mWeights.push_back(w);
-        rule.mPoints.push_back({c, a, 0.0});
-        rule.mWeights.push_back(w);
-    };
-    const auto add_sym6 = [&](double a, double b, double w_area_frac) {
-        const double w = 0.5 * w_area_frac;
-        const double c = 1.0 - a - b;
-        const double p[6][2] = {{a, b}, {b, a}, {b, c}, {c, b}, {c, a}, {a, c}};
-        for (const auto& q : p) {
-            rule.mPoints.push_back({q[0], q[1], 0.0});
-            rule.mWeights.push_back(w);
-        }
-    };
-
-    if (ExactOrder <= 1) {
-        rule.mPoints.push_back({1.0 / 3.0, 1.0 / 3.0, 0.0});
-        rule.mWeights.push_back(0.5);
-        return rule;
-    }
-    if (ExactOrder <= 2) {
-        add_sym3(1.0 / 6.0, 1.0 / 6.0, 1.0 / 3.0);
-        return rule;
-    }
-    if (ExactOrder <= 4) {
-        // Dunavant 6-point rule, exact to degree 4, all positive weights.
-        add_sym3(0.44594849091596488632, 0.44594849091596488632, 0.22338158967801146570);
-        add_sym3(0.09157621350977074346, 0.09157621350977074346, 0.10995174365532186764);
-        return rule;
-    }
-    if (ExactOrder <= 5) {
-        // Dunavant 7-point rule, exact to degree 5, all positive weights.
-        rule.mPoints.push_back({1.0 / 3.0, 1.0 / 3.0, 0.0});
-        rule.mWeights.push_back(0.5 * 0.225);
-        add_sym3(0.05971587178976982046, 0.47014206410511508977, 0.13239415278850618074);
-        add_sym3(0.79742698535308732240, 0.10128650732345633880, 0.12593918054482715260);
-        return rule;
-    }
-    if (ExactOrder <= 6) {
-        // Dunavant 12-point rule, exact to degree 6, all positive weights.
-        add_sym3(0.50142650965817915742, 0.24928674517091042129, 0.11678627572637936603);
-        add_sym3(0.87382197101699554332, 0.06308901449150222834, 0.05084490637020681692);
-        add_sym6(0.05314504984481694735, 0.31035245103378440542, 0.08285107561837357519);
-        return rule;
-    }
-    // General higher-order fallback: Duffy transform from [0, 1]^2 with u = (1-a)b, v = a,
-    // Jacobian = (1 - a). Polynomial of degree p in (u,v) has degree <= p+1 in a, <= p in b.
-    const int n = (ExactOrder + 2) / 2 + 1;
-    std::vector<double> gx, gw;
-    gauss_legendre_unit(n, gx, gw);
-    for (int i = 0; i < n; ++i) {
-        const double a = gx[static_cast<std::size_t>(i)];
-        const double wa = gw[static_cast<std::size_t>(i)] * (1.0 - a);
-        for (int j = 0; j < n; ++j) {
-            const double b = gx[static_cast<std::size_t>(j)];
-            rule.mPoints.push_back({(1.0 - a) * b, a, 0.0});
-            rule.mWeights.push_back(wa * gw[static_cast<std::size_t>(j)]);
-        }
-    }
-    return rule;
-}
-
-/// Symmetric tetrahedron quadrature on the unit tet (`u,v,w >= 0, u+v+w <= 1`, volume 1/6).
-inline QuadratureRule quadrature_tetra(int ExactOrder) {
-    QuadratureRule rule;
-    constexpr double kVol = 1.0 / 6.0;
-    const auto add_sym4 = [&](double a, double w_vol_frac) {
-        const double b = 1.0 - 3.0 * a;
-        const double w = kVol * w_vol_frac;
-        rule.mPoints.push_back({a, a, a});
-        rule.mWeights.push_back(w);
-        rule.mPoints.push_back({b, a, a});
-        rule.mWeights.push_back(w);
-        rule.mPoints.push_back({a, b, a});
-        rule.mWeights.push_back(w);
-        rule.mPoints.push_back({a, a, b});
-        rule.mWeights.push_back(w);
-    };
-    const auto add_sym6 = [&](double a, double w_vol_frac) {
-        const double b = 0.5 - a;
-        const double w = kVol * w_vol_frac;
-        const double p[6][3] = {{a, a, b}, {a, b, a}, {b, a, a}, {a, b, b}, {b, a, b}, {b, b, a}};
-        for (const auto& q : p) {
-            rule.mPoints.push_back({q[0], q[1], q[2]});
-            rule.mWeights.push_back(w);
-        }
-    };
-
-    if (ExactOrder <= 1) {
-        rule.mPoints.push_back({0.25, 0.25, 0.25});
-        rule.mWeights.push_back(kVol);
-        return rule;
-    }
-    if (ExactOrder <= 2) {
-        // 4-point Keast rule, exact to degree 2, positive weights.
-        const double a = (5.0 - std::sqrt(5.0)) / 20.0;
-        add_sym4(a, 0.25);
-        return rule;
-    }
-    if (ExactOrder <= 4) {
-        // 11-point Keast / Shunn-Ham rule, exact to degree 4, all positive weights.
-        rule.mPoints.push_back({0.25, 0.25, 0.25});
-        rule.mWeights.push_back(kVol * (-0.07893333333333333));
-        // Note: use 14-point positive-weight rule for degree 4 (Shunn & Ham 2012)
-        // so all weights are strictly positive!
-        rule.mPoints.clear();
-        rule.mWeights.clear();
-        add_sym4(0.09273525031089122640, 0.07349304311636194954);
-        add_sym4(0.31088591926330060980, 0.11268792571801585080);
-        add_sym6(0.04550370412564964949, 0.04254602077708146644);
-        return rule;
-    }
-    // General higher-order fallback: Duffy transform from [0, 1]^3 with
-    // w = a, v = (1 - a) b, u = (1 - a)(1 - b) c, Jacobian = (1 - a)^2 (1 - b).
-    const int n = (ExactOrder + 3) / 2 + 1;
-    std::vector<double> gx, gw;
-    gauss_legendre_unit(n, gx, gw);
-    for (int i = 0; i < n; ++i) {
-        const double a = gx[static_cast<std::size_t>(i)];
-        const double oma = 1.0 - a;
-        const double wa = gw[static_cast<std::size_t>(i)] * oma * oma;
-        for (int j = 0; j < n; ++j) {
-            const double b = gx[static_cast<std::size_t>(j)];
-            const double omb = 1.0 - b;
-            const double wab = wa * gw[static_cast<std::size_t>(j)] * omb;
-            for (int k = 0; k < n; ++k) {
-                const double c = gx[static_cast<std::size_t>(k)];
-                rule.mPoints.push_back({oma * omb * c, oma * b, a});
-                rule.mWeights.push_back(wab * gw[static_cast<std::size_t>(k)]);
-            }
-        }
-    }
-    return rule;
-}
-
-/// Quadrature rule for a base cell family (`CellType`) exact to polynomial degree @p ExactOrder.
-inline QuadratureRule quadrature_rule(CellType Type, int ExactOrder) {
-    const int order = std::max(1, ExactOrder);
-    const int n1d = (order + 2) / 2;  // 2*n1d - 1 >= order
-    QuadratureRule rule;
-    switch (Type) {
-        case CellType::Line:
-        case CellType::Line3:
-        case CellType::VtkLagrangeCurve:
-        case CellType::VtkBezierCurve: {
-            std::vector<double> gx, gw;
-            gauss_legendre_unit(n1d, gx, gw);
-            for (int i = 0; i < n1d; ++i) {
-                rule.mPoints.push_back({gx[static_cast<std::size_t>(i)], 0.0, 0.0});
-                rule.mWeights.push_back(gw[static_cast<std::size_t>(i)]);
-            }
-            return rule;
-        }
-        case CellType::Triangle:
-        case CellType::Triangle6:
-        case CellType::Triangle7:
-        case CellType::VtkLagrangeTriangle:
-        case CellType::VtkBezierTriangle:
-            return quadrature_triangle(order);
-
-        case CellType::Quad:
-        case CellType::Quad8:
-        case CellType::Quad9:
-        case CellType::VtkLagrangeQuadrilateral:
-        case CellType::VtkBezierQuadrilateral: {
-            std::vector<double> gx, gw;
-            gauss_legendre_unit(n1d, gx, gw);
-            for (int j = 0; j < n1d; ++j) {
-                for (int i = 0; i < n1d; ++i) {
-                    rule.mPoints.push_back(
-                        {gx[static_cast<std::size_t>(i)], gx[static_cast<std::size_t>(j)], 0.0});
-                    rule.mWeights.push_back(gw[static_cast<std::size_t>(i)] *
-                                            gw[static_cast<std::size_t>(j)]);
-                }
-            }
-            return rule;
-        }
-        case CellType::Tetra:
-        case CellType::Tetra10:
-        case CellType::VtkLagrangeTetrahedron:
-        case CellType::VtkBezierTetrahedron:
-            return quadrature_tetra(order);
-
-        case CellType::Hexahedron:
-        case CellType::Hexahedron20:
-        case CellType::Hexahedron27:
-        case CellType::VtkLagrangeHexahedron:
-        case CellType::VtkBezierHexahedron: {
-            std::vector<double> gx, gw;
-            gauss_legendre_unit(n1d, gx, gw);
-            for (int k = 0; k < n1d; ++k) {
-                for (int j = 0; j < n1d; ++j) {
-                    for (int i = 0; i < n1d; ++i) {
-                        rule.mPoints.push_back({gx[static_cast<std::size_t>(i)],
-                                                gx[static_cast<std::size_t>(j)],
-                                                gx[static_cast<std::size_t>(k)]});
-                        rule.mWeights.push_back(gw[static_cast<std::size_t>(i)] *
-                                                gw[static_cast<std::size_t>(j)] *
-                                                gw[static_cast<std::size_t>(k)]);
-                    }
-                }
-            }
-            return rule;
-        }
-        case CellType::Wedge:
-        case CellType::Wedge15:
-        case CellType::Wedge18:
-        case CellType::VtkLagrangeWedge:
-        case CellType::VtkBezierWedge: {
-            const QuadratureRule tri = quadrature_triangle(order);
-            std::vector<double> gz, wz;
-            gauss_legendre_unit(n1d, gz, wz);
-            for (int k = 0; k < n1d; ++k) {
-                for (std::size_t t = 0; t < tri.mPoints.size(); ++t) {
-                    rule.mPoints.push_back(
-                        {tri.mPoints[t][0], tri.mPoints[t][1], gz[static_cast<std::size_t>(k)]});
-                    rule.mWeights.push_back(tri.mWeights[t] * wz[static_cast<std::size_t>(k)]);
-                }
-            }
-            return rule;
-        }
-        case CellType::Pyramid:
-        case CellType::Pyramid13:
-        case CellType::Pyramid14:
-        case CellType::VtkLagrangePyramid:
-        case CellType::VtkBezierPyramid: {
-            // Duffy mapping from [0, 1]^3: w = c, u = (1-c)*a, v = (1-c)*b, J = (1-c)^2.
-            const int nz = (order + 4) / 2;
-            std::vector<double> gx, gw, gz, wz;
-            gauss_legendre_unit(n1d, gx, gw);
-            gauss_legendre_unit(nz, gz, wz);
-            for (int k = 0; k < nz; ++k) {
-                const double c = gz[static_cast<std::size_t>(k)];
-                const double omc = 1.0 - c;
-                const double wk = wz[static_cast<std::size_t>(k)] * omc * omc;
-                for (int j = 0; j < n1d; ++j) {
-                    for (int i = 0; i < n1d; ++i) {
-                        rule.mPoints.push_back({omc * gx[static_cast<std::size_t>(i)],
-                                                omc * gx[static_cast<std::size_t>(j)], c});
-                        rule.mWeights.push_back(wk * gw[static_cast<std::size_t>(i)] *
-                                                gw[static_cast<std::size_t>(j)]);
-                    }
-                }
-            }
-            return rule;
-        }
-        default:
-            return rule;
-    }
-}
-
-}  // namespace meshioplusplus::detail
-// ===== end src/cpp/src/detail/quadrature.hpp =====
 // ===== begin src/cpp/src/detail/raster.hpp =====
 /**
  * @file detail/raster.hpp
@@ -138649,6 +138946,8 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
             layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(pts);
             layout.As<std::int64_t>()[1] = static_cast<std::int64_t>(width);
             mesh.AddFieldData("abaqus:layout:" + name, std::move(layout));
+            detail::set_ip_layout(mesh, name, static_cast<std::int64_t>(pts),
+                                  static_cast<std::int64_t>(width), f.mLocation == 2 ? 0 : -1);
         }
     }
     return mesh;
@@ -139639,6 +139938,10 @@ private:
                 layout.assign(v.Data(), v.Data() + l.Size());
                 if (layout.size() != 2 || layout[0] < 1 || layout[1] < 1)
                     filw_fail("'abaqus:layout:" + name + "' must be (points, components)");
+            } else {
+                const detail::IpLayout ip = detail::get_ip_layout(rMesh, name);
+                if (ip.mValid)
+                    layout = {ip.mPoints, ip.mWidth};
             }
             int location = 1;
             if (parsed.mRebar)
@@ -163630,8 +163933,18 @@ const gid_detail::GidResultTypeEntry* gid_declared_result_type(const Mesh& rMesh
 std::size_t gid_declared_gauss_points(const Mesh& rMesh, const std::string& rName,
                                       std::size_t cols) {
     const std::string key = std::string(kGidGaussPointsPrefix) + rName;
-    if (!rMesh.HasFieldData(key))
+    if (!rMesh.HasFieldData(key)) {
+        const detail::IpLayout ip = detail::get_ip_layout(rMesh, rName);
+        if (ip.mValid && ip.mPoints > 1) {
+            const auto g = static_cast<std::size_t>(ip.mPoints);
+            if (cols % g != 0)
+                throw WriteError("GiD: '" + rName + "' is declared " + std::to_string(g) +
+                                 " integration points via meshio:ip but has " +
+                                 std::to_string(cols) + " columns");
+            return g;
+        }
         return 1;
+    }
 
     const NDArray& decl = rMesh.FieldData(key);
     if (decl.Size() == 0)
@@ -179324,6 +179637,8 @@ public:
                 layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(e.mPoints);
                 layout.As<std::int64_t>()[1] = static_cast<std::int64_t>(e.mWidth);
                 rMesh.AddFieldData("lsdyna_d3plot:layout:" + name, std::move(layout));
+                detail::set_ip_layout(rMesh, name, static_cast<std::int64_t>(e.mPoints),
+                                      static_cast<std::int64_t>(e.mWidth), -1);
             }
         }
     }
@@ -180012,6 +180327,13 @@ std::vector<D3wBlockArray> d3w_cell_array(const Mesh& rMesh, const std::string& 
         layout0 = detail::read_int(rMesh.FieldData(key), 0);
         layout1 = detail::read_int(rMesh.FieldData(key), 1);
         has_layout = true;
+    } else {
+        const detail::IpLayout ip = detail::get_ip_layout(rMesh, rName);
+        if (ip.mValid) {
+            layout0 = ip.mPoints;
+            layout1 = ip.mWidth;
+            has_layout = true;
+        }
     }
     const auto dflt = static_cast<std::size_t>(d3w_default_comps(rName));
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
@@ -186468,15 +186790,23 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
 
 // One "support" subgroup (NOE for nodal, MAI.<type> for a cell block):
 // GAU/PFL attrs, the default-profile subgroup with NBR/NGA/GAU/CO.
-void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray& rData) {
+void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray& rData,
+                       std::int64_t Nga = 1) {
     h5::Hid typ = h5::create_group_crt(ts, rSupportName);
     write_attr_bytes(typ, "GAU", "");
     write_attr_bytes(typ, "PFL", kProfile);
     h5::Hid profile = h5::create_group_crt(typ, kProfile);
-    h5::write_attr_int(profile, "NBR", static_cast<std::int64_t>(detail::rows(rData)));
-    h5::write_attr_int(profile, "NGA", 1);
+    const std::size_t n_entities = detail::rows(rData);
+    h5::write_attr_int(profile, "NBR", static_cast<std::int64_t>(n_entities));
+    h5::write_attr_int(profile, "NGA", Nga);
     write_attr_bytes(profile, "GAU", "");
     NDArray widened = med_field_widen(rData);
+    if (Nga > 1) {
+        const std::size_t total_cols = detail::cols(widened);
+        const std::size_t nga_u = static_cast<std::size_t>(Nga);
+        const std::size_t k = total_cols / nga_u;
+        widened.Reshape({n_entities * nga_u, k});
+    }
     NDArray flat = flatten_f(widened, 0);
     h5::write_dataset(profile, "CO", flat);
 }
@@ -186505,6 +186835,15 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
         }
     }
 
+    std::int64_t nga = 1;
+    std::size_t header_components = ncomponents;
+    const detail::IpLayout ip = detail::get_ip_layout(rMesh, rName);
+    if (ip.mValid && ip.mPoints > 1 &&
+        static_cast<std::size_t>(ip.mPoints) * static_cast<std::size_t>(ip.mWidth) == ncomponents) {
+        nga = ip.mPoints;
+        header_components = static_cast<std::size_t>(ip.mWidth);
+    }
+
     // Group blocks by MED type first: two blocks of the same type share one
     // "MAI.<type>" support subgroup (mirrors the connectivity-writing loop's
     // own consolidation -- two calls to write_cha_support with the same
@@ -186531,12 +186870,12 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             contributing.push_back(med_type);
     }
 
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rDiskName, dt, ncomponents,
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rDiskName, dt, header_components,
                                         /*IsNodal=*/false, contributing);
 
     for (const std::string& med_type : contributing)
         write_cha_support(ts, "MAI." + med_type,
-                          med_concat_cell_data_rows(rMesh, rName, by_type[med_type]));
+                          med_concat_cell_data_rows(rMesh, rName, by_type[med_type]), nga);
 }
 
 // ---- families (point/cell tags) ----
@@ -186942,7 +187281,7 @@ void med_reject_or_skip(const std::string& rWhat, bool Lenient, MedInfo* pInfo) 
 
 /// Named profiles use one-based entity indices and NaN on uncovered rows.
 NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents,
-                              std::size_t rows) {
+                              std::size_t rows, std::int64_t* pNgaOut = nullptr) {
     std::string profile_name = read_attr_bytes(support, "PFL");
     if (profile_name.empty())
         profile_name = kProfile;
@@ -186952,9 +187291,14 @@ NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponent
                                          std::numeric_limits<std::size_t>::max() / rows))
         throw ReadError("MED: invalid field component count");
     const auto k = static_cast<std::size_t>(ncomponents);
-    if (h5::has_attr(profile, "NGA") && h5::read_attr_int(profile, "NGA") != 1)
-        throw ReadError("MED: Gauss-point data requires the Python reference reader");
+    const std::int64_t nga = h5::has_attr(profile, "NGA") ? h5::read_attr_int(profile, "NGA") : 1;
+    if (nga < 1)
+        throw ReadError("MED: invalid NGA attribute");
+    if (pNgaOut)
+        *pNgaOut = nga;
     if (profile_name != kProfile) {
+        if (nga != 1)
+            throw ReadError("MED: Gauss-point data with named profiles is not supported");
         h5::Hid profiles = h5::open_group(file, "PROFILS");
         h5::Hid definition = h5::open_group(profiles, profile_name);
         NDArray indices = h5::read_dataset(definition, "PFL");
@@ -186982,10 +187326,16 @@ NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponent
         }
         return out;
     }
-    if (flat.Size() != rows * k)
+    const auto nga_u = static_cast<std::size_t>(nga);
+    if (nga_u > 1 && rows && nga_u > std::numeric_limits<std::size_t>::max() / rows)
+        throw ReadError("MED: Gauss-point data dimensions overflow");
+    const std::size_t total_rows = rows * nga_u;
+    if (flat.Size() != total_rows * k)
         throw ReadError("MED: field data size does not match its declared shape");
-    NDArray out = unflatten_f(flat, rows, k, 0);
-    if (k == 1)
+    NDArray out = unflatten_f(flat, total_rows, k, 0);
+    if (nga_u > 1)
+        out.Reshape({rows, nga_u * k});
+    else if (k == 1)
         out.Reshape({rows});
     return out;
 }
@@ -187132,14 +187482,16 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             per_block.emplace_back(DType::Float64, std::vector<std::size_t>{0});
         std::vector<bool> filled(rMesh.NumCellBlocks(), false);
         bool skip_field = false;
+        std::int64_t field_nga = 1;
+        bool field_is_elno = false;
+        bool has_first_ct = false;
+        CellType first_ct = CellType::Vertex;
         for (const std::string& supp : supports) {
-            // Anything not "NOE"/"MAI.<type>" is an ELNO/ELGA support: one
-            // value per node-within-cell or per Gauss point, a 3-D shape the
-            // uniform mesh API's (n,)/(n,k) cell_data cannot hold at all --
-            // structurally unrepresentable, not merely unimplemented.
-            if (supp.rfind("MAI.", 0) != 0) {
+            const bool is_mai = (supp.rfind("MAI.", 0) == 0);
+            const bool is_noe_el = (supp.rfind("NOE.", 0) == 0);
+            if (!is_mai && !is_noe_el) {
                 med_reject_or_skip("field '" + field_name + "' support '" + supp +
-                                       "' (ELNO/ELGA data has no (n,)/(n,k) representation)",
+                                       "' (unsupported support kind)",
                                    Lenient, pInfo);
                 skip_field = true;
                 break;
@@ -187155,7 +187507,17 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             }
             const std::size_t b = bit->second;
             h5::Hid grp = h5::open_group(ts, supp);
-            per_block[b] = read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells());
+            std::int64_t block_nga = 1;
+            per_block[b] =
+                read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells(), &block_nga);
+            if (block_nga > field_nga)
+                field_nga = block_nga;
+            if (is_noe_el)
+                field_is_elno = true;
+            if (!has_first_ct) {
+                first_ct = cell_type_from_name(rMesh.Cells(b).Type());
+                has_first_ct = true;
+            }
             filled[b] = true;
         }
         if (skip_field)
@@ -187169,13 +187531,20 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             if (filled[b])
                 continue;
             const std::size_t ncells = rMesh.Cells(b).NumCells();
+            const std::size_t total_cols =
+                static_cast<std::size_t>(field_nga) * static_cast<std::size_t>(ncomponents);
             std::vector<std::size_t> shape =
-                ncomponents > 1
-                    ? std::vector<std::size_t>{ncells, static_cast<std::size_t>(ncomponents)}
-                    : std::vector<std::size_t>{ncells};
+                total_cols > 1 ? std::vector<std::size_t>{ncells, total_cols}
+                               : std::vector<std::size_t>{ncells};
             per_block[b] = NDArray(DType::Float64, shape);
         }
         rMesh.AddCellData(field_name, std::move(per_block));
+        if (field_nga > 1 || field_is_elno) {
+            const std::int64_t rule_id =
+                field_is_elno ? 0
+                              : (has_first_ct ? detail::infer_ip_rule_id(first_ct, field_nga) : -1);
+            detail::set_ip_layout(rMesh, field_name, field_nga, ncomponents, rule_id);
+        }
     }
 }
 
@@ -274872,6 +275241,531 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/interpolate.cpp =====
+// ===== begin src/cpp/src/operations/ip_ops.cpp =====
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <set>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace {
+
+Mesh ip_clone_mesh(const Mesh& rMesh, const std::set<std::string>& rSkipPointData = {},
+                   const std::set<std::string>& rSkipCellData = {},
+                   const std::set<std::string>& rSkipFieldData = {}) {
+    Mesh out;
+    out.AssignPoints(detail::data_owned_copy(rMesh.Points()));
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.IsRagged()) {
+            if (cb.IsPolyhedron()) {
+                std::vector<std::vector<std::vector<std::int64_t>>> cells(cb.NumCells());
+                for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                    cells[r].resize(cb.NumFaces(r));
+                    for (std::size_t f = 0; f < cb.NumFaces(r); ++f) {
+                        const auto face = cb.Face(r, f);
+                        cells[r][f].assign(face.first, face.first + face.second);
+                    }
+                }
+                out.AddPolyhedronBlock(cb.Type(), cells);
+            } else {
+                std::vector<std::vector<std::int64_t>> rows(cb.NumCells());
+                for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                    const auto* pRow = cb.Row(r);
+                    rows[r].assign(pRow, pRow + cb.RowSize(r));
+                }
+                out.AddPolygonBlock(cb.Type(), rows);
+            }
+        } else {
+            out.AddCellBlock(cb.Type(), detail::data_owned_copy(cb.Conn()));
+        }
+    }
+    for (const std::string& name : rMesh.PointDataNames()) {
+        if (!rSkipPointData.count(name))
+            out.AddPointData(name, detail::data_owned_copy(rMesh.PointData(name)));
+    }
+    for (const std::string& name : rMesh.CellDataNames()) {
+        if (rSkipCellData.count(name))
+            continue;
+        std::vector<NDArray> blocks;
+        blocks.reserve(rMesh.CellDataNumBlocks(name));
+        for (std::size_t b = 0; b < rMesh.CellDataNumBlocks(name); ++b)
+            blocks.push_back(detail::data_owned_copy(rMesh.CellData(name, b)));
+        out.AddCellData(name, std::move(blocks));
+    }
+    for (const std::string& name : rMesh.FieldDataNames()) {
+        if (!rSkipFieldData.count(name))
+            out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+    }
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r)
+        out.AddRegion(rMesh.Region(r));
+    return out;
+}
+
+void ip_collect_layout_keys(const std::string& rName, std::set<std::string>& rSkipField) {
+    const std::string prefixes[] = {
+        detail::kIpLayoutPrefix,
+        "abaqus:layout:",
+        "lsdyna_d3plot:layout:",
+        "gid:gauss_points:",
+        "gmsh:element_node_components:",
+    };
+    for (const std::string& pre : prefixes)
+        rSkipField.insert(pre + rName);
+}
+
+std::vector<std::string> ip_select_cell_arrays(const Mesh& rMesh,
+                                               const std::vector<std::string>& rRequested,
+                                               std::vector<std::string>& rWarnings) {
+    std::vector<std::string> out;
+    if (rRequested.empty()) {
+        for (const std::string& name : rMesh.CellDataNames()) {
+            if (detail::get_ip_layout(rMesh, name).mValid)
+                out.push_back(name);
+        }
+        return out;
+    }
+    for (const std::string& name : rRequested) {
+        if (!rMesh.HasCellData(name)) {
+            rWarnings.push_back("cell_data array '" + name + "' not found");
+            continue;
+        }
+        if (!detail::get_ip_layout(rMesh, name).mValid) {
+            rWarnings.push_back("cell_data array '" + name + "' has no integration-point layout");
+            continue;
+        }
+        out.push_back(name);
+    }
+    return out;
+}
+
+/// Build the `npc x n_ip` extrapolation matrix `rE` (row-major) from the
+/// `n_ip x npc` shape-function evaluation matrix `M` (`M[q * npc + j] = N_j(xi_q)`).
+/// Returns false if singular.
+bool ip_build_extrapolation_matrix(const std::vector<double>& rM, std::size_t NIp, std::size_t Npc,
+                                   std::vector<double>& rE) {
+    rE.assign(Npc * NIp, 0.0);
+    if (NIp == 0 || Npc == 0)
+        return false;
+
+    if (NIp >= Npc) {
+        // Solve (M^T M) E = M^T column-by-column for each of the NIp columns.
+        std::vector<double> mtm(Npc * Npc, 0.0);
+        for (std::size_t i = 0; i < Npc; ++i) {
+            for (std::size_t j = 0; j < Npc; ++j) {
+                double s = 0.0;
+                for (std::size_t q = 0; q < NIp; ++q)
+                    s += rM[q * Npc + i] * rM[q * Npc + j];
+                mtm[i * Npc + j] = s;
+            }
+        }
+        for (std::size_t q = 0; q < NIp; ++q) {
+            std::vector<double> a = mtm;
+            std::vector<double> rhs(Npc, 0.0);
+            for (std::size_t i = 0; i < Npc; ++i)
+                rhs[i] = rM[q * Npc + i];
+            if (!detail::lsq_solve(a, rhs, Npc))
+                return false;
+            for (std::size_t i = 0; i < Npc; ++i)
+                rE[i * NIp + q] = rhs[i];
+        }
+        return true;
+    }
+
+    // Underdetermined (NIp < Npc): minimum-norm least-squares E = M^T (M M^T)^{-1}.
+    // Since sum_j N_j(xi_q) = 1, constant fields are reproduced identically.
+    std::vector<double> mmt(NIp * NIp, 0.0);
+    for (std::size_t p = 0; p < NIp; ++p) {
+        for (std::size_t q = 0; q < NIp; ++q) {
+            double s = 0.0;
+            for (std::size_t j = 0; j < Npc; ++j)
+                s += rM[p * Npc + j] * rM[q * Npc + j];
+            mmt[p * NIp + q] = s;
+        }
+    }
+    std::vector<double> inv(NIp * NIp, 0.0);
+    for (std::size_t col = 0; col < NIp; ++col) {
+        std::vector<double> a = mmt;
+        std::vector<double> rhs(NIp, 0.0);
+        rhs[col] = 1.0;
+        if (!detail::lsq_solve(a, rhs, NIp))
+            return false;
+        for (std::size_t row = 0; row < NIp; ++row)
+            inv[row * NIp + col] = rhs[row];
+    }
+    for (std::size_t j = 0; j < Npc; ++j) {
+        for (std::size_t col = 0; col < NIp; ++col) {
+            double s = 0.0;
+            for (std::size_t p = 0; p < NIp; ++p)
+                s += rM[p * Npc + j] * inv[p * NIp + col];
+            rE[j * NIp + col] = s;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
+IpOpResult ip_to_points(const Mesh& rMesh, const IpToPointsOptions& rOptions) {
+    IpOpResult res;
+    const std::vector<std::string> targets =
+        ip_select_cell_arrays(rMesh, rOptions.mArrays, res.mWarnings);
+
+    std::set<std::string> skip_cell;
+    std::set<std::string> skip_field;
+    if (rOptions.mDropSource) {
+        for (const std::string& name : targets) {
+            skip_cell.insert(name);
+            ip_collect_layout_keys(name, skip_field);
+        }
+    }
+    res.mMesh = ip_clone_mesh(rMesh, {}, skip_cell, skip_field);
+
+    const std::size_t n_pts = rMesh.NumPoints();
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    for (const std::string& name : targets) {
+        const detail::IpLayout layout = detail::get_ip_layout(rMesh, name);
+        const std::size_t n_ip = static_cast<std::size_t>(layout.mPoints);
+        const std::size_t width = static_cast<std::size_t>(layout.mWidth);
+
+        std::vector<double> accum(n_pts * width, 0.0);
+        std::vector<std::size_t> count(n_pts, 0);
+
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            if (b >= rMesh.CellDataNumBlocks(name))
+                continue;
+            const auto cb = rMesh.Cells(b);
+            if (cb.IsRagged() || cb.NumCells() == 0)
+                continue;
+            const NDArray& arr = rMesh.CellData(name, b);
+            const std::size_t n_cells = cb.NumCells();
+            const std::size_t total_cols = detail::cols(arr);
+            if (detail::rows(arr) != n_cells || total_cols < n_ip * width)
+                continue;
+
+            const std::size_t npc = cb.NodesPerCell();
+            const CellType ct = cell_type_from_name(cb.Type());
+
+            // Determine extrapolation strategy for this block.
+            bool is_elno = (layout.mRuleId == 0 && n_ip == npc);
+            bool has_extrap = false;
+            std::vector<double> extrap;
+
+            if (!is_elno) {
+                detail::QuadratureRule rule;
+                if (detail::resolve_ip_quadrature(rMesh, name, ct, layout, rule)) {
+                    std::vector<double> M(n_ip * npc, 0.0);
+                    bool ok = true;
+                    std::vector<double> N;
+                    std::vector<std::array<double, 3>> dN;
+                    for (std::size_t q = 0; q < n_ip; ++q) {
+                        if (!detail::eval_reference_shape(ct, npc, rule.mPoints[q], N, dN) ||
+                            N.size() != npc) {
+                            ok = false;
+                            break;
+                        }
+                        for (std::size_t j = 0; j < npc; ++j)
+                            M[q * npc + j] = N[j];
+                    }
+                    if (ok)
+                        has_extrap = ip_build_extrapolation_matrix(M, n_ip, npc, extrap);
+                }
+            }
+
+            const NDArray& conn = cb.Conn();
+            std::vector<double> ip_vals(n_ip, 0.0);
+            for (std::size_t r = 0; r < n_cells; ++r) {
+                for (std::size_t c = 0; c < width; ++c) {
+                    bool all_finite = true;
+                    double mean = 0.0;
+                    std::size_t n_fin = 0;
+                    for (std::size_t q = 0; q < n_ip; ++q) {
+                        const double v =
+                            detail::read_double(arr, r * total_cols + q * width + c);
+                        ip_vals[q] = v;
+                        if (std::isfinite(v)) {
+                            mean += v;
+                            ++n_fin;
+                        } else {
+                            all_finite = false;
+                        }
+                    }
+                    if (n_fin == 0)
+                        continue;
+                    mean /= static_cast<double>(n_fin);
+
+                    for (std::size_t j = 0; j < npc; ++j) {
+                        const std::int64_t node = detail::read_int(conn, r * npc + j);
+                        if (node < 0 || static_cast<std::size_t>(node) >= n_pts)
+                            continue;
+                        double v_node = mean;
+                        if (is_elno) {
+                            v_node = std::isfinite(ip_vals[j]) ? ip_vals[j] : mean;
+                        } else if (has_extrap && all_finite) {
+                            double s = 0.0;
+                            for (std::size_t q = 0; q < n_ip; ++q)
+                                s += extrap[j * n_ip + q] * ip_vals[q];
+                            v_node = s;
+                        }
+                        accum[static_cast<std::size_t>(node) * width + c] += v_node;
+                        if (c == 0)
+                            count[static_cast<std::size_t>(node)] += 1;
+                    }
+                }
+            }
+        }
+
+        std::vector<std::size_t> shape =
+            width == 1 ? std::vector<std::size_t>{n_pts} : std::vector<std::size_t>{n_pts, width};
+        NDArray pd(DType::Float64, shape);
+        double* dst = pd.As<double>();
+        for (std::size_t i = 0; i < n_pts; ++i) {
+            if (count[i] == 0) {
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[i * width + c] = nan;
+            } else {
+                const double inv = 1.0 / static_cast<double>(count[i]);
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[i * width + c] = accum[i * width + c] * inv;
+            }
+        }
+        res.mMesh.AddPointData(name, std::move(pd));
+        res.mConverted.push_back(name);
+    }
+
+    return res;
+}
+
+IpOpResult ip_to_cells(const Mesh& rMesh, const IpToCellsOptions& rOptions) {
+    IpOpResult res;
+    const std::vector<std::string> targets =
+        ip_select_cell_arrays(rMesh, rOptions.mArrays, res.mWarnings);
+
+    std::set<std::string> skip_field;
+    if (rOptions.mDropMetadata) {
+        for (const std::string& name : targets)
+            ip_collect_layout_keys(name, skip_field);
+    }
+    res.mMesh = ip_clone_mesh(rMesh, {}, {}, skip_field);
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    for (const std::string& name : targets) {
+        const detail::IpLayout layout = detail::get_ip_layout(rMesh, name);
+        const std::size_t n_ip = static_cast<std::size_t>(layout.mPoints);
+        const std::size_t width = static_cast<std::size_t>(layout.mWidth);
+
+        std::vector<NDArray> out_blocks;
+        out_blocks.reserve(rMesh.NumCellBlocks());
+
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            const std::size_t n_cells = cb.NumCells();
+            std::vector<std::size_t> shape = width == 1
+                                                 ? std::vector<std::size_t>{n_cells}
+                                                 : std::vector<std::size_t>{n_cells, width};
+            NDArray cd(DType::Float64, shape);
+            double* dst = cd.As<double>();
+            std::fill_n(dst, cd.Size(), nan);
+
+            if (b < rMesh.CellDataNumBlocks(name) && n_cells > 0) {
+                const NDArray& arr = rMesh.CellData(name, b);
+                const std::size_t total_cols = detail::cols(arr);
+                if (detail::rows(arr) == n_cells && total_cols >= n_ip * width) {
+                    const CellType ct = cell_type_from_name(cb.Type());
+                    std::vector<double> weights(n_ip, 1.0);
+                    detail::QuadratureRule rule;
+                    if (detail::resolve_ip_quadrature(rMesh, name, ct, layout, rule) &&
+                        rule.mWeights.size() == n_ip) {
+                        weights = rule.mWeights;
+                    }
+
+                    for (std::size_t r = 0; r < n_cells; ++r) {
+                        for (std::size_t c = 0; c < width; ++c) {
+                            double wsum = 0.0;
+                            double vsum = 0.0;
+                            for (std::size_t q = 0; q < n_ip; ++q) {
+                                const double v =
+                                    detail::read_double(arr, r * total_cols + q * width + c);
+                                if (std::isfinite(v)) {
+                                    vsum += weights[q] * v;
+                                    wsum += weights[q];
+                                }
+                            }
+                            if (wsum > 0.0)
+                                dst[r * width + c] = vsum / wsum;
+                        }
+                    }
+                }
+            }
+            out_blocks.push_back(std::move(cd));
+        }
+
+        res.mMesh.AddCellData(name, std::move(out_blocks));
+        res.mConverted.push_back(name);
+    }
+
+    return res;
+}
+
+IpOpResult points_to_ip(const Mesh& rMesh, const PointsToIpOptions& rOptions) {
+    IpOpResult res;
+
+    if (rOptions.mRuleId < 0)
+        throw std::invalid_argument(
+            "points_to_ip: rule_id must be >= 0 (0 = element-nodal, >= 1 = quadrature order)");
+
+    std::vector<std::string> targets;
+    if (rOptions.mArrays.empty()) {
+        for (const std::string& name : rMesh.PointDataNames()) {
+            const NDArray& pd = rMesh.PointData(name);
+            if (pd.Size() > 0)
+                targets.push_back(name);
+        }
+    } else {
+        for (const std::string& name : rOptions.mArrays) {
+            if (!rMesh.HasPointData(name)) {
+                res.mWarnings.push_back("point_data array '" + name + "' not found");
+                continue;
+            }
+            targets.push_back(name);
+        }
+    }
+
+    // Precompute shape matrices per block.
+    const std::size_t nb = rMesh.NumCellBlocks();
+    std::vector<std::size_t> block_nip(nb, 0);
+    std::vector<std::vector<double>> block_M(nb);
+    std::size_t max_nip = 0;
+
+    for (std::size_t b = 0; b < nb; ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.IsRagged() || cb.NumCells() == 0)
+            continue;
+        const std::size_t npc = cb.NodesPerCell();
+        const CellType ct = cell_type_from_name(cb.Type());
+        if (rOptions.mRuleId == 0) {
+            block_nip[b] = npc;
+            max_nip = std::max(max_nip, npc);
+        } else {
+            const detail::QuadratureRule rule =
+                detail::quadrature_rule(ct, static_cast<int>(rOptions.mRuleId));
+            if (rule.mPoints.empty())
+                continue;
+            const std::size_t n_ip = rule.mPoints.size();
+            std::vector<double> M(n_ip * npc, 0.0);
+            std::vector<double> N;
+            std::vector<std::array<double, 3>> dN;
+            bool ok = true;
+            for (std::size_t q = 0; q < n_ip; ++q) {
+                if (!detail::eval_reference_shape(ct, npc, rule.mPoints[q], N, dN) ||
+                    N.size() != npc) {
+                    ok = false;
+                    break;
+                }
+                for (std::size_t j = 0; j < npc; ++j)
+                    M[q * npc + j] = N[j];
+            }
+            if (ok) {
+                block_nip[b] = n_ip;
+                block_M[b] = std::move(M);
+                max_nip = std::max(max_nip, n_ip);
+            }
+        }
+    }
+
+    if (max_nip == 0) {
+        res.mMesh = ip_clone_mesh(rMesh);
+        res.mWarnings.push_back("points_to_ip: no supported cell blocks for rule_id " +
+                                std::to_string(rOptions.mRuleId));
+        return res;
+    }
+
+    const std::size_t n_pts = rMesh.NumPoints();
+    std::set<std::string> skip_point;
+    if (rOptions.mDropSource) {
+        for (const std::string& name : targets) {
+            if (detail::rows(rMesh.PointData(name)) == n_pts)
+                skip_point.insert(name);
+        }
+    }
+    res.mMesh = ip_clone_mesh(rMesh, skip_point, {}, {});
+
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+
+    for (const std::string& name : targets) {
+        const NDArray& pd = rMesh.PointData(name);
+        if (detail::rows(pd) != n_pts) {
+            res.mWarnings.push_back("point_data array '" + name + "' row count mismatch");
+            continue;
+        }
+        const std::size_t width = detail::cols(pd);
+        const std::size_t total_cols = max_nip * width;
+
+        std::vector<NDArray> out_blocks;
+        out_blocks.reserve(nb);
+        for (std::size_t b = 0; b < nb; ++b) {
+            const auto cb = rMesh.Cells(b);
+            const std::size_t n_cells = cb.NumCells();
+            NDArray cd(DType::Float64, {n_cells, total_cols});
+            double* dst = cd.As<double>();
+            std::fill_n(dst, cd.Size(), nan);
+
+            const std::size_t n_ip = block_nip[b];
+            if (n_ip > 0 && n_cells > 0) {
+                const std::size_t npc = cb.NodesPerCell();
+                const NDArray& conn = cb.Conn();
+                for (std::size_t r = 0; r < n_cells; ++r) {
+                    if (rOptions.mRuleId == 0) {
+                        for (std::size_t j = 0; j < npc; ++j) {
+                            const std::int64_t node = detail::read_int(conn, r * npc + j);
+                            if (node < 0 || static_cast<std::size_t>(node) >= n_pts)
+                                continue;
+                            for (std::size_t c = 0; c < width; ++c) {
+                                dst[r * total_cols + j * width + c] = detail::read_double(
+                                    pd, static_cast<std::size_t>(node) * width + c);
+                            }
+                        }
+                    } else {
+                        const std::vector<double>& M = block_M[b];
+                        for (std::size_t q = 0; q < n_ip; ++q) {
+                            for (std::size_t c = 0; c < width; ++c) {
+                                double s = 0.0;
+                                for (std::size_t j = 0; j < npc; ++j) {
+                                    const std::int64_t node = detail::read_int(conn, r * npc + j);
+                                    if (node < 0 || static_cast<std::size_t>(node) >= n_pts)
+                                        continue;
+                                    s += M[q * npc + j] *
+                                         detail::read_double(
+                                             pd, static_cast<std::size_t>(node) * width + c);
+                                }
+                                dst[r * total_cols + q * width + c] = s;
+                            }
+                        }
+                    }
+                }
+            }
+            out_blocks.push_back(std::move(cd));
+        }
+
+        res.mMesh.AddCellData(name, std::move(out_blocks));
+        detail::set_ip_layout(res.mMesh, name, static_cast<std::int64_t>(max_nip),
+                              static_cast<std::int64_t>(width), rOptions.mRuleId);
+        res.mConverted.push_back(name);
+    }
+
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/ip_ops.cpp =====
 // ===== begin src/cpp/src/operations/isosurface.cpp =====
 #include <algorithm>
 #include <cmath>

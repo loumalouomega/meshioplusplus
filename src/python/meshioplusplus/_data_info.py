@@ -119,6 +119,24 @@ def _annotate_complex_pairs(entries: list) -> list:
     return entries
 
 
+def _annotate_ip_layouts(mesh, entries: list) -> list:
+    """Attach ``integration_points`` metadata to annotated cell_data entries."""
+    from ._ip_ops import _extract_ip_layout
+
+    for e in entries:
+        if e["location"] != "cell_data":
+            continue
+        layout = _extract_ip_layout(mesh, e["name"])
+        if layout is not None:
+            pts, width, rule_id = layout
+            e["integration_points"] = {
+                "points": pts,
+                "width": width,
+                "rule_id": rule_id,
+            }
+    return entries
+
+
 def _info_py(mesh) -> list:
     """Pure-Python reference for :func:`data_info`."""
     out = []
@@ -131,7 +149,7 @@ def _info_py(mesh) -> list:
         out.append(_summarize("cell_data", name, list(blocks), len(blocks)))
     for name in sorted(mesh.field_data.keys()):
         out.append(_summarize("field_data", name, [mesh.field_data[name]], 1))
-    return _annotate_complex_pairs(out)
+    return _annotate_ip_layouts(mesh, _annotate_complex_pairs(out))
 
 
 def data_info(mesh) -> list:
@@ -184,4 +202,4 @@ def data_info(mesh) -> list:
                 "inconsistent_blocks": bool(a["inconsistent_blocks"]),
             }
         )
-    return _annotate_complex_pairs(out)
+    return _annotate_ip_layouts(mesh, _annotate_complex_pairs(out))

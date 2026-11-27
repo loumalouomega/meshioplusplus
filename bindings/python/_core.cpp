@@ -248,6 +248,7 @@
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/split.hpp"
 #include "meshioplusplus/operations/stats.hpp"
+#include "meshioplusplus/operations/ip_ops.hpp"
 #include "meshioplusplus/operations/side_data.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
 #include "meshioplusplus/operations/surface.hpp"
@@ -11587,4 +11588,60 @@ data. Usable as a context manager; ``__exit__`` finalizes.
                                   std::move(report));
         },
         py::arg("mesh"), py::arg("region_name") = "", py::arg("drop_facet_blocks") = false);
+    m.def(
+        "ip_to_points",
+        [](py::handle pymesh, const std::vector<std::string>& arrays, bool drop_source) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto m = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::IpToPointsOptions opts;
+            opts.mArrays = arrays;
+            opts.mDropSource = drop_source;
+            auto res = core_nogil([&] { return meshioplusplus::ip_to_points(m, opts); });
+            py::dict report;
+            report["converted"] = res.mConverted;
+            report["warnings"] = res.mWarnings;
+            return py::make_tuple(meshioplusplus_py::mesh_to_py(std::move(res.mMesh)),
+                                  std::move(report));
+        },
+        py::arg("mesh"), py::arg("arrays") = std::vector<std::string>{},
+        py::arg("drop_source") = false);
+    m.def(
+        "ip_to_cells",
+        [](py::handle pymesh, const std::vector<std::string>& arrays, bool drop_metadata) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto m = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::IpToCellsOptions opts;
+            opts.mArrays = arrays;
+            opts.mDropMetadata = drop_metadata;
+            auto res = core_nogil([&] { return meshioplusplus::ip_to_cells(m, opts); });
+            py::dict report;
+            report["converted"] = res.mConverted;
+            report["warnings"] = res.mWarnings;
+            return py::make_tuple(meshioplusplus_py::mesh_to_py(std::move(res.mMesh)),
+                                  std::move(report));
+        },
+        py::arg("mesh"), py::arg("arrays") = std::vector<std::string>{},
+        py::arg("drop_metadata") = true);
+    m.def(
+        "points_to_ip",
+        [](py::handle pymesh, const std::vector<std::string>& arrays, std::int64_t rule_id,
+           bool drop_source) {
+            meshioplusplus_py::PyMeshRefs refs;
+            auto m = meshioplusplus_py::py_to_mesh(
+                pymesh, refs, /*lenient_field_data=*/true, /*allow_ragged=*/true);
+            meshioplusplus::PointsToIpOptions opts;
+            opts.mArrays = arrays;
+            opts.mRuleId = rule_id;
+            opts.mDropSource = drop_source;
+            auto res = core_nogil([&] { return meshioplusplus::points_to_ip(m, opts); });
+            py::dict report;
+            report["converted"] = res.mConverted;
+            report["warnings"] = res.mWarnings;
+            return py::make_tuple(meshioplusplus_py::mesh_to_py(std::move(res.mMesh)),
+                                  std::move(report));
+        },
+        py::arg("mesh"), py::arg("arrays") = std::vector<std::string>{}, py::arg("rule_id") = 2,
+        py::arg("drop_source") = false);
 }

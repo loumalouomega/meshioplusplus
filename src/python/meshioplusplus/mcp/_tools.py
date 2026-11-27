@@ -149,10 +149,10 @@ from .. import (
     iga_remove_knots,
     iga_sample,
     interpolate,
-    isosurface,
-    laplacian_eigenmodes,
-    line,
 )
+from .. import ip_to_cells as _ip_to_cells_op
+from .. import ip_to_points as _ip_to_points_op
+from .. import isosurface, laplacian_eigenmodes, line
 from .. import locate_points as _locate_points_op
 from .. import lshape
 from .. import mass_properties as _mass_properties_op
@@ -181,10 +181,9 @@ from .. import (
     plate_with_hole,
     platonic,
     point_data_to_cell_data,
-    poly_to_tet,
-    power_spectrum,
-    prepare_metric,
 )
+from .. import points_to_ip as _points_to_ip_op
+from .. import poly_to_tet, power_spectrum, prepare_metric
 from .. import profile_solid as _profile_solid_op
 from .. import profile_solid_providers as _profile_solid_providers
 from .. import (
@@ -1979,6 +1978,65 @@ def tool_cells_to_sides(
         _load(input_path, input_format),
         region_name=region_name,
         drop_facet_blocks=bool(drop_facet_blocks),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_ip_to_points(
+    input_path,
+    output_path,
+    arrays=None,
+    drop_source=False,
+    input_format=None,
+    output_format=None,
+):
+    """Extrapolate integration-point cell_data arrays to point_data."""
+    out, report = _ip_to_points_op(
+        _load(input_path, input_format),
+        arrays=arrays,
+        drop_source=bool(drop_source),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_ip_to_cells(
+    input_path,
+    output_path,
+    arrays=None,
+    drop_metadata=True,
+    input_format=None,
+    output_format=None,
+):
+    """Average integration-point cell_data arrays to one value per cell."""
+    out, report = _ip_to_cells_op(
+        _load(input_path, input_format),
+        arrays=arrays,
+        drop_metadata=bool(drop_metadata),
+        return_report=True,
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_points_to_ip(
+    input_path,
+    output_path,
+    arrays=None,
+    rule_id=2,
+    drop_source=False,
+    input_format=None,
+    output_format=None,
+):
+    """Evaluate point_data arrays at element integration points."""
+    out, report = _points_to_ip_op(
+        _load(input_path, input_format),
+        arrays=arrays,
+        rule_id=int(rule_id),
+        drop_source=bool(drop_source),
         return_report=True,
     )
     report["output_path"] = _store(out, output_path, output_format)
@@ -8826,6 +8884,18 @@ TOOL_REGISTRY = OrderedDict(
         (
             "cells_to_sides",
             {"fn": tool_cells_to_sides, "wraps": ("cells_to_sides",), "gated": None},
+        ),
+        (
+            "ip_to_points",
+            {"fn": tool_ip_to_points, "wraps": ("ip_to_points",), "gated": None},
+        ),
+        (
+            "ip_to_cells",
+            {"fn": tool_ip_to_cells, "wraps": ("ip_to_cells",), "gated": None},
+        ),
+        (
+            "points_to_ip",
+            {"fn": tool_points_to_ip, "wraps": ("points_to_ip",), "gated": None},
         ),
         ("clip", {"fn": tool_clip, "wraps": ("clip",), "gated": None}),
         (

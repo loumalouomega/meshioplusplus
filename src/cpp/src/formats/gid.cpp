@@ -67,6 +67,7 @@ GidMode gid_mode_from_name(const std::string& rName) {
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
+#include "../detail/integration_points.hpp"
 #include "../detail/typed_view.hpp"
 
 extern "C" {
@@ -400,8 +401,18 @@ const gid_detail::GidResultTypeEntry* gid_declared_result_type(const Mesh& rMesh
 std::size_t gid_declared_gauss_points(const Mesh& rMesh, const std::string& rName,
                                       std::size_t cols) {
     const std::string key = std::string(kGidGaussPointsPrefix) + rName;
-    if (!rMesh.HasFieldData(key))
+    if (!rMesh.HasFieldData(key)) {
+        const detail::IpLayout ip = detail::get_ip_layout(rMesh, rName);
+        if (ip.mValid && ip.mPoints > 1) {
+            const auto g = static_cast<std::size_t>(ip.mPoints);
+            if (cols % g != 0)
+                throw WriteError("GiD: '" + rName + "' is declared " + std::to_string(g) +
+                                 " integration points via meshio:ip but has " +
+                                 std::to_string(cols) + " columns");
+            return g;
+        }
         return 1;
+    }
 
     const NDArray& decl = rMesh.FieldData(key);
     if (decl.Size() == 0)

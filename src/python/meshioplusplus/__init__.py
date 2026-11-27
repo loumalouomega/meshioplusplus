@@ -235,6 +235,7 @@ if TYPE_CHECKING:
         write_parquet,
     )
     from ._interpolate import interpolate
+    from ._ip_ops import ip_to_cells, ip_to_points, points_to_ip
     from ._isosurface import isosurface
     from ._mass_properties import mass_properties
     from ._measure import align_datums, measure, measure_table
@@ -466,6 +467,9 @@ _LAZY_ATTRS = {
     "from_complex": "_complex",
     "sides_to_cells": "_side_data",
     "cells_to_sides": "_side_data",
+    "ip_to_points": "_ip_ops",
+    "ip_to_cells": "_ip_ops",
+    "points_to_ip": "_ip_ops",
     "convert_cells": "_convert_cells",
     "crop": "_crop",
     "compute_curvature": "_curvature",
@@ -1041,6 +1045,9 @@ __all__ = [
     "from_complex",
     "sides_to_cells",
     "cells_to_sides",
+    "ip_to_points",
+    "ip_to_cells",
+    "points_to_ip",
     "tensor_invariants",
     "view",
     "screenshot",
