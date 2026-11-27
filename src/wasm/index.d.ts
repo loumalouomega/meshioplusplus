@@ -5114,10 +5114,11 @@ export interface MeshioPlusPlusModule {
       integrator?: string;
       maxLength?: number;
       stepSize?: number;
+      step?: number;
       maxSteps?: number;
       tolerance?: number;
     },
-  ): { mesh: Mesh; numLines: number; numSeeds: number; numDropped: number };
+  ): { mesh: Mesh; numLines: number; numSeedsOutside: number; dim: number };
 
   transferOperator(
     coarse: Mesh,
@@ -5185,12 +5186,12 @@ export interface MeshioPlusPlusModule {
 
   shortestPath(
     mesh: Mesh,
-    options?: { source?: number; target?: number; method?: string; timeFactor?: number; maxSteps?: number },
-  ): { mesh: Mesh; totalLength: number; numPoints: number; reached: boolean };
+    options?: { source?: number; target?: number; method?: string; timeFactor?: number },
+  ): { mesh: Mesh; totalLength: number; numSegments: number; reached: boolean };
 
   geodesicVoronoi(
     mesh: Mesh,
-    options?: { sources?: number[]; maxDistance?: number },
+    options?: { sources?: number[]; attachCellLabels?: boolean },
   ): { mesh: Mesh; numSources: number; numUnreached: number };
 
   deformFfd(

@@ -156,6 +156,7 @@
 #include "meshioplusplus/operations/registration.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/mesh_operator.hpp"
+#include "meshioplusplus/operations/smooth_field.hpp"
 #include "meshioplusplus/operations/streamlines.hpp"
 #include "meshioplusplus/operations/transfer_operator.hpp"
 #include "meshioplusplus/operations/spectral_descriptors.hpp"
@@ -8334,6 +8335,37 @@ val sparse_op_to_val(const meshioplusplus::MeshOperatorResult& rOp) {
     return out;
 }
 
+meshioplusplus::MeshOperatorKind wasm_mesh_operator_kind_from_name(const std::string& rName) {
+    if (rName == "laplacian")
+        return meshioplusplus::MeshOperatorKind::Laplacian;
+    if (rName == "mass_lumped")
+        return meshioplusplus::MeshOperatorKind::MassLumped;
+    if (rName == "mass_consistent")
+        return meshioplusplus::MeshOperatorKind::MassConsistent;
+    if (rName == "gradient")
+        return meshioplusplus::MeshOperatorKind::Gradient;
+    throw std::invalid_argument("meshOperator: unknown kind '" + rName + "'");
+}
+
+meshioplusplus::StreamlineDirection wasm_streamline_direction_from_name(const std::string& rName) {
+    if (rName == "both")
+        return meshioplusplus::StreamlineDirection::Both;
+    if (rName == "forward")
+        return meshioplusplus::StreamlineDirection::Forward;
+    if (rName == "backward")
+        return meshioplusplus::StreamlineDirection::Backward;
+    throw std::invalid_argument("streamlines: unknown direction '" + rName + "'");
+}
+
+meshioplusplus::StreamlineIntegrator wasm_streamline_integrator_from_name(
+    const std::string& rName) {
+    if (rName == "rk4")
+        return meshioplusplus::StreamlineIntegrator::RK4;
+    if (rName == "rk45")
+        return meshioplusplus::StreamlineIntegrator::RK45;
+    throw std::invalid_argument("streamlines: unknown integrator '" + rName + "'");
+}
+
 }  // namespace
 
 val mesh_operator_js(const val& rMeshObj, const val& rOptions) {
@@ -8341,8 +8373,8 @@ val mesh_operator_js(const val& rMeshObj, const val& rOptions) {
         meshioplusplus::MeshOperatorOptions options;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
             if (rOptions.hasOwnProperty("kind"))
-                options.mKind = meshioplusplus::mesh_operator_kind_from_name(
-                    rOptions["kind"].as<std::string>());
+                options.mKind =
+                    wasm_mesh_operator_kind_from_name(rOptions["kind"].as<std::string>());
         }
         return sparse_op_to_val(meshioplusplus::mesh_operator(val_to_mesh(rMeshObj), options));
     });
@@ -8390,15 +8422,17 @@ val streamlines_js(const val& rMeshObj, const val& rOptions) {
                     options.mSeedPoints[i] = arr[i].as<double>();
             }
             if (rOptions.hasOwnProperty("direction"))
-                options.mDirection = meshioplusplus::streamline_direction_from_name(
-                    rOptions["direction"].as<std::string>());
+                options.mDirection =
+                    wasm_streamline_direction_from_name(rOptions["direction"].as<std::string>());
             if (rOptions.hasOwnProperty("integrator"))
-                options.mIntegrator = meshioplusplus::streamline_integrator_from_name(
-                    rOptions["integrator"].as<std::string>());
+                options.mIntegrator =
+                    wasm_streamline_integrator_from_name(rOptions["integrator"].as<std::string>());
             if (rOptions.hasOwnProperty("maxLength"))
                 options.mMaxLength = rOptions["maxLength"].as<double>();
             if (rOptions.hasOwnProperty("stepSize"))
-                options.mStepSize = rOptions["stepSize"].as<double>();
+                options.mStep = rOptions["stepSize"].as<double>();
+            if (rOptions.hasOwnProperty("step"))
+                options.mStep = rOptions["step"].as<double>();
             if (rOptions.hasOwnProperty("maxSteps"))
                 options.mMaxSteps = static_cast<std::int64_t>(rOptions["maxSteps"].as<double>());
             if (rOptions.hasOwnProperty("tolerance"))
@@ -8408,8 +8442,8 @@ val streamlines_js(const val& rMeshObj, const val& rOptions) {
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("numLines", static_cast<double>(r.mNumLines));
-        out.set("numSeeds", static_cast<double>(r.mNumSeeds));
-        out.set("numDropped", static_cast<double>(r.mNumDropped));
+        out.set("numSeedsOutside", static_cast<double>(r.mNumSeedsOutside));
+        out.set("dim", static_cast<double>(r.mDim));
         return out;
     });
 }
@@ -8473,12 +8507,14 @@ val spectral_descriptors_js(const val& rMeshObj, const val& rOptions) {
 
 val attach_fvm_quality_js(const val& rMeshObj) {
     return with_js_errors([&]() -> val {
-        auto r = meshioplusplus::attach_fvm_quality(val_to_mesh(rMeshObj));
+        const auto mesh = val_to_mesh(rMeshObj);
+        const auto report = meshioplusplus::compute_fvm_quality(mesh);
+        auto out_mesh = meshioplusplus::attach_fvm_quality(mesh);
         val out = val::object();
-        out.set("mesh", mesh_to_val(r.mMesh));
-        out.set("numInteriorFaces", static_cast<double>(r.mReport.mNumInteriorFaces));
-        out.set("numCells", static_cast<double>(r.mReport.mNumCells));
-        out.set("numNegativePyramids", static_cast<double>(r.mReport.mNumNegativePyramids));
+        out.set("mesh", mesh_to_val(out_mesh));
+        out.set("numInteriorFaces", static_cast<double>(report.mNumInteriorFaces));
+        out.set("numCells", static_cast<double>(report.mNumCells));
+        out.set("numNegativePyramids", static_cast<double>(report.mNumNegativePyramids));
         return out;
     });
 }
@@ -8561,14 +8597,12 @@ val shortest_path_js(const val& rMeshObj, const val& rOptions) {
                     rOptions["method"].as<std::string>());
             if (rOptions.hasOwnProperty("timeFactor"))
                 options.mTimeFactor = rOptions["timeFactor"].as<double>();
-            if (rOptions.hasOwnProperty("maxSteps"))
-                options.mMaxSteps = static_cast<std::int64_t>(rOptions["maxSteps"].as<double>());
         }
         auto r = meshioplusplus::shortest_path(val_to_mesh(rMeshObj), options);
         val out = val::object();
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("totalLength", r.mTotalLength);
-        out.set("numPoints", static_cast<double>(r.mNumPoints));
+        out.set("numSegments", static_cast<double>(r.mNumSegments));
         out.set("reached", r.mReached);
         return out;
     });
@@ -8585,8 +8619,8 @@ val geodesic_voronoi_js(const val& rMeshObj, const val& rOptions) {
                 for (std::size_t i = 0; i < n; ++i)
                     options.mSources[i] = static_cast<std::int64_t>(arr[i].as<double>());
             }
-            if (rOptions.hasOwnProperty("maxDistance"))
-                options.mMaxDistance = rOptions["maxDistance"].as<double>();
+            if (rOptions.hasOwnProperty("attachCellLabels"))
+                options.mAttachCellLabels = rOptions["attachCellLabels"].as<bool>();
         }
         auto r = meshioplusplus::geodesic_voronoi(val_to_mesh(rMeshObj), options);
         val out = val::object();
