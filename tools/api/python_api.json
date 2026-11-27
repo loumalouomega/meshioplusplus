@@ -3095,6 +3095,32 @@
     ]
    }
   },
+  "cells_to_sides": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "region_name"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "drop_facet_blocks"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "cgns": {
    "kind": "module"
   },
@@ -10978,6 +11004,27 @@
      {
       "default": "False",
       "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "sides_to_cells": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "region"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
       "name": "return_report"
      }
     ]

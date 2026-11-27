@@ -44,7 +44,14 @@ from collections import OrderedDict
 
 import numpy as np
 
-from .. import GeometryGuard, GridArray, GridSpec, adapt, adapt_volume, agglomerate
+from .. import (
+    GeometryGuard,
+    GridArray,
+    GridSpec,
+    adapt,
+    adapt_volume,
+    agglomerate,
+)
 from .. import align_datums as _align_datums_op
 from .. import (
     annulus,
@@ -59,14 +66,9 @@ from .. import (
     capsule,
 )
 from .. import cast_rays as _cast_rays_op
-from .. import (
-    cell_data_to_point_data,
-    check_conformity,
-    check_quality,
-    check_tetrahedra,
-    circle,
-    clean,
-)
+from .. import cell_data_to_point_data
+from .. import cells_to_sides as _cells_to_sides_op
+from .. import check_conformity, check_quality, check_tetrahedra, circle, clean
 from .. import clip as _clip_op
 from .. import (
     colorize,
@@ -221,6 +223,7 @@ from .. import sections as _sections_op
 from .. import segment
 from .. import select as _select_op
 from .. import shrinkwrap
+from .. import sides_to_cells as _sides_to_cells_op
 from .. import silhouette as _silhouette_op
 from .. import slice as _slice_op
 from .. import smooth
@@ -1947,6 +1950,36 @@ def tool_flip_normals(
     """Reverse the winding of cells."""
     out, report = _flip_normals_op(
         _load(input_path, input_format), region, return_report=True
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_sides_to_cells(
+    input_path, output_path, region=None, input_format=None, output_format=None
+):
+    """Materialize side regions as lower-dimensional cell blocks with meshio:side_of."""
+    out, report = _sides_to_cells_op(
+        _load(input_path, input_format), region=region, return_report=True
+    )
+    report["output_path"] = _store(out, output_path, output_format)
+    return _json_safe(report)
+
+
+def tool_cells_to_sides(
+    input_path,
+    output_path,
+    region_name=None,
+    drop_facet_blocks=False,
+    input_format=None,
+    output_format=None,
+):
+    """Rebuild side regions and side-set variables from meshio:side_of cell blocks."""
+    out, report = _cells_to_sides_op(
+        _load(input_path, input_format),
+        region_name=region_name,
+        drop_facet_blocks=bool(drop_facet_blocks),
+        return_report=True,
     )
     report["output_path"] = _store(out, output_path, output_format)
     return _json_safe(report)
@@ -8785,6 +8818,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "flip_normals",
             {"fn": tool_flip_normals, "wraps": ("flip_normals",), "gated": None},
+        ),
+        (
+            "sides_to_cells",
+            {"fn": tool_sides_to_cells, "wraps": ("sides_to_cells",), "gated": None},
+        ),
+        (
+            "cells_to_sides",
+            {"fn": tool_cells_to_sides, "wraps": ("cells_to_sides",), "gated": None},
         ),
         ("clip", {"fn": tool_clip, "wraps": ("clip",), "gated": None}),
         (

@@ -133,11 +133,11 @@ if TYPE_CHECKING:
     from ._clean import clean
     from ._clip import clip
     from ._colorize import colorize
+    from ._complex import complex_pairs, from_complex, to_complex
     from ._conduit import from_conduit, has_conduit, to_conduit
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
     from ._coordinates import convert_coordinates
-    from ._complex import complex_pairs, from_complex, to_complex
     from ._crop import crop
     from ._curvature import compute_curvature
     from ._cut import cut_has_cutcells, cut_level_set, cut_quadrature
@@ -184,17 +184,17 @@ if TYPE_CHECKING:
     from ._grid import grid
     from ._grid_transfer import (
         GridArray,
-        from_grid,
-        to_grid,
         GridSpec,
         PowerSpectrum,
         expand_grid,
+        from_grid,
         interpolate_grid,
         power_spectrum,
         resample_grid,
         sample_grid,
         scatter_grid,
         squeeze_grid,
+        to_grid,
     )
     from ._guard import GeometryGuard, geometry_descriptors
     from ._hausdorff import hausdorff_distance
@@ -352,6 +352,7 @@ if TYPE_CHECKING:
     from ._sequence_stats import sequence_derivative, sequence_statistics
     from ._shortest_path import geodesic_voronoi, shortest_path
     from ._shrinkwrap import shrinkwrap
+    from ._side_data import cells_to_sides, sides_to_cells
     from ._silhouette import silhouette
     from ._skeleton import extract_skeleton
     from ._skin import extract_skin
@@ -463,6 +464,8 @@ _LAZY_ATTRS = {
     "complex_pairs": "_complex",
     "to_complex": "_complex",
     "from_complex": "_complex",
+    "sides_to_cells": "_side_data",
+    "cells_to_sides": "_side_data",
     "convert_cells": "_convert_cells",
     "crop": "_crop",
     "compute_curvature": "_curvature",
@@ -1036,6 +1039,8 @@ __all__ = [
     "complex_pairs",
     "to_complex",
     "from_complex",
+    "sides_to_cells",
+    "cells_to_sides",
     "tensor_invariants",
     "view",
     "screenshot",

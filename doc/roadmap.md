@@ -926,12 +926,10 @@ Gauss-point results are the primary output of a structural solver, and no operat
 - **Steps.** `detail/integration_points.hpp` (layout read and write, rule lookup); the readers and writers of the five formats on it, with MED ELGA written and read in the core; the two operations by [checklist O](#landing-checklists); `data_info` reporting integration-point arrays as such; conversion MED to GiD and `.fil` to MED as the round-trip tests.
 - **Done when.** A `.fil` stress field converts to MED ELGA and to a nodal field whose values match Abaqus's own extrapolation (`.dat` printout) on the truss and a C3D8 run. **L, design pass first**
 
-### 8.4 Data on facets and edges
+### 8.4 Data on facets and edges (remaining format readers)
 
-- **State today.** A `Region` holds a name, kind, dimension, tag and entries (`include/meshioplusplus/region.hpp` lines 123–148; `Side` entries are `(global cell, local facet)` rows, numbered by `detail/cell_faces.hpp` and `cell_edges.hpp`) and no values; `Region` is 120 bytes in `test_abi_layout.cpp`. A value per boundary face today means a duplicated block of surface cells with cell data, which is what the VTK family and OpenFOAM's boundary fields use (the writer maps boundary-block rows to `boundaryField`).
-- **Decisions to take first.** (1) Recommended: no change to `Region`; side data is cell data on the lower-dimensional block, and a side region can be turned into such a block and back: `sides_to_cells(mesh, region)` (the facets as a new block with a `meshio:side_of` `(cell, local facet)` cell array) and its inverse, so the formats that store values on sides (CGNS `FaceCenter` solutions and BC data, Exodus side-set variables, UGRID `location = "face"` on volumes, MED face families) read into that form and write from it. This makes the convention explicit and testable instead of per format. (2) Edge data likewise on `line` blocks with `meshio:edge_of`. (3) A data member on `Region` only if a format needs values on sides with no cells to hang them on.
-- **Steps.** The two helpers by checklist O (they are `extract_skin`'s neighbours and reuse its facet table); the readers of 2.3.1.4, 2.3.2.3 and 2.4.3.2; a section in [regions](./regions.md).
-- **Done when.** An Exodus side-set variable reads as cell data on a quad block that `sides_to_cells` would have produced, and writes back. **M, design pass first**
+- **State today.** `sides_to_cells` and `cells_to_sides` (`operations/side_data.hpp`, `meshio:side_of` `(global_cell, local_facet)` cell data) and the Exodus side-set variable round-trip bridge have shipped without changing `Region`'s 120-byte ABI layout.
+- **Steps.** Wire CGNS `FaceCenter`/`BCDataSet_t` (2.3.1.4) and CF-UGRID `location="face"` (2.4.3.2) onto the `meshio:side_of` facet-block convention when those format-depth readers land. **S**
 
 ### 8.5 Hierarchy (remaining format parsers)
 

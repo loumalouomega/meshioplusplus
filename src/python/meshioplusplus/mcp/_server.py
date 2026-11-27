@@ -834,6 +834,31 @@ def _register_operations(server: FastMCP) -> None:
         point moved; Side regions move with their cells. Reports num_flipped."""
 
     @server.tool()
+    @_forward(_tools.tool_sides_to_cells)
+    def sides_to_cells(
+        input_path: str,
+        output_path: str,
+        region: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Materialize side regions as lower-dimensional cell blocks with
+        meshio:side_of and transfer Exodus side-set variables onto them."""
+
+    @server.tool()
+    @_forward(_tools.tool_cells_to_sides)
+    def cells_to_sides(
+        input_path: str,
+        output_path: str,
+        region_name: Optional[str] = None,
+        drop_facet_blocks: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Rebuild side regions and side-set variables from meshio:side_of
+        cell blocks."""
+
+    @server.tool()
     @_forward(_tools.tool_clip)
     def clip(
         input_path: str,
