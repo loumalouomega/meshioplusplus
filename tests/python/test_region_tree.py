@@ -2,6 +2,7 @@
 
 import h5py
 import numpy as np
+import pytest
 
 import meshioplusplus as mp
 
@@ -37,7 +38,7 @@ def _nested_mesh():
 def test_vtm_nested_hierarchy_roundtrip(tmp_path):
     m = _nested_mesh()
     out = tmp_path / "nested.vtm"
-    mp.write(out, m)
+    mp.write(out, m, compression=None)
 
     xml = out.read_text()
     assert 'name="Vehicle"' in xml
@@ -52,6 +53,8 @@ def test_vtm_nested_hierarchy_roundtrip(tmp_path):
 
 
 def test_vtkhdf_nested_assembly_roundtrip(tmp_path):
+    if not getattr(mp._core, "__has_hdf5__", False):
+        pytest.skip("C++ core built without HDF5")
     m = _nested_mesh()
     out = tmp_path / "nested.vtkhdf"
     mp.vtkhdf.write(out, m, dataset_type="MultiBlockDataSet")

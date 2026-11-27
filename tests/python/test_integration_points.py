@@ -141,6 +141,8 @@ def test_data_info_reports_integration_points():
 
 
 def test_med_elga_native_roundtrip(tmp_path):
+    if not getattr(mio._core, "__has_hdf5__", False):
+        pytest.skip("C++ core built without HDF5")
     mesh = _unit_hex_mesh()
     x, y, z = mesh.points[:, 0], mesh.points[:, 1], mesh.points[:, 2]
     stress = np.column_stack([10.0 * x + 1.0, 20.0 * y + 2.0, 30.0 * z + 3.0])

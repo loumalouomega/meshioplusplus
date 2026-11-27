@@ -1,6 +1,7 @@
 """Tests for roadmap §8.2 string, string-list, and boolean field conventions."""
 
 import numpy as np
+import pytest
 
 import meshioplusplus as mp
 
@@ -16,6 +17,8 @@ def _tri_mesh(**kwargs):
 def test_exodus_string_title_roundtrip_strict_core(tmp_path):
     """Roadmap 8.2 Done when: Mesh(..., field_data={'title': 'wing'}) writes
     through the C++ core to Exodus and reads back equal."""
+    if not getattr(mp._core, "__has_netcdf__", False):
+        pytest.skip("C++ core built without netCDF")
     m = _tri_mesh(field_data={"title": "wing"})
     out = tmp_path / "wing.exo"
     mp.write(out, m)
@@ -38,7 +41,7 @@ def test_vtu_string_list_and_bool_roundtrip_strict_core(tmp_path):
         },
     )
     out = tmp_path / "strings_bools.vtu"
-    mp.write(out, m)
+    mp.write(out, m, compression=None)
     back = mp.read(out)
 
     assert back.field_data["title"] == "wing-section"
@@ -57,6 +60,8 @@ def test_vtu_string_list_and_bool_roundtrip_strict_core(tmp_path):
 
 
 def test_cgns_string_and_bool_roundtrip_strict_core(tmp_path):
+    if not getattr(mp._core, "__has_hdf5__", False):
+        pytest.skip("C++ core built without HDF5")
     m = _tri_mesh(
         point_data={"mask": np.array([False, True, False], dtype=bool)},
         field_data={"case_name": "airfoil", "tags": ["inlet", "outlet"]},
