@@ -1388,22 +1388,34 @@ def _as_2d(arr):
 
 
 def _write_fields(f, mesh, elem_labels, code_aster):
+    from .._complex import find_complex_pairs
+
     analysis = _field_scalar(mesh, "unv:analysis", 0, int)
     step_id = _field_scalar(mesh, "unv:step", 0, int)
     time = _field_scalar(mesh, TIME_KEY, 0.0, float)
 
-    def write_field(field_id, name, location, labels, data):
+    def write_field(field_id, name, location, labels, data, is_complex=False):
         keep = ~np.all(np.isnan(data), axis=1)
         labels = [lb for lb, k in zip(labels, keep) if k]
         data = data[keep]
-        nc = data.shape[1]
+        row_vals = data.shape[1]
+        nc = row_vals // 2 if is_complex else row_vals
         char = _data_char(nc)
         if char in (4, 5):
-            data = _tensor_from_meshio(nc, data)
+            if not is_complex:
+                data = _tensor_from_meshio(nc, data)
+            else:
+                re = _tensor_from_meshio(nc, data[:, 0::2])
+                im = _tensor_from_meshio(nc, data[:, 1::2])
+                out = np.empty_like(data)
+                out[:, 0::2] = re
+                out[:, 1::2] = im
+                data = out
         if code_aster:
+            dtype = 5 if is_complex else 2
             f.write(f"    -1\n{55 if location == 1 else 56:6d}\n")
             f.write(f"{name}\n" + "NONE\n" * 4)
-            f.write(f"{1:10d}{analysis:10d}{char:10d}{0:10d}{2:10d}{nc:10d}\n")
+            f.write(f"{1:10d}{analysis:10d}{char:10d}{0:10d}{dtype:10d}{nc:10d}\n")
             if analysis == 2:
                 ints, reals = [1, step_id], [time, 0.0, 0.0, 0.0]
             elif analysis in (3, 7):
@@ -1426,10 +1438,11 @@ def _write_fields(f, mesh, elem_labels, code_aster):
             _write_reals(f, reals, "%13.5E", 6)
             fmt, per = "%13.5E", 6
         else:
+            dtype = 6 if is_complex else 4
             f.write("    -1\n  2414\n")
             f.write(f"{field_id:10d}\n{name}\n{location:10d}\n")
             f.write("NONE\n" * 5)
-            f.write(f"{1:10d}{analysis:10d}{char:10d}{0:10d}{4:10d}{nc:10d}\n")
+            f.write(f"{1:10d}{analysis:10d}{char:10d}{0:10d}{dtype:10d}{nc:10d}\n")
             r10 = [0] * 8
             r12 = [0.0] * 12
             if analysis == 2:
@@ -1449,7 +1462,7 @@ def _write_fields(f, mesh, elem_labels, code_aster):
             _write_reals(f, r12[:6], "%13.5E", 6)
             _write_reals(f, r12[6:], "%13.5E", 6)
             # One line per entity: pyuff pairs each element record with one value line.
-            fmt, per = "%20.12E", max(nc, 1)
+            fmt, per = "%20.12E", max(row_vals, 1)
         for lb, row in zip(labels, data):
             if location == 1:
                 f.write(f"{int(lb):10d}\n")
@@ -1459,16 +1472,33 @@ def _write_fields(f, mesh, elem_labels, code_aster):
         f.write("    -1\n")
 
     field_id = 0
-    for name in sorted(getattr(mesh, "point_data", None) or {}):
-        data = _as_2d(mesh.point_data[name])
+    pt_data = getattr(mesh, "point_data", None) or {}
+    pt_names = sorted(pt_data)
+    pt_by_real = {
+        re_k: (base, im_k) for base, re_k, im_k in find_complex_pairs(pt_names)
+    }
+    pt_paired_imag = set()
+    for name in pt_names:
+        if name in pt_paired_imag:
+            continue
+        data = _as_2d(pt_data[name])
         if data.size == 0 or data.shape[1] == 0:
             continue
+        if name in pt_by_real:
+            base, im_k = pt_by_real[name]
+            im_data = _as_2d(pt_data[im_k])
+            if im_data.shape == data.shape:
+                pt_paired_imag.add(im_k)
+                inter = np.empty((data.shape[0], data.shape[1] * 2), dtype=float)
+                inter[:, 0::2] = data
+                inter[:, 1::2] = im_data
+                field_id += 1
+                write_field(field_id, base, 1, range(1, len(data) + 1), inter, True)
+                continue
         field_id += 1
-        write_field(field_id, name, 1, range(1, len(data) + 1), data)
+        write_field(field_id, name, 1, range(1, len(data) + 1), data, False)
 
-    for name in sorted(getattr(mesh, "cell_data", None) or {}):
-        if name in ("unv:pid", "unv:mid"):
-            continue
+    def collect_cell(name):
         blocks = mesh.cell_data[name]
         labels, rows = [], []
         nc = None
@@ -1484,10 +1514,33 @@ def _write_fields(f, mesh, elem_labels, code_aster):
                 continue
             labels += elem_labels[bi]
             rows.append(blk)
+        return labels, (np.concatenate(rows) if rows else None), nc
+
+    cell_data = getattr(mesh, "cell_data", None) or {}
+    cell_names = sorted(cell_data)
+    cell_by_real = {
+        re_k: (base, im_k) for base, re_k, im_k in find_complex_pairs(cell_names)
+    }
+    cell_paired_imag = set()
+    for name in cell_names:
+        if name in ("unv:pid", "unv:mid") or name in cell_paired_imag:
+            continue
+        labels, data, nc = collect_cell(name)
         if nc is None or not labels:
             continue
+        if name in cell_by_real:
+            base, im_k = cell_by_real[name]
+            im_labels, im_data, im_nc = collect_cell(im_k)
+            if im_nc == nc and im_labels == labels:
+                cell_paired_imag.add(im_k)
+                inter = np.empty((data.shape[0], data.shape[1] * 2), dtype=float)
+                inter[:, 0::2] = data
+                inter[:, 1::2] = im_data
+                field_id += 1
+                write_field(field_id, base, 2, labels, inter, True)
+                continue
         field_id += 1
-        write_field(field_id, name, 2, labels, np.concatenate(rows))
+        write_field(field_id, name, 2, labels, data, False)
 
 
 def _results_text(text):

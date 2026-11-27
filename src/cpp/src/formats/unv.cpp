@@ -61,6 +61,7 @@
 #include "../detail/fortran_number.hpp"
 #include "../detail/text_utils.hpp"
 #include "../detail/append_series.hpp"
+#include "../detail/complex_pairs.hpp"
 
 namespace meshioplusplus {
 
@@ -2003,17 +2004,20 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
     const std::int64_t step_id = pStep ? *pStep : unv_field_int(rMesh, "unv:step", 0);
     const double time = pTime ? *pTime : unv_field_real(rMesh, kSequenceTimeKey, 0.0);
     auto write_field = [&](int field_id, const std::string& rName, int location, std::size_t nc,
-                           std::vector<std::int64_t> rLabels, std::vector<double> rFlat) {
+                           std::vector<std::int64_t> rLabels, std::vector<double> rFlat,
+                           bool is_complex = false) {
+        const std::size_t width = is_complex ? 2 : 1;
+        const std::size_t row_vals = nc * width;
         // An entity with no value (NaN everywhere, as the reader pads) gets no record.
         {
             std::vector<std::int64_t> keep_labels;
             std::vector<double> keep_flat;
             for (std::size_t r = 0; r < rLabels.size(); ++r) {
-                const double* row = rFlat.data() + r * nc;
-                if (std::all_of(row, row + nc, [](double v) { return std::isnan(v); }))
+                const double* row = rFlat.data() + r * row_vals;
+                if (std::all_of(row, row + row_vals, [](double v) { return std::isnan(v); }))
                     continue;
                 keep_labels.push_back(rLabels[r]);
-                keep_flat.insert(keep_flat.end(), row, row + nc);
+                keep_flat.insert(keep_flat.end(), row, row + row_vals);
             }
             if (keep_labels.size() != rLabels.size()) {
                 rLabels.swap(keep_labels);
@@ -2021,17 +2025,36 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
             }
         }
         const int ch = unv_data_char(nc);
-        if (ch == 4 || ch == 5)
-            for (std::size_t r = 0; r < rLabels.size(); ++r)
-                unv_tensor_from_meshio(nc, rFlat.data() + r * nc);
+        if (ch == 4 || ch == 5) {
+            if (!is_complex) {
+                for (std::size_t r = 0; r < rLabels.size(); ++r)
+                    unv_tensor_from_meshio(nc, rFlat.data() + r * nc);
+            } else {
+                std::vector<double> re_buf(nc), im_buf(nc);
+                for (std::size_t r = 0; r < rLabels.size(); ++r) {
+                    double* row = rFlat.data() + r * row_vals;
+                    for (std::size_t c = 0; c < nc; ++c) {
+                        re_buf[c] = row[2 * c];
+                        im_buf[c] = row[2 * c + 1];
+                    }
+                    unv_tensor_from_meshio(nc, re_buf.data());
+                    unv_tensor_from_meshio(nc, im_buf.data());
+                    for (std::size_t c = 0; c < nc; ++c) {
+                        row[2 * c] = re_buf[c];
+                        row[2 * c + 1] = im_buf[c];
+                    }
+                }
+            }
+        }
         if (code_aster) {
             // Legacy 55 (nodes) / 56 (elements), single precision E13.5 as the spec reads.
+            const int dtype = is_complex ? 5 : 2;
             std::snprintf(buf, sizeof(buf), "    -1\n%6d\n", location == 1 ? 55 : 56);
             f << buf;
             f << rName << "\n";
             for (int i = 0; i < 4; ++i)
                 f << "NONE\n";
-            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, 2,
+            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, dtype,
                           nc);
             f << buf;
             std::vector<std::int64_t> ints;
@@ -2071,9 +2094,10 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
                     std::snprintf(buf, sizeof(buf), "%10lld%10zu\n",
                                   static_cast<long long>(rLabels[r]), nc);
                 f << buf;
-                unv_write_reals(f, rFlat.data() + r * nc, nc, "%13.5E", 6);
+                unv_write_reals(f, rFlat.data() + r * row_vals, row_vals, "%13.5E", 6);
             }
         } else {
+            const int dtype = is_complex ? 6 : 4;
             f << "    -1\n  2414\n";
             std::snprintf(buf, sizeof(buf), "%10d\n", field_id);
             f << buf << rName << "\n";
@@ -2081,7 +2105,7 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
             f << buf;
             for (int i = 0; i < 5; ++i)
                 f << "NONE\n";
-            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, 4,
+            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, dtype,
                           nc);
             f << buf;
             std::int64_t r10[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -2130,7 +2154,7 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
                 f << buf;
                 // One line per entity, whatever its length: pyuff pairs each element
                 // record with exactly one value line.
-                unv_write_reals(f, rFlat.data() + r * nc, nc, "%20.12E", nc);
+                unv_write_reals(f, rFlat.data() + r * row_vals, row_vals, "%20.12E", row_vals);
             }
         }
         f << "    -1\n";
@@ -2140,27 +2164,46 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
     std::vector<std::int64_t> node_labels(np);
     for (std::size_t k = 0; k < np; ++k)
         node_labels[k] = static_cast<std::int64_t>(k + 1);
-    for (const auto& name : rMesh.PointDataNames()) {
+    const auto pt_names = rMesh.PointDataNames();
+    const auto pt_pairs = detail::ComplexPairIndex::Build(pt_names);
+    std::unordered_set<std::string> pt_paired_imag;
+    for (const auto& name : pt_names) {
+        if (pt_paired_imag.count(name) != 0)
+            continue;
         const NDArray& arr = rMesh.PointData(name);
         const std::size_t nc = np ? arr.Size() / np : 0;
         if (nc == 0)
             continue;
+        if (const auto* pair = pt_pairs.PairForReal(name)) {
+            const NDArray& im_arr = rMesh.PointData(pair->mImag);
+            const std::size_t im_nc = np ? im_arr.Size() / np : 0;
+            if (im_nc == nc) {
+                pt_paired_imag.insert(pair->mImag);
+                std::vector<double> flat(np * nc * 2);
+                const detail::DoubleView re_vals(arr);
+                const detail::DoubleView im_vals(im_arr);
+                for (std::size_t i = 0; i < np * nc; ++i) {
+                    flat[2 * i] = re_vals[i];
+                    flat[2 * i + 1] = im_vals[i];
+                }
+                write_field(++field_id, pair->mBase, 1, nc, node_labels, std::move(flat), true);
+                continue;
+            }
+        }
         std::vector<double> flat(np * nc);
         const detail::DoubleView values(arr);
         for (std::size_t i = 0; i < np * nc; ++i)
             flat[i] = values[i];
-        write_field(++field_id, name, 1, nc, node_labels, flat);
+        write_field(++field_id, name, 1, nc, node_labels, std::move(flat), false);
     }
-    for (const auto& name : rMesh.CellDataNames()) {
-        if (name == "unv:pid" || name == "unv:mid")
-            continue;
-        std::vector<std::int64_t> labels;
-        std::vector<double> flat;
+
+    auto collect_cell_flat = [&](const std::string& rName, std::vector<std::int64_t>& rLabels,
+                                 std::vector<double>& rFlat) -> std::size_t {
         std::size_t nc = 0;
-        for (std::size_t bi = 0; bi < nblocks && bi < rMesh.CellDataNumBlocks(name); ++bi) {
+        for (std::size_t bi = 0; bi < nblocks && bi < rMesh.CellDataNumBlocks(rName); ++bi) {
             if (block_labels[bi].empty())
                 continue;
-            const NDArray& blk = rMesh.CellData(name, bi);
+            const NDArray& blk = rMesh.CellData(rName, bi);
             const std::size_t ne = block_labels[bi].size();
             const std::size_t bnc = ne ? blk.Size() / ne : 0;
             if (bnc == 0)
@@ -2171,14 +2214,42 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
                 continue;
             const detail::DoubleView blk_values(blk);
             for (std::size_t r = 0; r < ne; ++r) {
-                labels.push_back(block_labels[bi][r]);
+                rLabels.push_back(block_labels[bi][r]);
                 for (std::size_t c = 0; c < nc; ++c)
-                    flat.push_back(blk_values[r * nc + c]);
+                    rFlat.push_back(blk_values[r * nc + c]);
             }
         }
+        return nc;
+    };
+
+    const auto cell_names = rMesh.CellDataNames();
+    const auto cell_pairs = detail::ComplexPairIndex::Build(cell_names);
+    std::unordered_set<std::string> cell_paired_imag;
+    for (const auto& name : cell_names) {
+        if (name == "unv:pid" || name == "unv:mid" || cell_paired_imag.count(name) != 0)
+            continue;
+        std::vector<std::int64_t> labels;
+        std::vector<double> flat;
+        const std::size_t nc = collect_cell_flat(name, labels, flat);
         if (nc == 0 || labels.empty())
             continue;
-        write_field(++field_id, name, 2, nc, labels, flat);
+        if (const auto* pair = cell_pairs.PairForReal(name)) {
+            std::vector<std::int64_t> im_labels;
+            std::vector<double> im_flat;
+            const std::size_t im_nc = collect_cell_flat(pair->mImag, im_labels, im_flat);
+            if (im_nc == nc && im_labels == labels) {
+                cell_paired_imag.insert(pair->mImag);
+                std::vector<double> interleaved(flat.size() * 2);
+                for (std::size_t i = 0; i < flat.size(); ++i) {
+                    interleaved[2 * i] = flat[i];
+                    interleaved[2 * i + 1] = im_flat[i];
+                }
+                write_field(++field_id, pair->mBase, 2, nc, std::move(labels),
+                            std::move(interleaved), true);
+                continue;
+            }
+        }
+        write_field(++field_id, name, 2, nc, std::move(labels), std::move(flat), false);
     }
 }
 

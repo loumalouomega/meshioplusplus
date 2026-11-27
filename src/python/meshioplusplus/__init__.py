@@ -137,6 +137,7 @@ if TYPE_CHECKING:
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
     from ._coordinates import convert_coordinates
+    from ._complex import complex_pairs, from_complex, to_complex
     from ._crop import crop
     from ._curvature import compute_curvature
     from ._cut import cut_has_cutcells, cut_level_set, cut_quadrature
@@ -457,6 +458,9 @@ _LAZY_ATTRS = {
     "write_graph": "_adjacency",
     "clean": "_clean",
     "conservative_interpolate": "_conservative_interpolate",
+    "complex_pairs": "_complex",
+    "to_complex": "_complex",
+    "from_complex": "_complex",
     "convert_cells": "_convert_cells",
     "crop": "_crop",
     "compute_curvature": "_curvature",
@@ -1025,6 +1029,9 @@ __all__ = [
     "data_calc",
     "data_condition",
     "data_info",
+    "complex_pairs",
+    "to_complex",
+    "from_complex",
     "tensor_invariants",
     "view",
     "screenshot",

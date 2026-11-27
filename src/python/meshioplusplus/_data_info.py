@@ -96,6 +96,29 @@ def _summarize(location, name, arrays, num_blocks):
     }
 
 
+def _annotate_complex_pairs(entries: list) -> list:
+    """Attach ``complex_pair`` and ``complex_part`` to matched ``_real``/``_imag`` entries."""
+    from ._complex import find_complex_pairs
+
+    for loc in ("point_data", "cell_data"):
+        names = [e["name"] for e in entries if e["location"] == loc]
+        if not names:
+            continue
+        pairs = find_complex_pairs(names)
+        if not pairs:
+            continue
+        by_name = {}
+        for base, re_name, im_name in pairs:
+            by_name[re_name] = (base, "real")
+            by_name[im_name] = (base, "imag")
+        for e in entries:
+            if e["location"] == loc and e["name"] in by_name:
+                base, part = by_name[e["name"]]
+                e["complex_pair"] = base
+                e["complex_part"] = part
+    return entries
+
+
 def _info_py(mesh) -> list:
     """Pure-Python reference for :func:`data_info`."""
     out = []
@@ -108,7 +131,7 @@ def _info_py(mesh) -> list:
         out.append(_summarize("cell_data", name, list(blocks), len(blocks)))
     for name in sorted(mesh.field_data.keys()):
         out.append(_summarize("field_data", name, [mesh.field_data[name]], 1))
-    return out
+    return _annotate_complex_pairs(out)
 
 
 def data_info(mesh) -> list:
@@ -123,7 +146,9 @@ def data_info(mesh) -> list:
         carries ``location``, ``name``, ``dtype``, ``shape``, ``num_blocks``,
         ``num_entries``, ``num_components``, ``num_values``, ``min``, ``max``,
         ``mean``, the three ``*_per_component`` lists, ``num_nan``,
-        ``num_inf``, ``num_finite`` and ``inconsistent_blocks``.
+        ``num_inf``, ``num_finite`` and ``inconsistent_blocks``. Matched
+        ``<base>_real`` / ``<base>_imag`` pairs additionally carry
+        ``complex_pair`` and ``complex_part``.
     """
     try:
         from . import _core
@@ -159,4 +184,4 @@ def data_info(mesh) -> list:
                 "inconsistent_blocks": bool(a["inconsistent_blocks"]),
             }
         )
-    return out
+    return _annotate_complex_pairs(out)

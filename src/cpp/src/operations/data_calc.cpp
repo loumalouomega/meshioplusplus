@@ -63,6 +63,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../detail/complex_pairs.hpp"
 
 namespace meshioplusplus {
 
@@ -235,7 +236,10 @@ enum class CalcNodeType {
     Sign,
     // ... and binary (scalar-broadcasting, like min and max).
     Atan2,
+    Hypot,
     Pow,
+    // Complex-pair unary helper (rewritten to Atan2 in calc_infer).
+    Phase,
     // Tuple functions: they read a whole row, so each checks its widths.
     Dot,
     Cross,
@@ -290,6 +294,8 @@ const CalcFuncDef CALC_FUNCS[] = {
     {"acos", CalcNodeType::Acos, 1},
     {"atan", CalcNodeType::Atan, 1},
     {"atan2", CalcNodeType::Atan2, 2},
+    {"hypot", CalcNodeType::Hypot, 2},
+    {"phase", CalcNodeType::Phase, 1},
     {"sinh", CalcNodeType::Sinh, 1},
     {"cosh", CalcNodeType::Cosh, 1},
     {"tanh", CalcNodeType::Tanh, 1},
@@ -548,6 +554,8 @@ const char* calc_node_op_name(CalcNodeType t) {
             return "max";
         case CalcNodeType::Atan2:
             return "atan2";
+        case CalcNodeType::Hypot:
+            return "hypot";
         case CalcNodeType::Pow:
             return "pow";
         case CalcNodeType::Dot:
@@ -661,9 +669,67 @@ CalcOperand calc_precompute_call(const CalcNode& rNode, const Mesh& rMesh, DataL
 void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMesh,
                 DataLocation location, std::vector<CalcOperand>& rOperands) {
     std::unordered_map<std::string, std::size_t> seen;
-    // The pool is built bottom-up by the parser, so a single forward sweep
-    // visits every node after its children.
+
+    // Rewrite complex-pair calls `phase(u)` -> `atan2(u_imag, u_real)` and
+    // `abs(u)` -> `hypot(u_real, u_imag)` when `u` is a complex pair rather
+    // than a literal array or coordinate.
     for (std::size_t i = 0; i <= root; ++i) {
+        const CalcNodeType t = rPool[i].mType;
+        if (t != CalcNodeType::Phase && t != CalcNodeType::Abs)
+            continue;
+        const std::size_t arg_idx = rPool[i].mLhs;
+        if (rPool[arg_idx].mType != CalcNodeType::Array) {
+            if (t == CalcNodeType::Phase)
+                calc_fail_at("'phase' requires a complex pair array name, not an expression",
+                             rPool[i].mPos);
+            continue;
+        }
+        const std::string base = rPool[arg_idx].mName;
+        if (t == CalcNodeType::Abs) {
+            const bool has_array = data_has(rMesh, location, base);
+            const bool is_coord = location != DataLocation::Field && calc_coord_index(base) >= 0;
+            if (has_array || is_coord)
+                continue;
+        }
+        std::string re_name;
+        std::string im_name;
+        if (!detail::find_complex_pair_for_base(rMesh, location, base, re_name, im_name)) {
+            if (t == CalcNodeType::Phase)
+                calc_fail_at("'phase' requires a complex pair '" + base + "_real' and '" + base +
+                                 "_imag'",
+                             rPool[i].mPos);
+            continue;
+        }
+        CalcNode partner;
+        partner.mType = CalcNodeType::Array;
+        partner.mPos = rPool[arg_idx].mPos;
+        if (t == CalcNodeType::Abs) {
+            rPool[arg_idx].mName = re_name;
+            partner.mName = im_name;
+            const std::size_t rhs_idx = rPool.size();
+            rPool.push_back(std::move(partner));
+            rPool[i].mType = CalcNodeType::Hypot;
+            rPool[i].mRhs = rhs_idx;
+        } else {
+            rPool[arg_idx].mName = im_name;
+            partner.mName = re_name;
+            const std::size_t rhs_idx = rPool.size();
+            rPool.push_back(std::move(partner));
+            rPool[i].mType = CalcNodeType::Atan2;
+            rPool[i].mRhs = rhs_idx;
+        }
+    }
+
+    // Build visit order: any newly appended leaf Array nodes first, then the
+    // original bottom-up pool 0..root.
+    std::vector<std::size_t> order;
+    order.reserve(rPool.size());
+    for (std::size_t i = root + 1; i < rPool.size(); ++i)
+        order.push_back(i);
+    for (std::size_t i = 0; i <= root; ++i)
+        order.push_back(i);
+
+    for (std::size_t i : order) {
         CalcNode& n = rPool[i];
         switch (n.mType) {
             case CalcNodeType::Const:
@@ -847,10 +913,13 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
             case CalcNodeType::Min:
             case CalcNodeType::Max:
             case CalcNodeType::Atan2:
+            case CalcNodeType::Hypot:
             case CalcNodeType::Pow:
                 n.mWidth =
                     calc_combine_width(rPool[n.mLhs].mWidth, rPool[n.mRhs].mWidth, n.mType, n.mPos);
                 break;
+            case CalcNodeType::Phase:
+                calc_fail_at("internal error: unresolved 'phase' node", n.mPos);
         }
     }
 }
@@ -1087,6 +1156,9 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
                 break;
             case CalcNodeType::Atan2:
                 pOut[k] = std::atan2(a, b);
+                break;
+            case CalcNodeType::Hypot:
+                pOut[k] = std::hypot(a, b);
                 break;
             case CalcNodeType::Pow:
                 pOut[k] = std::pow(a, b);

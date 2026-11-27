@@ -49270,6 +49270,119 @@ ClosedFacets closed_facets(const Mesh& rSurface, const std::string& rPrefix);
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/closed_facets.hpp =====
+// ===== begin src/cpp/src/detail/complex_pairs.hpp =====
+/**
+ * @file detail/complex_pairs.hpp
+ * @brief Complex-field naming convention (`<base>_real` / `<base>_imag`).
+ *
+ * Complex fields are stored as matched pairs of real-valued arrays named
+ * `<base>_real` and `<base>_imag` (the convention shared by UNV, Nastran OP2,
+ * Nastran HDF5 and EnSight). Core-private: no installed header includes this.
+ */
+
+// System includes
+#include <algorithm>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+inline constexpr std::string_view kComplexRealSuffix = "_real";
+inline constexpr std::string_view kComplexImagSuffix = "_imag";
+
+/// A matched `<base>_real` / `<base>_imag` pair.
+struct ComplexPair {
+    std::string mBase;
+    std::string mReal;
+    std::string mImag;
+};
+
+/// Returns every matched `<base>_real` / `<base>_imag` pair in `rNames`,
+/// sorted by `mBase`. `<base>` must be non-empty.
+inline std::vector<ComplexPair> find_complex_pairs(const std::vector<std::string>& rNames) {
+    std::unordered_set<std::string_view> present(rNames.begin(), rNames.end());
+    std::vector<ComplexPair> pairs;
+    for (const std::string& name : rNames) {
+        if (name.size() <= kComplexRealSuffix.size())
+            continue;
+        if (std::string_view(name).ends_with(kComplexRealSuffix)) {
+            const std::string base = name.substr(0, name.size() - kComplexRealSuffix.size());
+            const std::string imag = base + std::string(kComplexImagSuffix);
+            if (present.count(imag) != 0)
+                pairs.push_back({base, name, imag});
+        }
+    }
+    std::sort(pairs.begin(), pairs.end(),
+              [](const ComplexPair& rA, const ComplexPair& rB) { return rA.mBase < rB.mBase; });
+    return pairs;
+}
+
+/// Maps each `<base>_real` name to its matching `ComplexPair` index, and marks
+/// every `<base>_imag` partner so writers can emit each pair once in sorted
+/// order and skip the companion `_imag` key.
+struct ComplexPairIndex {
+    std::vector<ComplexPair> mPairs;
+    std::unordered_map<std::string, std::size_t> mByReal;
+    std::unordered_set<std::string> mImagNames;
+
+    static ComplexPairIndex Build(const std::vector<std::string>& rNames) {
+        ComplexPairIndex idx;
+        idx.mPairs = find_complex_pairs(rNames);
+        for (std::size_t i = 0; i < idx.mPairs.size(); ++i) {
+            idx.mByReal.emplace(idx.mPairs[i].mReal, i);
+            idx.mImagNames.insert(idx.mPairs[i].mImag);
+        }
+        return idx;
+    }
+
+    const ComplexPair* PairForReal(const std::string& rName) const {
+        auto it = mByReal.find(rName);
+        return it == mByReal.end() ? nullptr : &mPairs[it->second];
+    }
+
+    bool IsImagMember(const std::string& rName) const { return mImagNames.count(rName) != 0; }
+};
+
+/// Returns true if `rMesh` carries both `<rBase>_real` and `<rBase>_imag` at `Loc`,
+/// writing the two array names to `rReal` and `rImag`.
+inline bool find_complex_pair_for_base(const Mesh& rMesh, DataLocation Loc,
+                                       const std::string& rBase, std::string& rReal,
+                                       std::string& rImag) {
+    if (rBase.empty())
+        return false;
+    const std::string re = rBase + std::string(kComplexRealSuffix);
+    const std::string im = rBase + std::string(kComplexImagSuffix);
+    bool has_re = false;
+    bool has_im = false;
+    switch (Loc) {
+        case DataLocation::Point:
+            has_re = rMesh.HasPointData(re);
+            has_im = rMesh.HasPointData(im);
+            break;
+        case DataLocation::Cell:
+            has_re = rMesh.HasCellData(re);
+            has_im = rMesh.HasCellData(im);
+            break;
+        case DataLocation::Field:
+            has_re = rMesh.HasFieldData(re);
+            has_im = rMesh.HasFieldData(im);
+            break;
+    }
+    if (has_re && has_im) {
+        rReal = re;
+        rImag = im;
+        return true;
+    }
+    return false;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/complex_pairs.hpp =====
 // ===== begin src/cpp/src/detail/cow_source.hpp =====
 /**
  * @file detail/cow_source.hpp
@@ -153164,22 +153277,49 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
                 "scalar per node:",         "vector per node:",        "tensor symm per node:",
                 "tensor asym per node:",    "scalar per element:",     "vector per element:",
                 "tensor symm per element:", "tensor asym per element:"};
+            const bool is_complex = ensight_starts_with(line, "complex ");
+            const std::string_view rest_line =
+                is_complex ? std::string_view(line).substr(8) : std::string_view(line);
             for (const std::string_view kind : kKinds) {
-                if (line.compare(0, kind.size(), kind) != 0)
+                if (rest_line.compare(0, kind.size(), kind) != 0)
                     continue;
                 const std::string kind_str(kind.substr(0, kind.size() - 1));  // drop trailing ':'
-                const std::vector<std::string> toks =
-                    ensight_tokens_after_leading_ints(line.substr(kind.size()));
-                if (toks.size() < 2)
-                    throw ReadError("EnSight: malformed '" + kind_str + "' line: " + line);
-                EnsightVariableEntry entry;
-                entry.mFilePattern = toks.back();
-                std::string joined;
-                for (std::size_t i = 0; i + 1 < toks.size(); ++i)
-                    joined += (i ? " " : "") + toks[i];
-                entry.mName = joined;
-                entry.mKind = kind_str;
-                info.mVariables.push_back(std::move(entry));
+                std::vector<std::string> toks = ensight_tokens_after_leading_ints(
+                    std::string(rest_line.substr(kind.size())));
+                if (is_complex) {
+                    // EnSight Gold syntax: `[ts] [fs] <name> <real_file> <imag_file> [frequency]`.
+                    if (toks.size() >= 4) {
+                        try {
+                            (void)detail::parse_double(toks.back());
+                            toks.pop_back();
+                        } catch (const std::exception&) {
+                            // No trailing frequency token; keep all tokens.
+                        }
+                    }
+                    if (toks.size() < 3)
+                        throw ReadError("EnSight: malformed 'complex " + kind_str +
+                                        "' line: " + line);
+                    const std::string imag_pat = toks.back();
+                    toks.pop_back();
+                    const std::string real_pat = toks.back();
+                    toks.pop_back();
+                    std::string joined;
+                    for (std::size_t i = 0; i < toks.size(); ++i)
+                        joined += (i ? " " : "") + toks[i];
+                    info.mVariables.push_back({kind_str, joined + "_real", real_pat});
+                    info.mVariables.push_back({kind_str, joined + "_imag", imag_pat});
+                } else {
+                    if (toks.size() < 2)
+                        throw ReadError("EnSight: malformed '" + kind_str + "' line: " + line);
+                    EnsightVariableEntry entry;
+                    entry.mFilePattern = toks.back();
+                    std::string joined;
+                    for (std::size_t i = 0; i + 1 < toks.size(); ++i)
+                        joined += (i ? " " : "") + toks[i];
+                    entry.mName = joined;
+                    entry.mKind = kind_str;
+                    info.mVariables.push_back(std::move(entry));
+                }
                 break;
             }
         } else if (section == "TIME") {
@@ -154637,8 +154777,42 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
         if (!vars.empty() || !constants.empty()) {
             out += "\n";
             out += "VARIABLE\n";
-            for (const EnsightVariableToWrite& v : vars) {
+            std::vector<std::string> pt_var_names;
+            std::vector<std::string> cell_var_names;
+            std::unordered_map<std::string, std::size_t> pt_var_idx;
+            std::unordered_map<std::string, std::size_t> cell_var_idx;
+            for (std::size_t i = 0; i < vars.size(); ++i) {
+                if (vars[i].mPerNode) {
+                    pt_var_names.push_back(vars[i].mName);
+                    pt_var_idx[vars[i].mName] = i;
+                } else {
+                    cell_var_names.push_back(vars[i].mName);
+                    cell_var_idx[vars[i].mName] = i;
+                }
+            }
+            const auto pt_pairs = detail::ComplexPairIndex::Build(pt_var_names);
+            const auto cell_pairs = detail::ComplexPairIndex::Build(cell_var_names);
+            std::vector<bool> emitted(vars.size(), false);
+            for (std::size_t i = 0; i < vars.size(); ++i) {
+                if (emitted[i])
+                    continue;
+                const EnsightVariableToWrite& v = vars[i];
                 const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
+                const auto& pairs = v.mPerNode ? pt_pairs : cell_pairs;
+                const auto& idx_map = v.mPerNode ? pt_var_idx : cell_var_idx;
+                if (const auto* pair = pairs.PairForReal(v.mName)) {
+                    auto it = idx_map.find(pair->mImag);
+                    if (it != idx_map.end() && vars[it->second].mKind == v.mKind &&
+                        vars[it->second].mPerNode == v.mPerNode) {
+                        emitted[i] = true;
+                        emitted[it->second] = true;
+                        out += "complex " + v.mKind + " per " +
+                               (v.mPerNode ? "node" : "element") + ": " + pair->mBase + " " +
+                               pair->mReal + "." + ext + " " + pair->mImag + "." + ext + " 0\n";
+                        continue;
+                    }
+                }
+                emitted[i] = true;
                 out += v.mKind + " per " + (v.mPerNode ? "node" : "element") + ": " + v.mName +
                        " " + v.mName + "." + ext + "\n";
             }
@@ -231501,17 +231675,20 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
     const std::int64_t step_id = pStep ? *pStep : unv_field_int(rMesh, "unv:step", 0);
     const double time = pTime ? *pTime : unv_field_real(rMesh, kSequenceTimeKey, 0.0);
     auto write_field = [&](int field_id, const std::string& rName, int location, std::size_t nc,
-                           std::vector<std::int64_t> rLabels, std::vector<double> rFlat) {
+                           std::vector<std::int64_t> rLabels, std::vector<double> rFlat,
+                           bool is_complex = false) {
+        const std::size_t width = is_complex ? 2 : 1;
+        const std::size_t row_vals = nc * width;
         // An entity with no value (NaN everywhere, as the reader pads) gets no record.
         {
             std::vector<std::int64_t> keep_labels;
             std::vector<double> keep_flat;
             for (std::size_t r = 0; r < rLabels.size(); ++r) {
-                const double* row = rFlat.data() + r * nc;
-                if (std::all_of(row, row + nc, [](double v) { return std::isnan(v); }))
+                const double* row = rFlat.data() + r * row_vals;
+                if (std::all_of(row, row + row_vals, [](double v) { return std::isnan(v); }))
                     continue;
                 keep_labels.push_back(rLabels[r]);
-                keep_flat.insert(keep_flat.end(), row, row + nc);
+                keep_flat.insert(keep_flat.end(), row, row + row_vals);
             }
             if (keep_labels.size() != rLabels.size()) {
                 rLabels.swap(keep_labels);
@@ -231519,17 +231696,36 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
             }
         }
         const int ch = unv_data_char(nc);
-        if (ch == 4 || ch == 5)
-            for (std::size_t r = 0; r < rLabels.size(); ++r)
-                unv_tensor_from_meshio(nc, rFlat.data() + r * nc);
+        if (ch == 4 || ch == 5) {
+            if (!is_complex) {
+                for (std::size_t r = 0; r < rLabels.size(); ++r)
+                    unv_tensor_from_meshio(nc, rFlat.data() + r * nc);
+            } else {
+                std::vector<double> re_buf(nc), im_buf(nc);
+                for (std::size_t r = 0; r < rLabels.size(); ++r) {
+                    double* row = rFlat.data() + r * row_vals;
+                    for (std::size_t c = 0; c < nc; ++c) {
+                        re_buf[c] = row[2 * c];
+                        im_buf[c] = row[2 * c + 1];
+                    }
+                    unv_tensor_from_meshio(nc, re_buf.data());
+                    unv_tensor_from_meshio(nc, im_buf.data());
+                    for (std::size_t c = 0; c < nc; ++c) {
+                        row[2 * c] = re_buf[c];
+                        row[2 * c + 1] = im_buf[c];
+                    }
+                }
+            }
+        }
         if (code_aster) {
             // Legacy 55 (nodes) / 56 (elements), single precision E13.5 as the spec reads.
+            const int dtype = is_complex ? 5 : 2;
             std::snprintf(buf, sizeof(buf), "    -1\n%6d\n", location == 1 ? 55 : 56);
             f << buf;
             f << rName << "\n";
             for (int i = 0; i < 4; ++i)
                 f << "NONE\n";
-            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, 2,
+            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, dtype,
                           nc);
             f << buf;
             std::vector<std::int64_t> ints;
@@ -231569,9 +231765,10 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
                     std::snprintf(buf, sizeof(buf), "%10lld%10zu\n",
                                   static_cast<long long>(rLabels[r]), nc);
                 f << buf;
-                unv_write_reals(f, rFlat.data() + r * nc, nc, "%13.5E", 6);
+                unv_write_reals(f, rFlat.data() + r * row_vals, row_vals, "%13.5E", 6);
             }
         } else {
+            const int dtype = is_complex ? 6 : 4;
             f << "    -1\n  2414\n";
             std::snprintf(buf, sizeof(buf), "%10d\n", field_id);
             f << buf << rName << "\n";
@@ -231579,7 +231776,7 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
             f << buf;
             for (int i = 0; i < 5; ++i)
                 f << "NONE\n";
-            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, 4,
+            std::snprintf(buf, sizeof(buf), "%10d%10d%10d%10d%10d%10zu\n", 1, analysis, ch, 0, dtype,
                           nc);
             f << buf;
             std::int64_t r10[8] = {0, 0, 0, 0, 0, 0, 0, 0};
@@ -231628,7 +231825,7 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
                 f << buf;
                 // One line per entity, whatever its length: pyuff pairs each element
                 // record with exactly one value line.
-                unv_write_reals(f, rFlat.data() + r * nc, nc, "%20.12E", nc);
+                unv_write_reals(f, rFlat.data() + r * row_vals, row_vals, "%20.12E", row_vals);
             }
         }
         f << "    -1\n";
@@ -231638,27 +231835,46 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
     std::vector<std::int64_t> node_labels(np);
     for (std::size_t k = 0; k < np; ++k)
         node_labels[k] = static_cast<std::int64_t>(k + 1);
-    for (const auto& name : rMesh.PointDataNames()) {
+    const auto pt_names = rMesh.PointDataNames();
+    const auto pt_pairs = detail::ComplexPairIndex::Build(pt_names);
+    std::unordered_set<std::string> pt_paired_imag;
+    for (const auto& name : pt_names) {
+        if (pt_paired_imag.count(name) != 0)
+            continue;
         const NDArray& arr = rMesh.PointData(name);
         const std::size_t nc = np ? arr.Size() / np : 0;
         if (nc == 0)
             continue;
+        if (const auto* pair = pt_pairs.PairForReal(name)) {
+            const NDArray& im_arr = rMesh.PointData(pair->mImag);
+            const std::size_t im_nc = np ? im_arr.Size() / np : 0;
+            if (im_nc == nc) {
+                pt_paired_imag.insert(pair->mImag);
+                std::vector<double> flat(np * nc * 2);
+                const detail::DoubleView re_vals(arr);
+                const detail::DoubleView im_vals(im_arr);
+                for (std::size_t i = 0; i < np * nc; ++i) {
+                    flat[2 * i] = re_vals[i];
+                    flat[2 * i + 1] = im_vals[i];
+                }
+                write_field(++field_id, pair->mBase, 1, nc, node_labels, std::move(flat), true);
+                continue;
+            }
+        }
         std::vector<double> flat(np * nc);
         const detail::DoubleView values(arr);
         for (std::size_t i = 0; i < np * nc; ++i)
             flat[i] = values[i];
-        write_field(++field_id, name, 1, nc, node_labels, flat);
+        write_field(++field_id, name, 1, nc, node_labels, std::move(flat), false);
     }
-    for (const auto& name : rMesh.CellDataNames()) {
-        if (name == "unv:pid" || name == "unv:mid")
-            continue;
-        std::vector<std::int64_t> labels;
-        std::vector<double> flat;
+
+    auto collect_cell_flat = [&](const std::string& rName, std::vector<std::int64_t>& rLabels,
+                                 std::vector<double>& rFlat) -> std::size_t {
         std::size_t nc = 0;
-        for (std::size_t bi = 0; bi < nblocks && bi < rMesh.CellDataNumBlocks(name); ++bi) {
+        for (std::size_t bi = 0; bi < nblocks && bi < rMesh.CellDataNumBlocks(rName); ++bi) {
             if (block_labels[bi].empty())
                 continue;
-            const NDArray& blk = rMesh.CellData(name, bi);
+            const NDArray& blk = rMesh.CellData(rName, bi);
             const std::size_t ne = block_labels[bi].size();
             const std::size_t bnc = ne ? blk.Size() / ne : 0;
             if (bnc == 0)
@@ -231669,14 +231885,42 @@ void unv_write_impl(const std::string& rPath, const Mesh& rMesh, const UnvInfo& 
                 continue;
             const detail::DoubleView blk_values(blk);
             for (std::size_t r = 0; r < ne; ++r) {
-                labels.push_back(block_labels[bi][r]);
+                rLabels.push_back(block_labels[bi][r]);
                 for (std::size_t c = 0; c < nc; ++c)
-                    flat.push_back(blk_values[r * nc + c]);
+                    rFlat.push_back(blk_values[r * nc + c]);
             }
         }
+        return nc;
+    };
+
+    const auto cell_names = rMesh.CellDataNames();
+    const auto cell_pairs = detail::ComplexPairIndex::Build(cell_names);
+    std::unordered_set<std::string> cell_paired_imag;
+    for (const auto& name : cell_names) {
+        if (name == "unv:pid" || name == "unv:mid" || cell_paired_imag.count(name) != 0)
+            continue;
+        std::vector<std::int64_t> labels;
+        std::vector<double> flat;
+        const std::size_t nc = collect_cell_flat(name, labels, flat);
         if (nc == 0 || labels.empty())
             continue;
-        write_field(++field_id, name, 2, nc, labels, flat);
+        if (const auto* pair = cell_pairs.PairForReal(name)) {
+            std::vector<std::int64_t> im_labels;
+            std::vector<double> im_flat;
+            const std::size_t im_nc = collect_cell_flat(pair->mImag, im_labels, im_flat);
+            if (im_nc == nc && im_labels == labels) {
+                cell_paired_imag.insert(pair->mImag);
+                std::vector<double> interleaved(flat.size() * 2);
+                for (std::size_t i = 0; i < flat.size(); ++i) {
+                    interleaved[2 * i] = flat[i];
+                    interleaved[2 * i + 1] = im_flat[i];
+                }
+                write_field(++field_id, pair->mBase, 2, nc, std::move(labels),
+                            std::move(interleaved), true);
+                continue;
+            }
+        }
+        write_field(++field_id, name, 2, nc, std::move(labels), std::move(flat), false);
     }
 }
 
@@ -255164,7 +255408,10 @@ enum class CalcNodeType {
     Sign,
     // ... and binary (scalar-broadcasting, like min and max).
     Atan2,
+    Hypot,
     Pow,
+    // Complex-pair unary helper (rewritten to Atan2 in calc_infer).
+    Phase,
     // Tuple functions: they read a whole row, so each checks its widths.
     Dot,
     Cross,
@@ -255219,6 +255466,8 @@ const CalcFuncDef CALC_FUNCS[] = {
     {"acos", CalcNodeType::Acos, 1},
     {"atan", CalcNodeType::Atan, 1},
     {"atan2", CalcNodeType::Atan2, 2},
+    {"hypot", CalcNodeType::Hypot, 2},
+    {"phase", CalcNodeType::Phase, 1},
     {"sinh", CalcNodeType::Sinh, 1},
     {"cosh", CalcNodeType::Cosh, 1},
     {"tanh", CalcNodeType::Tanh, 1},
@@ -255477,6 +255726,8 @@ const char* calc_node_op_name(CalcNodeType t) {
             return "max";
         case CalcNodeType::Atan2:
             return "atan2";
+        case CalcNodeType::Hypot:
+            return "hypot";
         case CalcNodeType::Pow:
             return "pow";
         case CalcNodeType::Dot:
@@ -255590,9 +255841,67 @@ CalcOperand calc_precompute_call(const CalcNode& rNode, const Mesh& rMesh, DataL
 void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMesh,
                 DataLocation location, std::vector<CalcOperand>& rOperands) {
     std::unordered_map<std::string, std::size_t> seen;
-    // The pool is built bottom-up by the parser, so a single forward sweep
-    // visits every node after its children.
+
+    // Rewrite complex-pair calls `phase(u)` -> `atan2(u_imag, u_real)` and
+    // `abs(u)` -> `hypot(u_real, u_imag)` when `u` is a complex pair rather
+    // than a literal array or coordinate.
     for (std::size_t i = 0; i <= root; ++i) {
+        const CalcNodeType t = rPool[i].mType;
+        if (t != CalcNodeType::Phase && t != CalcNodeType::Abs)
+            continue;
+        const std::size_t arg_idx = rPool[i].mLhs;
+        if (rPool[arg_idx].mType != CalcNodeType::Array) {
+            if (t == CalcNodeType::Phase)
+                calc_fail_at("'phase' requires a complex pair array name, not an expression",
+                             rPool[i].mPos);
+            continue;
+        }
+        const std::string base = rPool[arg_idx].mName;
+        if (t == CalcNodeType::Abs) {
+            const bool has_array = data_has(rMesh, location, base);
+            const bool is_coord = location != DataLocation::Field && calc_coord_index(base) >= 0;
+            if (has_array || is_coord)
+                continue;
+        }
+        std::string re_name;
+        std::string im_name;
+        if (!detail::find_complex_pair_for_base(rMesh, location, base, re_name, im_name)) {
+            if (t == CalcNodeType::Phase)
+                calc_fail_at("'phase' requires a complex pair '" + base + "_real' and '" + base +
+                                 "_imag'",
+                             rPool[i].mPos);
+            continue;
+        }
+        CalcNode partner;
+        partner.mType = CalcNodeType::Array;
+        partner.mPos = rPool[arg_idx].mPos;
+        if (t == CalcNodeType::Abs) {
+            rPool[arg_idx].mName = re_name;
+            partner.mName = im_name;
+            const std::size_t rhs_idx = rPool.size();
+            rPool.push_back(std::move(partner));
+            rPool[i].mType = CalcNodeType::Hypot;
+            rPool[i].mRhs = rhs_idx;
+        } else {
+            rPool[arg_idx].mName = im_name;
+            partner.mName = re_name;
+            const std::size_t rhs_idx = rPool.size();
+            rPool.push_back(std::move(partner));
+            rPool[i].mType = CalcNodeType::Atan2;
+            rPool[i].mRhs = rhs_idx;
+        }
+    }
+
+    // Build visit order: any newly appended leaf Array nodes first, then the
+    // original bottom-up pool 0..root.
+    std::vector<std::size_t> order;
+    order.reserve(rPool.size());
+    for (std::size_t i = root + 1; i < rPool.size(); ++i)
+        order.push_back(i);
+    for (std::size_t i = 0; i <= root; ++i)
+        order.push_back(i);
+
+    for (std::size_t i : order) {
         CalcNode& n = rPool[i];
         switch (n.mType) {
             case CalcNodeType::Const:
@@ -255776,10 +256085,13 @@ void calc_infer(std::vector<CalcNode>& rPool, std::size_t root, const Mesh& rMes
             case CalcNodeType::Min:
             case CalcNodeType::Max:
             case CalcNodeType::Atan2:
+            case CalcNodeType::Hypot:
             case CalcNodeType::Pow:
                 n.mWidth =
                     calc_combine_width(rPool[n.mLhs].mWidth, rPool[n.mRhs].mWidth, n.mType, n.mPos);
                 break;
+            case CalcNodeType::Phase:
+                calc_fail_at("internal error: unresolved 'phase' node", n.mPos);
         }
     }
 }
@@ -256016,6 +256328,9 @@ std::size_t calc_eval(const std::vector<CalcNode>& rPool, std::size_t idx,
                 break;
             case CalcNodeType::Atan2:
                 pOut[k] = std::atan2(a, b);
+                break;
+            case CalcNodeType::Hypot:
+                pOut[k] = std::hypot(a, b);
                 break;
             case CalcNodeType::Pow:
                 pOut[k] = std::pow(a, b);
@@ -273438,6 +273753,22 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             if (rSource.HasCellData(name)) {
                 cell_names.push_back(name);
                 any = true;
+            }
+            if (!any) {
+                std::string re_name;
+                std::string im_name;
+                if (detail::find_complex_pair_for_base(rSource, DataLocation::Point, name, re_name,
+                                                       im_name)) {
+                    point_names.push_back(re_name);
+                    point_names.push_back(im_name);
+                    any = true;
+                }
+                if (detail::find_complex_pair_for_base(rSource, DataLocation::Cell, name, re_name,
+                                                       im_name)) {
+                    cell_names.push_back(re_name);
+                    cell_names.push_back(im_name);
+                    any = true;
+                }
             }
             if (!any)
                 throw std::invalid_argument(

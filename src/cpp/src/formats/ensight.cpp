@@ -53,6 +53,7 @@
 #include "../detail/polyhedron_groups.hpp"
 #include "../detail/text_cursor.hpp"
 #include "../detail/typed_view.hpp"
+#include "../detail/complex_pairs.hpp"
 
 namespace meshioplusplus {
 
@@ -498,22 +499,49 @@ EnsightCaseInfo ensight_parse_case(const std::string& rCasePath) {
                 "scalar per node:",         "vector per node:",        "tensor symm per node:",
                 "tensor asym per node:",    "scalar per element:",     "vector per element:",
                 "tensor symm per element:", "tensor asym per element:"};
+            const bool is_complex = ensight_starts_with(line, "complex ");
+            const std::string_view rest_line =
+                is_complex ? std::string_view(line).substr(8) : std::string_view(line);
             for (const std::string_view kind : kKinds) {
-                if (line.compare(0, kind.size(), kind) != 0)
+                if (rest_line.compare(0, kind.size(), kind) != 0)
                     continue;
                 const std::string kind_str(kind.substr(0, kind.size() - 1));  // drop trailing ':'
-                const std::vector<std::string> toks =
-                    ensight_tokens_after_leading_ints(line.substr(kind.size()));
-                if (toks.size() < 2)
-                    throw ReadError("EnSight: malformed '" + kind_str + "' line: " + line);
-                EnsightVariableEntry entry;
-                entry.mFilePattern = toks.back();
-                std::string joined;
-                for (std::size_t i = 0; i + 1 < toks.size(); ++i)
-                    joined += (i ? " " : "") + toks[i];
-                entry.mName = joined;
-                entry.mKind = kind_str;
-                info.mVariables.push_back(std::move(entry));
+                std::vector<std::string> toks = ensight_tokens_after_leading_ints(
+                    std::string(rest_line.substr(kind.size())));
+                if (is_complex) {
+                    // EnSight Gold syntax: `[ts] [fs] <name> <real_file> <imag_file> [frequency]`.
+                    if (toks.size() >= 4) {
+                        try {
+                            (void)detail::parse_double(toks.back());
+                            toks.pop_back();
+                        } catch (const std::exception&) {
+                            // No trailing frequency token; keep all tokens.
+                        }
+                    }
+                    if (toks.size() < 3)
+                        throw ReadError("EnSight: malformed 'complex " + kind_str +
+                                        "' line: " + line);
+                    const std::string imag_pat = toks.back();
+                    toks.pop_back();
+                    const std::string real_pat = toks.back();
+                    toks.pop_back();
+                    std::string joined;
+                    for (std::size_t i = 0; i < toks.size(); ++i)
+                        joined += (i ? " " : "") + toks[i];
+                    info.mVariables.push_back({kind_str, joined + "_real", real_pat});
+                    info.mVariables.push_back({kind_str, joined + "_imag", imag_pat});
+                } else {
+                    if (toks.size() < 2)
+                        throw ReadError("EnSight: malformed '" + kind_str + "' line: " + line);
+                    EnsightVariableEntry entry;
+                    entry.mFilePattern = toks.back();
+                    std::string joined;
+                    for (std::size_t i = 0; i + 1 < toks.size(); ++i)
+                        joined += (i ? " " : "") + toks[i];
+                    entry.mName = joined;
+                    entry.mKind = kind_str;
+                    info.mVariables.push_back(std::move(entry));
+                }
                 break;
             }
         } else if (section == "TIME") {
@@ -1971,8 +1999,42 @@ void write_ensight(const std::string& rPath, const Mesh& rMesh, bool binary, boo
         if (!vars.empty() || !constants.empty()) {
             out += "\n";
             out += "VARIABLE\n";
-            for (const EnsightVariableToWrite& v : vars) {
+            std::vector<std::string> pt_var_names;
+            std::vector<std::string> cell_var_names;
+            std::unordered_map<std::string, std::size_t> pt_var_idx;
+            std::unordered_map<std::string, std::size_t> cell_var_idx;
+            for (std::size_t i = 0; i < vars.size(); ++i) {
+                if (vars[i].mPerNode) {
+                    pt_var_names.push_back(vars[i].mName);
+                    pt_var_idx[vars[i].mName] = i;
+                } else {
+                    cell_var_names.push_back(vars[i].mName);
+                    cell_var_idx[vars[i].mName] = i;
+                }
+            }
+            const auto pt_pairs = detail::ComplexPairIndex::Build(pt_var_names);
+            const auto cell_pairs = detail::ComplexPairIndex::Build(cell_var_names);
+            std::vector<bool> emitted(vars.size(), false);
+            for (std::size_t i = 0; i < vars.size(); ++i) {
+                if (emitted[i])
+                    continue;
+                const EnsightVariableToWrite& v = vars[i];
                 const std::string ext = ensight_variable_extension(v.mKind, v.mPerNode);
+                const auto& pairs = v.mPerNode ? pt_pairs : cell_pairs;
+                const auto& idx_map = v.mPerNode ? pt_var_idx : cell_var_idx;
+                if (const auto* pair = pairs.PairForReal(v.mName)) {
+                    auto it = idx_map.find(pair->mImag);
+                    if (it != idx_map.end() && vars[it->second].mKind == v.mKind &&
+                        vars[it->second].mPerNode == v.mPerNode) {
+                        emitted[i] = true;
+                        emitted[it->second] = true;
+                        out += "complex " + v.mKind + " per " +
+                               (v.mPerNode ? "node" : "element") + ": " + pair->mBase + " " +
+                               pair->mReal + "." + ext + " " + pair->mImag + "." + ext + " 0\n";
+                        continue;
+                    }
+                }
+                emitted[i] = true;
                 out += v.mKind + " per " + (v.mPerNode ? "node" : "element") + ": " + v.mName +
                        " " + v.mName + "." + ext + "\n";
             }

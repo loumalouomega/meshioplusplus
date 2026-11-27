@@ -51,6 +51,7 @@
 #include "../detail/cell_centroids.hpp"
 #include "../detail/point_locator.hpp"
 #include "../detail/transfer_names.hpp"
+#include "../detail/complex_pairs.hpp"
 #include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
@@ -212,6 +213,22 @@ Mesh interpolate(const Mesh& rSource, const Mesh& rTarget, const InterpolateOpti
             if (rSource.HasCellData(name)) {
                 cell_names.push_back(name);
                 any = true;
+            }
+            if (!any) {
+                std::string re_name;
+                std::string im_name;
+                if (detail::find_complex_pair_for_base(rSource, DataLocation::Point, name, re_name,
+                                                       im_name)) {
+                    point_names.push_back(re_name);
+                    point_names.push_back(im_name);
+                    any = true;
+                }
+                if (detail::find_complex_pair_for_base(rSource, DataLocation::Cell, name, re_name,
+                                                       im_name)) {
+                    cell_names.push_back(re_name);
+                    cell_names.push_back(im_name);
+                    any = true;
+                }
             }
             if (!any)
                 throw std::invalid_argument(

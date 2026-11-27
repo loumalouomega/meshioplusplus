@@ -181,21 +181,50 @@ def _parse_case_info(case_path):
                     )
                 info["constants"].append((" ".join(toks[:-1]), value))
             elif section == "VARIABLE":
+                is_complex = line.startswith("complex ")
+                rest_line = line[8:] if is_complex else line
                 for kind in _VARIABLE_KINDS:
-                    if not line.startswith(kind):
+                    if not rest_line.startswith(kind):
                         continue
-                    toks = _tokens_after_leading_ints(line[len(kind) :])
-                    if len(toks) < 2:
-                        raise ReadError(
-                            f"EnSight: malformed '{kind[:-1]}' line: {line}"
+                    toks = _tokens_after_leading_ints(rest_line[len(kind) :])
+                    if is_complex:
+                        if len(toks) >= 4:
+                            try:
+                                float(toks[-1])
+                                toks = toks[:-1]
+                            except ValueError:
+                                pass
+                        if len(toks) < 3:
+                            raise ReadError(
+                                f"EnSight: malformed 'complex {kind[:-1]}' line: {line}"
+                            )
+                        base_name = " ".join(toks[:-2])
+                        info["variables"].append(
+                            {
+                                "kind": kind[:-1],
+                                "name": f"{base_name}_real",
+                                "pattern": toks[-2],
+                            }
                         )
-                    info["variables"].append(
-                        {
-                            "kind": kind[:-1],
-                            "name": " ".join(toks[:-1]),
-                            "pattern": toks[-1],
-                        }
-                    )
+                        info["variables"].append(
+                            {
+                                "kind": kind[:-1],
+                                "name": f"{base_name}_imag",
+                                "pattern": toks[-1],
+                            }
+                        )
+                    else:
+                        if len(toks) < 2:
+                            raise ReadError(
+                                f"EnSight: malformed '{kind[:-1]}' line: {line}"
+                            )
+                        info["variables"].append(
+                            {
+                                "kind": kind[:-1],
+                                "name": " ".join(toks[:-1]),
+                                "pattern": toks[-1],
+                            }
+                        )
                     break
             elif section == "TIME":
                 if line.startswith("time set:"):
@@ -1207,9 +1236,41 @@ def write(filename, mesh, binary=True, fortran=False):
         "FORMAT\n" "type: ensight gold\n" "\n" "GEOMETRY\n" f"model: {geo_path.name}\n"
     )
     if variables or constants:
+        from .._complex import find_complex_pairs
+
         text += "\nVARIABLE\n"
-        for name, kind, _, per_node in variables:
+        pt_idx = {v[0]: i for i, v in enumerate(variables) if v[3]}
+        cell_idx = {v[0]: i for i, v in enumerate(variables) if not v[3]}
+        pt_by_real = {
+            re_k: (base, im_k) for base, re_k, im_k in find_complex_pairs(pt_idx.keys())
+        }
+        cell_by_real = {
+            re_k: (base, im_k)
+            for base, re_k, im_k in find_complex_pairs(cell_idx.keys())
+        }
+        emitted = [False] * len(variables)
+        for i, (name, kind, _, per_node) in enumerate(variables):
+            if emitted[i]:
+                continue
             ext = _variable_extension(kind, per_node)
+            by_real = pt_by_real if per_node else cell_by_real
+            idx_map = pt_idx if per_node else cell_idx
+            if name in by_real:
+                base, im_k = by_real[name]
+                j = idx_map.get(im_k)
+                if (
+                    j is not None
+                    and variables[j][1] == kind
+                    and variables[j][3] == per_node
+                ):
+                    emitted[i] = True
+                    emitted[j] = True
+                    text += (
+                        f"complex {kind} per {'node' if per_node else 'element'}: "
+                        f"{base} {name}.{ext} {im_k}.{ext} 0\n"
+                    )
+                    continue
+            emitted[i] = True
             text += (
                 f"{kind} per {'node' if per_node else 'element'}: "
                 f"{name} {name}.{ext}\n"

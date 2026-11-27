@@ -75,6 +75,10 @@ mesh.cell_data = {
 
 A symmetric tensor stored as six components per point or cell uses the order **`xx yy zz xy yz zx`**, the order of VTK's six-component arrays and of CalculiX's `STRESS`/`TOSTRAIN` blocks. Readers keep the order the file uses rather than reordering it; the [CalculiX reader](formats/frd.md#results-and-steps) is the one that documents it, and the ones that leave a six-component array untouched (GiD's `Sxx Syy Szz Sxy Syz Sxz`, XDMF's `Tensor6`) name their own.
 
+## Complex values
+
+Complex-valued fields are stored as matched pairs of real-valued arrays named **`<base>_real`** and **`<base>_imag`** (the convention shared by UNV, Nastran OP2, Nastran HDF5 and EnSight). Writers for formats with native complex fields pair matching `<base>_real` and `<base>_imag` arrays into one complex field on output; `transform(..., rotate_vector_data=True)` rotates both halves together, `interpolate(..., arrays=["u"])` expands a complex base name to both arrays, `data_calc` evaluates `abs(u)` (`hypot(u_real, u_imag)`) and `phase(u)` (`atan2(u_imag, u_real)`), and `data_info` annotates matched pairs with `complex_pair` and `complex_part`. In Python, `complex_pairs(mesh)` lists complex base names, `to_complex(mesh, name)` combines a pair into a `complex64`/`complex128` NumPy array, and `from_complex(mesh, name, array)` stores a complex array as `<name>_real` and `<name>_imag`.
+
 ## Convenience properties
 
 | Property | Returns |

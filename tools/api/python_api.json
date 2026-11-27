@@ -3362,6 +3362,22 @@
     ]
    }
   },
+  "complex_pairs": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'both'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
+     }
+    ]
+   }
+  },
   "compute_bandwidth": {
    "kind": "function",
    "signature": {
@@ -6337,6 +6353,30 @@
       "default": "True",
       "kind": "KEYWORD_ONLY",
       "name": "attributes"
+     }
+    ]
+   }
+  },
+  "from_complex": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "name"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "default": "'point'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
      }
     ]
    }
@@ -11996,6 +12036,27 @@
       "default": "True",
       "kind": "KEYWORD_ONLY",
       "name": "validate"
+     }
+    ]
+   }
+  },
+  "to_complex": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "name"
+     },
+     {
+      "default": "'both'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
      }
     ]
    }
