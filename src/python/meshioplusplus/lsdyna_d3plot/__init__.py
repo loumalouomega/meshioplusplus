@@ -3,14 +3,15 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._series_writer import CoreSeriesWriter
-from .._shims import time_values_shim
-from ._d3plot import read as _py_read
+from .._shims import dispatch_write, series_read_shim, time_values_shim
+from ._d3plot import read as _py_read  # noqa: F401
 from ._d3plot import time_values as _py_time_values  # noqa: F401
 from ._write import SeriesWriter as _PySeriesWriter
-from ._write import write as _py_write
+from ._write import write as _py_write  # noqa: F401
 
-
-def read(filename, points_only=False, arrays=None, time_step=0):
+read = series_read_shim(
+    __name__,
+    "lsdyna_d3plot",
     """Read one state of an LS-DYNA d3plot family.
 
     Open the base file (``d3plot``): its numbered members (``d3plot01``...)
@@ -21,22 +22,8 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     per integration point or layer as ``(cells, points * components)`` with
     ``field_data["lsdyna_d3plot:layout:<name>"]``), the deletion flags the int8
     mask ``lsdyna:alive`` and the globals field data. Parts are cell regions.
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.lsdyna_d3plot_read(
-                str(filename),
-                points_only=points_only,
-                arrays=arrays,
-                time_step=time_step,
-            )
-        except Exception as exc:
-            if not core_declined(exc, "lsdyna_d3plot", "read", filename):
-                raise
-    return _py_read(
-        filename, points_only=points_only, arrays=arrays, time_step=time_step
-    )
-
+    """,
+)
 
 time_values = time_values_shim(
     __name__, "lsdyna_d3plot", """The times of the family's states."""
@@ -60,13 +47,14 @@ def write(filename, mesh, double=False):
     ``lsdyna:eid`` and ``lsdyna:part`` the user ids, cell regions the parts and
     their titles; ``field_data["meshio:time"]`` the state's time.
     """
-    if not is_buffer(filename, "w"):
-        try:
-            return _core.lsdyna_d3plot_write(str(filename), mesh, double=double)
-        except Exception as exc:
-            if not core_declined(exc, "lsdyna_d3plot", "write", filename):
-                raise
-    return _py_write(filename, mesh, double=double)
+    return dispatch_write(
+        __name__,
+        "lsdyna_d3plot",
+        filename,
+        mesh,
+        (bool(double),),
+        dict(double=double),
+    )
 
 
 class SeriesWriter(CoreSeriesWriter):

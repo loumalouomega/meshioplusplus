@@ -60,13 +60,12 @@ def remove_islands_cmd(args):
                 )
             }
         )
-        return 0
+        return
     print(
         f"{r['num_components']} component(s); {r['num_removed']} removed "
         f"({r['num_cells_removed']} cell(s), {r['num_points_removed']} point(s))"
         + (" [dry run]" if args.dry_run else "")
     )
-    return 0
 
 
 def add_flip_args(parser):
@@ -83,9 +82,8 @@ def flip_normals_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json(r)
-        return 0
+        return
     print(f"{r['num_flipped']} cell(s) flipped")
-    return 0
 
 
 def add_clip_args(parser):
@@ -108,14 +106,13 @@ def clip_cmd(args):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json(r)
-        return 0
+        return
     print(
         f"{r['num_kept']} kept, {r['num_split']} split; {r['num_cap_triangles']} cap "
         f"triangle(s) over {r['num_loops']} loop(s)"
     )
     for w in r["warnings"]:
         print(f"warning: {w}")
-    return 0
 
 
 def _offset_args(parser, amount):
@@ -145,14 +142,13 @@ def _offset_report(args, out, r):
     write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json(r)
-        return 0
+        return
     print(
         f"max move {r['max_move']!r}; {r['num_folded']} folded face(s), "
         f"{r['num_rim_quads']} rim quad(s)"
     )
     for w in r["warnings"]:
         print(f"warning: {w}")
-    return 0
 
 
 def offset_surface_cmd(args):

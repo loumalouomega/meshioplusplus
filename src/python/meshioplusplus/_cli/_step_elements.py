@@ -37,7 +37,7 @@ def step_elements_cmd(args):
     r = write_step_elements(args.outfile, mesh, patches=patches, segments=args.segments)
     if args.json:
         emit_json(r)
-        return 0
+        return
     print(
         f"{r['num_planes']} plane(s), {r['num_spheres']} sphere(s), "
         f"{r['num_cylinders']} cylinder(s), {r['num_cones']} cone(s), "
@@ -45,4 +45,3 @@ def step_elements_cmd(args):
     )
     for w in r["warnings"]:
         print(f"warning: {w}")
-    return 0

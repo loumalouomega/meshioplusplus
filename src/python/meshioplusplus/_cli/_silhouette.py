@@ -65,7 +65,7 @@ def silhouette_cmd(args):
         write(args.outfile, out, file_format=args.output_format)
     if args.json:
         emit_json(r)
-        return 0
+        return
     print(
         f"{r['num_loops']} loop(s): {r['num_outer']} outer, {r['num_holes']} hole(s); "
         f"area {r['area']:.9g}, perimeter {r['perimeter']:.9g}; heights "
@@ -73,4 +73,3 @@ def silhouette_cmd(args):
     )
     for w in r["warnings"]:
         print(f"warning: {w}")
-    return 0

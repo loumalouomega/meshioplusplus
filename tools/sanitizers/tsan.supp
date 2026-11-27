@@ -3,3 +3,9 @@
 # Every entry here must explain why it is a known third-party false positive
 # (not a race in meshio++'s own code). Leave empty unless a concrete third-party
 # runtime frame is observed under TSan.
+
+# Ubuntu's system libtbb12 (oneTBB) is not compiled with -fsanitize=thread, so
+# TSan cannot observe synchronization inside libtbb.so / tbb::detail::d1
+# work-stealing (e.g. dynamic_grainsize_mode::check_being_stolen in partitioner.h).
+race:tbb::detail::
+called_from_lib:libtbb.so

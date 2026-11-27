@@ -264,3 +264,31 @@ TEST(MathUtils, Solve3SolvesNonSymmetricAndRefusesSingular) {
     EXPECT_FALSE(ok);
     EXPECT_EQ(bad, (Vec3{0.0, 0.0, 0.0}));
 }
+
+TEST(MathUtils, Invert3x3AndPackTensor3x3) {
+    // Symmetric positive-definite matrix
+    const double m[9] = {4.0, 1.0, 2.0, 1.0, 3.0, 0.0, 2.0, 0.0, 5.0};
+    double inv[9] = {};
+    MathUtils::Invert3x3(m, inv);
+    // M * inv == I
+    for (int i = 0; i < 3; ++i)
+        for (int j = 0; j < 3; ++j) {
+            double s = 0.0;
+            for (int k = 0; k < 3; ++k)
+                s += m[i * 3 + k] * inv[k * 3 + j];
+            EXPECT_NEAR(s, i == j ? 1.0 : 0.0, 1e-14);
+        }
+    double voigt[6] = {};
+    MathUtils::PackTensor3x3(inv, 6, voigt);
+    EXPECT_DOUBLE_EQ(voigt[0], inv[0]);
+    EXPECT_DOUBLE_EQ(voigt[1], inv[4]);
+    EXPECT_DOUBLE_EQ(voigt[2], inv[8]);
+    EXPECT_DOUBLE_EQ(voigt[3], inv[1]);
+    EXPECT_DOUBLE_EQ(voigt[4], inv[5]);
+    EXPECT_DOUBLE_EQ(voigt[5], inv[2]);
+    // Singular matrix -> all NaN
+    const double sing[9] = {1, 2, 3, 2, 4, 6, 0, 0, 1};
+    MathUtils::Invert3x3(sing, inv);
+    for (int k = 0; k < 9; ++k)
+        EXPECT_TRUE(std::isnan(inv[k]));
+}

@@ -57,9 +57,8 @@ def bake_texture_cmd(args):
                 "covered_pixels": report["covered_pixels"],
             }
         )
-        return 0
+        return
     print(
         f"{report['covered_pixels']} pixel(s) covered, range "
         f"[{report['vmin']:.6g}, {report['vmax']:.6g}]"
     )
-    return 0

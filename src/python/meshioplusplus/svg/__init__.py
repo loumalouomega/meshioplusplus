@@ -1,12 +1,11 @@
 from typing import Union
 
-from .. import _core
-from .._fallback import core_declined
-from .._files import is_buffer
+from .. import _core  # noqa: F401
 from .._helpers import register_format
 from .._projection import ISO_AZIMUTH, ISO_ELEVATION
-from ._svg import read as _py_read
-from ._svg import write as _py_write
+from .._shims import dispatch_write, drawing_read_shim
+from ._svg import read as _py_read  # noqa: F401
+from ._svg import write as _py_write  # noqa: F401
 
 
 def write(
@@ -46,55 +45,51 @@ def write(
     (and only the viewBox). With ``color_by`` unset the output is
     byte-identical to previous releases.
     """
-    if not is_buffer(filename, "w"):
-        try:
-            # Positional, and the order is load-bearing: it must match the
-            # py::arg list in bindings/python/_core.cpp exactly.
-            _core.svg_write(
-                str(filename),
-                mesh,
-                float_fmt,
-                stroke_width,
-                image_width,
-                fill,
-                stroke,
-                azimuth,
-                elevation,
-                roll,
-                color_by or "",
-                component,
-                cmap,
-                vmin,
-                vmax,
-                nan_color,
-                colorbar,
-            )
-            return
-        except Exception as exc:
-            if not core_declined(exc, "svg", "write", filename):
-                raise
-    return _py_write(
+    return dispatch_write(
+        __name__,
+        "svg",
         filename,
         mesh,
-        float_fmt=float_fmt,
-        stroke_width=stroke_width,
-        image_width=image_width,
-        fill=fill,
-        stroke=stroke,
-        azimuth=azimuth,
-        elevation=elevation,
-        roll=roll,
-        color_by=color_by,
-        component=component,
-        cmap=cmap,
-        vmin=vmin,
-        vmax=vmax,
-        nan_color=nan_color,
-        colorbar=colorbar,
+        (
+            float_fmt,
+            stroke_width,
+            image_width,
+            fill,
+            stroke,
+            azimuth,
+            elevation,
+            roll,
+            color_by or "",
+            component,
+            cmap,
+            vmin,
+            vmax,
+            nan_color,
+            colorbar,
+        ),
+        dict(
+            float_fmt=float_fmt,
+            stroke_width=stroke_width,
+            image_width=image_width,
+            fill=fill,
+            stroke=stroke,
+            azimuth=azimuth,
+            elevation=elevation,
+            roll=roll,
+            color_by=color_by,
+            component=component,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            nan_color=nan_color,
+            colorbar=colorbar,
+        ),
     )
 
 
-def read(filename, points_only=False, arrays=None, strict=True):
+read = drawing_read_shim(
+    __name__,
+    "svg",
     """Read an SVG drawing written by :func:`write` back as a planar mesh.
 
     A drawing is not a mesh, so only the structure meshio++'s own writer emits is
@@ -102,14 +97,8 @@ def read(filename, points_only=False, arrays=None, strict=True):
     ``ReadError`` naming the construct. A file without meshio++'s marker comment is
     refused unless ``strict=False``. ``z`` is always 0, and the read warns once that
     depth is lost. See ``doc/formats/svg.md``.
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.svg_read(str(filename), points_only, arrays, strict)
-        except Exception as exc:
-            if not core_declined(exc, "svg", "read", filename):
-                raise
-    return _py_read(filename, points_only=points_only, arrays=arrays, strict=strict)
+    """,
+)
 
 
 register_format("svg", [".svg"], read, {"svg": write})

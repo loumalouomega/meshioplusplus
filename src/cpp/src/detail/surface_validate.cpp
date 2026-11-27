@@ -43,18 +43,8 @@ double sv_median(std::vector<double> rV) {
 }  // namespace
 
 double patch_noise_sigma(const std::vector<PatchVec>& rPts, const std::vector<PatchTri>& rTris) {
-    std::vector<std::vector<std::size_t>> ring(rPts.size());
-    for (const PatchTri& t : rTris)
-        for (int k = 0; k < 3; ++k) {
-            ring[t[static_cast<std::size_t>(k)]].push_back(
-                t[static_cast<std::size_t>((k + 1) % 3)]);
-            ring[t[static_cast<std::size_t>((k + 1) % 3)]].push_back(
-                t[static_cast<std::size_t>(k)]);
-        }
-    for (auto& r : ring) {
-        std::sort(r.begin(), r.end());
-        r.erase(std::unique(r.begin(), r.end()), r.end());
-    }
+    std::vector<std::vector<std::size_t>> ring =
+        GeometryUtils::TriangleVertexRings(rTris, rPts.size());
     bool ok = true;
     std::vector<std::uint8_t> boundary(rPts.size(), 0);
     for (const auto& loop : param_boundary_loops(rTris, ok))

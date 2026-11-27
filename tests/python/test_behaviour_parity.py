@@ -69,14 +69,18 @@ def test_time_values_shim_guards_file_like_buffers():
         "marc",
         "ansys_rst",
         "lsdyna_d3plot",
+        "lsdyna_binout",
         "femap",
         "abaqus_fil",
+        "selafin",
+        "ugrid_nc",
     ],
 )
 def test_every_time_values_format_uses_guarded_shim(fmt: str):
     src = (PKG / fmt / "__init__.py").read_text(encoding="utf-8")
-    assert "time_values_shim" in src
-    assert "time_values = time_values_shim(" in src
+    uses_tv_shim = "time_values = time_values_shim(" in src
+    uses_series_shims = "series_shims(" in src and "time_values" in src
+    assert uses_tv_shim or uses_series_shims
 
 
 def test_medmulti_writes_med_num():

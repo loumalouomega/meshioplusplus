@@ -77,6 +77,9 @@ IgaShape iga_check_patch(const NurbsPatch& rP, const std::string& rWhat) {
             if (!std::isfinite(k[i]) || (i && k[i] < k[i - 1]))
                 iga_fail(rWhat + " knot vector is not finite and non-decreasing");
         sh.mCounts[d] = k.size() - static_cast<std::size_t>(p) - 1;
+        if (k[static_cast<std::size_t>(p)] >= k[sh.mCounts[d]])
+            iga_fail(rWhat + " knot vector in direction " + std::to_string(d) +
+                     " has zero active span length");
         sh.mNumPoints *= sh.mCounts[d];
     }
     const NDArray& cps = rP.mControlPoints;
@@ -833,6 +836,9 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         std::size_t spans = 0;
         for (std::size_t s = static_cast<std::size_t>(patch.mDegrees[d]); s < sh.mCounts[d]; ++s)
             spans += k[s] < k[s + 1] ? 1 : 0;
+        if (spans == 0)
+            iga_fail("closest_point knot vector in direction " + std::to_string(d) +
+                     " has zero active span length");
         const std::size_t cap = dim == 1 ? 4096 : 64;
         std::size_t per = static_cast<std::size_t>(patch.mDegrees[d]) + 1;
         per = std::max<std::size_t>(1, std::min(per, cap > spans ? (cap - 1) / spans : 1));

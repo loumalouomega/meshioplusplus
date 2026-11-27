@@ -3,13 +3,15 @@ from .._fallback import core_declined
 from .._files import is_buffer
 from .._helpers import register_format
 from .._series_writer import CoreSeriesWriter
-from ._binout import read as _py_read
-from ._binout import time_values as _py_time_values
+from .._shims import dispatch_write, series_read_shim, time_values_shim
+from ._binout import read as _py_read  # noqa: F401
+from ._binout import time_values as _py_time_values  # noqa: F401
 from ._write import SeriesWriter as _PySeriesWriter
-from ._write import write as _py_write
+from ._write import write as _py_write  # noqa: F401
 
-
-def read(filename, points_only=False, arrays=None, time_step=0):
+read = series_read_shim(
+    __name__,
+    "lsdyna_binout",
     """Read one output of an LS-DYNA binout (``binout``, ``binout%001``...).
 
     The steps are the ``nodout`` outputs: each is a point cloud of the
@@ -19,29 +21,14 @@ def read(filename, points_only=False, arrays=None, time_step=0):
     ``matsum``, ``elout/beam``...) are field data
     ``binout:<database>:<variable>``. Without ``nodout`` the steps are the
     first database's outputs and the mesh has no points.
-    """
-    if not is_buffer(filename, "r"):
-        try:
-            return _core.lsdyna_binout_read(
-                str(filename),
-                points_only=points_only,
-                arrays=arrays,
-                time_step=time_step,
-            )
-        except Exception as exc:
-            if not core_declined(exc, "lsdyna_binout", "read", filename):
-                raise
-    return _py_read(filename, points_only, arrays, time_step)
+    """,
+)
 
-
-def time_values(filename):
-    """The time of every output (``nodout``'s, else the first database's)."""
-    try:
-        return list(_core.lsdyna_binout_time_values(str(filename)))
-    except Exception as exc:
-        if not core_declined(exc, "lsdyna_binout", "read", filename):
-            raise
-    return _py_time_values(filename)
+time_values = time_values_shim(
+    __name__,
+    "lsdyna_binout",
+    """The time of every output (``nodout``'s, else the first database's).""",
+)
 
 
 def write(filename, mesh, split_size=0, word_size=8, big_endian=False):
@@ -64,16 +51,14 @@ def write(filename, mesh, split_size=0, word_size=8, big_endian=False):
     length and offset in the LSDA records and ``big_endian`` their byte order and the
     data's.
     """
-    if not is_buffer(filename, "w"):
-        try:
-            _core.lsdyna_binout_write(
-                str(filename), mesh, split_size, word_size, big_endian
-            )
-            return
-        except Exception as exc:
-            if not core_declined(exc, "lsdyna_binout", "write", filename):
-                raise
-    return _py_write(filename, mesh, split_size, word_size, big_endian)
+    return dispatch_write(
+        __name__,
+        "lsdyna_binout",
+        filename,
+        mesh,
+        (split_size, word_size, big_endian),
+        dict(split_size=split_size, word_size=word_size, big_endian=big_endian),
+    )
 
 
 class SeriesWriter(CoreSeriesWriter):

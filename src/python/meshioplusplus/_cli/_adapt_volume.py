@@ -94,7 +94,7 @@ def adapt_volume_cmd(args):
                 **{k: v for k, v in report.items() if k != "timings"},
             }
         )
-        return 0
+        return
     print(
         f"tets {report['num_tets_before']} -> {report['num_tets_after']}, "
         f"points {report['num_points_before']} -> {report['num_points_after']}"
@@ -111,4 +111,3 @@ def adapt_volume_cmd(args):
         f"degrees; boundary within {report['max_boundary_deviation']:.4g} "
         f"(hausd {report['hausd']:.4g})"
     )
-    return 0

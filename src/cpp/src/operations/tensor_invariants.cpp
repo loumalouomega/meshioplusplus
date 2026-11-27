@@ -38,6 +38,7 @@
 #include "meshioplusplus/ndarray.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../detail/math_utils.hpp"
 
 namespace meshioplusplus {
 
@@ -143,7 +144,9 @@ NDArray tinv_deviatoric(const NDArray& rSrc, std::size_t Ncomp) {
 /// `xx yy zz xy yz zx`, symmetric; a 9-component row is not symmetrised).
 /// Returns false when any component is non-finite.
 bool tinv_read_matrix(const NDArray& rArray, std::size_t Ncomp, std::size_t r, double* pM) {
-    double t[9];
+    if (Ncomp != 6 && Ncomp != 9)
+        return false;
+    double t[9] = {};
     for (std::size_t k = 0; k < Ncomp; ++k) {
         t[k] = detail::read_double(rArray, r * Ncomp + k);
         if (!std::isfinite(t[k]))
@@ -243,35 +246,15 @@ NDArray tinv_inverse(const NDArray& rSrc, std::size_t Ncomp) {
     double* out = dst.As<double>();
     parallel_for(nrows, [&](std::size_t r) {
         double m[9];
-        double inv[9];
-        const double nan = std::numeric_limits<double>::quiet_NaN();
-        const double det = tinv_read_matrix(rSrc, Ncomp, r, m) ? tinv_det(m) : nan;
-        if (!std::isfinite(det) || det == 0.0) {
+        if (!tinv_read_matrix(rSrc, Ncomp, r, m)) {
+            const double nan = std::numeric_limits<double>::quiet_NaN();
             for (std::size_t k = 0; k < Ncomp; ++k)
                 out[r * Ncomp + k] = nan;
             return;
         }
-        // The adjugate (the transposed cofactor matrix), row by row.
-        inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;
-        inv[1] = (m[2] * m[7] - m[1] * m[8]) / det;
-        inv[2] = (m[1] * m[5] - m[2] * m[4]) / det;
-        inv[3] = (m[5] * m[6] - m[3] * m[8]) / det;
-        inv[4] = (m[0] * m[8] - m[2] * m[6]) / det;
-        inv[5] = (m[2] * m[3] - m[0] * m[5]) / det;
-        inv[6] = (m[3] * m[7] - m[4] * m[6]) / det;
-        inv[7] = (m[1] * m[6] - m[0] * m[7]) / det;
-        inv[8] = (m[0] * m[4] - m[1] * m[3]) / det;
-        if (Ncomp == 6) {
-            out[r * 6 + 0] = inv[0];
-            out[r * 6 + 1] = inv[4];
-            out[r * 6 + 2] = inv[8];
-            out[r * 6 + 3] = inv[1];
-            out[r * 6 + 4] = inv[5];
-            out[r * 6 + 5] = inv[2];
-        } else {
-            for (int k = 0; k < 9; ++k)
-                out[r * 9 + k] = inv[k];
-        }
+        double inv[9];
+        detail::MathUtils::Invert3x3(m, inv);
+        detail::MathUtils::PackTensor3x3(inv, Ncomp, out + r * Ncomp);
     });
     return dst;
 }

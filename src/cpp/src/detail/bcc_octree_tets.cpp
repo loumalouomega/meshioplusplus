@@ -33,6 +33,7 @@
 
 // Project includes
 #include "bcc_octree_tets.hpp"
+#include "geometry_utils.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
@@ -41,8 +42,6 @@ namespace detail {
 namespace {
 
 using BccoPoint = std::array<std::int64_t, 3>;
-
-constexpr double kBccoRadToDeg = 57.29577951308232087680;
 
 std::uint64_t bcco_key(const BccoPoint& rP) {
     return linoct_key(rP[0], rP[1], rP[2]);
@@ -105,21 +104,8 @@ void bcco_emit(std::vector<BccoTet>& rOut, const BccoPoint& rP0, BccVertexType T
 
 std::array<double, 6> tet_dihedral_angles(const Vec3& rA, const Vec3& rB, const Vec3& rC,
                                           const Vec3& rD) {
-    const Vec3 p[4] = {rA, rB, rC, rD};
-    // The edge (i, j) has the opposite edge (k, l); its dihedral angle is the
-    // angle between the normals of faces (i, j, k) and (i, j, l).
-    constexpr int kEdge[6][4] = {{0, 1, 2, 3}, {0, 2, 1, 3}, {0, 3, 1, 2},
-                                 {1, 2, 0, 3}, {1, 3, 0, 2}, {2, 3, 0, 1}};
-    std::array<double, 6> out{};
-    for (std::size_t e = 0; e < 6; ++e) {
-        const Vec3& a = p[kEdge[e][0]];
-        const Vec3& b = p[kEdge[e][1]];
-        const Vec3 ab = vec3_sub(b, a);
-        const Vec3 n1 = vec3_cross(ab, vec3_sub(p[kEdge[e][2]], a));
-        const Vec3 n2 = vec3_cross(ab, vec3_sub(p[kEdge[e][3]], a));
-        const double c = vec3_dot(n1, n2) / std::sqrt(vec3_norm_sq(n1) * vec3_norm_sq(n2));
-        out[e] = std::acos(std::clamp(c, -1.0, 1.0)) * kBccoRadToDeg;
-    }
+    std::array<double, 6> out =
+        GeometryUtils::TetDihedralAnglesDeg(rA, rB, rC, rD, /*GuardZero=*/false);
     std::sort(out.begin(), out.end());
     return out;
 }

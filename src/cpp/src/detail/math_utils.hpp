@@ -47,6 +47,7 @@
 
 // Project includes
 #include "meshioplusplus/detail/geometry.hpp"
+#include "always_inline.hpp"
 
 namespace meshioplusplus::detail {
 
@@ -206,6 +207,53 @@ struct MathUtils {
             x[static_cast<std::size_t>(k)] = det(c0, c1, c2) / d;
         }
         return x;
+    }
+
+    /**
+     * @brief Exact cofactor/adjugate inverse `adj(M) / det(M)` of a row-major
+     * 3x3 matrix `pM`, written to `pInv` (which must not alias `pM`).
+     *
+     * Writes `NaN` to all 9 entries when `det(M)` is zero or non-finite.
+     * Matches `data_calc`'s `inv` and `tensor_invariants`' inverse operation
+     * for operation.
+     */
+    MIO_ALWAYS_INLINE static void Invert3x3(const double* pM, double* pInv) {
+        const double det =
+            det3({pM[0], pM[1], pM[2]}, {pM[3], pM[4], pM[5]}, {pM[6], pM[7], pM[8]});
+        if (!std::isfinite(det) || det == 0.0) {
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            for (int k = 0; k < 9; ++k)
+                pInv[k] = nan;
+            return;
+        }
+        pInv[0] = (pM[4] * pM[8] - pM[5] * pM[7]) / det;
+        pInv[1] = (pM[2] * pM[7] - pM[1] * pM[8]) / det;
+        pInv[2] = (pM[1] * pM[5] - pM[2] * pM[4]) / det;
+        pInv[3] = (pM[5] * pM[6] - pM[3] * pM[8]) / det;
+        pInv[4] = (pM[0] * pM[8] - pM[2] * pM[6]) / det;
+        pInv[5] = (pM[2] * pM[3] - pM[0] * pM[5]) / det;
+        pInv[6] = (pM[3] * pM[7] - pM[4] * pM[6]) / det;
+        pInv[7] = (pM[1] * pM[6] - pM[0] * pM[7]) / det;
+        pInv[8] = (pM[0] * pM[4] - pM[1] * pM[3]) / det;
+    }
+
+    /**
+     * @brief Packs a row-major 3x3 tensor `pM` into `pOut`: 6-component
+     * symmetric Voigt order (`xx yy zz xy yz zx`) when `Ncomp == 6`, or all 9
+     * entries when `Ncomp == 9`.
+     */
+    MIO_ALWAYS_INLINE static void PackTensor3x3(const double* pM, std::size_t Ncomp, double* pOut) {
+        if (Ncomp == 6) {
+            pOut[0] = pM[0];
+            pOut[1] = pM[4];
+            pOut[2] = pM[8];
+            pOut[3] = pM[1];
+            pOut[4] = pM[5];
+            pOut[5] = pM[2];
+        } else {
+            for (int k = 0; k < 9; ++k)
+                pOut[k] = pM[k];
+        }
     }
 
     ///@}

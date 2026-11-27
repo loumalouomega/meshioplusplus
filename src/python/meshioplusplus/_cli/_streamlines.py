@@ -110,9 +110,8 @@ def streamlines_cmd(args):
                 "dim": report["dim"],
             }
         )
-        return 0
+        return
     text = f"traced {report['num_lines']} streamline(s), {len(out.points)} point(s)"
     if report["num_seeds_outside"]:
         text += f", {report['num_seeds_outside']} seed(s) outside the mesh"
     print(text)
-    return 0
