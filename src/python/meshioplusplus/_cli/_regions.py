@@ -98,6 +98,29 @@ def _edit_cmd(args):
     return 0
 
 
+def _print_regions(regions):
+    has_tree = any("/" in r["name"] for r in regions)
+    if not has_tree:
+        for r in regions:
+            tag = "" if r["tag"] < 0 else f", tag={r['tag']}"
+            dim = "" if r["dim"] < 0 else f", dim={r['dim']}"
+            print(f"  {r['name']} ({r['kind']}, {r['num_entries']} entries{dim}{tag})")
+        return
+    printed_groups = set()
+    for r in regions:
+        parts = [p for p in r["name"].split("/") if p]
+        for depth in range(len(parts) - 1):
+            prefix = "/".join(parts[: depth + 1])
+            if prefix not in printed_groups:
+                printed_groups.add(prefix)
+                print(f"  {'  ' * depth}{parts[depth]}/")
+        tag = "" if r["tag"] < 0 else f", tag={r['tag']}"
+        dim = "" if r["dim"] < 0 else f", dim={r['dim']}"
+        indent = "  " * max(len(parts) - 1, 0)
+        leaf = parts[-1] if parts else r["name"]
+        print(f"  {indent}{leaf} ({r['kind']}, {r['num_entries']} entries{dim}{tag})")
+
+
 def regions_cmd(args):
     if args.edits:
         return _edit_cmd(args)
@@ -122,8 +145,5 @@ def regions_cmd(args):
         return 0
 
     print(f"<meshio++ mesh regions> ({len(regions)})")
-    for r in regions:
-        tag = "" if r["tag"] < 0 else f", tag={r['tag']}"
-        dim = "" if r["dim"] < 0 else f", dim={r['dim']}"
-        print(f"  {r['name']} ({r['kind']}, {r['num_entries']} entries{dim}{tag})")
+    _print_regions(regions)
     return 0

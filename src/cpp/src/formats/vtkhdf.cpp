@@ -49,6 +49,7 @@
 #include "meshioplusplus/types.hpp"
 #include "meshioplusplus/vtk_common.hpp"
 #include "../detail/lattice_cells.hpp"
+#include "../detail/region_tree.hpp"
 #include "../detail/structured_grid.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/ndarray_utils.hpp"
@@ -903,7 +904,9 @@ struct VtkhdfBlock {
     Hid mGroup;
 };
 
-void vtkhdf_walk_assembly(hid_t Node, const std::string& rPrefix, std::vector<VtkhdfBlock>& rOut) {
+bool vtkhdf_walk_assembly(hid_t Node, const std::string& rPrefix, std::vector<VtkhdfBlock>& rOut,
+                          std::vector<std::string>& rEmptyGroups) {
+    bool found_any = false;
     for (const auto& name : h5::group_links_crt(Node)) {
         if (h5::is_soft_link(Node, name)) {
             if (H5Oexists_by_name(Node, name.c_str(), H5P_DEFAULT) <= 0)
@@ -915,19 +918,29 @@ void vtkhdf_walk_assembly(hid_t Node, const std::string& rPrefix, std::vector<Vt
             b.mPath = rPrefix + name;
             b.mGroup = Hid(H5Gopen2(Node, name.c_str(), H5P_DEFAULT), H5Gclose);
             rOut.push_back(std::move(b));
+            found_any = true;
         } else {
             Hid child(H5Gopen2(Node, name.c_str(), H5P_DEFAULT), H5Gclose);
-            if (child.Valid())
-                vtkhdf_walk_assembly(child, rPrefix + name + "/", rOut);
+            if (child.Valid()) {
+                const std::string sub_path = rPrefix + name;
+                const bool sub =
+                    vtkhdf_walk_assembly(child, sub_path + "/", rOut, rEmptyGroups);
+                if (!sub)
+                    rEmptyGroups.push_back(sub_path);
+                found_any = found_any || sub;
+            }
         }
     }
+    return found_any;
 }
 
-std::vector<VtkhdfBlock> vtkhdf_composite_blocks(hid_t G, const std::string& rKind) {
+std::vector<VtkhdfBlock> vtkhdf_composite_blocks(hid_t G, const std::string& rKind,
+                                                 std::vector<std::string>* pEmptyGroups = nullptr) {
     std::vector<VtkhdfBlock> blocks;
+    std::vector<std::string> empty_groups;
     if (h5::exists(G, "Assembly")) {
         Hid asm_ = h5::open_group(G, "Assembly");
-        vtkhdf_walk_assembly(asm_, "", blocks);
+        vtkhdf_walk_assembly(asm_, "", blocks, empty_groups);
     } else {
         for (const auto& name : h5::group_links_crt(G)) {
             if (name == "Assembly" || name == "Steps" || name == "FieldData")
@@ -941,10 +954,20 @@ std::vector<VtkhdfBlock> vtkhdf_composite_blocks(hid_t G, const std::string& rKi
             }
         }
     }
+    if (pEmptyGroups)
+        *pEmptyGroups = std::move(empty_groups);
+
+    // Keep full nested Assembly paths (skipping only the flat 1-level PDC
+    // wrapper `X/X` so flat PDC files keep plain region names).
     std::set<std::string> seen;
     bool collide = false;
-    for (const auto& b : blocks)
+    for (auto& b : blocks) {
+        const bool is_flat_pdc_wrapper =
+            rKind == "PartitionedDataSetCollection" && b.mPath == b.mName + "/" + b.mName;
+        if (!is_flat_pdc_wrapper && b.mPath.find('/') != std::string::npos)
+            b.mName = b.mPath;
         collide = !seen.insert(b.mName).second || collide;
+    }
     if (collide)
         for (auto& b : blocks)
             b.mName = b.mPath;
@@ -1066,7 +1089,8 @@ VtkhdfLeaf vtkhdf_concat_leaves(std::vector<VtkhdfLeaf>& rLeaves) {
 }
 
 Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions& rOpts) {
-    std::vector<VtkhdfBlock> blocks = vtkhdf_composite_blocks(G, rKind);
+    std::vector<std::string> empty_groups;
+    std::vector<VtkhdfBlock> blocks = vtkhdf_composite_blocks(G, rKind, &empty_groups);
     const VtkhdfSteps root_steps = vtkhdf_check_no_time(G, kVtkhdfRoot);
     (void)rOpts.ResolveTimeStep(root_steps.Count());  // 0 / -1 are the only steps of a static file
 
@@ -1124,7 +1148,10 @@ Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions&
     VtkhdfLeaf merged = vtkhdf_concat_leaves(leaves);
     for (auto& kv : root_fd.mFieldData)
         merged.mFieldData.emplace(kv.first, std::move(kv.second));
-    return vtkhdf_assemble(merged, rOpts, piece_names);
+    Mesh out = vtkhdf_assemble(merged, rOpts, piece_names);
+    if (!empty_groups.empty())
+        detail::set_region_tree_nodes(out, empty_groups);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1543,7 +1570,7 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
 using VtkhdfPiece = detail::MeshPart;
 
 std::vector<VtkhdfPiece> vtkhdf_carve(const Mesh& rMesh) {
-    return detail::carve_by_region(rMesh, "vtkhdf", /*StrictNames=*/true, /*RejectSlash=*/true);
+    return detail::carve_by_region(rMesh, "vtkhdf", /*StrictNames=*/true, /*RejectSlash=*/false);
 }
 
 std::pair<int, int> vtkhdf_resolve_version(VtkhdfVersion Requested, VtkhdfType Type, bool HasPoly) {
@@ -1596,23 +1623,84 @@ void write_vtkhdf(const std::string& rPath, const Mesh& rMesh, int GzipLevel, Vt
         const std::vector<VtkhdfPiece> pieces = vtkhdf_carve(rMesh);
         vtkhdf_write_type_and_version(root, vtkhdf_type_name(Type), ver);
         const bool pdc = Type == VtkhdfType::PartitionedDataSetCollection;
+        const std::vector<std::string> empty_tree_nodes = detail::get_region_tree_nodes(rMesh);
+        bool has_hierarchy = !empty_tree_nodes.empty();
+        for (const auto& p : pieces)
+            if (p.mName.find('/') != std::string::npos)
+                has_hierarchy = true;
+
+        std::vector<std::string> root_names(pieces.size());
+        std::set<std::string> used_root;
         for (std::size_t i = 0; i < pieces.size(); ++i) {
+            std::string gname = pieces[i].mName;
+            if (gname.find('/') != std::string::npos) {
+                std::string flat;
+                for (char c : gname)
+                    flat += (c == '/') ? "__" : std::string(1, c);
+                gname = flat;
+            }
+            if (used_root.count(gname) != 0 || gname == "Assembly" || gname == "Steps" ||
+                gname == "FieldData") {
+                std::size_t suffix = 1;
+                while (used_root.count(gname + "_" + std::to_string(suffix)) != 0)
+                    ++suffix;
+                gname += "_" + std::to_string(suffix);
+            }
+            used_root.insert(gname);
+            root_names[i] = gname;
             // A composite's root may hold only blocks and the Assembly (vtkHDFReader reads
             // every other root group as a block and then fails), so mesh-wide field_data
             // rides on each block's own FieldData group, which the block writer does.
-            Hid bg = h5::create_group_crt(root, pieces[i].mName);
+            Hid bg = h5::create_group_crt(root, gname);
             if (pdc)
                 h5::write_attr_int(bg, "Index", static_cast<I64>(i));
             vtkhdf_write_ug_group(bg, rMesh, &pieces[i].mCells, GzipLevel, ver);
         }
         Hid asm_ = h5::create_group_crt(root, "Assembly");
-        for (const auto& p : pieces) {
-            const std::string target = std::string("/") + kVtkhdfRoot + "/" + p.mName;
-            if (pdc) {
-                Hid node = h5::create_group_crt(asm_, p.mName);
-                h5::create_soft_link(node, p.mName, target);
-            } else {
-                h5::create_soft_link(asm_, p.mName, target);
+        if (!has_hierarchy) {
+            for (std::size_t i = 0; i < pieces.size(); ++i) {
+                const std::string target = std::string("/") + kVtkhdfRoot + "/" + root_names[i];
+                if (pdc) {
+                    Hid node = h5::create_group_crt(asm_, pieces[i].mName);
+                    h5::create_soft_link(node, pieces[i].mName, target);
+                } else {
+                    h5::create_soft_link(asm_, pieces[i].mName, target);
+                }
+            }
+        } else {
+            auto ensure_asm_group = [&](const std::vector<std::string>& rSegs,
+                                        std::size_t Depth) -> Hid {
+                hid_t cur_id = asm_.Get();
+                Hid owned;
+                for (std::size_t d = 0; d < Depth; ++d) {
+                    const std::string& seg = rSegs[d];
+                    Hid next = h5::exists(cur_id, seg) ? h5::open_group(cur_id, seg)
+                                                       : h5::create_group_crt(cur_id, seg);
+                    owned = std::move(next);
+                    cur_id = owned.Get();
+                }
+                return owned;
+            };
+            for (std::size_t i = 0; i < pieces.size(); ++i) {
+                const std::string target = std::string("/") + kVtkhdfRoot + "/" + root_names[i];
+                const auto segs = detail::split_region_path(pieces[i].mName);
+                if (segs.size() <= 1) {
+                    const std::string leaf = segs.empty() ? root_names[i] : segs[0];
+                    if (pdc) {
+                        Hid node = h5::create_group_crt(asm_, leaf);
+                        h5::create_soft_link(node, leaf, target);
+                    } else {
+                        h5::create_soft_link(asm_, leaf, target);
+                    }
+                } else {
+                    Hid parent = ensure_asm_group(segs, segs.size() - 1);
+                    h5::create_soft_link(parent, segs.back(), target);
+                }
+            }
+            for (const std::string& p : empty_tree_nodes) {
+                const auto segs = detail::split_region_path(p);
+                if (!segs.empty())
+                    (void)ensure_asm_group(segs, segs.size());
             }
         }
     }

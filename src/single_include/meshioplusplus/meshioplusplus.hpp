@@ -61587,6 +61587,335 @@ std::vector<RegionSummary> region_summaries_from_field_names(
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/region_field_data.hpp =====
+// ===== begin src/cpp/src/detail/string_field.hpp =====
+/**
+ * @file detail/string_field.hpp
+ * @brief UTF-8 string and boolean-mask conventions in `field_data` (roadmap §8.2).
+ *
+ * - Scalar string `name`:
+ *     - `field_data[name]`           = `UInt8` 1-D array of UTF-8 bytes
+ *     - `field_data[name:offsets]`   = `Int64` 1-D array of shape `{1}` holding `{len}`
+ * - List of `k` strings `name`:
+ *     - `field_data[name]`           = `UInt8` 1-D array of concatenated UTF-8 bytes
+ *     - `field_data[name:offsets]`   = `Int64` 1-D array of shape `{k + 1}` holding CSR offsets
+ * - Boolean array `name` at location `loc` (`"point"`, `"cell"`, `"field"`):
+ *     - stored as `UInt8` (`0`/`1`), marked by `field_data["meshio:bool:<loc>:<name>"] = UInt8[1] { 1 }`
+ *
+ * Decoding reads byte/bool payloads via `DType::UInt8` fast path or `read_int`
+ * fallback so it works identically on MESHIO, NATIVE, and KRATOS backends
+ * (where `NativeMesh::canonicalize_array` widens `UInt8` to `Int64`).
+ *
+ * Core-private: no installed header includes this.
+ */
+
+// System includes
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+inline constexpr std::string_view kStringOffsetsSuffix = ":offsets";
+inline constexpr std::string_view kBoolMarkerPrefix = "meshio:bool:";
+
+inline std::string string_offsets_key(std::string_view rName) {
+    return std::string(rName) + std::string(kStringOffsetsSuffix);
+}
+
+inline bool is_bool_marker_key(std::string_view rName) {
+    return rName.starts_with(kBoolMarkerPrefix);
+}
+
+inline std::string bool_marker_key(std::string_view rLoc, std::string_view rName) {
+    return std::string(kBoolMarkerPrefix) + std::string(rLoc) + ":" + std::string(rName);
+}
+
+inline void set_bool_marker(Mesh& rMesh, std::string_view rLoc, std::string_view rName) {
+    NDArray flag(DType::UInt8, {1});
+    flag.As<std::uint8_t>()[0] = 1;
+    rMesh.AddFieldData(bool_marker_key(rLoc, rName), std::move(flag));
+}
+
+inline bool is_bool_array(const Mesh& rMesh, std::string_view rLoc, std::string_view rName) {
+    const std::string key = bool_marker_key(rLoc, rName);
+    if (!rMesh.HasFieldData(key))
+        return false;
+    const NDArray& flag = rMesh.FieldData(key);
+    return flag.Size() >= 1 && read_int(flag, 0) != 0;
+}
+
+/// Returns true if `rKey` is a companion `<base>:offsets` array for an existing
+/// string field `<base>` on `rMesh`.
+inline bool is_string_offsets_key(const Mesh& rMesh, std::string_view rKey) {
+    if (rKey.size() <= kStringOffsetsSuffix.size() || !rKey.ends_with(kStringOffsetsSuffix))
+        return false;
+    const std::string base(rKey.substr(0, rKey.size() - kStringOffsetsSuffix.size()));
+    return rMesh.HasFieldData(base);
+}
+
+/// Returns true if `rKey` is internal string/bool metadata (`<base>:offsets` or
+/// `meshio:bool:*`) that numeric-only writers should skip.
+inline bool is_string_or_bool_meta_key(const Mesh& rMesh, std::string_view rKey) {
+    return is_bool_marker_key(rKey) || is_string_offsets_key(rMesh, rKey);
+}
+
+/// Store a scalar UTF-8 string in `field_data[rName]`.
+inline void set_field_string(Mesh& rMesh, const std::string& rName, std::string_view rValue) {
+    NDArray bytes(DType::UInt8, {rValue.size()});
+    if (!rValue.empty())
+        std::memcpy(bytes.Data(), rValue.data(), rValue.size());
+    NDArray offs(DType::Int64, {1});
+    offs.As<std::int64_t>()[0] = static_cast<std::int64_t>(rValue.size());
+    rMesh.AddFieldData(rName, std::move(bytes));
+    rMesh.AddFieldData(string_offsets_key(rName), std::move(offs));
+}
+
+/// Store a list of UTF-8 strings in `field_data[rName]`.
+inline void set_field_strings(Mesh& rMesh, const std::string& rName,
+                              const std::vector<std::string>& rValues) {
+    std::size_t total = 0;
+    for (const auto& s : rValues)
+        total += s.size();
+    NDArray bytes(DType::UInt8, {total});
+    NDArray offs(DType::Int64, {rValues.size() + 1});
+    auto* p_off = offs.As<std::int64_t>();
+    auto* p_bytes = bytes.As<std::uint8_t>();
+    std::size_t pos = 0;
+    p_off[0] = 0;
+    for (std::size_t i = 0; i < rValues.size(); ++i) {
+        if (!rValues[i].empty())
+            std::memcpy(p_bytes + pos, rValues[i].data(), rValues[i].size());
+        pos += rValues[i].size();
+        p_off[i + 1] = static_cast<std::int64_t>(pos);
+    }
+    rMesh.AddFieldData(rName, std::move(bytes));
+    rMesh.AddFieldData(string_offsets_key(rName), std::move(offs));
+}
+
+/// Decode `rBytes[rBegin .. rEnd)` into a `std::string` regardless of whether
+/// the backend kept `UInt8` or widened to `Int64`.
+inline std::string decode_utf8_slice(const NDArray& rBytes, std::size_t Begin, std::size_t End) {
+    if (End <= Begin || End > rBytes.Size())
+        return {};
+    const std::size_t len = End - Begin;
+    std::string out(len, '\0');
+    if (rBytes.Dtype() == DType::UInt8) {
+        std::memcpy(out.data(), rBytes.As<std::uint8_t>() + Begin, len);
+    } else {
+        for (std::size_t i = 0; i < len; ++i)
+            out[i] = static_cast<char>(static_cast<std::uint8_t>(read_int(rBytes, Begin + i)));
+    }
+    return out;
+}
+
+/// Returns true if `field_data[rName]` is encoded as a scalar UTF-8 string.
+inline bool is_field_string(const Mesh& rMesh, const std::string& rName) {
+    const std::string off_key = string_offsets_key(rName);
+    if (!rMesh.HasFieldData(rName) || !rMesh.HasFieldData(off_key))
+        return false;
+    const NDArray& offs = rMesh.FieldData(off_key);
+    return offs.Shape().size() == 1 && offs.Shape()[0] == 1;
+}
+
+/// Returns true if `field_data[rName]` is encoded as a list of UTF-8 strings.
+inline bool is_field_string_list(const Mesh& rMesh, const std::string& rName) {
+    const std::string off_key = string_offsets_key(rName);
+    if (!rMesh.HasFieldData(rName) || !rMesh.HasFieldData(off_key))
+        return false;
+    const NDArray& offs = rMesh.FieldData(off_key);
+    return offs.Shape().size() == 1 && offs.Shape()[0] >= 2;
+}
+
+/// Read a scalar UTF-8 string from `field_data[rName]`, or `std::nullopt`.
+inline std::optional<std::string> get_field_string(const Mesh& rMesh, const std::string& rName) {
+    if (!is_field_string(rMesh, rName))
+        return std::nullopt;
+    const NDArray& bytes = rMesh.FieldData(rName);
+    const NDArray& offs = rMesh.FieldData(string_offsets_key(rName));
+    const std::int64_t len = read_int(offs, 0);
+    if (len < 0 || static_cast<std::size_t>(len) != bytes.Size())
+        return std::nullopt;
+    return decode_utf8_slice(bytes, 0, bytes.Size());
+}
+
+/// Read a list of UTF-8 strings from `field_data[rName]` (also accepts a scalar
+/// string as a 1-element list). Returns `std::nullopt` if not a string field.
+inline std::optional<std::vector<std::string>> get_field_strings(const Mesh& rMesh,
+                                                                 const std::string& rName) {
+    if (auto scalar = get_field_string(rMesh, rName))
+        return std::vector<std::string>{std::move(*scalar)};
+    if (!is_field_string_list(rMesh, rName))
+        return std::nullopt;
+    const NDArray& bytes = rMesh.FieldData(rName);
+    const NDArray& offs = rMesh.FieldData(string_offsets_key(rName));
+    const std::size_t n = offs.Size() - 1;
+    std::vector<std::string> out;
+    out.reserve(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        const std::int64_t a = read_int(offs, i);
+        const std::int64_t b = read_int(offs, i + 1);
+        if (a < 0 || b < a || static_cast<std::size_t>(b) > bytes.Size())
+            return std::nullopt;
+        out.push_back(decode_utf8_slice(bytes, static_cast<std::size_t>(a),
+                                        static_cast<std::size_t>(b)));
+    }
+    return out;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/string_field.hpp =====
+// ===== begin src/cpp/src/detail/region_tree.hpp =====
+/**
+ * @file detail/region_tree.hpp
+ * @brief Region hierarchy helpers (`/` path names + `field_data["meshio:tree"]`, roadmap §8.5).
+ *
+ * Regions remain flat on `Mesh`, with `/` separating hierarchy levels (e.g.
+ * `Vehicle/Wing/Skin`). Internal assembly nodes that own no direct entities
+ * are recorded as a UTF-8 string list under `field_data["meshio:tree"]` (using
+ * `detail/string_field.hpp`).
+ *
+ * Core-private: no installed header includes this.
+ */
+
+// System includes
+#include <algorithm>
+#include <cstddef>
+#include <set>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus::detail {
+
+inline constexpr std::string_view kRegionTreeKey = "meshio:tree";
+
+/// Split a `/`-separated hierarchy path into non-empty segments.
+inline std::vector<std::string> split_region_path(std::string_view rPath) {
+    std::vector<std::string> parts;
+    std::size_t pos = 0;
+    while (pos < rPath.size()) {
+        const std::size_t slash = rPath.find('/', pos);
+        const std::string_view seg =
+            slash == std::string_view::npos ? rPath.substr(pos) : rPath.substr(pos, slash - pos);
+        if (!seg.empty())
+            parts.emplace_back(seg);
+        if (slash == std::string_view::npos)
+            break;
+        pos = slash + 1;
+    }
+    return parts;
+}
+
+/// Join path segments with `/`.
+inline std::string join_region_path(const std::vector<std::string>& rParts, std::size_t Count) {
+    std::string out;
+    for (std::size_t i = 0; i < Count && i < rParts.size(); ++i) {
+        if (i != 0)
+            out += '/';
+        out += rParts[i];
+    }
+    return out;
+}
+
+/// Parent path of a `/`-separated name (`"a/b/c"` -> `"a/b"`, `"a"` -> `""`).
+inline std::string parent_region_path(std::string_view rPath) {
+    const auto parts = split_region_path(rPath);
+    return parts.size() <= 1 ? std::string() : join_region_path(parts, parts.size() - 1);
+}
+
+/// Leaf segment of a `/`-separated name (`"a/b/c"` -> `"c"`).
+inline std::string leaf_region_name(std::string_view rPath) {
+    const auto parts = split_region_path(rPath);
+    return parts.empty() ? std::string() : parts.back();
+}
+
+/// Store sorted, deduplicated empty internal assembly paths in `field_data["meshio:tree"]`.
+inline void set_region_tree_nodes(Mesh& rMesh, const std::vector<std::string>& rPaths) {
+    std::set<std::string> uniq;
+    for (const auto& p : rPaths) {
+        const auto segs = split_region_path(p);
+        if (!segs.empty())
+            uniq.insert(join_region_path(segs, segs.size()));
+    }
+    if (uniq.empty())
+        return;
+    std::vector<std::string> sorted(uniq.begin(), uniq.end());
+    set_field_strings(rMesh, std::string(kRegionTreeKey), sorted);
+}
+
+/// Read internal assembly paths from `field_data["meshio:tree"]` (empty if absent).
+inline std::vector<std::string> get_region_tree_nodes(const Mesh& rMesh) {
+    auto opt = get_field_strings(rMesh, std::string(kRegionTreeKey));
+    return opt ? std::move(*opt) : std::vector<std::string>{};
+}
+
+struct RegionTreeNode {
+    std::string mPath;
+    std::string mName;
+    std::vector<std::string> mChildren;       ///< Direct child full paths, insertion/sorted order.
+    std::vector<std::size_t> mRegionIndices;  ///< Indices into `rMesh.Regions()` at this node.
+};
+
+struct RegionTree {
+    std::vector<std::string> mRoots;
+    std::unordered_map<std::string, RegionTreeNode> mNodes;
+
+    bool HasHierarchy() const {
+        for (const auto& [path, node] : mNodes)
+            if (!node.mChildren.empty() || path.find('/') != std::string::npos)
+                return true;
+        return false;
+    }
+};
+
+/// Build the region hierarchy tree from `rMesh.Regions()` and `field_data["meshio:tree"]`.
+inline RegionTree build_region_tree(const Mesh& rMesh) {
+    RegionTree tree;
+    auto ensure_path = [&](const std::string& rPath) -> std::string {
+        const auto parts = split_region_path(rPath);
+        if (parts.empty())
+            return {};
+        std::string cur;
+        for (std::size_t i = 0; i < parts.size(); ++i) {
+            const std::string parent = cur;
+            cur = i == 0 ? parts[i] : cur + "/" + parts[i];
+            auto it = tree.mNodes.find(cur);
+            if (it == tree.mNodes.end()) {
+                RegionTreeNode node;
+                node.mPath = cur;
+                node.mName = parts[i];
+                tree.mNodes.emplace(cur, std::move(node));
+                if (parent.empty())
+                    tree.mRoots.push_back(cur);
+                else
+                    tree.mNodes.at(parent).mChildren.push_back(cur);
+            }
+        }
+        return cur;
+    };
+
+    for (std::size_t i = 0; i < rMesh.NumRegions(); ++i) {
+        const std::string canonical = ensure_path(rMesh.Region(i).mName);
+        if (!canonical.empty())
+            tree.mNodes.at(canonical).mRegionIndices.push_back(i);
+    }
+    for (const std::string& p : get_region_tree_nodes(rMesh))
+        (void)ensure_path(p);
+
+    return tree;
+}
+
+}  // namespace meshioplusplus::detail
+// ===== end src/cpp/src/detail/region_tree.hpp =====
 // ===== begin src/cpp/src/detail/render_field.hpp =====
 /**
  * @file detail/render_field.hpp
@@ -62989,189 +63318,6 @@ StreamlineTraces trace_streamlines_timed(const Mesh& rMesh, const double* pXyz, 
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/detail/streamlines.hpp =====
-// ===== begin src/cpp/src/detail/string_field.hpp =====
-/**
- * @file detail/string_field.hpp
- * @brief UTF-8 string and boolean-mask conventions in `field_data` (roadmap §8.2).
- *
- * - Scalar string `name`:
- *     - `field_data[name]`           = `UInt8` 1-D array of UTF-8 bytes
- *     - `field_data[name:offsets]`   = `Int64` 1-D array of shape `{1}` holding `{len}`
- * - List of `k` strings `name`:
- *     - `field_data[name]`           = `UInt8` 1-D array of concatenated UTF-8 bytes
- *     - `field_data[name:offsets]`   = `Int64` 1-D array of shape `{k + 1}` holding CSR offsets
- * - Boolean array `name` at location `loc` (`"point"`, `"cell"`, `"field"`):
- *     - stored as `UInt8` (`0`/`1`), marked by `field_data["meshio:bool:<loc>:<name>"] = UInt8[1] { 1 }`
- *
- * Decoding reads byte/bool payloads via `DType::UInt8` fast path or `read_int`
- * fallback so it works identically on MESHIO, NATIVE, and KRATOS backends
- * (where `NativeMesh::canonicalize_array` widens `UInt8` to `Int64`).
- *
- * Core-private: no installed header includes this.
- */
-
-// System includes
-#include <cstddef>
-#include <cstdint>
-#include <cstring>
-#include <optional>
-#include <string>
-#include <string_view>
-#include <vector>
-
-// Project includes
-
-namespace meshioplusplus::detail {
-
-inline constexpr std::string_view kStringOffsetsSuffix = ":offsets";
-inline constexpr std::string_view kBoolMarkerPrefix = "meshio:bool:";
-
-inline std::string string_offsets_key(std::string_view rName) {
-    return std::string(rName) + std::string(kStringOffsetsSuffix);
-}
-
-inline bool is_bool_marker_key(std::string_view rName) {
-    return rName.starts_with(kBoolMarkerPrefix);
-}
-
-inline std::string bool_marker_key(std::string_view rLoc, std::string_view rName) {
-    return std::string(kBoolMarkerPrefix) + std::string(rLoc) + ":" + std::string(rName);
-}
-
-inline void set_bool_marker(Mesh& rMesh, std::string_view rLoc, std::string_view rName) {
-    NDArray flag(DType::UInt8, {1});
-    flag.As<std::uint8_t>()[0] = 1;
-    rMesh.AddFieldData(bool_marker_key(rLoc, rName), std::move(flag));
-}
-
-inline bool is_bool_array(const Mesh& rMesh, std::string_view rLoc, std::string_view rName) {
-    const std::string key = bool_marker_key(rLoc, rName);
-    if (!rMesh.HasFieldData(key))
-        return false;
-    const NDArray& flag = rMesh.FieldData(key);
-    return flag.Size() >= 1 && read_int(flag, 0) != 0;
-}
-
-/// Returns true if `rKey` is a companion `<base>:offsets` array for an existing
-/// string field `<base>` on `rMesh`.
-inline bool is_string_offsets_key(const Mesh& rMesh, std::string_view rKey) {
-    if (rKey.size() <= kStringOffsetsSuffix.size() || !rKey.ends_with(kStringOffsetsSuffix))
-        return false;
-    const std::string base(rKey.substr(0, rKey.size() - kStringOffsetsSuffix.size()));
-    return rMesh.HasFieldData(base);
-}
-
-/// Returns true if `rKey` is internal string/bool metadata (`<base>:offsets` or
-/// `meshio:bool:*`) that numeric-only writers should skip.
-inline bool is_string_or_bool_meta_key(const Mesh& rMesh, std::string_view rKey) {
-    return is_bool_marker_key(rKey) || is_string_offsets_key(rMesh, rKey);
-}
-
-/// Store a scalar UTF-8 string in `field_data[rName]`.
-inline void set_field_string(Mesh& rMesh, const std::string& rName, std::string_view rValue) {
-    NDArray bytes(DType::UInt8, {rValue.size()});
-    if (!rValue.empty())
-        std::memcpy(bytes.Data(), rValue.data(), rValue.size());
-    NDArray offs(DType::Int64, {1});
-    offs.As<std::int64_t>()[0] = static_cast<std::int64_t>(rValue.size());
-    rMesh.AddFieldData(rName, std::move(bytes));
-    rMesh.AddFieldData(string_offsets_key(rName), std::move(offs));
-}
-
-/// Store a list of UTF-8 strings in `field_data[rName]`.
-inline void set_field_strings(Mesh& rMesh, const std::string& rName,
-                              const std::vector<std::string>& rValues) {
-    std::size_t total = 0;
-    for (const auto& s : rValues)
-        total += s.size();
-    NDArray bytes(DType::UInt8, {total});
-    NDArray offs(DType::Int64, {rValues.size() + 1});
-    auto* p_off = offs.As<std::int64_t>();
-    auto* p_bytes = bytes.As<std::uint8_t>();
-    std::size_t pos = 0;
-    p_off[0] = 0;
-    for (std::size_t i = 0; i < rValues.size(); ++i) {
-        if (!rValues[i].empty())
-            std::memcpy(p_bytes + pos, rValues[i].data(), rValues[i].size());
-        pos += rValues[i].size();
-        p_off[i + 1] = static_cast<std::int64_t>(pos);
-    }
-    rMesh.AddFieldData(rName, std::move(bytes));
-    rMesh.AddFieldData(string_offsets_key(rName), std::move(offs));
-}
-
-/// Decode `rBytes[rBegin .. rEnd)` into a `std::string` regardless of whether
-/// the backend kept `UInt8` or widened to `Int64`.
-inline std::string decode_utf8_slice(const NDArray& rBytes, std::size_t Begin, std::size_t End) {
-    if (End <= Begin || End > rBytes.Size())
-        return {};
-    const std::size_t len = End - Begin;
-    std::string out(len, '\0');
-    if (rBytes.Dtype() == DType::UInt8) {
-        std::memcpy(out.data(), rBytes.As<std::uint8_t>() + Begin, len);
-    } else {
-        for (std::size_t i = 0; i < len; ++i)
-            out[i] = static_cast<char>(static_cast<std::uint8_t>(read_int(rBytes, Begin + i)));
-    }
-    return out;
-}
-
-/// Returns true if `field_data[rName]` is encoded as a scalar UTF-8 string.
-inline bool is_field_string(const Mesh& rMesh, const std::string& rName) {
-    const std::string off_key = string_offsets_key(rName);
-    if (!rMesh.HasFieldData(rName) || !rMesh.HasFieldData(off_key))
-        return false;
-    const NDArray& offs = rMesh.FieldData(off_key);
-    return offs.Shape().size() == 1 && offs.Shape()[0] == 1;
-}
-
-/// Returns true if `field_data[rName]` is encoded as a list of UTF-8 strings.
-inline bool is_field_string_list(const Mesh& rMesh, const std::string& rName) {
-    const std::string off_key = string_offsets_key(rName);
-    if (!rMesh.HasFieldData(rName) || !rMesh.HasFieldData(off_key))
-        return false;
-    const NDArray& offs = rMesh.FieldData(off_key);
-    return offs.Shape().size() == 1 && offs.Shape()[0] >= 2;
-}
-
-/// Read a scalar UTF-8 string from `field_data[rName]`, or `std::nullopt`.
-inline std::optional<std::string> get_field_string(const Mesh& rMesh, const std::string& rName) {
-    if (!is_field_string(rMesh, rName))
-        return std::nullopt;
-    const NDArray& bytes = rMesh.FieldData(rName);
-    const NDArray& offs = rMesh.FieldData(string_offsets_key(rName));
-    const std::int64_t len = read_int(offs, 0);
-    if (len < 0 || static_cast<std::size_t>(len) != bytes.Size())
-        return std::nullopt;
-    return decode_utf8_slice(bytes, 0, bytes.Size());
-}
-
-/// Read a list of UTF-8 strings from `field_data[rName]` (also accepts a scalar
-/// string as a 1-element list). Returns `std::nullopt` if not a string field.
-inline std::optional<std::vector<std::string>> get_field_strings(const Mesh& rMesh,
-                                                                 const std::string& rName) {
-    if (auto scalar = get_field_string(rMesh, rName))
-        return std::vector<std::string>{std::move(*scalar)};
-    if (!is_field_string_list(rMesh, rName))
-        return std::nullopt;
-    const NDArray& bytes = rMesh.FieldData(rName);
-    const NDArray& offs = rMesh.FieldData(string_offsets_key(rName));
-    const std::size_t n = offs.Size() - 1;
-    std::vector<std::string> out;
-    out.reserve(n);
-    for (std::size_t i = 0; i < n; ++i) {
-        const std::int64_t a = read_int(offs, i);
-        const std::int64_t b = read_int(offs, i + 1);
-        if (a < 0 || b < a || static_cast<std::size_t>(b) > bytes.Size())
-            return std::nullopt;
-        out.push_back(decode_utf8_slice(bytes, static_cast<std::size_t>(a),
-                                        static_cast<std::size_t>(b)));
-    }
-    return out;
-}
-
-}  // namespace meshioplusplus::detail
-// ===== end src/cpp/src/detail/string_field.hpp =====
 // ===== begin src/cpp/src/detail/structured_grid.hpp =====
 /**
  * @file detail/structured_grid.hpp
@@ -234383,7 +234529,9 @@ struct VtkhdfBlock {
     Hid mGroup;
 };
 
-void vtkhdf_walk_assembly(hid_t Node, const std::string& rPrefix, std::vector<VtkhdfBlock>& rOut) {
+bool vtkhdf_walk_assembly(hid_t Node, const std::string& rPrefix, std::vector<VtkhdfBlock>& rOut,
+                          std::vector<std::string>& rEmptyGroups) {
+    bool found_any = false;
     for (const auto& name : h5::group_links_crt(Node)) {
         if (h5::is_soft_link(Node, name)) {
             if (H5Oexists_by_name(Node, name.c_str(), H5P_DEFAULT) <= 0)
@@ -234395,19 +234543,29 @@ void vtkhdf_walk_assembly(hid_t Node, const std::string& rPrefix, std::vector<Vt
             b.mPath = rPrefix + name;
             b.mGroup = Hid(H5Gopen2(Node, name.c_str(), H5P_DEFAULT), H5Gclose);
             rOut.push_back(std::move(b));
+            found_any = true;
         } else {
             Hid child(H5Gopen2(Node, name.c_str(), H5P_DEFAULT), H5Gclose);
-            if (child.Valid())
-                vtkhdf_walk_assembly(child, rPrefix + name + "/", rOut);
+            if (child.Valid()) {
+                const std::string sub_path = rPrefix + name;
+                const bool sub =
+                    vtkhdf_walk_assembly(child, sub_path + "/", rOut, rEmptyGroups);
+                if (!sub)
+                    rEmptyGroups.push_back(sub_path);
+                found_any = found_any || sub;
+            }
         }
     }
+    return found_any;
 }
 
-std::vector<VtkhdfBlock> vtkhdf_composite_blocks(hid_t G, const std::string& rKind) {
+std::vector<VtkhdfBlock> vtkhdf_composite_blocks(hid_t G, const std::string& rKind,
+                                                 std::vector<std::string>* pEmptyGroups = nullptr) {
     std::vector<VtkhdfBlock> blocks;
+    std::vector<std::string> empty_groups;
     if (h5::exists(G, "Assembly")) {
         Hid asm_ = h5::open_group(G, "Assembly");
-        vtkhdf_walk_assembly(asm_, "", blocks);
+        vtkhdf_walk_assembly(asm_, "", blocks, empty_groups);
     } else {
         for (const auto& name : h5::group_links_crt(G)) {
             if (name == "Assembly" || name == "Steps" || name == "FieldData")
@@ -234421,10 +234579,20 @@ std::vector<VtkhdfBlock> vtkhdf_composite_blocks(hid_t G, const std::string& rKi
             }
         }
     }
+    if (pEmptyGroups)
+        *pEmptyGroups = std::move(empty_groups);
+
+    // Keep full nested Assembly paths (skipping only the flat 1-level PDC
+    // wrapper `X/X` so flat PDC files keep plain region names).
     std::set<std::string> seen;
     bool collide = false;
-    for (const auto& b : blocks)
+    for (auto& b : blocks) {
+        const bool is_flat_pdc_wrapper =
+            rKind == "PartitionedDataSetCollection" && b.mPath == b.mName + "/" + b.mName;
+        if (!is_flat_pdc_wrapper && b.mPath.find('/') != std::string::npos)
+            b.mName = b.mPath;
         collide = !seen.insert(b.mName).second || collide;
+    }
     if (collide)
         for (auto& b : blocks)
             b.mName = b.mPath;
@@ -234546,7 +234714,8 @@ VtkhdfLeaf vtkhdf_concat_leaves(std::vector<VtkhdfLeaf>& rLeaves) {
 }
 
 Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions& rOpts) {
-    std::vector<VtkhdfBlock> blocks = vtkhdf_composite_blocks(G, rKind);
+    std::vector<std::string> empty_groups;
+    std::vector<VtkhdfBlock> blocks = vtkhdf_composite_blocks(G, rKind, &empty_groups);
     const VtkhdfSteps root_steps = vtkhdf_check_no_time(G, kVtkhdfRoot);
     (void)rOpts.ResolveTimeStep(root_steps.Count());  // 0 / -1 are the only steps of a static file
 
@@ -234604,7 +234773,10 @@ Mesh vtkhdf_read_composite(hid_t G, const std::string& rKind, const ReadOptions&
     VtkhdfLeaf merged = vtkhdf_concat_leaves(leaves);
     for (auto& kv : root_fd.mFieldData)
         merged.mFieldData.emplace(kv.first, std::move(kv.second));
-    return vtkhdf_assemble(merged, rOpts, piece_names);
+    Mesh out = vtkhdf_assemble(merged, rOpts, piece_names);
+    if (!empty_groups.empty())
+        detail::set_region_tree_nodes(out, empty_groups);
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -235023,7 +235195,7 @@ void vtkhdf_write_polydata_group(hid_t Grp, const Mesh& rMesh, int Gzip,
 using VtkhdfPiece = detail::MeshPart;
 
 std::vector<VtkhdfPiece> vtkhdf_carve(const Mesh& rMesh) {
-    return detail::carve_by_region(rMesh, "vtkhdf", /*StrictNames=*/true, /*RejectSlash=*/true);
+    return detail::carve_by_region(rMesh, "vtkhdf", /*StrictNames=*/true, /*RejectSlash=*/false);
 }
 
 std::pair<int, int> vtkhdf_resolve_version(VtkhdfVersion Requested, VtkhdfType Type, bool HasPoly) {
@@ -235076,23 +235248,84 @@ void write_vtkhdf(const std::string& rPath, const Mesh& rMesh, int GzipLevel, Vt
         const std::vector<VtkhdfPiece> pieces = vtkhdf_carve(rMesh);
         vtkhdf_write_type_and_version(root, vtkhdf_type_name(Type), ver);
         const bool pdc = Type == VtkhdfType::PartitionedDataSetCollection;
+        const std::vector<std::string> empty_tree_nodes = detail::get_region_tree_nodes(rMesh);
+        bool has_hierarchy = !empty_tree_nodes.empty();
+        for (const auto& p : pieces)
+            if (p.mName.find('/') != std::string::npos)
+                has_hierarchy = true;
+
+        std::vector<std::string> root_names(pieces.size());
+        std::set<std::string> used_root;
         for (std::size_t i = 0; i < pieces.size(); ++i) {
+            std::string gname = pieces[i].mName;
+            if (gname.find('/') != std::string::npos) {
+                std::string flat;
+                for (char c : gname)
+                    flat += (c == '/') ? "__" : std::string(1, c);
+                gname = flat;
+            }
+            if (used_root.count(gname) != 0 || gname == "Assembly" || gname == "Steps" ||
+                gname == "FieldData") {
+                std::size_t suffix = 1;
+                while (used_root.count(gname + "_" + std::to_string(suffix)) != 0)
+                    ++suffix;
+                gname += "_" + std::to_string(suffix);
+            }
+            used_root.insert(gname);
+            root_names[i] = gname;
             // A composite's root may hold only blocks and the Assembly (vtkHDFReader reads
             // every other root group as a block and then fails), so mesh-wide field_data
             // rides on each block's own FieldData group, which the block writer does.
-            Hid bg = h5::create_group_crt(root, pieces[i].mName);
+            Hid bg = h5::create_group_crt(root, gname);
             if (pdc)
                 h5::write_attr_int(bg, "Index", static_cast<I64>(i));
             vtkhdf_write_ug_group(bg, rMesh, &pieces[i].mCells, GzipLevel, ver);
         }
         Hid asm_ = h5::create_group_crt(root, "Assembly");
-        for (const auto& p : pieces) {
-            const std::string target = std::string("/") + kVtkhdfRoot + "/" + p.mName;
-            if (pdc) {
-                Hid node = h5::create_group_crt(asm_, p.mName);
-                h5::create_soft_link(node, p.mName, target);
-            } else {
-                h5::create_soft_link(asm_, p.mName, target);
+        if (!has_hierarchy) {
+            for (std::size_t i = 0; i < pieces.size(); ++i) {
+                const std::string target = std::string("/") + kVtkhdfRoot + "/" + root_names[i];
+                if (pdc) {
+                    Hid node = h5::create_group_crt(asm_, pieces[i].mName);
+                    h5::create_soft_link(node, pieces[i].mName, target);
+                } else {
+                    h5::create_soft_link(asm_, pieces[i].mName, target);
+                }
+            }
+        } else {
+            auto ensure_asm_group = [&](const std::vector<std::string>& rSegs,
+                                        std::size_t Depth) -> Hid {
+                hid_t cur_id = asm_.Get();
+                Hid owned;
+                for (std::size_t d = 0; d < Depth; ++d) {
+                    const std::string& seg = rSegs[d];
+                    Hid next = h5::exists(cur_id, seg) ? h5::open_group(cur_id, seg)
+                                                       : h5::create_group_crt(cur_id, seg);
+                    owned = std::move(next);
+                    cur_id = owned.Get();
+                }
+                return owned;
+            };
+            for (std::size_t i = 0; i < pieces.size(); ++i) {
+                const std::string target = std::string("/") + kVtkhdfRoot + "/" + root_names[i];
+                const auto segs = detail::split_region_path(pieces[i].mName);
+                if (segs.size() <= 1) {
+                    const std::string leaf = segs.empty() ? root_names[i] : segs[0];
+                    if (pdc) {
+                        Hid node = h5::create_group_crt(asm_, leaf);
+                        h5::create_soft_link(node, leaf, target);
+                    } else {
+                        h5::create_soft_link(asm_, leaf, target);
+                    }
+                } else {
+                    Hid parent = ensure_asm_group(segs, segs.size() - 1);
+                    h5::create_soft_link(parent, segs.back(), target);
+                }
+            }
+            for (const std::string& p : empty_tree_nodes) {
+                const auto segs = detail::split_region_path(p);
+                if (!segs.empty())
+                    (void)ensure_asm_group(segs, segs.size());
             }
         }
     }
@@ -235814,16 +236047,31 @@ Mesh vtm_extract_piece(const Mesh& rMesh, std::size_t Idx) {
     return piece;
 }
 
-// Every `<DataSet>` under `pNode`, in document order, regardless of how many
-// `<Block>` levels separate them from it (xpath is not linked in, so this is
-// a plain recursive walk rather than a `"//DataSet"` select).
-void vtm_collect_datasets(const pugi::xml_node& rNode, std::vector<pugi::xml_node>& rOut) {
+// Every `<DataSet>` under `rNode`, in document order, tracking ancestor
+// `<Block name="...">` hierarchy prefixes and empty named `<Block>` groups.
+bool vtm_collect_datasets(const pugi::xml_node& rNode, const std::string& rPrefix,
+                          std::vector<std::pair<std::string, pugi::xml_node>>& rOut,
+                          std::vector<std::string>& rEmptyGroups) {
+    bool found_any = false;
     for (pugi::xml_node child : rNode.children()) {
-        if (std::string(child.name()) == "DataSet")
-            rOut.push_back(child);
-        else
-            vtm_collect_datasets(child, rOut);
+        const std::string tag(child.name());
+        if (tag == "DataSet") {
+            rOut.emplace_back(rPrefix, child);
+            found_any = true;
+        } else if (tag == "Block") {
+            const std::string bname = child.attribute("name").as_string("");
+            const std::string next_prefix =
+                bname.empty() ? rPrefix : (rPrefix.empty() ? bname : rPrefix + "/" + bname);
+            const bool sub = vtm_collect_datasets(child, next_prefix, rOut, rEmptyGroups);
+            if (!sub && !bname.empty())
+                rEmptyGroups.push_back(next_prefix);
+            found_any = found_any || sub;
+        } else {
+            if (vtm_collect_datasets(child, rPrefix, rOut, rEmptyGroups))
+                found_any = true;
+        }
     }
+    return found_any;
 }
 
 // One piece, resolved from its `<DataSet>` element: the path to read (relative
@@ -235833,7 +236081,8 @@ struct vtm_piece_ref {
     std::string mName;
 };
 
-std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_document& rDoc) {
+std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_document& rDoc,
+                                           std::vector<std::string>* pEmptyGroups = nullptr) {
     const pugi::xml_parse_result parsed = rDoc.load_file(rPath.c_str());
     if (!parsed)
         throw ReadError("Could not parse .vtm XML: " + rPath + ": " + parsed.description());
@@ -235847,21 +236096,25 @@ std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_d
     if (!mb)
         throw ReadError("Expected tag 'vtkMultiBlockDataSet': " + rPath);
 
-    std::vector<pugi::xml_node> datasets;
-    vtm_collect_datasets(mb, datasets);
+    std::vector<std::pair<std::string, pugi::xml_node>> datasets;
+    std::vector<std::string> empty_groups;
+    vtm_collect_datasets(mb, "", datasets, empty_groups);
+    if (pEmptyGroups)
+        *pEmptyGroups = std::move(empty_groups);
 
     const fs::path base = fs::path(rPath).parent_path();
     std::vector<vtm_piece_ref> pieces;
     pieces.reserve(datasets.size());
-    for (const pugi::xml_node& ds : datasets) {
+    for (const auto& [prefix, ds] : datasets) {
         const std::string file = ds.attribute("file").as_string("");
         if (file.empty())
             throw ReadError("<DataSet> is missing its 'file' attribute: " + rPath);
         vtm_piece_ref ref;
         ref.mPath = base.empty() ? fs::path(file) : base / file;
-        ref.mName = ds.attribute("name").as_string("");
-        if (ref.mName.empty())
-            ref.mName = "block_" + std::to_string(pieces.size());
+        std::string leaf = ds.attribute("name").as_string("");
+        if (leaf.empty())
+            leaf = "block_" + std::to_string(pieces.size());
+        ref.mName = prefix.empty() ? leaf : (prefix + "/" + leaf);
         pieces.push_back(std::move(ref));
     }
     return pieces;
@@ -235955,11 +236208,73 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
     os << "<VTKFile type=\"vtkMultiBlockDataSet\" version=\"1.0\" byte_order=\"LittleEndian\">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<vtkMultiBlockDataSet>\n";
-    os << "<Block index=\"0\">\n";
-    for (std::size_t i = 0; i < piece_files.size(); ++i)
-        os << "<DataSet index=\"" << i << "\" name=\"" << vtm_xml_attr(piece_names[i]) << "\" file=\""
-           << piece_files[i] << "\"/>\n";
-    os << "</Block>\n";
+
+    const std::vector<std::string> empty_tree_nodes = detail::get_region_tree_nodes(rMesh);
+    bool has_hierarchy = !empty_tree_nodes.empty();
+    for (const auto& name : piece_names)
+        if (name.find('/') != std::string::npos)
+            has_hierarchy = true;
+
+    if (!has_hierarchy) {
+        os << "<Block index=\"0\">\n";
+        for (std::size_t i = 0; i < piece_files.size(); ++i)
+            os << "<DataSet index=\"" << i << "\" name=\"" << vtm_xml_attr(piece_names[i])
+               << "\" file=\"" << piece_files[i] << "\"/>\n";
+        os << "</Block>\n";
+    } else {
+        struct VtmTreeNode {
+            std::string mName;
+            std::vector<std::pair<std::string, std::size_t>> mDatasets;  // (leaf_name, piece_idx)
+            std::vector<std::string> mChildOrder;
+            std::unordered_map<std::string, VtmTreeNode> mChildren;
+        };
+        VtmTreeNode root_node;
+        auto ensure_group = [&](const std::vector<std::string>& rSegs, std::size_t Depth) -> VtmTreeNode* {
+            VtmTreeNode* cur = &root_node;
+            for (std::size_t d = 0; d < Depth; ++d) {
+                const std::string& seg = rSegs[d];
+                auto it = cur->mChildren.find(seg);
+                if (it == cur->mChildren.end()) {
+                    cur->mChildOrder.push_back(seg);
+                    VtmTreeNode child;
+                    child.mName = seg;
+                    it = cur->mChildren.emplace(seg, std::move(child)).first;
+                }
+                cur = &it->second;
+            }
+            return cur;
+        };
+        for (std::size_t i = 0; i < piece_names.size(); ++i) {
+            const auto segs = detail::split_region_path(piece_names[i]);
+            if (segs.empty()) {
+                root_node.mDatasets.emplace_back("block_" + std::to_string(i), i);
+            } else {
+                VtmTreeNode* parent = ensure_group(segs, segs.size() - 1);
+                parent->mDatasets.emplace_back(segs.back(), i);
+            }
+        }
+        for (const std::string& p : empty_tree_nodes) {
+            const auto segs = detail::split_region_path(p);
+            if (!segs.empty())
+                (void)ensure_group(segs, segs.size());
+        }
+        auto emit_node = [&](auto&& self, const VtmTreeNode& rNode) -> void {
+            std::size_t idx = 0;
+            for (const auto& [leaf, pi] : rNode.mDatasets) {
+                os << "<DataSet index=\"" << idx++ << "\" name=\"" << vtm_xml_attr(leaf)
+                   << "\" file=\"" << piece_files[pi] << "\"/>\n";
+            }
+            for (const std::string& cname : rNode.mChildOrder) {
+                const VtmTreeNode& child = rNode.mChildren.at(cname);
+                os << "<Block index=\"" << idx++ << "\" name=\"" << vtm_xml_attr(child.mName)
+                   << "\">\n";
+                self(self, child);
+                os << "</Block>\n";
+            }
+        };
+        emit_node(emit_node, root_node);
+    }
+
     os << "</vtkMultiBlockDataSet>\n";
     os << "</VTKFile>\n";
     if (!os)
@@ -235972,10 +236287,13 @@ void write_vtm(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
 Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
-    const std::vector<vtm_piece_ref> refs = vtm_parse_index(rPath, doc);
+    std::vector<std::string> empty_groups;
+    const std::vector<vtm_piece_ref> refs = vtm_parse_index(rPath, doc, &empty_groups);
     if (refs.empty()) {
         Mesh empty;
         empty.AssignPoints(NDArray::Uninit(DType::Float64, {0, 3}));
+        if (!empty_groups.empty())
+            detail::set_region_tree_nodes(empty, empty_groups);
         return empty;
     }
 
@@ -236005,6 +236323,8 @@ Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts) {
 
     for (std::size_t i = 0; i < refs.size(); ++i)
         result.mMesh.AddRegion(Region(refs[i].mName, RegionKind::Cell, std::move(result.mCellMaps[i])));
+    if (!empty_groups.empty())
+        detail::set_region_tree_nodes(result.mMesh, empty_groups);
 
     return std::move(result.mMesh);
 }

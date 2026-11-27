@@ -933,12 +933,10 @@ Gauss-point results are the primary output of a structural solver, and no operat
 - **Steps.** The two helpers by checklist O (they are `extract_skin`'s neighbours and reuse its facet table); the readers of 2.3.1.4, 2.3.2.3 and 2.4.3.2; a section in [regions](./regions.md).
 - **Done when.** An Exodus side-set variable reads as cell data on a quad block that `sides_to_cells` would have produced, and writes back. **M, design pass first**
 
-### 8.5 Hierarchy
+### 8.5 Hierarchy (remaining format parsers)
 
-- **State today.** Regions are flat; nesting is `/` in the name ([regions](./regions.md), lines 286–298), and the KRATOS backend is the one consumer that interprets it (`BuildSubModelPartsFromRegions`, `kratos_mesh.hpp` line 610; `RestoreRegions`, 995), losing only names that contain `.` and the `mDim`/`mTag` members. VTKHDF assemblies and `.vtm` flatten to it on read.
-- **Decisions to take first.** Whether `/` names plus one `field_data` entry are enough to round-trip the trees files hold. Recommended: yes, with `field_data["meshio:tree"]` as a string list (8.2) of the internal nodes that own no entity (an assembly that only groups), since leaves are regions already. Check against: Abaqus parts and instances (instances repeat a part with a transform: the tree names them, the transform goes to `field_data`), VTKHDF `Assembly`, `.vtm` nesting, CGNS families of families, Exodus assemblies (2.3.2.4), USD prims.
-- **Steps.** `detail/region_tree.hpp` (parse, build, parent and children queries) with the KRATOS interpreter moved onto it; the five formats' writers rebuild their nesting from it; `regions` reports print the tree.
-- **Done when.** A nested `.vtm` and a VTKHDF file with an `Assembly` round-trip with the same nesting. **M, design pass first; after 8.2**
+- **State today.** `detail/region_tree.hpp`, `field_data["meshio:tree"]` (empty internal assembly nodes), nested `.vtm` `<Block>` round-trips, nested VTKHDF `Assembly` round-trips, and indented `regions` CLI tree output have shipped. Abaqus `*PART`/`*INSTANCE`/`*ASSEMBLY`, CGNS `Family_t`/`FamilyName_t`, and Exodus assemblies have no parsers in the core yet.
+- **Steps.** Wire Abaqus parts/instances (instance transforms in `field_data`), CGNS families of families, and Exodus assemblies (2.3.2.4) onto `detail/region_tree.hpp` when those format-depth parsers land. **M**
 
 ---
 

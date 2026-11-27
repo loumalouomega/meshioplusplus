@@ -268,7 +268,8 @@ def test_data_dtypes_and_shapes_survive(tmp_path):
     assert np.array_equal(back.point_data["f32"], mesh.point_data["f32"])
     assert back.point_data["i64"].dtype == np.int64
     assert back.point_data["vec"].shape == (5, 3)
-    assert back.point_data["flag"].dtype == np.uint8  # bool is stored as uint8
+    assert back.point_data["flag"].dtype == np.bool_
+    assert np.array_equal(back.point_data["flag"], mesh.point_data["flag"])
     assert back.field_data["matrix"].shape == (2, 3)
     assert np.array_equal(back.field_data["matrix"], mesh.field_data["matrix"])
 
