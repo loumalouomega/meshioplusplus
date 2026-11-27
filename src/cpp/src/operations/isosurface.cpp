@@ -42,6 +42,8 @@
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/marching.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
+#include "meshioplusplus/operations/tessellate.hpp"
+#include "../detail/reference_element.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
@@ -301,8 +303,236 @@ Mesh isosurface(const Mesh& rMesh, const IsosurfaceOptions& rOptions) {
     std::sort(isovalues.begin(), isovalues.end());
     isovalues.erase(std::unique(isovalues.begin(), isovalues.end()), isovalues.end());
 
+    // High-order field isocontours (roadmap 15.3.4): when the mesh contains
+    // order >= 2 cells, subdivide them on a fine reference lattice (sampling
+    // geometry and fields via the exact high-order shape functions) so the
+    // level set follows the true polynomial field rather than the linear corners.
+    bool has_high_order = false;
+    int max_ho_order = 1;
+    for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+        const auto cb = rMesh.Cells(b);
+        if (cb.NumCells() == 0 || cb.IsRagged())
+            continue;
+        detail::ReferenceElementInfo info;
+        if (detail::reference_element_info(cell_type_from_name(cb.Type()), cb.NodesPerCell(),
+                                           info) &&
+            info.mOrder >= 2) {
+            has_high_order = true;
+            max_ho_order = std::max(max_ho_order, info.mOrder);
+        }
+    }
+
+    Mesh ho_work;
+    const Mesh* p_source = &rMesh;
+    if (has_high_order) {
+        // Subdivide every high-order block into linear sub-cells via reference_element.
+        const int n_sub = std::max(2 * max_ho_order, 4);
+        const NDArray& pts_in = rMesh.Points();
+        const std::size_t pdim = rMesh.PointDim();
+        const NDArray& arr_in = rMesh.PointData(rOptions.mArrayName);
+        const std::size_t arr_rows = detail::rows(arr_in);
+        const std::size_t arr_comp = arr_rows == 0 ? 0 : arr_in.Size() / arr_rows;
+
+        std::vector<detail::Vec3> sub_pts;
+        std::vector<double> sub_field;
+        std::vector<std::int64_t> sub_tris;
+        std::vector<std::int64_t> sub_tets;
+        const double inv_n = 1.0 / static_cast<double>(n_sub);
+
+        for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {
+            const auto cb = rMesh.Cells(b);
+            if (cb.NumCells() == 0 || cb.IsRagged())
+                continue;
+            const std::size_t k = cb.NodesPerCell();
+            const CellType ct = cell_type_from_name(cb.Type());
+            const NDArray& conn = cb.Conn();
+            detail::ReferenceElementInfo info;
+            if (!detail::reference_element_info(ct, k, info))
+                continue;
+
+            for (std::size_t c = 0; c < cb.NumCells(); ++c) {
+                std::vector<std::int64_t> nids(k);
+                std::vector<detail::Vec3> cpts(k);
+                std::vector<double> cvals(k * arr_comp);
+                for (std::size_t i = 0; i < k; ++i) {
+                    nids[i] = detail::read_int(conn, c * k + i);
+                    const auto u = static_cast<std::size_t>(nids[i]);
+                    cpts[i] = {detail::read_double(pts_in, u * pdim + 0),
+                               pdim > 1 ? detail::read_double(pts_in, u * pdim + 1) : 0.0,
+                               pdim > 2 ? detail::read_double(pts_in, u * pdim + 2) : 0.0};
+                    for (std::size_t comp = 0; comp < arr_comp; ++comp)
+                        cvals[i * arr_comp + comp] =
+                            detail::read_double(arr_in, u * arr_comp + comp);
+                }
+
+                auto add_node = [&](const std::array<double, 3>& rXi) -> std::int64_t {
+                    std::vector<double> nv;
+                    std::vector<std::array<double, 3>> ng;
+                    detail::eval_reference_shape(ct, k, rXi, nv, ng);
+                    detail::Vec3 p{0.0, 0.0, 0.0};
+                    for (std::size_t i = 0; i < k; ++i) {
+                        p[0] += nv[i] * cpts[i][0];
+                        p[1] += nv[i] * cpts[i][1];
+                        p[2] += nv[i] * cpts[i][2];
+                    }
+                    const auto id = static_cast<std::int64_t>(sub_pts.size());
+                    sub_pts.push_back(p);
+                    for (std::size_t comp = 0; comp < arr_comp; ++comp) {
+                        double v = 0.0;
+                        for (std::size_t i = 0; i < k; ++i)
+                            v += nv[i] * cvals[i * arr_comp + comp];
+                        sub_field.push_back(v);
+                    }
+                    return id;
+                };
+
+                if (info.mShape == lagrange::Shape::Quad) {
+                    std::vector<std::int64_t> grid(
+                        static_cast<std::size_t>((n_sub + 1) * (n_sub + 1)));
+                    for (int j = 0; j <= n_sub; ++j)
+                        for (int i = 0; i <= n_sub; ++i)
+                            grid[static_cast<std::size_t>(j * (n_sub + 1) + i)] =
+                                add_node({i * inv_n, j * inv_n, 0.0});
+                    for (int j = 0; j < n_sub; ++j) {
+                        for (int i = 0; i < n_sub; ++i) {
+                            const std::int64_t v00 =
+                                grid[static_cast<std::size_t>(j * (n_sub + 1) + i)];
+                            const std::int64_t v10 =
+                                grid[static_cast<std::size_t>(j * (n_sub + 1) + i + 1)];
+                            const std::int64_t v11 =
+                                grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i + 1)];
+                            const std::int64_t v01 =
+                                grid[static_cast<std::size_t>((j + 1) * (n_sub + 1) + i)];
+                            sub_tris.insert(sub_tris.end(), {v00, v10, v11, v00, v11, v01});
+                        }
+                    }
+                } else if (info.mShape == lagrange::Shape::Triangle) {
+                    std::vector<std::vector<std::int64_t>> row_ids(
+                        static_cast<std::size_t>(n_sub + 1));
+                    for (int j = 0; j <= n_sub; ++j) {
+                        row_ids[static_cast<std::size_t>(j)].resize(
+                            static_cast<std::size_t>(n_sub - j + 1));
+                        for (int i = 0; i <= n_sub - j; ++i)
+                            row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)] =
+                                add_node({i * inv_n, j * inv_n, 0.0});
+                    }
+                    for (int j = 0; j < n_sub; ++j) {
+                        for (int i = 0; i < n_sub - j; ++i) {
+                            const std::int64_t a =
+                                row_ids[static_cast<std::size_t>(j)][static_cast<std::size_t>(i)];
+                            const std::int64_t b = row_ids[static_cast<std::size_t>(j)]
+                                                          [static_cast<std::size_t>(i + 1)];
+                            const std::int64_t d = row_ids[static_cast<std::size_t>(j + 1)]
+                                                          [static_cast<std::size_t>(i)];
+                            sub_tris.insert(sub_tris.end(), {a, b, d});
+                            if (i + 1 < n_sub - j) {
+                                const std::int64_t e = row_ids[static_cast<std::size_t>(j + 1)]
+                                                              [static_cast<std::size_t>(i + 1)];
+                                sub_tris.insert(sub_tris.end(), {b, e, d});
+                            }
+                        }
+                    }
+                } else if (info.mShape == lagrange::Shape::Hexahedron) {
+                    const int s = n_sub + 1;
+                    std::vector<std::int64_t> grid(static_cast<std::size_t>(s * s * s));
+                    for (int kk = 0; kk <= n_sub; ++kk)
+                        for (int j = 0; j <= n_sub; ++j)
+                            for (int i = 0; i <= n_sub; ++i)
+                                grid[static_cast<std::size_t>((kk * s + j) * s + i)] =
+                                    add_node({i * inv_n, j * inv_n, kk * inv_n});
+                    for (int kk = 0; kk < n_sub; ++kk) {
+                        for (int j = 0; j < n_sub; ++j) {
+                            for (int i = 0; i < n_sub; ++i) {
+                                auto at = [&](int di, int dj, int dk) {
+                                    return grid[static_cast<std::size_t>(
+                                        ((kk + dk) * s + (j + dj)) * s + (i + di))];
+                                };
+                                const std::int64_t v0 = at(0, 0, 0), v1 = at(1, 0, 0),
+                                                   v2 = at(1, 1, 0), v3 = at(0, 1, 0),
+                                                   v4 = at(0, 0, 1), v5 = at(1, 0, 1),
+                                                   v6 = at(1, 1, 1), v7 = at(0, 1, 1);
+                                // Kuhn 6-tet decomposition of the sub-cube.
+                                sub_tets.insert(sub_tets.end(),
+                                                {v0, v1, v2, v6, v0, v2, v3, v6, v0, v3, v7, v6,
+                                                 v0, v7, v4, v6, v0, v4, v5, v6, v0, v5, v1, v6});
+                            }
+                        }
+                    }
+                } else if (info.mShape == lagrange::Shape::Tetra) {
+                    // Recursive Kuhn subdivision of the reference tet via integer lattice.
+                    const int s = n_sub + 1;
+                    std::vector<std::int64_t> grid(static_cast<std::size_t>(s * s * s), -1);
+                    for (int kk = 0; kk <= n_sub; ++kk)
+                        for (int j = 0; j <= n_sub - kk; ++j)
+                            for (int i = 0; i <= n_sub - kk - j; ++i)
+                                grid[static_cast<std::size_t>((kk * s + j) * s + i)] =
+                                    add_node({i * inv_n, j * inv_n, kk * inv_n});
+                    auto at = [&](int i, int j, int kk) {
+                        return grid[static_cast<std::size_t>((kk * s + j) * s + i)];
+                    };
+                    for (int kk = 0; kk < n_sub; ++kk) {
+                        for (int j = 0; j < n_sub - kk; ++j) {
+                            for (int i = 0; i < n_sub - kk - j; ++i) {
+                                // Corner upright tet
+                                sub_tets.insert(sub_tets.end(),
+                                                {at(i, j, kk), at(i + 1, j, kk), at(i, j + 1, kk),
+                                                 at(i, j, kk + 1)});
+                                // Octahedron inside tet (4 tets) when i+j+kk <= n_sub - 2
+                                if (i + j + kk <= n_sub - 2) {
+                                    const std::int64_t a = at(i + 1, j, kk);
+                                    const std::int64_t b0 = at(i, j + 1, kk);
+                                    const std::int64_t c0 = at(i, j, kk + 1);
+                                    const std::int64_t d = at(i + 1, j + 1, kk);
+                                    const std::int64_t e = at(i + 1, j, kk + 1);
+                                    const std::int64_t f = at(i, j + 1, kk + 1);
+                                    sub_tets.insert(sub_tets.end(), {a, d, b0, e, b0, d, f, e, b0,
+                                                                     f, c0, e, a, b0, c0, e});
+                                }
+                                // Inverted tet when i+j+kk <= n_sub - 3
+                                if (i + j + kk <= n_sub - 3) {
+                                    sub_tets.insert(
+                                        sub_tets.end(),
+                                        {at(i + 1, j + 1, kk), at(i + 1, j, kk + 1),
+                                         at(i, j + 1, kk + 1), at(i + 1, j + 1, kk + 1)});
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!sub_pts.empty() && (!sub_tris.empty() || !sub_tets.empty())) {
+            NDArray sp(DType::Float64, {sub_pts.size(), pdim});
+            double* psp = sp.As<double>();
+            for (std::size_t i = 0; i < sub_pts.size(); ++i) {
+                psp[i * pdim + 0] = sub_pts[i][0];
+                if (pdim > 1)
+                    psp[i * pdim + 1] = sub_pts[i][1];
+                if (pdim > 2)
+                    psp[i * pdim + 2] = sub_pts[i][2];
+            }
+            ho_work.AssignPoints(std::move(sp));
+            if (!sub_tris.empty()) {
+                NDArray tc(DType::Int64, {sub_tris.size() / 3, std::size_t{3}});
+                std::copy(sub_tris.begin(), sub_tris.end(), tc.As<std::int64_t>());
+                ho_work.AddCellBlock(cell_type_name(CellType::Triangle), std::move(tc));
+            }
+            if (!sub_tets.empty()) {
+                NDArray tc(DType::Int64, {sub_tets.size() / 4, std::size_t{4}});
+                std::copy(sub_tets.begin(), sub_tets.end(), tc.As<std::int64_t>());
+                ho_work.AddCellBlock(cell_type_name(CellType::Tetra), std::move(tc));
+            }
+            NDArray sf = arr_comp == 1 ? NDArray(DType::Float64, {sub_pts.size()})
+                                       : NDArray(DType::Float64, {sub_pts.size(), arr_comp});
+            std::copy(sub_field.begin(), sub_field.end(), sf.As<double>());
+            ho_work.AddPointData(rOptions.mArrayName, std::move(sf));
+            p_source = &ho_work;
+        }
+    }
+
     // Simplexify once; every isovalue is cut against the same prepared input.
-    const detail::MarchingInput input = detail::marching_prepare(rMesh);
+    const detail::MarchingInput input = detail::marching_prepare(*p_source);
     const Mesh& simp = input.Simp();
     const std::size_t nnodes = simp.NumPoints();
     const std::size_t dim = simp.PointDim();

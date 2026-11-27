@@ -28,12 +28,70 @@
 // Project includes (private, not installed)
 #include "../detail/sparse_solve.hpp"
 #include "../detail/surface_fem.hpp"
+#include "../detail/tet_fem.hpp"
 
 namespace meshioplusplus {
 
 MeshOperatorResult mesh_operator(const Mesh& rMesh, const MeshOperatorOptions& rOptions) {
     using detail::SparseTriplet;
     using detail::Vec3;
+
+    if (detail::mesh_is_pure_tetra(rMesh)) {
+        const detail::TetFem fem = detail::build_tet_fem(rMesh, "mesh_operator");
+        const std::size_t n = fem.mPoints.size();
+        std::size_t rows = n;
+        std::vector<SparseTriplet> triplets;
+        switch (rOptions.mKind) {
+            case MeshOperatorKind::Laplacian: {
+                std::vector<double> mass;
+                detail::tet_fem_assemble(fem, mass, triplets);
+                break;
+            }
+            case MeshOperatorKind::MassLumped: {
+                std::vector<double> mass;
+                std::vector<SparseTriplet> stiffness;
+                detail::tet_fem_assemble(fem, mass, stiffness);
+                for (std::size_t i = 0; i < n; ++i)
+                    if (mass[i] != 0.0)
+                        triplets.push_back({i, i, mass[i]});
+                break;
+            }
+            case MeshOperatorKind::MassConsistent: {
+                double M[4][4];
+                for (const detail::TetFemCell& tc : fem.mCells) {
+                    detail::tet_p1_mass_consistent(tc.mVolume, M);
+                    for (std::size_t a = 0; a < 4; ++a)
+                        for (std::size_t b = 0; b < 4; ++b)
+                            triplets.push_back({static_cast<std::size_t>(tc.mNodes[a]),
+                                                static_cast<std::size_t>(tc.mNodes[b]), M[a][b]});
+                }
+                break;
+            }
+            case MeshOperatorKind::Gradient: {
+                rows = 3 * static_cast<std::size_t>(fem.mNumInput);
+                for (const detail::TetFemCell& tc : fem.mCells) {
+                    for (std::size_t a = 0; a < 4; ++a)
+                        for (std::size_t k = 0; k < 3; ++k)
+                            triplets.push_back({3 * static_cast<std::size_t>(tc.mIndex) + k,
+                                                static_cast<std::size_t>(tc.mNodes[a]),
+                                                tc.mGrad[a][k]});
+                }
+                break;
+            }
+            default:
+                throw std::invalid_argument("mesh_operator: unknown kind");
+        }
+        const detail::SparseCsr csr = detail::csr_from_triplets(rows, n, std::move(triplets));
+        MeshOperatorResult out;
+        out.mRows = static_cast<std::int64_t>(csr.mRows);
+        out.mCols = static_cast<std::int64_t>(csr.mCols);
+        out.mIndptr.assign(csr.mStart.begin(), csr.mStart.end());
+        out.mIndices.assign(csr.mCol.begin(), csr.mCol.end());
+        out.mValues = csr.mValue;
+        out.mNumDegenerate = fem.mNumDegenerate;
+        return out;
+    }
+
     const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "mesh_operator");
     const std::size_t n = fem.mPoints.size();
 

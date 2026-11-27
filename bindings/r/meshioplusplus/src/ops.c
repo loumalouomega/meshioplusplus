@@ -2118,6 +2118,110 @@ SEXP R_mio_laplacian_eigenmodes(SEXP mesh, SEXP num_modes, SEXP tolerance,
     return res;
 }
 
+static SEXP mio_r_unpack_sparse_op(mio_sparse_operator* op, const char* who) {
+    if (op == NULL)
+        mio_r_fail(who);
+    int64_t rows = mio_sparse_operator_rows(op);
+    int64_t cols = mio_sparse_operator_cols(op);
+    int64_t nnz = mio_sparse_operator_nnz(op);
+    int64_t n_ip = 0, n_ix = 0, n_vl = 0;
+    const int64_t* ip = mio_sparse_operator_indptr(op, &n_ip);
+    const int64_t* ix = mio_sparse_operator_indices(op, &n_ix);
+    const double* vl = mio_sparse_operator_values(op, &n_vl);
+    SEXP sip = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n_ip));
+    for (int64_t i = 0; i < n_ip; ++i)
+        REAL(sip)[i] = (double)ip[i];
+    SEXP six = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n_ix));
+    for (int64_t i = 0; i < n_ix; ++i)
+        REAL(six)[i] = (double)ix[i];
+    SEXP svl = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n_vl));
+    if (n_vl > 0)
+        memcpy(REAL(svl), vl, (size_t)n_vl * sizeof(double));
+    mio_sparse_operator_free(op);
+    const char* keys[] = {"rows", "cols", "nnz", "indptr", "indices", "values"};
+    const SEXP values[] = {NULL, NULL, NULL, sip, six, svl};
+    const double numbers[] = {(double)rows, (double)cols, (double)nnz};
+    SEXP res = mio_r_report_list(6, keys, values, numbers);
+    UNPROTECT(3);
+    return res;
+}
+
+SEXP R_mio_mesh_operator(SEXP mesh, SEXP kind) {
+    mio_sparse_operator* op = mio_mesh_operator(mio_r_mesh(mesh), (int32_t)Rf_asInteger(kind));
+    return mio_r_unpack_sparse_op(op, "mesh_operator");
+}
+
+SEXP R_mio_smooth_field(SEXP mesh, SEXP array, SEXP output, SEXP length, SEXP tolerance,
+                        SEXP max_iterations) {
+    mio_smooth_field_opts opts;
+    mio_smooth_field_opts_init(&opts);
+    opts.array = CHAR(STRING_ELT(array, 0));
+    const char* out_name = CHAR(STRING_ELT(output, 0));
+    opts.output = out_name[0] ? out_name : NULL;
+    opts.length = Rf_asReal(length);
+    opts.tolerance = Rf_asReal(tolerance);
+    opts.max_iterations = (int64_t)Rf_asReal(max_iterations);
+    mio_smooth_field_report rep;
+    mio_mesh* out = mio_smooth_field(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL)
+        mio_r_fail("smooth_field");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP c = PROTECT(Rf_ScalarLogical(rep.converged != 0));
+    const char* keys[] = {"mesh", "num_degenerate", "iterations", "converged"};
+    const SEXP values[] = {mo, NULL, NULL, c};
+    const double numbers[] = {(double)rep.num_degenerate, (double)rep.iterations};
+    SEXP res = mio_r_report_list(4, keys, values, numbers);
+    UNPROTECT(2);
+    return res;
+}
+
+SEXP R_mio_streamlines(SEXP mesh, SEXP array, SEXP seeds, SEXP direction, SEXP integrator,
+                       SEXP max_length, SEXP step, SEXP max_steps, SEXP tolerance) {
+    mio_streamlines_opts opts;
+    mio_streamlines_opts_init(&opts);
+    opts.array = CHAR(STRING_ELT(array, 0));
+    opts.seeds = (int64_t)Rf_asReal(seeds);
+    opts.direction = (int32_t)Rf_asInteger(direction);
+    opts.integrator = (int32_t)Rf_asInteger(integrator);
+    opts.max_length = Rf_asReal(max_length);
+    opts.step = Rf_asReal(step);
+    opts.max_steps = (int64_t)Rf_asReal(max_steps);
+    opts.tolerance = Rf_asReal(tolerance);
+    mio_streamlines_report* rep = NULL;
+    mio_mesh* out = mio_streamlines(mio_r_mesh(mesh), &opts, &rep);
+    if (out == NULL)
+        mio_r_fail("streamlines");
+    int64_t n_lines = rep ? mio_streamlines_report_num_lines(rep) : 0;
+    if (rep)
+        mio_streamlines_report_free(rep);
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char* keys[] = {"mesh", "num_lines"};
+    const SEXP values[] = {mo, NULL};
+    const double numbers[] = {(double)n_lines};
+    SEXP res = mio_r_report_list(2, keys, values, numbers);
+    UNPROTECT(1);
+    return res;
+}
+
+SEXP R_mio_transfer_operator(SEXP coarse, SEXP fine, SEXP mode, SEXP transpose, SEXP tolerance,
+                             SEXP fallback_nearest) {
+    mio_transfer_operator_opts opts;
+    mio_transfer_operator_opts_init(&opts);
+    opts.mode = (int32_t)Rf_asInteger(mode);
+    opts.transpose = Rf_asLogical(transpose) ? 1 : 0;
+    opts.tolerance = Rf_asReal(tolerance);
+    opts.fallback_nearest = Rf_asLogical(fallback_nearest) ? 1 : 0;
+    mio_sparse_operator* op = mio_transfer_operator(mio_r_mesh(coarse), mio_r_mesh(fine), &opts);
+    return mio_r_unpack_sparse_op(op, "transfer_operator");
+}
+
+SEXP R_mio_attach_fvm_quality(SEXP mesh) {
+    mio_mesh* out = mio_attach_fvm_quality(mio_r_mesh(mesh));
+    if (out == NULL)
+        mio_r_fail("attach_fvm_quality");
+    return mio_r_wrap_mesh(out);
+}
+
 SEXP R_mio_register_rigid(SEXP source, SEXP target, SEXP method, SEXP max_iterations,
                           SEXP tolerance, SEXP max_distance, SEXP initial, SEXP initial_mode,
                           SEXP symmetric_check, SEXP source_region, SEXP target_region,

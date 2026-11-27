@@ -9659,6 +9659,240 @@ MIO_API mio_mesh* mio_filter_points(const mio_mesh* mesh, const mio_filter_point
  *  (string-getter rule 5); -1 on error. */
 MIO_API int64_t mio_filter_points_warnings(char* buf, int64_t buflen);
 
+/* ------------------------------------------------------------------------
+ * Discrete operators, streamlines, transfer operators, spectral descriptors,
+ * FVM quality, denoising, skeleton, geodesic paths, FFD/RBF, high-order
+ * (roadmap 9.11-9.15, 15.2.2, 15.3, 15.4.1, 15.5.2, 15.6).
+ * ------------------------------------------------------------------------ */
+
+/** Owned compressed-row sparse matrix returned by mio_mesh_operator / mio_transfer_operator. */
+typedef struct mio_sparse_operator mio_sparse_operator;
+
+MIO_API void mio_sparse_operator_free(mio_sparse_operator* op);
+MIO_API int64_t mio_sparse_operator_rows(const mio_sparse_operator* op);
+MIO_API int64_t mio_sparse_operator_cols(const mio_sparse_operator* op);
+MIO_API int64_t mio_sparse_operator_nnz(const mio_sparse_operator* op);
+MIO_API int64_t mio_sparse_operator_num_degenerate(const mio_sparse_operator* op);
+MIO_API const int64_t* mio_sparse_operator_indptr(const mio_sparse_operator* op, int64_t* count);
+MIO_API const int64_t* mio_sparse_operator_indices(const mio_sparse_operator* op, int64_t* count);
+MIO_API const double* mio_sparse_operator_values(const mio_sparse_operator* op, int64_t* count);
+
+/** P1 finite-element operator kind for mio_mesh_operator. */
+typedef enum mio_mesh_operator_kind {
+    MIO_OPERATOR_LAPLACIAN = 0,
+    MIO_OPERATOR_MASS_LUMPED = 1,
+    MIO_OPERATOR_MASS_CONSISTENT = 2,
+    MIO_OPERATOR_GRADIENT = 3
+} mio_mesh_operator_kind;
+
+/** Assemble a P1 finite-element operator on triangles or tetrahedra (roadmap 15.2.2). */
+MIO_API mio_sparse_operator* mio_mesh_operator(const mio_mesh* mesh, int32_t kind);
+
+/** Options for mio_smooth_field (roadmap 15.2.2). Size: 64 bytes. */
+typedef struct mio_smooth_field_opts {
+    const char* array;
+    const char* output;
+    double length;
+    double tolerance;
+    int64_t max_iterations;
+    int64_t reserved[3];
+} mio_smooth_field_opts;
+
+/** Report for mio_smooth_field. Size: 48 bytes. */
+typedef struct mio_smooth_field_report {
+    int64_t num_degenerate;
+    int64_t iterations;
+    int32_t converged;
+    int32_t reserved0;
+    int64_t reserved[3];
+} mio_smooth_field_report;
+
+MIO_API void mio_smooth_field_opts_init(mio_smooth_field_opts* opts);
+MIO_API mio_mesh* mio_smooth_field(const mio_mesh* mesh, const mio_smooth_field_opts* opts,
+                                   mio_smooth_field_report* report);
+
+/** Options for mio_streamlines (roadmap 15.4.1). Size: 112 bytes. */
+typedef struct mio_streamlines_opts {
+    const char* array;
+    int64_t seeds;
+    const double* seed_points;
+    int64_t num_seed_points;
+    int32_t direction;
+    int32_t integrator;
+    double step;
+    double max_length;
+    int64_t max_steps;
+    double terminal_speed;
+    double tolerance;
+    int64_t reserved[4];
+} mio_streamlines_opts;
+
+/** Owned report handle for mio_streamlines (free with mio_streamlines_report_free). */
+typedef struct mio_streamlines_report mio_streamlines_report;
+
+MIO_API void mio_streamlines_opts_init(mio_streamlines_opts* opts);
+MIO_API mio_mesh* mio_streamlines(const mio_mesh* mesh, const mio_streamlines_opts* opts,
+                                  mio_streamlines_report** report);
+MIO_API void mio_streamlines_report_free(mio_streamlines_report* report);
+MIO_API int64_t mio_streamlines_report_num_lines(const mio_streamlines_report* report);
+MIO_API int64_t mio_streamlines_report_num_seeds_outside(const mio_streamlines_report* report);
+MIO_API int32_t mio_streamlines_report_dim(const mio_streamlines_report* report);
+MIO_API const int64_t* mio_streamlines_report_seed_ids(const mio_streamlines_report* report,
+                                                       int64_t* count);
+MIO_API const int32_t* mio_streamlines_report_end_backward(const mio_streamlines_report* report,
+                                                           int64_t* count);
+MIO_API const int32_t* mio_streamlines_report_end_forward(const mio_streamlines_report* report,
+                                                          int64_t* count);
+
+/** Options for mio_transfer_operator (roadmap 15.5.2). Size: 48 bytes. */
+typedef struct mio_transfer_operator_opts {
+    int32_t mode;
+    int32_t transpose;
+    double tolerance;
+    int32_t fallback_nearest;
+    int32_t reserved0;
+    int64_t reserved[3];
+} mio_transfer_operator_opts;
+
+MIO_API void mio_transfer_operator_opts_init(mio_transfer_operator_opts* opts);
+MIO_API mio_sparse_operator* mio_transfer_operator(const mio_mesh* coarse, const mio_mesh* fine,
+                                                   const mio_transfer_operator_opts* opts);
+
+/** Options for mio_spectral_descriptors (roadmap 15.6). Size: 96 bytes. */
+typedef struct mio_spectral_descriptors_opts {
+    int32_t kind;
+    int32_t scale_invariant;
+    int64_t num_modes;
+    int64_t num_scales;
+    int32_t reuse_eigenmodes;
+    int32_t reserved0;
+    double wks_variance;
+    double tolerance;
+    int64_t max_iterations;
+    const char* output;
+    int64_t reserved[4];
+} mio_spectral_descriptors_opts;
+
+MIO_API void mio_spectral_descriptors_opts_init(mio_spectral_descriptors_opts* opts);
+MIO_API mio_mesh* mio_spectral_descriptors(const mio_mesh* mesh,
+                                           const mio_spectral_descriptors_opts* opts,
+                                           int64_t* num_modes_used, int32_t* reused_eigenmodes);
+
+/** Attach FVM interior face-pair quality arrays to a 3-D volume mesh (roadmap 9.11). */
+MIO_API mio_mesh* mio_attach_fvm_quality(const mio_mesh* mesh);
+
+/** Options for mio_denoise_surface (roadmap 9.12). Size: 88 bytes. */
+typedef struct mio_denoise_surface_opts {
+    int32_t method;
+    int32_t fix_boundary;
+    int64_t normal_iterations;
+    int64_t vertex_iterations;
+    double sigma_spatial;
+    double sigma_normal;
+    int32_t guard_foldover;
+    int32_t reserved0;
+    const char* region;
+    int64_t reserved[4];
+} mio_denoise_surface_opts;
+
+MIO_API void mio_denoise_surface_opts_init(mio_denoise_surface_opts* opts);
+MIO_API mio_mesh* mio_denoise_surface(const mio_mesh* mesh, const mio_denoise_surface_opts* opts,
+                                      int64_t* num_nodes_moved, double* max_displacement);
+
+/** Options for mio_extract_skeleton (roadmap 9.13). Size: 80 bytes. */
+typedef struct mio_skeleton_opts {
+    int64_t max_iterations;
+    double contraction_weight;
+    double attraction_weight;
+    double volume_tolerance;
+    double merge_tolerance;
+    int32_t recenter;
+    int32_t reserved0;
+    int64_t reserved[4];
+} mio_skeleton_opts;
+
+MIO_API void mio_skeleton_opts_init(mio_skeleton_opts* opts);
+MIO_API mio_mesh* mio_extract_skeleton(const mio_mesh* mesh, const mio_skeleton_opts* opts,
+                                       int64_t* num_nodes, int64_t* num_segments);
+
+/** Options for mio_shortest_path (roadmap 9.14.1). Size: 112 bytes. */
+typedef struct mio_shortest_path_opts {
+    int64_t source;
+    int64_t target;
+    int32_t has_source_point;
+    int32_t has_target_point;
+    double source_point[3];
+    double target_point[3];
+    int32_t method;
+    int32_t reserved0;
+    double time_factor;
+    int64_t reserved[3];
+} mio_shortest_path_opts;
+
+MIO_API void mio_shortest_path_opts_init(mio_shortest_path_opts* opts);
+MIO_API mio_mesh* mio_shortest_path(const mio_mesh* mesh, const mio_shortest_path_opts* opts,
+                                    double* total_length, int32_t* reached);
+
+/** Multi-source geodesic Voronoi partitioning (roadmap 9.14.2). */
+MIO_API mio_mesh* mio_geodesic_voronoi(const mio_mesh* mesh, const int64_t* sources,
+                                       int64_t num_sources, const double* seed_points,
+                                       int64_t num_seed_points, int32_t attach_cell_labels,
+                                       int64_t* num_unreached, double* max_distance);
+
+/** Options for mio_deform_ffd (roadmap 9.15.1). Size: 144 bytes. */
+typedef struct mio_deform_ffd_opts {
+    int64_t grid_dims[3];
+    int64_t degrees[3];
+    const double* displacements;
+    int64_t num_displacements;
+    int32_t has_bounds;
+    int32_t reserved0;
+    double box_min[3];
+    double box_max[3];
+    const char* region;
+    int64_t reserved[2];
+} mio_deform_ffd_opts;
+
+MIO_API void mio_deform_ffd_opts_init(mio_deform_ffd_opts* opts);
+MIO_API mio_mesh* mio_deform_ffd(const mio_mesh* mesh, const mio_deform_ffd_opts* opts,
+                                 int64_t* num_inverted, double* max_displacement);
+
+/** Options for mio_deform_rbf (roadmap 9.15.2). Size: 88 bytes. */
+typedef struct mio_deform_rbf_opts {
+    const double* control_points;
+    const double* displacements;
+    int64_t num_control_points;
+    int32_t kernel;
+    int32_t polynomial;
+    double radius;
+    double regularization;
+    const char* region;
+    int64_t reserved[4];
+} mio_deform_rbf_opts;
+
+MIO_API void mio_deform_rbf_opts_init(mio_deform_rbf_opts* opts);
+MIO_API mio_mesh* mio_deform_rbf(const mio_mesh* mesh, const mio_deform_rbf_opts* opts,
+                                 int64_t* num_inverted, double* max_displacement);
+
+/** Convert between Lagrange and Bezier cells (roadmap 15.3.2). */
+MIO_API mio_mesh* mio_change_basis(const mio_mesh* mesh, int32_t target, int32_t transform_fields,
+                                   int64_t* num_converted);
+
+/** Options for mio_critical_points (roadmap 15.3.3). Size: 72 bytes. */
+typedef struct mio_critical_points_opts {
+    const char* array;
+    double tolerance;
+    int64_t max_iterations;
+    double merge_tolerance;
+    int64_t seed_subdivisions;
+    int64_t reserved[4];
+} mio_critical_points_opts;
+
+MIO_API void mio_critical_points_opts_init(mio_critical_points_opts* opts);
+MIO_API mio_mesh* mio_critical_points(const mio_mesh* mesh, const mio_critical_points_opts* opts,
+                                      int64_t* num_minima, int64_t* num_maxima,
+                                      int64_t* num_saddles);
+
 #ifdef __cplusplus
 }
 #endif

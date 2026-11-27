@@ -158,6 +158,33 @@ public:
         return count;
     }
 
+    /**
+     * @brief All indexed points within @p Radius of @p rP
+     * (`dx*dx + dy*dy + dz*dz <= Radius * Radius`), appended to @p rOut as
+     * `(squared_distance, id)` pairs sorted deterministically by ascending id.
+     */
+    void WithinRadius(const Vec& rP, double Radius,
+                      std::vector<std::pair<double, std::int64_t>>& rOut) const {
+        rOut.clear();
+        if (mPoints.empty() || !(Radius >= 0.0))
+            return;
+        const Vec lo{rP[0] - Radius, rP[1] - Radius, rP[2] - Radius};
+        const Vec hi{rP[0] + Radius, rP[1] + Radius, rP[2] + Radius};
+        const double r2 = Radius * Radius;
+        mGrid.ForEachInBox(
+            mGrid.KeyOf(lo.data()), mGrid.KeyOf(hi.data()), [&](const BucketView& rIds) {
+                for (const std::int64_t id : rIds) {
+                    const Vec& q = mPoints[static_cast<std::size_t>(id)];
+                    const double dx = rP[0] - q[0], dy = rP[1] - q[1], dz = rP[2] - q[2];
+                    const double d2 = dx * dx + dy * dy + dz * dz;
+                    if (d2 <= r2)
+                        rOut.emplace_back(d2, id);
+                }
+            });
+        std::sort(rOut.begin(), rOut.end(),
+                  [](const auto& rA, const auto& rB) { return rA.second < rB.second; });
+    }
+
 private:
     std::vector<Vec> mPoints;
     BucketTable mGrid{1.0};

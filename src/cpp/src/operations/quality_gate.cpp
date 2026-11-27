@@ -31,6 +31,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/quality_gate.hpp"
+#include "meshioplusplus/operations/fvm_quality.hpp"
 #include "meshioplusplus/detail/fast_number.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/ndarray.hpp"
@@ -54,7 +55,23 @@ const char* const kQgMetrics[] = {
     "quality:diagonal_ratio",
 };
 
+const char* const kQgFvmMetrics[] = {
+    "fvm:non_orthogonality",
+    "fvm:face_skewness",
+    "fvm:volume_ratio",
+    "fvm:min_pyramid_height",
+};
+
+bool qg_is_fvm(const std::string& rMetric) {
+    return rMetric.rfind("fvm:", 0) == 0;
+}
+
 std::string qg_full_name(const std::string& rMetric) {
+    if (qg_is_fvm(rMetric)) {
+        for (const char* m : kQgFvmMetrics)
+            if (rMetric == m)
+                return rMetric;
+    }
     const std::string full = rMetric.rfind("quality:", 0) == 0 ? rMetric : "quality:" + rMetric;
     for (const char* m : kQgMetrics)
         if (full == m)
@@ -62,6 +79,8 @@ std::string qg_full_name(const std::string& rMetric) {
     std::string names;
     for (const char* m : kQgMetrics)
         names += (names.empty() ? "" : ", ") + std::string(m + 8);
+    for (const char* m : kQgFvmMetrics)
+        names += ", " + std::string(m);
     throw std::invalid_argument(std::string(kQgPrefix) + "unknown metric '" + rMetric +
                                 "' (expected one of " + names + ")");
 }
@@ -87,7 +106,7 @@ std::string qg_g(double v) {
 }
 
 std::string qg_name(const std::string& rMetric, double Min, double Max, double Fraction) {
-    const std::string m = rMetric.substr(8);
+    const std::string m = rMetric.rfind("quality:", 0) == 0 ? rMetric.substr(8) : rMetric;
     std::string s;
     if (!std::isnan(Min) && !std::isnan(Max))
         s = qg_g(Min) + " <= " + m + " <= " + qg_g(Max);
@@ -157,6 +176,9 @@ QualityGateResult check_quality(const Mesh& rMesh, const QualityGateOptions& rOp
     result.mReport = compute_quality(rMesh);
     const QualityReport& rep = result.mReport;
 
+    bool have_fvm = false;
+    FvmQualityReport fvm_rep;
+
     for (const QualityThreshold& t : rOptions.mThresholds) {
         QualityCheck c;
         c.mMetric = qg_full_name(t.mMetric);
@@ -172,9 +194,19 @@ QualityGateResult check_quality(const Mesh& rMesh, const QualityGateOptions& rOp
         c.mName = qg_name(c.mMetric, t.mMin, t.mMax, t.mMaxFraction);
 
         const std::vector<NDArray>* arrays = nullptr;
-        for (const auto& kv : rep.mCellArrays)
-            if (kv.first == c.mMetric)
-                arrays = &kv.second;
+        if (qg_is_fvm(c.mMetric)) {
+            if (!have_fvm) {
+                fvm_rep = compute_fvm_quality(rMesh);
+                have_fvm = true;
+            }
+            for (const auto& kv : fvm_rep.mCellArrays)
+                if (kv.first == c.mMetric)
+                    arrays = &kv.second;
+        } else {
+            for (const auto& kv : rep.mCellArrays)
+                if (kv.first == c.mMetric)
+                    arrays = &kv.second;
+        }
         // The margin by which a value clears the bound (negative: violates it).
         auto margin = [&](double v) {
             double m = std::numeric_limits<double>::infinity();
@@ -247,7 +279,7 @@ std::string quality_gate_summary(const QualityGateResult& rResult) {
         s += std::string("  ") + (c.mPassed ? "pass" : "FAIL") + "  " + c.mName + ": " +
              std::to_string(c.mViolations) + " of " + std::to_string(c.mEvaluated) +
              " cells violate";
-        if (c.mMetric.rfind("quality:", 0) == 0 && c.mWorstCell >= 0)
+        if ((c.mMetric.rfind("quality:", 0) == 0 || qg_is_fvm(c.mMetric)) && c.mWorstCell >= 0)
             s += ", worst " + qg_g(c.mWorst) + " at cell " + std::to_string(c.mWorstCell);
         s += "\n";
     }

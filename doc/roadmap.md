@@ -1049,49 +1049,7 @@ Reopened from the non-goals, which record why a native `mesh_boolean` was not qu
 
 Now actionable: 2.4.3 (UGRID NetCDF, ADCIRC, Selafin) and 2.4.6.1 (LAS, whose VLRs carry the CRS verbatim in `las:vlrs`) have landed, so georeferenced meshes are read. `field_data["meshio:crs"]` as a WKT2 or `EPSG:<code>` string (8.2's encoding), set by the UGRID, LAS and ADCIRC readers and written back; reprojection as a mode of [`convert_coordinates`](./coordinates.md) (`CoordinateOptions`, `operations/coordinates.hpp` line 119) through PROJ, an optional dependency in the TecIO pattern (2.4.6.2) with a Python twin through `pyproj`; without it the operation refuses by name. glTF and 3D Tiles get the ECEF convention only on request. **S–M**
 
-### 9.11 Finite-volume (CFD) face-pair mesh quality diagnostics
-
-`compute_quality` (`src/cpp/src/operations/quality.cpp` lines 53–92) evaluates 22 isolated per-cell geometric metrics only, whereas finite-volume CFD solvers (OpenFOAM `checkMesh`, Fluent, STAR-CCM+, SU2) fail or diverge on cell-to-cell face metrics that depend on adjacent cells across interior faces. **S–M**
-
-- **State today.** `quality.cpp` has no interior-face pairing. The adjacency machinery already exists: `detail::build_global_faces` (`detail/face_mesh.hpp`) pairs owner and neighbour cells across every interior face (including polyhedra), `detail::cell_centroids` (`detail/cell_centroids.hpp`) computes cell centres and `detail::poly_measure` (`detail/polyhedron.hpp`) computes cell volumes.
-- **Design.** A companion operation `compute_fvm_quality(mesh)` (or an opt-in mode of `check_quality` / `quality_gate`) computing per-interior-face: **non-orthogonality** (degrees between face unit normal and owner-to-neighbour centroid vector), **FVM face skewness** (distance from the face centre to the intersection of the centroid-to-centroid segment with the face plane, normalised by face diameter), **adjacent volume growth ratio** (`max(V_L, V_R) / min(V_L, V_R)`), and **face concavity / pyramid-height** checks. Aggregate min/max/mean and worst-face values projected onto owner and neighbour cells as `fvm:non_orthogonality`, `fvm:face_skewness`, `fvm:volume_ratio` so [`check`](./mesh_quality.md) (`quality_gate.hpp`) can gate on rules like `"fvm:non_orthogonality <= 70"`.
-- **Done when.** On a skewed polyhedral and hexahedral mesh, reported max and mean non-orthogonality and face skewness match OpenFOAM `checkMesh`'s numbers within tolerance on every surface by [checklist O](#landing-checklists).
-
-### 9.12 Feature-preserving surface denoising (bilateral and guided normal filtering)
-
-[`smooth`](./smooth.md) (`src/cpp/include/meshioplusplus/operations/smooth.hpp` lines 125–134) offers `Laplacian`, `Taubin` and `Odt` — all isotropic low-pass filters that round off sharp edges unless pinned by a hard dihedral threshold (`mPreserveFeatures`), which fails on noisy 3-D scans where noise spikes trigger false creases. **S–M**
-
-- **State today.** No bilateral or guided normal filter exists in `src/cpp/` or `src/python/`. `detail/surface_rings.hpp`, `detail/geometry_utils.hpp`, `detail/crease_edges.hpp` and `smooth.cpp`'s flat coordinate buffer and inversion guard already provide the neighbourhood and safety machinery.
-- **Design.** Add `SmoothMethod::Bilateral` (or a dedicated `denoise_surface` operation: design pass decides whether the extra range-sigma parameters fit `SmoothOptions` or warrant their own struct) implementing two-stage bilateral / guided normal filtering (Fleishman, Drori and Cohen-Or 2003†; Zheng et al. 2011†; Zhang et al. 2015†): filter face normals iteratively with spatial and normal-similarity Gaussian weights in Jacobi `parallel_for` passes, then update vertex positions to align with filtered normals (Sun et al. 2007†), optionally guarded against facet fold-over.
-- **Done when.** Denoising a Gaussian-perturbed CAD cube or cylinder scan cuts Hausdorff distance to the nominal surface by >50% while preserving 90° dihedral edges where Taubin either rounds them or leaves noise pinned.
-
-### 9.13 Curve-skeleton and centerline extraction (mean-curvature flow contraction)
-
-Internal CFD (pipes, manifolds, airways), vascular/biomedical meshes (2.4.4) and reverse engineering routinely need a 1-D curve skeleton / centerline with local inscribed radius from a closed surface mesh. **M**
-
-- **State today.** Every numerical ingredient already lives in the core: cotangent Laplacian and lumped mass (`detail/surface_fem.hpp`), sparse SPD solves (`detail/sparse_solve.hpp`, with IC(0) and Nested-Dissection LDLᵀ), edge-collapse connectivity thinning (`operations/decimate.cpp`) and surface distance (`detail/tri_bvh.hpp`). Nothing extracts centerlines.
-- **Design.** `extract_skeleton(mesh, SkeletonOptions)` implementing mean-curvature flow skeletonization (Au et al. 2008†; Tagliasacchi et al. 2012†): iteratively solve `(M + w_L L) X' = M X` with medial-axis attraction weights until volume collapses, thin the contracted triangle mesh by half-edge collapse into a 1-D `line` mesh, recenter skeleton vertices via `detail::DistanceQuery`, and attach `skeleton:radius` (local inscribed radius), `skeleton:degree` (endpoint / regular / branch) and `skeleton:surface_map` (surface vertex → nearest skeleton node).
-- **Done when.** `extract_skeleton` on a bifurcating pipe and a torus produces a topologically faithful 1-D `line` graph whose `skeleton:radius` matches the analytic tube radius within 5% across backends.
-
-### 9.14 Shortest geodesic paths and surface Voronoi partitioning
-
-[`geodesic_distance`](./geodesic.md) (`operations/geodesic.hpp`) computes a scalar distance field from source vertices via the heat method, but cannot extract an explicit shortest curve (`line` mesh) between landmarks or partition a surface into geodesic Voronoi cells. **S–M**
-
-- **State today.** `detail/node_adjacency.hpp`, `detail/surface_rings.hpp` and `operations/geodesic.cpp` exist; no Dijkstra or surface-path tracer exists.
-- **Steps.**
-  - **9.14.1 `shortest_path`.** Compute a deterministic shortest path between source and target vertices (or points snapped to the surface via `locate_points`): `"dijkstra"` over the edge-length graph with deterministic tie-breaking by ascending vertex id, and `"heat_trace"` (gradient back-trace across faces from `geodesic_distance`'s field, with optional face-crossing edge-flipping refinement, Sharp and Crane 2020†). Return a 1-D `line` mesh carrying `path:distance` and `path:source_cell`. **S**
-  - **9.14.2 Multi-source geodesic Voronoi regions.** Given a list of seed vertices/points, compute both `geodesic:distance` and `geodesic:nearest_source` (point/cell region labels) in one multi-source Dijkstra or heat pass — useful for patch decomposition and domain splitting on curved surfaces. **S**
-- **Done when.** On a triangulated sphere, the extracted shortest path between two points matches the great-circle arc length within mesh resolution and lies on the surface on every surface by [checklist O](#landing-checklists).
-
-### 9.15 Parametric FFD lattice and RBF control-point morphing
-
-[`morph`](./morph.md) (`src/cpp/src/operations/morph.cpp`) solves a harmonic PDE from prescribed displacements on every boundary node; aerodynamic shape optimisation, CAD parameter studies and physics-ML geometry augmentation need low-dimensional deformations from sparse control handles or a bounding lattice without solving a mesh-sized linear system. **M**
-
-- **State today.** `detail/iga_kernels.hpp` already evaluates tensor-product B-splines (`iga_eval_point`), `detail/lsq_fit.hpp` solves dense small linear systems and `detail/point_knn.hpp` accelerates compact-support queries. Neither Free-Form Deformation (FFD) nor Radial Basis Function (RBF) morphing exists.
-- **Steps.**
-  - **9.15.1 Free-Form Deformation (FFD).** `deform_ffd(mesh, control_grid, displacements, degrees)` (Sederberg and Parry 1986†): map mesh points (or a named region) into a user-defined Bézier / B-spline control lattice, evaluate the displacement via `detail/iga_kernels.hpp` in `parallel_for`, and preserve connectivity, regions and data (working on volume, surface, polyhedral and high-order meshes alike). **S**
-  - **9.15.2 RBF morphing.** `deform_rbf(mesh, control_points, displacements, kernel="tps"|"wendland_c2", radius)` (de Boer, van der Schoot and Bijl 2007†): fit exact RBF weights with linear polynomial reproduction over sparse control handles (dense solve for global TPS; `PointKnn` sparse assembly + `csr_pcg` for compactly-supported Wendland C2 at large handle counts) and evaluate displacements in `parallel_for`. **S–M**
-- **Done when.** Both FFD lattice perturbations and sparse RBF control moves deform a 3-D volume mesh deterministically across backends with zero inverted cells checked by `compute_quality`.
+*(9.11 FVM face-pair quality, 9.12 bilateral/guided surface denoising, 9.13 MCF curve-skeleton extraction, 9.14 shortest geodesic paths and surface Voronoi, and 9.15 parametric FFD and RBF morphing have landed.)*
 
 ### 9.16 Cancellation and progress reporting for long-running operations {#progress-cancel}
 
@@ -1377,70 +1335,11 @@ What is measured for the paper, fixed before it is run. **M–L**
 
 Two facts shape every item. VTK's cell derivatives are exact for linear fields and approximate otherwise (the curl of a gradient comes out small, not zero), and so are meshio++'s: each page states the order of exactness rather than implying more. And VTK computes on its cells' own shape functions, where `gradient` reconstructs per cell from faces or neighbours: where a result is compared, it is compared on a field both reproduce exactly.
 
-### 15.1 Integration by quadrature
+### 15.1–15.6 Status
 
-Point data (through its cell means, exact for a linear field on a simplex), the flux `∫ u · n dA` and the boundary integrals of a volume mesh landed as **mode prefixes on the array names** of [`data_integrate`](./field_integration.md) (`point:`, `flux:`, `boundary:`), which changed no signature on any surface; the divergence-theorem test (the flux of `(x, y, z)` through a unit cube's boundary is 3) pins them. What remains is the quadrature.
+*(15.1 `quad:` / `boundary:quad:` Gauss quadrature in `data_integrate`, 15.2 tetrahedral `mesh_operator`/`smooth_field`, `mio_sparse_operator` C API & flat bindings, and the DEC spike in [spikes](./spikes.md#discrete-exterior-calculus-formerly-roadmap-1523), 15.3 high-order `evaluate_cells`, `change_basis`, `critical_points`, high-order `gradient`, and high-order `isosurface`, 15.4.1–15.4.2 streamlines flat bindings, `Streamlines` pipeline step, and notebook, 15.5 `transfer_operator` and `physicsnemo.transfer_matrix`, and 15.6 `spectral_descriptors` HKS/WKS have landed.)*
 
-- **State today.** `point:<a>` takes the mean of a cell's corner values, which is first order for anything but a linear field. No Gauss rule on the cell's shape functions exists in the core (3.4.3 queues the shared reference elements).
-- **Steps.**
-  - **15.1.1 Point data by Gauss quadrature.** Integrate point data through the cell's shape functions with a Gauss rule of the field's order, from 3.4.3's reference elements, as a further mode (`quad:<a>`, or the same `point:` once the rule exists, with its change of numbers stated); linear cells exact for linear data, quadratic cells for quadratic data. **S after 3.4.3**
-- **Tests.** A quadratic field on a `tetra10` and a `quad8` integrated exactly, where the first-order `point:` result is not.
-- **Done when.** `meshioplusplus data integrate part.vtu --array point:p --array flux:U` is exact for fields of the cells' order on every surface. **S after 3.4.3**
-
-### 15.2 Discrete operators as data
-
-`mesh_operator(mesh, kind)` (the cotangent Laplacian, the lumped and the consistent mass and the per-triangle gradient of a triangle surface, as a CSR matrix) and `smooth_field(mesh, array, length)` (the screened-Poisson smoothing `(M + l²K) g = M f`) landed in the C++ core, Python, the Python CLI and the MCP server ([mesh operators](./mesh_operator.md)); the field Laplacian is `(K @ f) / M.diagonal()` from the export. What is left:
-
-- **State today.** Both are core-only on triangle surfaces. Tetrahedra wait on the shared simplex kernels (3.4.4); there is no C API entry, so Fortran, Julia, R, Octave and WebAssembly cannot reach either; the DEC spike has not been run.
-- **Why this does not cross the non-goal.** The [solver-coupled non-goal](#non-goals-and-decisions-taken) rests on meshio++ having no notion of a discrete system, an assembly routine and its tangent. Exporting the geometric operators of the mesh as arrays, and the screened-Poisson solve two operations already make, add neither: the matrices are data, like `adjacency()`, and the physics stays in the caller.
-- **Steps.**
-  - **15.2.1 Tetrahedra.** P1 stiffness, lumped and consistent mass and the per-cell gradient (`3 · ncells × npoints`) on tetrahedra, from the shared simplex kernels of 3.4.4, as further scopes of `mesh_operator` and `smooth_field` (a mixed surface and volume mesh stays refused). **S after 3.4.4**
-  - **15.2.2 The C API and the wrappers.** A CSR result handle (like `mio_graph` for `adjacency`: `mio_mesh_operator(mesh, kind)` with `_rows`, `_cols`, `_indptr`, `_indices`, `_values` accessors, and `mio_smooth_field_opts` with a size, a reserved tail and a `static_assert`), then Fortran, Julia, R, Octave and WebAssembly by [checklist O](#landing-checklists) step 4. **M**
-  - **15.2.3 A discrete-exterior-calculus spike.** `d0`, `d1` and the diagonal Hodge stars on triangle surfaces (Desbrun, Hirani, Leok and Marsden 2005; Crane's *Discrete Differential Geometry* notes), checked by `d1 d0 = 0` exactly, and a Helmholtz–Hodge decomposition of a tangent vector field into its exact, coexact and harmonic parts as the measurement; findings to [spikes](./spikes.md), and a numbered item only if the decomposition is asked for. **M, spike**
-- **Done when.** Both operations give the same matrices and fields on a `tetra` mesh and on every surface, checked against the surface results on the boundary. **M**
-
-### 15.3 High-order field evaluation
-
-The role VTK's CellGrid takes (`vtkCellGridEvaluator`, `vtkCellGridFindCriticalPoints`, `vtkCellGridIsocontour`, `vtkCellGridChangeBasis`, the `vtkDG*Operators` bases): treating a field on curved cells as the polynomial it is rather than as its nodal values. **L, design pass first**
-
-- **State today.** `tessellate` (`operations/tessellate.hpp` line 131) samples five quadratic types on a lattice and interpolates their fields isoparametrically; the VTK Lagrange family passes through. Arbitrary-order Lagrange bases and `interpolation_matrix` exist (`src/cpp/src/formats/lagrange_common.hpp` line 721; twin `_lagrange.py` line 454) for node-to-node maps only. `interpolate` (`operations/interpolate.hpp` line 162) probes on the simplexified, linear mesh; `isosurface` is linear; `gradient` returns NaN on 3-D Lagrange cells. IGA has its own evaluation (`iga_evaluate`, `operations/iga.hpp` line 154).
-- **Decisions to take first.** (1) Whether the evaluator is a public kernel (`evaluate_cells(mesh, cells, reference_points, fields, derivatives) -> values, gradients`) or only an engine behind the steps below; recommended: public, since 9.3's `locate_points` returns reference coordinates for it to consume. (2) The bases: Lagrange on the registry's node orders (`detail/node_order.hpp`) first, Bézier through the change of basis, the H(div) and H(curl) bases only after 8.3 says where such data lives.
-- **Steps.**
-  - **15.3.1 Evaluation and gradient at reference points** for every fixed Lagrange type and the VTK Lagrange family, values and physical gradients through the inverse Jacobian; then `gradient` on high-order cells through it instead of NaN. After 3.4.3.
-  - **15.3.2 Change of basis** between Lagrange and Bézier control values per cell (the Bernstein–Lagrange transformation matrices, exact), writing VTK Bézier cells with `HigherOrderDegrees`, which the VTU writer already writes.
-  - **15.3.3 Critical points** of a scalar field per cell: Newton on `∇f = 0` from the reference-lattice seeds, classified by the Hessian's signs (minimum, maximum, saddle), deduplicated across shared faces; returned as a vertex block with the value and the class.
-  - **15.3.4 Isocontours of a high-order field** by adaptive tessellation of the cell (subdivide until the field's deviation from linear falls below a tolerance, then the linear `isosurface` on the pieces), points snapped onto the true level set by a Newton step along the gradient.
-- **Tests.** A polynomial field of the cell's order reproduced exactly at random reference points; Lagrange → Bézier → Lagrange the identity; the critical points of `(x−a)² + (y−b)² − (z−c)²` found and classed on a curved hexahedron; an isocontour of a quadratic field matching the analytic surface within tolerance where the linear `isosurface` does not.
-- **Done when.** `gradient`, `isosurface` and a new `critical_points` give exact results for polynomial fields of the cells' order on a `tetra10` and a VTK Lagrange hexahedron of order 4, on every surface.
-
-### 15.4 Streamlines: the flat bindings
-
-`streamlines(mesh, array, ...)` landed in the C++ core, Python, both CLIs and the MCP server ([streamlines](./streamlines.md)): time-domain RK4 and adaptive RK45 over the shared locator, explicit or ranked seeds, both directions, the end reasons, a determinism test and a rotation whose circles close. What remains is what this session could not build or run.
-
-- **State today.** No `mio_streamlines` in the C API, so Fortran, Julia, R, Octave and WebAssembly have no entry point; there is no pipeline step; and `render`'s streamlines still use the old fixed arc-length tracer (`detail::trace_streamlines`), sharing the locator and the seeding but not the integrators, so its digests are unchanged. There is no notebook in `example/python/` for it.
-- **Steps.**
-  - **15.4.1 The C API and the wrappers.** `mio_streamlines_opts` (size in its comment, a reserved tail, a `static_assert` on the struct size; the options are the `StreamlinesOptions` of `operations/streamlines.hpp`, the direction and integrator as `int`s) with `_init`, `mio_streamlines` returning the mesh and a report handle (`mio_streamlines_report`: counts, then per-line `seed_id`, `end_backward`, `end_forward`), then Fortran, Julia, R, Octave and WebAssembly by [checklist O](#landing-checklists) step 4, and `tests/cpp/test_c_api.cpp` and the binding suites. The WebAssembly parity test holds `js_bindings.cpp` to the C header, so the header and the wrappers go in together. **M**
-  - **15.4.2 The pipeline step and the notebook.** A `Streamlines` step is not obvious (it changes the mesh from cells to lines, like `extract_surface`, which has one): decide, add its keys to `tools/pipeline_steps.json`, and an `example/python/` notebook with graphical output. **S**
-  - **15.4.3 `render` on the public tracer.** Replace `render`'s arc-length RK4 with the timed tracer at unit speed, which changes its pictures: do it only with the golden images re-recorded and the change stated. **S, optional**
-- **Done when.** `meshioplusplus streamlines flow.vtu lines.vtp --array U --seeds 200` on every surface, including the flat bindings. **M**
-
-### 15.5 Inter-mesh transfer operators as sparse matrices (prolongation, restriction and GNN pooling)
-
-`mesh_operator` (`src/cpp/src/operations/mesh_operator.cpp`) exports single-mesh sparse operators (`Laplacian`, `MassLumped`, `MassConsistent`, `Gradient`), while geometric multigrid solvers and hierarchical physics-ML architectures (MeshGraphNets, BSMS-GNN and multigrid neural operators in `physicsnemo/`) need the inter-mesh prolongation matrix `P` (coarse → fine) and restriction matrix `R = Pᵀ` (fine → coarse) as sparse CSR arrays. **S–M**
-
-- **State today.** `refine` already notes "the prolongation operator's weights" in its header (`src/cpp/include/meshioplusplus/operations/refine.hpp` line 262) and `locate_points` (`detail/point_locator.hpp`) returns containing cells and barycentric weights for arbitrary meshes, but neither exports a CSR transfer matrix.
-- **Steps.**
-  - **15.5.1 `transfer_operator(coarse, fine)`.** Build the sparse CSR prolongation matrix `P` (`n_fine × n_coarse`) from either (a) exact nested refinement weights when `fine` carries `refine`'s hierarchy (`detail/refine_hierarchy.hpp`), or (b) barycentric weights from `detail::PointLocator` for arbitrary non-nested coarse/fine pairs (e.g., `decimate` or `remesh` coarsening hierarchies), with each row summing to 1 (partition of unity) and deterministic ascending column order. Return the same CSR shape `mesh_operator` uses (`mRows`, `mCols`, `mIndptr`, `mIndices`, `mValues`), exposing restriction `R` as the transpose option (or Galerkin `Pᵀ M_f P` check in tests). **S–M**
-  - **15.5.2 Flat bindings and `physicsnemo` helper.** Share the CSR C handle of 15.2.2 (`mio_mesh_operator` / `mio_transfer_operator`), and expose a thin Python helper returning `scipy.sparse.csr_matrix` / PyTorch sparse COO for hierarchical GNN pooling. **S after 15.2.2**
-- **Done when.** `P @ f_coarse` reproduces any linear point field on `fine` to machine precision, every row sums to 1, and `Pᵀ @ M_fine @ P` equals `M_coarse` on a nested uniform refinement.
-
-### 15.6 Spectral shape descriptors (HKS and WKS)
-
-[`laplacian_eigenmodes`](./eigenmodes.md) (`src/cpp/src/operations/eigenmodes.cpp`) already computes the lowest `k` Laplace–Beltrami eigenpairs `(λᵢ, φᵢ)` of a surface. Two standard intrinsic, isometry-invariant point descriptors follow directly from those eigenpairs in ~30 lines of arithmetic and serve non-rigid registration, correspondence and physics-ML node features. **S**
-
-- **State today.** `laplacian_eigenmodes` returns `laplacian:modes` `(N, k)` and `laplacian:eigenvalues` `(k,)` with deterministic sign canonicalisation; no spectral descriptor helper exists.
-- **Design.** `spectral_descriptors(mesh, kind="hks"|"wks", num_modes, num_scales, ...)` computing the **Heat Kernel Signature** (`HKS(x, t) = Σ exp(-λᵢ t) φᵢ(x)²`, Sun, Ovsjanikov and Guibas 2009†) or **Wave Kernel Signature** (`WKS(x, e)`, Aubry, Schlickewei and Cremers 2011†) on log-spaced scales derived automatically from `[λ₁, λ_{k-1}]`, with optional scale-invariant normalisation, reusing `laplacian_eigenmodes` directly (or accepting precomputed eigenpairs already attached to the mesh, so `eigenmodes` is never run twice).
-- **Done when.** HKS and WKS descriptors agree within tolerance between a mesh and an isometric bending / rigid transform of it, and run deterministically across backends.
+- **15.4.3 `render` on the public tracer (optional).** Replace `render`'s arc-length RK4 with the timed tracer at unit speed, which changes its pictures: do it only with the golden images re-recorded and the change stated. **S, optional**
 
 ### Considered, not queued
 
@@ -1544,13 +1443,12 @@ Open work only; what shipped is in `CHANGELOG.md`.
 8. **The chatbot (4.4) and the embeddable MCP server (4.9)** — the schema generator (4.4.2) first, since both need it; then 4.9's design pass before any native code, since it decides whether the Python server's sandbox and sanitizer move into the core.
 9. **Code duplication ([§6](#code-duplication))** — finish the remaining `svg`/`tikz` drawing writer internals (6.2) and rerun `tools/dup_report.py` alongside everything, like 3.4.
 10. **SonarCloud findings ([§7](#sonarcloud-findings))** — confirm the 45 fixes and the coverage path on the next `master` scan (7.1, 7.2), then make the gates required (7.4) and add the viewer's rebuild check (7.3) with the next WebAssembly build.
-11. **Operations ([§9](#operations))** — the boolean backend's measurement first (9.1.1, 9.1.2), since it decides a non-goal and two parked features; then the small, high-leverage ones (all-hits ray queries 9.3.1, FVM face-pair quality 9.11, bilateral denoising 9.12, shortest geodesic paths 9.14, averaged voxel point and `subsample_points` 9.9.1/9.9.2, the IGA list 9.8); then cancellation/progress (9.16), FFD/RBF morphing (9.15), curve-skeleton extraction (9.13), subdivision and elevation (9.2, 9.5), partitioner providers (9.7) and repeated green refinement (9.6.1). Only 9.10.2 and 9.6.2 wait on a decision.
+11. **Operations ([§9](#operations))** — the boolean backend's measurement first (9.1.1, 9.1.2), since it decides a non-goal and two parked features; then the small, high-leverage ones (all-hits ray queries 9.3.1, averaged voxel point and `subsample_points` 9.9.1/9.9.2, the IGA list 9.8); then cancellation/progress (9.16), subdivision and elevation (9.2, 9.5), partitioner providers (9.7) and repeated green refinement (9.6.1). Only 9.10.2 and 9.6.2 wait on a decision.
 12. **Data model ([§8](#data-model))** — design passes only until one says otherwise. The two whose recommended form is a convention and days of work, and which close losses already listed on format pages: complex pairs (8.1) and the structured annotation (8.6). Strings (8.2) before hierarchy (8.5), which uses them. Integration-point data (8.3) is the largest and the one most formats wait on (2.3.6.1, MED ELGA, the result readers); side data (8.4) unblocks 2.3.1.4 and 2.3.2.3. The format items that wait on each say so.
 13. **In-situ interchange, the modern C++ surface and provenance ([§10](#in-situ-interchange) to [§12](#provenance-remote))** — after everything above, in this order by dependency: the Conduit bridge (10.1) in Python first, since it needs no core change, and the ghost conventions (10.4) with 2.3.8.1, which wants the same names; errors as values and views (11.1, 11.2) together in one ABI change, then the concepts on top (11.3); PROV and RO-Crate (12.1), the `dataset add` statistics (12.3) and the remote-read decision (12.2) are small and independent. The upstream-meshio run (3.18) and the identifier-width audit (3.19) belong with the tooling of item 4. §10 to §12 came from a proposed revision of this file in November 2026: what the revision listed that the tree or this file already had (supply chain, hardening, the ABI diff, the C++ module, Zarr and pmsh in the core, the dataset manifests, the PyG dataset, partition ghosts and the `pvtu` writer, node-order tables, fsspec URLs, the mutation-testing and engine-differential spikes) was not repeated.
 14. **The remaining proposal-derived items** — the MSH 4.1 sections (2.3.6.3), QA records (2.3.2.5), collated OpenFOAM (2.3.5.4), VTKHDF composites (2.3.7.5) and glTF and OpenUSD completeness (2.3.9.8, 2.3.9.9) with format reach; the nanobind spike (4.17) beside 3.15.1; solver adapters (4.16) after 4.3 and 4.10; streaming writers (5.16); the resource-limit audit (12.4) beside 3.12; required gates (7.4) after 7.1 and 7.2.
 15. **Educational animation ([§13](#manim))** — the frame-stability and version check of 13.6.2 first, since every later step is rendered in CI or not at all, and the decisions of 13.1 with it; then the payload (13.2), which needs no manim, and `to_manim` with the helpers (13.3.1, 13.3.2) on top. The animations (13.4) are written as the pilot episode (13.5.1) asks for them, not ahead of it; the remaining episodes follow in the table's order, each alone. The raster path (13.3.5) is written when the first episode that needs a mesh above `max_faces` does; smooth shading and the OpenGL or ManimGL route (13.3.4, 13.3.6) and the ManimGL leg (13.6.3) wait on 13.6.4's measurements. Independent of every other section, so it runs beside any of the above.
 16. **The paper ([§14](#paper))** — the decisions (14.1) at once, because consent, endorsement and a venue's policy on AI assistance are calendar-bound and the last can change what kind of paper is possible; the claims table and the attribution (14.2.1, 14.2.2) next, since they say what the experiments must show; the bibliography (14.3) and the build (14.6) can start the same day. The experiments (14.4) are run once, at the release 14.1.7 fixes, after which the generated numbers (14.5.3) are frozen at that tag. A paper is better for the registrations of 4.1 being done (its availability section) and for stills from §13 (14.5.4), but waits on neither. Posting (14.7.2) is an author's act.
-17. **Math on meshes ([§15](#math-on-meshes))** — what is left, smallest first: spectral shape descriptors (15.6, immediately on top of `laplacian_eigenmodes`), inter-mesh transfer operators (15.5.1, over `refine` and `locate_points`), the flat bindings of streamlines (15.4.1, with a toolchain for each binding at hand: they cannot be checked without one), then its pipeline step and notebook (15.4.2); the C API and wrappers of the operator export (15.2.2, shared with 15.5.2); then point-data quadrature (15.1.1) and the operators on tetrahedra (15.2.1) once 3.4.3 and 3.4.4 have landed the shared reference elements and simplex kernels; the DEC spike (15.2.3) is optional. High-order evaluation (15.3) last: it waits on 3.4.3, 9.3 and 9.5 and its design pass.
 
 ### Dependency overview
 
@@ -1572,8 +1470,7 @@ An arrow means the item on the right needs the one on the left. Numbers are this
 14.1 decisions ──► everything in §14     14.2.1 claims ──► 14.4 experiments ──► 14.5 figures and numbers ──► 14.7
 4.1.8 container image ──► 14.4.5 (the reviewer's container)     3.18 upstream-meshio run ──► 14.4.4
 13.5 episodes ──► 14.5.4 gallery (optional)     4.1 registries ──► 14.2.3's availability section (optional)
-3.4.3 reference elements ──► 15.1.1 point-data quadrature, 15.3 high-order evaluation, 2.4.9.2 Nek5000     3.4.4 simplex kernels ──► 15.2.1 tetrahedra
-9.3 point location ──► 15.3, 15.5 transfer operators     9.5 elevation ──► 15.3     15.2.2 CSR C handle ──► 15.5.2
+3.4.3 reference elements ──► 2.4.9.2 Nek5000
 ```
 
 ### Milestones
@@ -1588,7 +1485,6 @@ By theme, not by version number: the project bumps its major version on an ABI c
 | In-situ and large data | 10.1, 10.2, 10.4, 2.3.7.5, 4.20, 5.16, 12.4 | Blueprint `verify` passes for every cell type; Arrow C Data zero-copy verified; a 10⁸-cell streamed write stays under its memory bound |
 | Reach | 4.1, 4.8, 4.16, 3.18, 12.1 to 12.3 | upstream meshio's suite runs with a known-failures file; a Poisson solve per landed adapter |
 | Research | 4.17, 3.11.3, the long spikes of [spikes](./spikes.md) | a written decision per spike |
-| Field calculus & geometry | 9.11 to 9.15, 15.1 to 15.6 | every mesh-aware function of VTK's `numpy_interface` has a meshio++ counterpart, checked against VTK by a `pyvista`-gated parity test on fields both reproduce exactly; FVM quality matches `checkMesh`; `P @ f_coarse` exact on linear fields |
 | Outreach | 13.1 to 13.6, 14.1 to 14.7 | the pilot episode embedded on the docs site and rendered in CI; the arXiv identifier in `CITATION.cff`, its tier S numbers reproduced from the tag |
 
 ### Specification index

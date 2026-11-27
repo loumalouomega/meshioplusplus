@@ -5094,6 +5094,140 @@ export interface MeshioPlusPlusModule {
     converged: boolean;
   };
 
+  meshOperator(
+    mesh: Mesh,
+    options?: { kind?: string },
+  ): { rows: number; cols: number; nnz: number; indptr: number[]; indices: number[]; values: number[] };
+
+  smoothField(
+    mesh: Mesh,
+    options: { array: string; output?: string; length?: number; tolerance?: number; maxIterations?: number },
+  ): { mesh: Mesh; numDegenerate: number; iterations: number; converged: boolean };
+
+  streamlines(
+    mesh: Mesh,
+    options: {
+      array: string;
+      seeds?: number;
+      seedPoints?: number[];
+      direction?: string;
+      integrator?: string;
+      maxLength?: number;
+      stepSize?: number;
+      step?: number;
+      maxSteps?: number;
+      tolerance?: number;
+    },
+  ): { mesh: Mesh; numLines: number; numSeedsOutside: number; dim: number };
+
+  transferOperator(
+    coarse: Mesh,
+    fine: Mesh,
+    options?: { mode?: string; transpose?: boolean; tolerance?: number; fallbackNearest?: boolean },
+  ): { rows: number; cols: number; nnz: number; indptr: number[]; indices: number[]; values: number[] };
+
+  spectralDescriptors(
+    mesh: Mesh,
+    options?: {
+      kind?: string;
+      numModes?: number;
+      numScales?: number;
+      scaleInvariant?: boolean;
+      reuseEigenmodes?: boolean;
+      wksVariance?: number;
+      tolerance?: number;
+      maxIterations?: number;
+      output?: string;
+    },
+  ): { mesh: Mesh; numModesUsed: number; reusedEigenmodes: boolean; scales: number[] };
+
+  attachFvmQuality(
+    mesh: Mesh,
+  ): { mesh: Mesh; numInteriorFaces: number; numCells: number; numNegativePyramids: number };
+
+  denoiseSurface(
+    mesh: Mesh,
+    options?: {
+      method?: string;
+      normalIterations?: number;
+      vertexIterations?: number;
+      sigmaSpatial?: number;
+      sigmaNormal?: number;
+      fixBoundary?: boolean;
+      guardFoldover?: boolean;
+      region?: string;
+    },
+  ): {
+    mesh: Mesh;
+    numNodesMoved: number;
+    maxDisplacement: number;
+    numSkippedFoldover: number;
+    sigmaSpatialUsed: number;
+  };
+
+  extractSkeleton(
+    mesh: Mesh,
+    options?: {
+      maxIterations?: number;
+      contractionWeight?: number;
+      attractionWeight?: number;
+      volumeTolerance?: number;
+      mergeTolerance?: number;
+      recenter?: boolean;
+    },
+  ): {
+    mesh: Mesh;
+    contractionIterations: number;
+    volumeRatio: number;
+    numNodes: number;
+    numSegments: number;
+    numBranches: number;
+  };
+
+  shortestPath(
+    mesh: Mesh,
+    options?: { source?: number; target?: number; method?: string; timeFactor?: number },
+  ): { mesh: Mesh; totalLength: number; numSegments: number; reached: boolean };
+
+  geodesicVoronoi(
+    mesh: Mesh,
+    options?: { sources?: number[]; attachCellLabels?: boolean },
+  ): { mesh: Mesh; numSources: number; numUnreached: number };
+
+  deformFfd(
+    mesh: Mesh,
+    options: { gridDims?: number[]; degrees?: number[]; displacements: number[]; region?: string },
+  ): { mesh: Mesh; numInverted: number; maxDisplacement: number };
+
+  deformRbf(
+    mesh: Mesh,
+    options: {
+      controlPoints: number[];
+      displacements: number[];
+      kernel?: string;
+      polynomial?: boolean;
+      radius?: number;
+      regularization?: number;
+      region?: string;
+    },
+  ): { mesh: Mesh; numInverted: number; maxDisplacement: number };
+
+  changeBasis(
+    mesh: Mesh,
+    options?: { target?: string; transformFields?: boolean },
+  ): { mesh: Mesh; numConverted: number };
+
+  criticalPoints(
+    mesh: Mesh,
+    options: {
+      array: string;
+      tolerance?: number;
+      maxIterations?: number;
+      mergeTolerance?: number;
+      seedSubdivisions?: number;
+    },
+  ): { mesh: Mesh; numMinima: number; numMaxima: number; numSaddles: number };
+
   /**
    * Rigid registration by iterative closest points: `matrix` (16 numbers,
    * row-major 4x4) lays `source`'s points onto `target` (its surface when it

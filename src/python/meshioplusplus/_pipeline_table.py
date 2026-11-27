@@ -1151,6 +1151,18 @@ OP_TABLE = {
         "Triangulate",
         "RecordParentIds",
     ),
+    # Trace streamlines of a point vector field as a 1-D line mesh (doc/streamlines.md).
+    "Streamlines": (
+        "Array",
+        "Seeds",
+        "Direction",
+        "Integrator",
+        "Step",
+        "MaxLength",
+        "MaxSteps",
+        "TerminalSpeed",
+        "Tolerance",
+    ),
 }
 
 # The steps only a version 2 file has.
@@ -2002,6 +2014,17 @@ KEY_DEFAULTS = {
     "CutLevelSet": (
         ("Selection", "text", ""),
         ("Backend", "text", "auto"),
+    ),
+    "Streamlines": (
+        ("Array", "text", ""),
+        ("Seeds", "number", 40),
+        ("Direction", "text", "both"),
+        ("Integrator", "text", "rk4"),
+        ("Step", "number", 0.0),
+        ("MaxLength", "number", 0.5),
+        ("MaxSteps", "number", 0),
+        ("TerminalSpeed", "number", 0.0),
+        ("Tolerance", "number", 1e-06),
     ),
     "Merge": (
         ("Weld", "flag", False),

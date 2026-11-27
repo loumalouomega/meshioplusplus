@@ -32,6 +32,7 @@
 // Project includes (private, not installed)
 #include "../detail/sparse_solve.hpp"
 #include "../detail/surface_fem.hpp"
+#include "../detail/tet_fem.hpp"
 
 namespace meshioplusplus {
 
@@ -54,15 +55,23 @@ SmoothFieldResult smooth_field(const Mesh& rMesh, const SmoothFieldOptions& rOpt
         fail("'" + rOptions.mArray + "' has " + std::to_string(detail::rows(field)) +
              " rows on a mesh of " + std::to_string(n) + " points");
 
-    const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "smooth_field");
     std::vector<double> mass;
     std::vector<detail::SparseTriplet> triplets;
-    detail::surface_fem_assemble(fem, mass, triplets);
+    std::int64_t num_degenerate = 0;
+    if (detail::mesh_is_pure_tetra(rMesh)) {
+        const detail::TetFem fem = detail::build_tet_fem(rMesh, "smooth_field");
+        detail::tet_fem_assemble(fem, mass, triplets);
+        num_degenerate = fem.mNumDegenerate;
+    } else {
+        const detail::SurfaceFem fem = detail::build_surface_fem(rMesh, "smooth_field");
+        detail::surface_fem_assemble(fem, mass, triplets);
+        num_degenerate = fem.mNumDegenerate;
+    }
     const double l2 = rOptions.mLength * rOptions.mLength;
     for (detail::SparseTriplet& t : triplets)
         t.mValue *= l2;
     for (std::size_t i = 0; i < n; ++i)
-        // A point in no triangle has no mass and no stiffness: an identity row keeps it.
+        // A point in no cell has no mass and no stiffness: an identity row keeps it.
         triplets.push_back({i, i, mass[i] > 0.0 ? mass[i] : 1.0});
     const detail::SparseCsr a = detail::csr_from_triplets(n, n, std::move(triplets));
 
@@ -95,7 +104,7 @@ SmoothFieldResult smooth_field(const Mesh& rMesh, const SmoothFieldOptions& rOpt
         for (std::size_t i = 0; i < n; ++i)
             po[i * comps + c] = x_cols[c][i];
     }
-    result.mNumDegenerate = fem.mNumDegenerate;
+    result.mNumDegenerate = num_degenerate;
     result.mMesh = detail::clone_mesh(rMesh);
     result.mMesh.AddPointData(
         rOptions.mOutput.empty() ? rOptions.mArray + kSmoothFieldSuffix : rOptions.mOutput,

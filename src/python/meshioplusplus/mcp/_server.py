@@ -233,11 +233,190 @@ def _register_inspection(server: FastMCP) -> None:
         kind: str = "laplacian",
         file_format: Optional[str] = None,
     ) -> dict:
-        """Export a P1 finite-element operator of a triangle surface as a sparse
-        matrix in an .npz file (indptr, indices, values, shape): kind is
-        laplacian (cotangent stiffness), mass_lumped, mass_consistent or gradient
-        (3T x n, row 3t+k is component k of the gradient on triangle t). Reports
-        the shape and the entry count."""
+        """Export a P1 finite-element operator of a triangle surface or tetrahedral
+        volume mesh as a sparse matrix in an .npz file (indptr, indices, values,
+        shape): kind is laplacian, mass_lumped, mass_consistent or gradient."""
+
+    @server.tool()
+    @_forward(_tools.tool_spectral_descriptors)
+    def spectral_descriptors(
+        input_path: str,
+        output_path: str,
+        kind: str = "hks",
+        num_modes: int = 32,
+        num_scales: int = 16,
+        scale_invariant: bool = False,
+        reuse_eigenmodes: bool = True,
+        wks_variance: float = 0.0,
+        tolerance: float = 1e-8,
+        max_iterations: int = 0,
+        output_name: str = "",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Compute HKS or WKS spectral shape descriptors on a triangle surface."""
+
+    @server.tool()
+    @_forward(_tools.tool_transfer_operator)
+    def transfer_operator(
+        coarse_path: str,
+        fine_path: str,
+        output_path: str,
+        mode: str = "auto",
+        transpose: bool = False,
+        tolerance: float = 1e-12,
+        fallback_nearest: bool = False,
+        coarse_format: Optional[str] = None,
+        fine_format: Optional[str] = None,
+    ) -> dict:
+        """Export a sparse CSR inter-mesh prolongation (or transposed restriction)
+        matrix between coarse and fine meshes as an .npz file."""
+
+    @server.tool()
+    @_forward(_tools.tool_fvm_quality)
+    def fvm_quality(
+        input_path: str,
+        output_path: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Compute finite-volume interior face-pair quality metrics
+        (non-orthogonality, face skewness, volume ratio, pyramid height)."""
+
+    @server.tool()
+    @_forward(_tools.tool_denoise_surface)
+    def denoise_surface(
+        input_path: str,
+        output_path: str,
+        method: str = "bilateral",
+        normal_iterations: int = 10,
+        vertex_iterations: int = 10,
+        sigma_spatial: float = 0.0,
+        sigma_normal: float = 0.35,
+        fix_boundary: bool = True,
+        guard_foldover: bool = True,
+        region: str = "",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Feature-preserving bilateral or guided normal surface denoising."""
+
+    @server.tool()
+    @_forward(_tools.tool_extract_skeleton)
+    def extract_skeleton(
+        input_path: str,
+        output_path: str,
+        max_iterations: int = 10,
+        contraction_weight: float = 1.0,
+        attraction_weight: float = 1.0,
+        volume_tolerance: float = 1e-4,
+        merge_tolerance: float = 0.0,
+        recenter: bool = True,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Extract a 1-D curve skeleton / centerline from a closed triangle surface."""
+
+    @server.tool()
+    @_forward(_tools.tool_shortest_path)
+    def shortest_path(
+        input_path: str,
+        output_path: str,
+        source: int = -1,
+        target: int = -1,
+        source_point: Optional[List[float]] = None,
+        target_point: Optional[List[float]] = None,
+        method: str = "dijkstra",
+        time_factor: float = 1.0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Extract a shortest geodesic path between two landmarks as a 1-D line mesh."""
+
+    @server.tool()
+    @_forward(_tools.tool_geodesic_voronoi)
+    def geodesic_voronoi(
+        input_path: str,
+        output_path: str,
+        sources: Optional[List[int]] = None,
+        seed_points: Optional[List[float]] = None,
+        attach_cell_labels: bool = True,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Partition a mesh into multi-source geodesic Voronoi regions."""
+
+    @server.tool()
+    @_forward(_tools.tool_deform_ffd)
+    def deform_ffd(
+        input_path: str,
+        output_path: str,
+        grid_dims: List[int],
+        displacements: List[float],
+        degrees: Optional[List[int]] = None,
+        box_min: Optional[List[float]] = None,
+        box_max: Optional[List[float]] = None,
+        region: str = "",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Deform a mesh via a tensor-product Bezier / B-spline FFD lattice."""
+
+    @server.tool()
+    @_forward(_tools.tool_deform_rbf)
+    def deform_rbf(
+        input_path: str,
+        output_path: str,
+        control_points: List[float],
+        displacements: List[float],
+        kernel: str = "tps",
+        radius: float = 0.0,
+        polynomial: bool = True,
+        regularization: float = 0.0,
+        region: str = "",
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Deform a mesh via RBF interpolation of sparse control-point displacements."""
+
+    @server.tool()
+    @_forward(_tools.tool_evaluate_cells)
+    def evaluate_cells(
+        input_path: str,
+        cells: List[int],
+        reference_points: List[float],
+        fields: Optional[List[str]] = None,
+        derivatives: bool = False,
+        input_format: Optional[str] = None,
+    ) -> dict:
+        """Evaluate physical positions, fields, and optional gradients at cell reference points."""
+
+    @server.tool()
+    @_forward(_tools.tool_change_basis)
+    def change_basis(
+        input_path: str,
+        output_path: str,
+        target: str = "bezier",
+        transform_fields: bool = True,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Convert between Lagrange and Bezier cell representations."""
+
+    @server.tool()
+    @_forward(_tools.tool_critical_points)
+    def critical_points(
+        input_path: str,
+        output_path: str,
+        array: str,
+        tolerance: float = 1e-10,
+        max_iterations: int = 30,
+        merge_tolerance: float = 1e-6,
+        seed_subdivisions: int = 0,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Locate and classify critical points of a scalar point_data field."""
 
     @server.tool()
     @_forward(_tools.tool_data_integrate)

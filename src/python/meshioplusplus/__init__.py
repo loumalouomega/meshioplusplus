@@ -150,6 +150,8 @@ if TYPE_CHECKING:
     from ._dataset import DatasetEntry, DatasetManifest
     from ._decimate import decimate
     from ._decimate_volume import decimate_volume
+    from ._deform import deform_ffd, deform_rbf
+    from ._denoise_surface import denoise_surface
     from ._deviation import deviation, deviation_regions, exaggerate
     from ._diff import diff, meshes_equal
     from ._eigenmodes import laplacian_eigenmodes
@@ -164,6 +166,7 @@ if TYPE_CHECKING:
     from ._fit_curves import fit_curves
     from ._fit_primitives import fit_primitives
     from ._flip_normals import flip_normals
+    from ._fvm_quality import attach_fvm_quality, compute_fvm_quality
     from ._geodesic import geodesic_distance
     from ._gpu import (
         from_cupy,
@@ -193,6 +196,7 @@ if TYPE_CHECKING:
     from ._guard import GeometryGuard, geometry_descriptors
     from ._hausdorff import hausdorff_distance
     from ._hessian import hessian
+    from ._high_order import change_basis, critical_points, evaluate_cells
     from ._hull import convex_hull, delaunay_2d
     from ._iga import (
         iga_bezier_extract,
@@ -343,14 +347,17 @@ if TYPE_CHECKING:
         write_sequence,
     )
     from ._sequence_stats import sequence_derivative, sequence_statistics
+    from ._shortest_path import geodesic_voronoi, shortest_path
     from ._shrinkwrap import shrinkwrap
     from ._silhouette import silhouette
+    from ._skeleton import extract_skeleton
     from ._skin import extract_skin
     from ._slice import sections, slice
     from ._smooth import smooth
     from ._smooth_field import smooth_field
     from ._sniff import detect, sniff_format
     from ._sobolev_deform import sobolev_deform
+    from ._spectral_descriptors import spectral_descriptors
     from ._split import split
     from ._stats import compute_stats
     from ._step_elements import write_step_elements
@@ -362,6 +369,7 @@ if TYPE_CHECKING:
     from ._tet_poly import poly_to_tet, tet_to_poly
     from ._tetrahedralize import has_netgen, tetrahedralize, tetrahedralize_backends
     from ._thickness import thickness
+    from ._transfer_operator import transfer_operator
     from ._transform import transform
     from ._tui import tui
     from ._undo_green import undo_green
@@ -413,6 +421,19 @@ _LAZY_ATTRS = {
     "data_statistics": "_data_statistics",
     "mesh_operator": "_mesh_operator",
     "smooth_field": "_smooth_field",
+    "spectral_descriptors": "_spectral_descriptors",
+    "transfer_operator": "_transfer_operator",
+    "compute_fvm_quality": "_fvm_quality",
+    "attach_fvm_quality": "_fvm_quality",
+    "denoise_surface": "_denoise_surface",
+    "extract_skeleton": "_skeleton",
+    "shortest_path": "_shortest_path",
+    "geodesic_voronoi": "_shortest_path",
+    "deform_ffd": "_deform",
+    "deform_rbf": "_deform",
+    "evaluate_cells": "_high_order",
+    "change_basis": "_high_order",
+    "critical_points": "_high_order",
     "sequence_statistics": "_sequence_stats",
     "sequence_derivative": "_sequence_stats",
     "parameterize": "_parameterize",
@@ -873,6 +894,19 @@ __all__ = [
     "data_statistics",
     "mesh_operator",
     "smooth_field",
+    "spectral_descriptors",
+    "transfer_operator",
+    "compute_fvm_quality",
+    "attach_fvm_quality",
+    "denoise_surface",
+    "extract_skeleton",
+    "shortest_path",
+    "geodesic_voronoi",
+    "deform_ffd",
+    "deform_rbf",
+    "evaluate_cells",
+    "change_basis",
+    "critical_points",
     "sequence_statistics",
     "sequence_derivative",
     "parameterize",

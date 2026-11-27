@@ -2584,6 +2584,17 @@
     ]
    }
   },
+  "attach_fvm_quality": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     }
+    ]
+   }
+  },
   "attach_quality": {
    "kind": "function",
    "signature": {
@@ -3087,6 +3098,32 @@
   "cgns": {
    "kind": "module"
   },
+  "change_basis": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'bezier'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "target"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "transform_fields"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "check_conformity": {
    "kind": "function",
    "signature": {
@@ -3383,6 +3420,17 @@
       "default": "False",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "return_report"
+     }
+    ]
+   }
+  },
+  "compute_fvm_quality": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
      }
     ]
    }
@@ -3822,6 +3870,46 @@
       "default": "0",
       "kind": "KEYWORD_ONLY",
       "name": "dimension"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "critical_points": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "default": "1e-10",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
+     },
+     {
+      "default": "30",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_iterations"
+     },
+     {
+      "default": "1e-06",
+      "kind": "KEYWORD_ONLY",
+      "name": "merge_tolerance"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "seed_subdivisions"
      },
      {
       "default": "False",
@@ -4472,6 +4560,99 @@
     ]
    }
   },
+  "deform_ffd": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "grid_dims"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "displacements"
+     },
+     {
+      "default": "(-1, -1, -1)",
+      "kind": "KEYWORD_ONLY",
+      "name": "degrees"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "box_min"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "box_max"
+     },
+     {
+      "default": "''",
+      "kind": "KEYWORD_ONLY",
+      "name": "region"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "deform_rbf": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "control_points"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "displacements"
+     },
+     {
+      "default": "'tps'",
+      "kind": "KEYWORD_ONLY",
+      "name": "kernel"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "radius"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "polynomial"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "regularization"
+     },
+     {
+      "default": "''",
+      "kind": "KEYWORD_ONLY",
+      "name": "region"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "delaunay_2d": {
    "kind": "function",
    "signature": {
@@ -4479,6 +4660,62 @@
      {
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "points"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "denoise_surface": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'bilateral'",
+      "kind": "KEYWORD_ONLY",
+      "name": "method"
+     },
+     {
+      "default": "10",
+      "kind": "KEYWORD_ONLY",
+      "name": "normal_iterations"
+     },
+     {
+      "default": "10",
+      "kind": "KEYWORD_ONLY",
+      "name": "vertex_iterations"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "sigma_spatial"
+     },
+     {
+      "default": "0.35",
+      "kind": "KEYWORD_ONLY",
+      "name": "sigma_normal"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "fix_boundary"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "guard_foldover"
+     },
+     {
+      "default": "''",
+      "kind": "KEYWORD_ONLY",
+      "name": "region"
      },
      {
       "default": "False",
@@ -5003,6 +5240,35 @@
     ]
    }
   },
+  "evaluate_cells": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "cells"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "reference_points"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "fields"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "derivatives"
+     }
+    ]
+   }
+  },
   "exaggerate": {
    "kind": "function",
    "signature": {
@@ -5065,6 +5331,52 @@
   },
   "extension_to_filetypes": {
    "kind": "constant"
+  },
+  "extract_skeleton": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "10",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_iterations"
+     },
+     {
+      "default": "1.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "contraction_weight"
+     },
+     {
+      "default": "1.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "attraction_weight"
+     },
+     {
+      "default": "0.0001",
+      "kind": "KEYWORD_ONLY",
+      "name": "volume_tolerance"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "merge_tolerance"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "recenter"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
   },
   "extract_skin": {
    "kind": "function",
@@ -6152,6 +6464,37 @@
       "default": "0",
       "kind": "KEYWORD_ONLY",
       "name": "max_iterations"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "geodesic_voronoi": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "sources"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "seed_points"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "attach_cell_labels"
      },
      {
       "default": "False",
@@ -10488,6 +10831,52 @@
     ]
    }
   },
+  "shortest_path": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "-1",
+      "kind": "KEYWORD_ONLY",
+      "name": "source"
+     },
+     {
+      "default": "-1",
+      "kind": "KEYWORD_ONLY",
+      "name": "target"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "source_point"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "target_point"
+     },
+     {
+      "default": "'dijkstra'",
+      "kind": "KEYWORD_ONLY",
+      "name": "method"
+     },
+     {
+      "default": "1.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "time_factor"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "shrinkwrap": {
    "kind": "function",
    "signature": {
@@ -10882,6 +11271,67 @@
       "default": "False",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "complete"
+     }
+    ]
+   }
+  },
+  "spectral_descriptors": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'hks'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "kind"
+     },
+     {
+      "default": "32",
+      "kind": "KEYWORD_ONLY",
+      "name": "num_modes"
+     },
+     {
+      "default": "16",
+      "kind": "KEYWORD_ONLY",
+      "name": "num_scales"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "scale_invariant"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "reuse_eigenmodes"
+     },
+     {
+      "default": "0.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "wks_variance"
+     },
+     {
+      "default": "1e-08",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
+     },
+     {
+      "default": "0",
+      "kind": "KEYWORD_ONLY",
+      "name": "max_iterations"
+     },
+     {
+      "default": "''",
+      "kind": "KEYWORD_ONLY",
+      "name": "output"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
      }
     ]
    }
@@ -11790,6 +12240,51 @@
       "default": "False",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "complete"
+     }
+    ]
+   }
+  },
+  "transfer_operator": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "coarse"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "fine"
+     },
+     {
+      "default": "'auto'",
+      "kind": "KEYWORD_ONLY",
+      "name": "mode"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "transpose"
+     },
+     {
+      "default": "1e-12",
+      "kind": "KEYWORD_ONLY",
+      "name": "tolerance"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "fallback_nearest"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "sparse"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
      }
     ]
    }

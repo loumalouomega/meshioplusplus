@@ -302,6 +302,10 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"CutLevelSet",
          {"LevelSets", "Planes", "Selection", "IncludeUncut", "Backend", "Degree", "Triangulate",
           "RecordParentIds"}},
+        // Trace streamlines of a point vector field as a 1-D line mesh (doc/streamlines.md).
+        {"Streamlines",
+         {"Array", "Seeds", "Direction", "Integrator", "Step", "MaxLength", "MaxSteps",
+          "TerminalSpeed", "Tolerance"}},
     };
     // clang-format on
     return table;

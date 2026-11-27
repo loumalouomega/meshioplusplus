@@ -1196,6 +1196,24 @@ def _apply_step(mesh, step, steps, warnings):
         mesh = _remesh_quads_step(mesh, step, entry, warnings)
     elif op == "CutLevelSet":
         mesh = _cut_level_set_step(mesh, step, entry, warnings)
+    elif op == "Streamlines":
+        from ._streamlines import streamlines as _streamlines
+
+        mesh, report = _streamlines(
+            mesh,
+            _text(step, "Array", ""),
+            seeds=int(_number(step, "Seeds", 40)),
+            direction=_text(step, "Direction", "both"),
+            integrator=_text(step, "Integrator", "rk4"),
+            step=_number(step, "Step", 0.0),
+            max_length=_number(step, "MaxLength", 0.5),
+            max_steps=int(_number(step, "MaxSteps", 0)),
+            terminal_speed=_number(step, "TerminalSpeed", 0.0),
+            tolerance=_number(step, "Tolerance", 1e-6),
+            return_report=True,
+        )
+        entry["NumLines"] = float(report["num_lines"])
+        entry["NumSeedsOutside"] = float(report["num_seeds_outside"])
     elif op == "ProjectToCad":
         mesh = _project_to_cad_step(mesh, step, entry, None)
     elif op == "Quality":

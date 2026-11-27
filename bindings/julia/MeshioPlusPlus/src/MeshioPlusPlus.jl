@@ -128,6 +128,9 @@ export repair, shrinkwrap, sobolev_deform, geodesic_distance, parameterize, conv
        constrain_primitives, face_support, fit_cad_iterate, profile_solid,
        find_symmetry_plane, auto_align, laplacian_eigenmodes, morph,
        untangle, prepare_metric
+export mesh_operator, smooth_field, streamlines, transfer_operator, spectral_descriptors,
+       attach_fvm_quality, denoise_surface, extract_skeleton, shortest_path, geodesic_voronoi,
+       deform_ffd, deform_rbf, change_basis, critical_points
 export interpolate, conservative_interpolate, meshes_equal, stats, compute_bandwidth
 export reorder, convert_cells, subdivide, agglomerate, tet_to_poly, poly_to_tet, refine, undo_green, decimate, decimate_volume, partition, partition_labels
 export boundary_layer

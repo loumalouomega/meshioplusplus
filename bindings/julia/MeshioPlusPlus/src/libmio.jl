@@ -2661,6 +2661,132 @@ end
 
 # Layout guards: a mismatch here would corrupt every call taking these structs,
 # silently. Checked once at load rather than trusted.
+struct _CSmoothFieldOpts
+    array::Cstring
+    output::Cstring
+    length::Cdouble
+    tolerance::Cdouble
+    max_iterations::Int64
+    reserved::NTuple{3,Int64}
+end
+
+struct _CSmoothFieldReport
+    num_degenerate::Int64
+    iterations::Int64
+    converged::Int32
+    reserved0::Int32
+    reserved::NTuple{3,Int64}
+end
+
+struct _CStreamlinesOpts
+    array::Cstring
+    seeds::Int64
+    seed_points::Ptr{Cdouble}
+    num_seed_points::Int64
+    direction::Int32
+    integrator::Int32
+    step::Cdouble
+    max_length::Cdouble
+    max_steps::Int64
+    terminal_speed::Cdouble
+    tolerance::Cdouble
+    reserved::NTuple{4,Int64}
+end
+
+struct _CTransferOperatorOpts
+    mode::Int32
+    transpose::Int32
+    tolerance::Cdouble
+    fallback_nearest::Int32
+    reserved0::Int32
+    reserved::NTuple{3,Int64}
+end
+
+struct _CSpectralDescriptorsOpts
+    kind::Int32
+    scale_invariant::Int32
+    num_modes::Int64
+    num_scales::Int64
+    reuse_eigenmodes::Int32
+    reserved0::Int32
+    wks_variance::Cdouble
+    tolerance::Cdouble
+    max_iterations::Int64
+    output::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+struct _CDenoiseSurfaceOpts
+    method::Int32
+    fix_boundary::Int32
+    normal_iterations::Int64
+    vertex_iterations::Int64
+    sigma_spatial::Cdouble
+    sigma_normal::Cdouble
+    guard_foldover::Int32
+    reserved0::Int32
+    region::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+struct _CSkeletonOpts
+    max_iterations::Int64
+    contraction_weight::Cdouble
+    attraction_weight::Cdouble
+    volume_tolerance::Cdouble
+    merge_tolerance::Cdouble
+    recenter::Int32
+    reserved0::Int32
+    reserved::NTuple{4,Int64}
+end
+
+struct _CShortestPathOpts
+    source::Int64
+    target::Int64
+    has_source_point::Int32
+    has_target_point::Int32
+    source_point::NTuple{3,Cdouble}
+    target_point::NTuple{3,Cdouble}
+    method::Int32
+    reserved0::Int32
+    time_factor::Cdouble
+    reserved::NTuple{3,Int64}
+end
+
+struct _CDeformFfdOpts
+    grid_dims::NTuple{3,Int64}
+    degrees::NTuple{3,Int64}
+    displacements::Ptr{Cdouble}
+    num_displacements::Int64
+    has_bounds::Int32
+    reserved0::Int32
+    box_min::NTuple{3,Cdouble}
+    box_max::NTuple{3,Cdouble}
+    region::Cstring
+    reserved::NTuple{2,Int64}
+end
+
+struct _CDeformRbfOpts
+    control_points::Ptr{Cdouble}
+    displacements::Ptr{Cdouble}
+    num_control_points::Int64
+    kernel::Int32
+    polynomial::Int32
+    radius::Cdouble
+    regularization::Cdouble
+    region::Cstring
+    reserved::NTuple{4,Int64}
+end
+
+struct _CCriticalPointsOpts
+    array::Cstring
+    tolerance::Cdouble
+    max_iterations::Int64
+    merge_tolerance::Cdouble
+    seed_subdivisions::Int64
+    reserved::NTuple{4,Int64}
+end
+
 function _check_abi_layout()
     sizeof(_CReadOpts) == 80 ||
         error("meshio++: mio_read_opts layout mismatch ($(sizeof(_CReadOpts)) bytes)")
@@ -3070,6 +3196,17 @@ function _check_abi_layout()
     sizeof(_CRemeshVolumeReport) == 136 ||
         error("meshio++: mio_remesh_volume_report layout mismatch " *
               "($(sizeof(_CRemeshVolumeReport)) bytes)")
+    sizeof(_CSmoothFieldOpts) == 64 || error("meshio++: mio_smooth_field_opts layout mismatch")
+    sizeof(_CSmoothFieldReport) == 48 || error("meshio++: mio_smooth_field_report layout mismatch")
+    sizeof(_CStreamlinesOpts) == 112 || error("meshio++: mio_streamlines_opts layout mismatch")
+    sizeof(_CTransferOperatorOpts) == 48 || error("meshio++: mio_transfer_operator_opts layout mismatch")
+    sizeof(_CSpectralDescriptorsOpts) == 96 || error("meshio++: mio_spectral_descriptors_opts layout mismatch")
+    sizeof(_CDenoiseSurfaceOpts) == 88 || error("meshio++: mio_denoise_surface_opts layout mismatch")
+    sizeof(_CSkeletonOpts) == 80 || error("meshio++: mio_skeleton_opts layout mismatch")
+    sizeof(_CShortestPathOpts) == 112 || error("meshio++: mio_shortest_path_opts layout mismatch")
+    sizeof(_CDeformFfdOpts) == 144 || error("meshio++: mio_deform_ffd_opts layout mismatch")
+    sizeof(_CDeformRbfOpts) == 88 || error("meshio++: mio_deform_rbf_opts layout mismatch")
+    sizeof(_CCriticalPointsOpts) == 72 || error("meshio++: mio_critical_points_opts layout mismatch")
     nothing
 end
 

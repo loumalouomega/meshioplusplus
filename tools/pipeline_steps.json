@@ -1139,6 +1139,17 @@
       {"name": "Degree"},
       {"name": "Triangulate"},
       {"name": "RecordParentIds"}
+    ]},
+    {"op": "Streamlines", "note": "Trace streamlines of a point vector field as a 1-D line mesh (doc/streamlines.md).", "keys": [
+      {"name": "Array", "kind": "text", "default": ""},
+      {"name": "Seeds", "kind": "number", "default": 40},
+      {"name": "Direction", "kind": "text", "default": "both"},
+      {"name": "Integrator", "kind": "text", "default": "rk4"},
+      {"name": "Step", "kind": "number", "default": 0.0},
+      {"name": "MaxLength", "kind": "number", "default": 0.5},
+      {"name": "MaxSteps", "kind": "number", "default": 0},
+      {"name": "TerminalSpeed", "kind": "number", "default": 0.0},
+      {"name": "Tolerance", "kind": "number", "default": 1e-06}
     ]}
   ],
   "v2_steps": [
