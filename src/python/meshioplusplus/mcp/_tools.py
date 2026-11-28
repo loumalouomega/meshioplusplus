@@ -237,6 +237,7 @@ from .. import (
     split_interface,
     streamlines,
     subdivide,
+    subdivide_surface,
     subsample_points,
     surface_watertight_check,
     tensor_invariants,
@@ -6047,8 +6048,10 @@ def tool_convert_cells(
     output_format=None,
     mode="linearize",
     record_parent_ids=False,
+    order=2,
+    full=False,
 ):
-    """Convert the element representation (linearize | simplexify | elevate)."""
+    """Convert the element representation (linearize | simplexify | elevate | reduce)."""
     return _run_op(convert_cells, locals(), report=False)
 
 
@@ -6061,6 +6064,22 @@ def tool_subdivide(
 ):
     """Polyhedrally refine: one polyhedral child per 3D cell face."""
     return _run_op(subdivide, locals(), report=False)
+
+
+def tool_subdivide_surface(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    scheme="loop",
+    levels=1,
+    crease_angle=60.0,
+    preserve_boundary=True,
+    interpolate_point_data=True,
+    record_parent_ids=False,
+):
+    """Smooth Loop or Catmull-Clark subdivision of a surface mesh."""
+    return _run_op(subdivide_surface, locals(), report=True)
 
 
 def tool_tessellate(
@@ -9507,6 +9526,14 @@ TOOL_REGISTRY = OrderedDict(
         (
             "convert_cells",
             {"fn": tool_convert_cells, "wraps": ("convert_cells",), "gated": None},
+        ),
+        (
+            "subdivide_surface",
+            {
+                "fn": tool_subdivide_surface,
+                "wraps": ("subdivide_surface",),
+                "gated": None,
+            },
         ),
         (
             "tessellate",

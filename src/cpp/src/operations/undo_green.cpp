@@ -21,6 +21,8 @@
 
 // System includes
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -28,6 +30,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -498,6 +501,316 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     res.mMesh = std::move(out);
     res.mCellMaps = std::move(cell_maps);
     res.mNumGroupsUndone = static_cast<std::int64_t>(num_groups);
+    res.mNumCellsRemoved = num_removed;
+
+    detail::RegionRemap rmap;
+    rmap.mCellMapKind = detail::CellMapKind::Direct;
+    rmap.pCellMaps = &res.mCellMaps;
+    rmap.mOpName = "undo_green";
+    detail::remap_regions(rFine, res.mMesh, rmap);
+
+    return res;
+}
+
+namespace {
+
+std::size_t ug_red_child_count(const std::string& rType) {
+    if (rType == "line")
+        return 2;
+    if (rType == "triangle" || rType == "quad")
+        return 4;
+    if (rType == "tetra" || rType == "wedge" || rType == "hexahedron")
+        return 8;
+    return 0;
+}
+
+std::array<double, 3> ug_read_pt(const NDArray& rPts, std::size_t idx, std::size_t dim) {
+    std::array<double, 3> p{0.0, 0.0, 0.0};
+    for (std::size_t d = 0; d < std::min<std::size_t>(dim, 3); ++d)
+        p[d] = detail::read_double(rPts, idx * dim + d);
+    return p;
+}
+
+double ug_tet_signed_vol(const NDArray& rPts, std::size_t dim,
+                         const std::vector<std::int64_t>& rN) {
+    const auto a = ug_read_pt(rPts, static_cast<std::size_t>(rN[0]), dim);
+    const auto b = ug_read_pt(rPts, static_cast<std::size_t>(rN[1]), dim);
+    const auto c = ug_read_pt(rPts, static_cast<std::size_t>(rN[2]), dim);
+    const auto d = ug_read_pt(rPts, static_cast<std::size_t>(rN[3]), dim);
+    const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    const double wx = d[0] - a[0], wy = d[1] - a[1], wz = d[2] - a[2];
+    return ux * (vy * wz - vz * wy) - uy * (vx * wz - vz * wx) + uz * (vx * wy - vy * wx);
+}
+
+std::array<double, 3> ug_tri_normal(const NDArray& rPts, std::size_t dim, std::int64_t i0,
+                                    std::int64_t i1, std::int64_t i2) {
+    const auto a = ug_read_pt(rPts, static_cast<std::size_t>(i0), dim);
+    const auto b = ug_read_pt(rPts, static_cast<std::size_t>(i1), dim);
+    const auto c = ug_read_pt(rPts, static_cast<std::size_t>(i2), dim);
+    const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    return {uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx};
+}
+
+}  // namespace
+
+UndoGreenResult undo_green(const Mesh& rFine) {
+    if (!rFine.HasPointData(kRefineEntityName))
+        throw std::invalid_argument(
+            std::string(kUgPrefix) + "single-mesh undo_green requires '" + kRefineEntityName +
+            "' point_data; run refine(..., record_hierarchy=True, record_levels=True) first");
+    const NDArray& entity_arr = rFine.PointData(kRefineEntityName);
+    const std::size_t npts = rFine.NumPoints();
+    if (detail::rows(entity_arr) != npts || (npts != 0 && entity_arr.Size() / npts != 4))
+        throw std::invalid_argument(std::string(kUgPrefix) + "'" + kRefineEntityName +
+                                    "' must have shape (num_points, 4)");
+    std::vector<std::array<std::int64_t, 4>> entity_keys(npts);
+    for (std::size_t p = 0; p < npts; ++p)
+        for (std::size_t k = 0; k < 4; ++k)
+            entity_keys[p][k] = detail::read_int(entity_arr, p * 4 + k);
+
+    const std::vector<std::int64_t> fine_bases = detail::block_bases(rFine);
+    const std::size_t nblocks = rFine.NumCellBlocks();
+    const std::size_t total_fine = static_cast<std::size_t>(fine_bases.back());
+    UgColumn fine_cid(rFine, fine_bases, kRefineCellIdName);
+    UgColumn fine_pid(rFine, fine_bases, kRefineParentIdName);
+    UgColumn fine_lvl(rFine, fine_bases, kRefineLevelName);
+
+    const NDArray& pts = rFine.Points();
+    const std::size_t pdim = rFine.PointDim();
+
+    enum class UgSingleRole : std::uint8_t { Keep = 0, Anchor = 1, Suppressed = 2 };
+    std::vector<UgSingleRole> role(total_fine, UgSingleRole::Keep);
+    std::vector<std::vector<std::int64_t>> anchor_corners(total_fine);
+    std::vector<std::int64_t> anchor_pid(total_fine, -1);
+    std::vector<std::size_t> group_anchor(total_fine, 0);
+    std::int64_t num_groups = 0;
+    std::int64_t num_removed = 0;
+
+    std::size_t bi = 0;
+    for (const auto cb : rFine.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        const std::size_t red_count = ug_red_child_count(cb.Type());
+        const std::size_t nc = cb.IsRagged() ? 0 : cb.NodesPerCell();
+        if (red_count <= 2 || nc == 0 || ncells == 0) {
+            ++bi;
+            continue;
+        }
+        // Group cells in this block by parent_id (where parent_id != cell_id).
+        std::unordered_map<std::int64_t, std::vector<std::size_t>> groups;
+        for (std::size_t r = 0; r < ncells; ++r) {
+            const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+            const std::int64_t pid = fine_pid.At(g);
+            const std::int64_t cid = fine_cid.At(g);
+            if (pid != cid)
+                groups[pid].push_back(r);
+        }
+        const NDArray& sconn = cb.Conn();
+        for (const auto& [pid, rows] : groups) {
+            if (rows.size() <= 1 || rows.size() >= red_count)
+                continue;
+            // Collect all distinct vertices used by this green sibling group.
+            std::vector<std::int64_t> verts;
+            for (std::size_t r : rows) {
+                for (std::size_t k = 0; k < nc; ++k)
+                    verts.push_back(detail::read_int(sconn, r * nc + k));
+            }
+            std::sort(verts.begin(), verts.end());
+            verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+
+            // A vertex is a mid-entity node of THIS split iff its refine:entity has >= 2 valid
+            // parent corners AND every valid corner in refine:entity is present in `verts`.
+            auto in_verts = [&](std::int64_t v) {
+                return std::binary_search(verts.begin(), verts.end(), v);
+            };
+            std::vector<std::int64_t> corners;
+            for (std::int64_t v : verts) {
+                bool is_mid = false;
+                if (v >= 0 && static_cast<std::size_t>(v) < npts) {
+                    const auto& ek = entity_keys[static_cast<std::size_t>(v)];
+                    int valid = 0;
+                    bool all_in = true;
+                    for (int k = 0; k < 4; ++k) {
+                        if (ek[k] >= 0) {
+                            ++valid;
+                            if (!in_verts(ek[k]))
+                                all_in = false;
+                        }
+                    }
+                    if (valid >= 2 && all_in)
+                        is_mid = true;
+                }
+                if (!is_mid)
+                    corners.push_back(v);
+            }
+            if (corners.size() != nc)
+                continue;
+
+            // Orient corners to match child 0's orientation.
+            const std::size_t r0 = rows[0];
+            if (cb.Type() == "triangle") {
+                const auto n0 = ug_tri_normal(pts, pdim, detail::read_int(sconn, r0 * nc + 0),
+                                              detail::read_int(sconn, r0 * nc + 1),
+                                              detail::read_int(sconn, r0 * nc + 2));
+                const auto np = ug_tri_normal(pts, pdim, corners[0], corners[1], corners[2]);
+                if (n0[0] * np[0] + n0[1] * np[1] + n0[2] * np[2] < 0.0)
+                    std::swap(corners[1], corners[2]);
+            } else if (cb.Type() == "tetra") {
+                std::vector<std::int64_t> c0 = {detail::read_int(sconn, r0 * nc + 0),
+                                                detail::read_int(sconn, r0 * nc + 1),
+                                                detail::read_int(sconn, r0 * nc + 2),
+                                                detail::read_int(sconn, r0 * nc + 3)};
+                const double v0 = ug_tet_signed_vol(pts, pdim, c0);
+                const double vp = ug_tet_signed_vol(pts, pdim, corners);
+                if (v0 * vp < 0.0)
+                    std::swap(corners[2], corners[3]);
+            } else if (cb.Type() == "quad") {
+                // Order 4 corners cyclically around their centroid using child 0's normal.
+                const auto n0 = ug_tri_normal(pts, pdim, detail::read_int(sconn, r0 * nc + 0),
+                                              detail::read_int(sconn, r0 * nc + 1),
+                                              detail::read_int(sconn, r0 * nc + 2));
+                std::array<double, 3> ctr{0.0, 0.0, 0.0};
+                for (std::int64_t v : corners) {
+                    const auto p = ug_read_pt(pts, static_cast<std::size_t>(v), pdim);
+                    ctr[0] += p[0] * 0.25;
+                    ctr[1] += p[1] * 0.25;
+                    ctr[2] += p[2] * 0.25;
+                }
+                const auto p0 = ug_read_pt(pts, static_cast<std::size_t>(corners[0]), pdim);
+                std::array<double, 3> e1{p0[0] - ctr[0], p0[1] - ctr[1], p0[2] - ctr[2]};
+                std::array<double, 3> e2{n0[1] * e1[2] - n0[2] * e1[1],
+                                         n0[2] * e1[0] - n0[0] * e1[2],
+                                         n0[0] * e1[1] - n0[1] * e1[0]};
+                std::sort(corners.begin(), corners.end(), [&](std::int64_t a, std::int64_t b) {
+                    const auto pa = ug_read_pt(pts, static_cast<std::size_t>(a), pdim);
+                    const auto pb = ug_read_pt(pts, static_cast<std::size_t>(b), pdim);
+                    const double ax = (pa[0] - ctr[0]) * e1[0] + (pa[1] - ctr[1]) * e1[1] +
+                                      (pa[2] - ctr[2]) * e1[2];
+                    const double ay = (pa[0] - ctr[0]) * e2[0] + (pa[1] - ctr[1]) * e2[1] +
+                                      (pa[2] - ctr[2]) * e2[2];
+                    const double bx = (pb[0] - ctr[0]) * e1[0] + (pb[1] - ctr[1]) * e1[1] +
+                                      (pb[2] - ctr[2]) * e1[2];
+                    const double by = (pb[0] - ctr[0]) * e2[0] + (pb[1] - ctr[1]) * e2[1] +
+                                      (pb[2] - ctr[2]) * e2[2];
+                    return std::atan2(ay, ax) < std::atan2(by, bx);
+                });
+            }
+
+            const std::size_t anchor_g = static_cast<std::size_t>(fine_bases[bi]) + rows[0];
+            role[anchor_g] = UgSingleRole::Anchor;
+            anchor_corners[anchor_g] = std::move(corners);
+            anchor_pid[anchor_g] = pid;
+            group_anchor[anchor_g] = anchor_g;
+            for (std::size_t k = 1; k < rows.size(); ++k) {
+                const std::size_t sg = static_cast<std::size_t>(fine_bases[bi]) + rows[k];
+                role[sg] = UgSingleRole::Suppressed;
+                group_anchor[sg] = anchor_g;
+            }
+            ++num_groups;
+            num_removed += static_cast<std::int64_t>(rows.size());
+        }
+        ++bi;
+    }
+
+    Mesh out;
+    out.AssignPoints(detail::data_owned_copy(rFine.Points()));
+    for (const std::string& name : rFine.PointDataNames())
+        out.AddPointData(name, detail::data_owned_copy(rFine.PointData(name)));
+    for (const std::string& name : rFine.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rFine.FieldData(name)));
+
+    std::vector<NDArray> cell_maps(nblocks);
+    std::vector<std::size_t> out_ncells(nblocks, 0);
+    std::vector<std::int64_t> anchor_out_row(total_fine, -1);
+
+    bi = 0;
+    for (const auto cb : rFine.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        std::size_t kept = 0;
+        for (std::size_t r = 0; r < ncells; ++r) {
+            const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+            if (role[g] != UgSingleRole::Suppressed)
+                ++kept;
+        }
+        out_ncells[bi] = kept;
+        NDArray cmap = NDArray::Uninit(DType::Int64, {ncells});
+        auto* cm = cmap.As<std::int64_t>();
+        if (cb.IsRagged()) {
+            out.AddCellBlock(cb.Type(), detail::data_owned_copy(cb.Conn()));
+            for (std::size_t r = 0; r < ncells; ++r)
+                cm[r] = static_cast<std::int64_t>(r);
+        } else {
+            const std::size_t nc = cb.NodesPerCell();
+            const NDArray& sconn = cb.Conn();
+            NDArray conn = NDArray::Uninit(DType::Int64, {kept, nc});
+            auto* dst = conn.As<std::int64_t>();
+            std::size_t out_row = 0;
+            for (std::size_t r = 0; r < ncells; ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgSingleRole::Suppressed)
+                    continue;
+                if (role[g] == UgSingleRole::Keep) {
+                    for (std::size_t k = 0; k < nc; ++k)
+                        dst[out_row * nc + k] = detail::read_int(sconn, r * nc + k);
+                } else {
+                    for (std::size_t k = 0; k < nc; ++k)
+                        dst[out_row * nc + k] = anchor_corners[g][k];
+                    anchor_out_row[g] = static_cast<std::int64_t>(out_row);
+                }
+                cm[r] = static_cast<std::int64_t>(out_row);
+                ++out_row;
+            }
+            for (std::size_t r = 0; r < ncells; ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgSingleRole::Suppressed)
+                    cm[r] = anchor_out_row[group_anchor[g]];
+            }
+            out.AddCellBlock(cb.Type(), std::move(conn));
+        }
+        cell_maps[bi] = std::move(cmap);
+        ++bi;
+    }
+
+    // Carry cell_data (restoring cell_id = parent_id on undone anchors).
+    for (const std::string& name : rFine.CellDataNames()) {
+        if (rFine.CellDataNumBlocks(name) != nblocks)
+            continue;
+        std::vector<NDArray> out_blocks(nblocks);
+        bi = 0;
+        for (const auto cb : rFine.CellRange()) {
+            const NDArray& fsrc = rFine.CellData(name, bi);
+            std::vector<std::size_t> shape = fsrc.Shape();
+            shape[0] = out_ncells[bi];
+            NDArray dst = NDArray::Uninit(fsrc.Dtype(), shape);
+            const std::size_t row_bytes =
+                fsrc.Nbytes() / std::max<std::size_t>(1, detail::rows(fsrc));
+            std::byte* p_dst = dst.Data();
+            const std::byte* p_fsrc = fsrc.Data();
+            std::size_t out_row = 0;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgSingleRole::Suppressed)
+                    continue;
+                if (role[g] == UgSingleRole::Anchor &&
+                    (name == kRefineCellIdName || name == kRefineParentIdName) &&
+                    fsrc.Dtype() == DType::Int64) {
+                    dst.As<std::int64_t>()[out_row] = anchor_pid[g];
+                } else if (row_bytes > 0) {
+                    std::memcpy(p_dst + out_row * row_bytes, p_fsrc + r * row_bytes, row_bytes);
+                }
+                ++out_row;
+            }
+            out_blocks[bi] = std::move(dst);
+            ++bi;
+        }
+        out.AddCellData(name, std::move(out_blocks));
+    }
+
+    UndoGreenResult res;
+    res.mMesh = std::move(out);
+    res.mCellMaps = std::move(cell_maps);
+    res.mNumGroupsUndone = num_groups;
     res.mNumCellsRemoved = num_removed;
 
     detail::RegionRemap rmap;

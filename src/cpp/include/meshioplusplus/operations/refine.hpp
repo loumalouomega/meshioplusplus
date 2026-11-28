@@ -408,6 +408,12 @@ struct RefineOptions {
     /// the prolongation operator's weights, which `redgreen`/`propagate` would
     /// otherwise never expose.
     bool mRecordHierarchy = false;
+    /// Before a selective pass, merge transitional (green) sibling groups back
+    /// to their parents using the mesh's own hierarchy arrays (`refine:cell_id`,
+    /// `refine:parent_id`, `refine:level`, `refine:entity`), marking any
+    /// restored parent whose child was selected (roadmap 9.6.1). Requires
+    /// `mRecordHierarchy` (and `mRecordLevels`); throws by name otherwise.
+    bool mUndoGreenFirst = false;
 };
 
 /// The result of `refine`: the refined mesh plus the index maps.

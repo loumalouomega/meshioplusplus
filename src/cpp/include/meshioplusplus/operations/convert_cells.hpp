@@ -87,12 +87,13 @@ namespace meshioplusplus {
 enum class ConvertCellsMode {
     Linearize,   ///< Higher-order cells -> their linear base (drops mid nodes).
     Simplexify,  ///< Cells -> simplices of the same topological dimension.
-    Elevate,     ///< Linear cells -> serendipity quadratic (adds mid-edge nodes).
+    Elevate,     ///< Promote cells to target polynomial order (default 2, serendipity or full).
+    Reduce,      ///< Reduce higher-order cells to a lower polynomial order (roadmap 9.5).
 };
 
 /**
  * @brief Parse a mode name into a `ConvertCellsMode`.
- * @param rName one of `"linearize"`, `"simplexify"`, `"elevate"`.
+ * @param rName one of `"linearize"`, `"simplexify"`, `"elevate"`, `"reduce"`.
  * @return the matching mode.
  * @throws std::invalid_argument on an unknown name.
  */
@@ -107,6 +108,11 @@ struct ConvertCellsOptions {
     /// block* (blocks correspond 1:1). Mainly useful under `Simplexify`, where
     /// several children share a parent.
     bool mRecordParentIds = false;
+    /// Target polynomial order for `Elevate` (>= 2, default 2) and `Reduce` (>= 1, default 1).
+    int mOrder = 2;
+    /// For order-2 `Elevate`, emit full-Lagrange (`quad9`, `hexahedron27`, `wedge18`)
+    /// instead of serendipity (`quad8`, `hexahedron20`, `wedge15`). Always true for order >= 3.
+    bool mFull = false;
 };
 
 /// The result of `convert_cells`: the converted mesh plus the index maps.

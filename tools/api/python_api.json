@@ -3899,6 +3899,16 @@
       "default": "False",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "record_parent_ids"
+     },
+     {
+      "default": "2",
+      "kind": "KEYWORD_ONLY",
+      "name": "order"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "full"
      }
     ]
    }
@@ -8906,6 +8916,11 @@
       "default": "None",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "weights"
+     },
+     {
+      "default": "False",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "connected_parts"
      }
     ]
    }
@@ -8946,6 +8961,11 @@
       "default": "None",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "weights"
+     },
+     {
+      "default": "False",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "connected_parts"
      }
     ]
    }
@@ -9766,6 +9786,11 @@
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "record_hierarchy"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "undo_green_first"
      }
     ]
    }
@@ -11839,6 +11864,52 @@
     ]
    }
   },
+  "subdivide_surface": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'loop'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "scheme"
+     },
+     {
+      "default": "1",
+      "kind": "KEYWORD_ONLY",
+      "name": "levels"
+     },
+     {
+      "default": "60.0",
+      "kind": "KEYWORD_ONLY",
+      "name": "crease_angle"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "preserve_boundary"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "interpolate_point_data"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "record_parent_ids"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "subsample_points": {
    "kind": "function",
    "signature": {
@@ -12866,6 +12937,7 @@
       "name": "coarse"
      },
      {
+      "default": "None",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "fine"
      },

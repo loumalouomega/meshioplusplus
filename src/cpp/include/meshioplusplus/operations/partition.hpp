@@ -128,6 +128,14 @@ struct PartitionOptions {
     /// (`""` = unweighted). SFC cuts the weight prefix sum; KaHIP receives it
     /// as vertex weights (scaled to positive integers).
     std::string mWeightsKey;
+    /// Optional provider name (`"sfc"`, `"auto"`, `"kahip"`, `"metis"`, `"scotch"`,
+    /// or any registered `GraphPartitionerProvider`; roadmap 9.7.1). When non-empty,
+    /// overrides `mMethod`.
+    std::string mMethodName;
+    /// Post-pass ensuring every non-empty part is a single facet-connected component
+    /// by reassigning disconnected islands to the neighbour sharing the most facets
+    /// (roadmap 9.7.3).
+    bool mConnectedParts = false;
 };
 
 /// One piece of a partition.

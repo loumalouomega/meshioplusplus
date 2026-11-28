@@ -417,28 +417,17 @@ def _undo_green_py(coarse, fine):
     return out, report
 
 
-def undo_green(coarse, fine, return_report: bool = False):
-    """Restore ``fine``'s transitional (green) cells back to their original
-    parent, read verbatim from ``coarse``.
+def undo_green(coarse, fine=None, return_report: bool = False):
+    """Restore ``fine``'s transitional (green) cells back to their parent cells.
 
-    :param coarse: the mesh a prior ``refine(coarse, ...)`` call was run on
-        (never modified).
-    :param fine: that call's output -- must carry one int64 scalar
-        ``cell_data`` array per block for each of ``refine:cell_id``,
-        ``refine:parent_id`` and ``refine:level`` (i.e. that call must have
-        used ``record_hierarchy=True, record_levels=True``); raises
-        otherwise.
-    :param return_report: also return ``{num_groups_undone,
-        num_cells_removed}``.
-    :returns: the undone mesh, or ``(mesh, report)`` when ``return_report``
-        is set.
-    :raises ValueError: when ``fine`` lacks the required hierarchy arrays,
-        when a ``refine:parent_id`` value cannot be resolved against
-        ``coarse``'s id space (the two meshes are not the input/output pair
-        of one ``refine()`` call), or when a sibling group's
-        ``refine:level`` matches neither the red nor the green relationship
-        to its coarse parent's own level.
+    When called with two meshes ``undo_green(coarse, fine)``, parents are read
+    verbatim from ``coarse``. When called with one mesh ``undo_green(fine)``
+    (or ``coarse=None``), parents are reconstructed directly from ``fine``'s
+    ``refine:cell_id``, ``refine:parent_id``, ``refine:level``, and
+    ``refine:entity`` arrays (roadmap 9.6.1).
     """
+    if fine is None:
+        coarse, fine = None, coarse
     out = None
     report = None
     try:
@@ -456,6 +445,10 @@ def undo_green(coarse, fine, return_report: bool = False):
         out = None
 
     if out is None:
+        if coarse is None:
+            raise RuntimeError(
+                "single-mesh undo_green requires the compiled C++ core (_core)"
+            )
         out, report = _undo_green_py(coarse, fine)
 
     return (out, report) if return_report else out

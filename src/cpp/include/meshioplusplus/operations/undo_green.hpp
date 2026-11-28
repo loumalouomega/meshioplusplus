@@ -133,4 +133,15 @@ struct UndoGreenResult {
  */
 MESHIOPLUSPLUS_API UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine);
 
+/**
+ * @brief Restore `rFine`'s transitional (green) cells back to their parent
+ * cells without needing the coarse mesh (roadmap 9.6.1).
+ *
+ * Uses `refine:cell_id`, `refine:parent_id`, `refine:level` and `refine:entity`
+ * to identify green sibling groups and reconstruct each parent's corners
+ * directly from its children. Supports multi-level hierarchies.
+ * @throws std::invalid_argument if `rFine` lacks the required hierarchy arrays.
+ */
+MESHIOPLUSPLUS_API UndoGreenResult undo_green(const Mesh& rFine);
+
 }  // namespace meshioplusplus

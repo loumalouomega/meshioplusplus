@@ -4053,10 +4053,29 @@ def _register_operations(server: FastMCP) -> None:
         output_format: Optional[str] = None,
         mode: str = "linearize",
         record_parent_ids: bool = False,
+        order: int = 2,
+        full: bool = False,
     ) -> dict:
         """Convert the element representation: linearize (drop higher-order
-        nodes), simplexify (split into triangles/tets) or elevate (linear ->
-        quadratic)."""
+        nodes), simplexify (split into triangles/tets), elevate (promote to
+        target polynomial order, serendipity or full-Lagrange), or reduce."""
+
+    @server.tool()
+    @_forward(_tools.tool_subdivide_surface)
+    def subdivide_surface(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        scheme: str = "loop",
+        levels: int = 1,
+        crease_angle: float = 60.0,
+        preserve_boundary: bool = True,
+        interpolate_point_data: bool = True,
+        record_parent_ids: bool = False,
+    ) -> dict:
+        """Apply smooth Loop (triangles) or Catmull-Clark (polygonal -> quads)
+        subdivision to a surface mesh with Hoppe crease/boundary preservation."""
 
     @server.tool()
     @_forward(_tools.tool_tessellate)

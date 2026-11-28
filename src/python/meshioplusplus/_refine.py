@@ -889,6 +889,7 @@ def refine(
     closure: str = "redgreen",
     record_levels: bool = False,
     record_hierarchy: bool = False,
+    undo_green_first: bool = False,
 ) -> Mesh:
     """Refine a mesh, subdividing cells into same-type children.
 
@@ -967,6 +968,7 @@ def refine(
             closure,
             bool(record_levels),
             bool(record_hierarchy),
+            bool(undo_green_first),
         )
         out = res["mesh"]
         point_map = np.asarray(res["point_map"])

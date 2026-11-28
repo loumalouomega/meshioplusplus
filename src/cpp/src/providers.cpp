@@ -103,6 +103,11 @@ struct ProvidersState {
         MIO_GUARDED_BY(mMutex);
     std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained
         MIO_GUARDED_BY(mMutex);
+    /// The graph partitioner providers (roadmap 9.7.1), by name.
+    std::map<std::string, std::shared_ptr<const GraphPartitionerProvider>> mPartitioners
+        MIO_GUARDED_BY(mMutex);
+    std::vector<std::shared_ptr<const GraphPartitionerProvider>> mPartitionersRetained
+        MIO_GUARDED_BY(mMutex);
     bool mProfileBuiltinDone MIO_GUARDED_BY(mMutex) = false;
     bool mExternalDone MIO_GUARDED_BY(mMutex) = false;
 };
@@ -261,6 +266,41 @@ std::vector<std::string> quad_remesher_names() {
     const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     for (const auto& r_entry : r_state.mQuad)
+        names.push_back(r_entry.first);
+    return names;
+}
+
+void add_graph_partitioner(GraphPartitionerProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const GraphPartitionerProvider>(std::move(Provider));
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mPartitioners.count(p_new->mName))
+        return;
+    r_state.mPartitionersRetained.push_back(p_new);
+    r_state.mPartitioners[p_new->mName] = std::move(p_new);
+}
+
+void remove_graph_partitioner(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
+    r_state.mPartitioners.erase(rName);
+}
+
+std::shared_ptr<const GraphPartitionerProvider> graph_partitioner(
+    const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
+    const auto it = r_state.mPartitioners.find(rName);
+    return it == r_state.mPartitioners.end() ? nullptr : it->second;
+}
+
+std::vector<std::string> graph_partitioner_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
+    std::vector<std::string> names;
+    for (const auto& r_entry : r_state.mPartitioners)
         names.push_back(r_entry.first);
     return names;
 }

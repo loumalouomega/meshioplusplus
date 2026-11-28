@@ -322,9 +322,9 @@ def _build_piece(mesh, flat, part, record_ids):
 def _validate(mesh, nparts, method, mode, ghost_layers):
     if int(nparts) < 1:
         raise ValueError(f"partition: nparts must be >= 1, got {nparts}")
-    if method not in ("auto", "sfc", "kahip"):
+    if not isinstance(method, str) or not method:
         raise ValueError(
-            f"partition: unknown method '{method}' (expected 'sfc', 'kahip', or 'auto')"
+            f"partition: unknown method '{method}' (expected 'sfc', 'kahip', 'auto', or a provider name)"
         )
     if mode not in _KAHIP_MODES:
         raise ValueError(
@@ -437,6 +437,7 @@ def partition_labels(
     mode: str = "eco",
     seed: int = 0,
     weights: str | None = None,
+    connected_parts: bool = False,
 ) -> list:
     """Compute the per-cell part assignment without building the pieces.
 
@@ -449,17 +450,20 @@ def partition_labels(
     method :
         ``"sfc"`` (Hilbert curve cut, always available), ``"kahip"`` (KaHIP
         ``kaffpa`` on the dual graph; needs a KaHIP-enabled C++ core or the
-        ``kahip`` package), or ``"auto"`` (KaHIP when available, else SFC).
+        ``kahip`` package), ``"auto"`` (KaHIP when available, else SFC), or any
+        registered ``GraphPartitionerProvider`` name (e.g. ``"metis"``, ``"scotch"``).
     imbalance :
-        KaHIP only: allowed imbalance fraction in (0, 1).
+        KaHIP/provider only: allowed imbalance fraction in (0, 1).
     mode :
-        KaHIP only: ``"fast"``/``"eco"``/``"strong"`` (default ``"eco"`` — per
-        the Kratos KaHIPApplication benchmarks, eco/strong carry the quality).
+        KaHIP/provider only: ``"fast"``/``"eco"``/``"strong"`` (default ``"eco"``).
     seed :
-        KaHIP only: random seed (``kaffpa`` is deterministic per seed).
+        KaHIP/provider only: random seed.
     weights :
         optional name of a scalar numeric ``cell_data`` array of per-cell
         weights; SFC cuts the weight prefix sum, KaHIP receives vertex weights.
+    connected_parts :
+        post-pass ensuring every non-empty part is a single facet-connected
+        component (roadmap 9.7.3).
 
     Returns
     -------
@@ -482,6 +486,7 @@ def partition_labels(
                     mode,
                     int(seed),
                     weights or "",
+                    bool(connected_parts),
                 )
             ]
         except Exception as exc:
@@ -501,6 +506,7 @@ def partition(
     record_ids: bool = False,
     ghost_layers: int = 0,
     weights: str | None = None,
+    connected_parts: bool = False,
 ) -> list:
     """Decompose a mesh into exactly ``nparts`` balanced pieces.
 
@@ -515,6 +521,9 @@ def partition(
     ghost_layers :
         grow each piece by this many shared-node BFS layers of other parts'
         cells (a halo), tagged ``partition:ghost``. Needs the C++ core.
+    connected_parts :
+        post-pass ensuring every non-empty part is a single facet-connected
+        component (roadmap 9.7.3).
 
     Returns
     -------
@@ -536,11 +545,6 @@ def partition(
     pieces = None
     use_py_kahip = _use_python_kahip(method)
     if use_py_kahip and int(ghost_layers) != 0:
-        # The pure-Python KaHIP route computes labels and builds disjoint
-        # pieces; it cannot grow a halo. An EXPLICIT method="kahip" request
-        # fails by name (the documented no-silent-SFC-downgrade rule), while
-        # "auto" — a preference order, not a method — routes to the C++ core,
-        # the one ghost-capable path.
         if method == "kahip":
             raise NotImplementedError(
                 "partition: ghost_layers with method='kahip' needs KaHIP "
@@ -562,6 +566,7 @@ def partition(
                 bool(record_ids),
                 int(ghost_layers),
                 weights or "",
+                bool(connected_parts),
             )
             pieces = [
                 (

@@ -193,6 +193,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
 #include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/subdivide_surface.hpp"
 #include "meshioplusplus/operations/subsample_points.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
@@ -2966,18 +2967,48 @@ PYBIND11_MODULE(_core, m) {
     // Returns a dict {mesh, point_map, cell_maps}. See operations/convert_cells.hpp.
     m.def(
         "convert_cells",
-        [](py::object pymesh, const std::string& mode, bool record_parent_ids) {
+        [](py::object pymesh, const std::string& mode, bool record_parent_ids, int order,
+           bool full) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
             meshioplusplus::ConvertCellsOptions options;
             options.mMode = meshioplusplus::convert_cells_mode_from_name(mode);
             options.mRecordParentIds = record_parent_ids;
+            options.mOrder = order;
+            options.mFull = full;
             meshioplusplus::ConvertCellsResult r =
                 core_nogil([&] { return meshioplusplus::convert_cells(cpp, options); });
             return core_mesh_maps_dict(r);
         },
-        py::arg("mesh"), py::arg("mode") = "linearize", py::arg("record_parent_ids") = false);
+        py::arg("mesh"), py::arg("mode") = "linearize", py::arg("record_parent_ids") = false,
+        py::arg("order") = 2, py::arg("full") = false);
+
+    m.def(
+        "subdivide_surface",
+        [](py::object pymesh, const std::string& scheme, int levels, double crease_angle,
+           bool preserve_boundary, bool interpolate_point_data, bool record_parent_ids) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::SubdivideSurfaceOptions opts;
+            opts.mScheme = meshioplusplus::subdivision_scheme_from_name(scheme);
+            opts.mLevels = levels;
+            opts.mCreaseAngle = crease_angle;
+            opts.mPreserveBoundary = preserve_boundary;
+            opts.mInterpolatePointData = interpolate_point_data;
+            opts.mRecordParentIds = record_parent_ids;
+            meshioplusplus::SubdivideSurfaceResult r =
+                core_nogil([&] { return meshioplusplus::subdivide_surface(cpp, opts); });
+            py::dict rep;
+            rep["num_crease_edges"] = r.mNumCreaseEdges;
+            rep["num_boundary_edges"] = r.mNumBoundaryEdges;
+            rep["warnings"] = r.mWarnings;
+            return py::make_tuple(meshioplusplus_py::mesh_to_py(std::move(r.mMesh)), rep);
+        },
+        py::arg("mesh"), py::arg("scheme") = "loop", py::arg("levels") = 1,
+        py::arg("crease_angle") = 60.0, py::arg("preserve_boundary") = true,
+        py::arg("interpolate_point_data") = true, py::arg("record_parent_ids") = false);
 
     // Polyhedral coarsening: merge groups of cells into single larger
     // polyhedral cells. Returns a dict {mesh, cell_map} -- a single FLAT
@@ -3124,14 +3155,18 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "undo_green",
         [](py::object pycoarse, py::object pyfine) {
-            auto coarse_in = core_mesh_in(pycoarse, /*allow_ragged=*/true);
-            [[maybe_unused]] auto& refs_coarse = coarse_in.mRefs;
-            auto& coarse = coarse_in.mMesh;
             auto fine_in = core_mesh_in(pyfine, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs_fine = fine_in.mRefs;
             auto& fine = fine_in.mMesh;
-            meshioplusplus::UndoGreenResult r =
-                core_nogil([&] { return meshioplusplus::undo_green(coarse, fine); });
+            meshioplusplus::UndoGreenResult r;
+            if (pycoarse.is_none()) {
+                r = core_nogil([&] { return meshioplusplus::undo_green(fine); });
+            } else {
+                auto coarse_in = core_mesh_in(pycoarse, /*allow_ragged=*/true);
+                [[maybe_unused]] auto& refs_coarse = coarse_in.mRefs;
+                auto& coarse = coarse_in.mMesh;
+                r = core_nogil([&] { return meshioplusplus::undo_green(coarse, fine); });
+            }
             py::dict out;
             out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
             py::list cell_maps;
@@ -3152,7 +3187,7 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh, int levels, bool record_parent_ids, py::object cells,
            const std::string& region, const std::string& predicate_array,
            const std::string& predicate_op, double predicate_value, const std::string& closure,
-           bool record_levels, bool record_hierarchy) {
+           bool record_levels, bool record_hierarchy, bool undo_green_first) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
@@ -3171,6 +3206,7 @@ PYBIND11_MODULE(_core, m) {
             options.mClosure = meshioplusplus::refine_closure_from_name(closure);
             options.mRecordLevels = record_levels;
             options.mRecordHierarchy = record_hierarchy;
+            options.mUndoGreenFirst = undo_green_first;
             meshioplusplus::RefineResult r =
                 core_nogil([&] { return meshioplusplus::refine(cpp, options); });
             return core_mesh_maps_dict(r);
@@ -3179,7 +3215,7 @@ PYBIND11_MODULE(_core, m) {
         py::arg("cells") = py::none(), py::arg("region") = "", py::arg("predicate_array") = "",
         py::arg("predicate_op") = "<", py::arg("predicate_value") = 0.0,
         py::arg("closure") = "redgreen", py::arg("record_levels") = false,
-        py::arg("record_hierarchy") = false);
+        py::arg("record_hierarchy") = false, py::arg("undo_green_first") = false);
 
     // The selective-refinement subdivision table for one cell type, as
     // {mask: [[child node ids], ...]} plus the tie-break metadata. Exported so
@@ -8601,19 +8637,20 @@ PYBIND11_MODULE(_core, m) {
         "partition",
         [](py::object pymesh, int nparts, const std::string& method, double imbalance,
            const std::string& mode, int seed, bool record_ids, int ghost_layers,
-           const std::string& weights_key) {
+           const std::string& weights_key, bool connected_parts) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
             meshioplusplus::PartitionOptions options;
             options.mNParts = nparts;
-            options.mMethod = meshioplusplus::partition_method_from_name(method);
+            options.mMethodName = method;
             options.mImbalance = imbalance;
             options.mMode = meshioplusplus::partition_mode_from_name(mode);
             options.mSeed = seed;
             options.mRecordIds = record_ids;
             options.mGhostLayers = ghost_layers;
             options.mWeightsKey = weights_key;
+            options.mConnectedParts = connected_parts;
             meshioplusplus::PartitionResult r =
                 core_nogil([&] { return meshioplusplus::partition(cpp, options); });
             py::list pieces;
@@ -8632,24 +8669,27 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("nparts"), py::arg("method") = "auto", py::arg("imbalance") = 0.03,
         py::arg("mode") = "eco", py::arg("seed") = 0, py::arg("record_ids") = false,
-        py::arg("ghost_layers") = 0, py::arg("weights_key") = "");
+        py::arg("ghost_layers") = 0, py::arg("weights_key") = "",
+        py::arg("connected_parts") = false);
 
     // The per-cell part assignment only (block-aligned Int64 arrays). See
     // operations/partition.hpp.
     m.def(
         "partition_labels",
         [](py::object pymesh, int nparts, const std::string& method, double imbalance,
-           const std::string& mode, int seed, const std::string& weights_key) {
+           const std::string& mode, int seed, const std::string& weights_key,
+           bool connected_parts) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
             meshioplusplus::PartitionOptions options;
             options.mNParts = nparts;
-            options.mMethod = meshioplusplus::partition_method_from_name(method);
+            options.mMethodName = method;
             options.mImbalance = imbalance;
             options.mMode = meshioplusplus::partition_mode_from_name(mode);
             options.mSeed = seed;
             options.mWeightsKey = weights_key;
+            options.mConnectedParts = connected_parts;
             std::vector<meshioplusplus::NDArray> labels =
                 core_nogil([&] { return meshioplusplus::partition_labels(cpp, options); });
             py::list out;
@@ -8658,7 +8698,8 @@ PYBIND11_MODULE(_core, m) {
             return out;
         },
         py::arg("mesh"), py::arg("nparts"), py::arg("method") = "auto", py::arg("imbalance") = 0.03,
-        py::arg("mode") = "eco", py::arg("seed") = 0, py::arg("weights_key") = "");
+        py::arg("mode") = "eco", py::arg("seed") = 0, py::arg("weights_key") = "",
+        py::arg("connected_parts") = false);
 
     // Geometric statistics (read-only). Returns a dict of the StatsReport fields.
     // See operations/stats.hpp.

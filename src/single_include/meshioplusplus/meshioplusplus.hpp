@@ -11600,12 +11600,13 @@ namespace meshioplusplus {
 enum class ConvertCellsMode {
     Linearize,   ///< Higher-order cells -> their linear base (drops mid nodes).
     Simplexify,  ///< Cells -> simplices of the same topological dimension.
-    Elevate,     ///< Linear cells -> serendipity quadratic (adds mid-edge nodes).
+    Elevate,     ///< Promote cells to target polynomial order (default 2, serendipity or full).
+    Reduce,      ///< Reduce higher-order cells to a lower polynomial order (roadmap 9.5).
 };
 
 /**
  * @brief Parse a mode name into a `ConvertCellsMode`.
- * @param rName one of `"linearize"`, `"simplexify"`, `"elevate"`.
+ * @param rName one of `"linearize"`, `"simplexify"`, `"elevate"`, `"reduce"`.
  * @return the matching mode.
  * @throws std::invalid_argument on an unknown name.
  */
@@ -11620,6 +11621,11 @@ struct ConvertCellsOptions {
     /// block* (blocks correspond 1:1). Mainly useful under `Simplexify`, where
     /// several children share a parent.
     bool mRecordParentIds = false;
+    /// Target polynomial order for `Elevate` (>= 2, default 2) and `Reduce` (>= 1, default 1).
+    int mOrder = 2;
+    /// For order-2 `Elevate`, emit full-Lagrange (`quad9`, `hexahedron27`, `wedge18`)
+    /// instead of serendipity (`quad8`, `hexahedron20`, `wedge15`). Always true for order >= 3.
+    bool mFull = false;
 };
 
 /// The result of `convert_cells`: the converted mesh plus the index maps.
@@ -28411,6 +28417,12 @@ struct RefineOptions {
     /// the prolongation operator's weights, which `redgreen`/`propagate` would
     /// otherwise never expose.
     bool mRecordHierarchy = false;
+    /// Before a selective pass, merge transitional (green) sibling groups back
+    /// to their parents using the mesh's own hierarchy arrays (`refine:cell_id`,
+    /// `refine:parent_id`, `refine:level`, `refine:entity`), marking any
+    /// restored parent whose child was selected (roadmap 9.6.1). Requires
+    /// `mRecordHierarchy` (and `mRecordLevels`); throws by name otherwise.
+    bool mUndoGreenFirst = false;
 };
 
 /// The result of `refine`: the refined mesh plus the index maps.
@@ -37487,6 +37499,14 @@ struct PartitionOptions {
     /// (`""` = unweighted). SFC cuts the weight prefix sum; KaHIP receives it
     /// as vertex weights (scaled to positive integers).
     std::string mWeightsKey;
+    /// Optional provider name (`"sfc"`, `"auto"`, `"kahip"`, `"metis"`, `"scotch"`,
+    /// or any registered `GraphPartitionerProvider`; roadmap 9.7.1). When non-empty,
+    /// overrides `mMethod`.
+    std::string mMethodName;
+    /// Post-pass ensuring every non-empty part is a single facet-connected component
+    /// by reassigning disconnected islands to the neighbour sharing the most facets
+    /// (roadmap 9.7.3).
+    bool mConnectedParts = false;
 };
 
 /// One piece of a partition.
@@ -43376,6 +43396,65 @@ MESHIOPLUSPLUS_API SubdivideResult subdivide(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/subdivide.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/subdivide_surface.hpp =====
+/**
+ * @file operations/subdivide_surface.hpp
+ * @brief Smooth subdivision surfaces: Loop (triangles) and Catmull-Clark
+ * (triangles, quads, polygons -> quads) with Hoppe-style crease and boundary
+ * preservation (roadmap 9.2).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Attached Int64 `cell_data` array recording each child's input cell index.
+inline constexpr const char* kSubdivideParentCellName = "subdivide:parent_cell";
+
+/// Smooth subdivision scheme for `subdivide_surface`.
+enum class SubdivisionScheme : std::int32_t {
+    Loop = 0,         ///< Loop triangle subdivision (1987); triangles only.
+    CatmullClark = 1  ///< Catmull-Clark subdivision (1978); polygonal -> quads.
+};
+
+/// Parse `"loop"` or `"catmull_clark"` / `"catmull-clark"` / `"cc"`.
+MESHIOPLUSPLUS_API SubdivisionScheme subdivision_scheme_from_name(const std::string& rName);
+
+/// Options for `subdivide_surface`.
+struct SubdivideSurfaceOptions {
+    /// Subdivision scheme (`Loop` or `CatmullClark`).
+    SubdivisionScheme mScheme = SubdivisionScheme::Loop;
+    /// Number of subdivision levels (>= 0; 0 returns a copy).
+    int mLevels = 1;
+    /// Dihedral angle threshold in degrees for automatic sharp creases (<= 0 or >= 180 disables).
+    double mCreaseAngle = 60.0;
+    /// Apply crease/boundary rules to open boundary edges (corners pinned).
+    bool mPreserveBoundary = true;
+    /// Interpolate floating-point `point_data` using the subdivision weights.
+    bool mInterpolatePointData = true;
+    /// Attach Int64 `subdivide:parent_cell` recording each child's input cell index.
+    bool mRecordParentIds = false;
+};
+
+/// Result of `subdivide_surface`.
+struct SubdivideSurfaceResult {
+    Mesh mMesh;
+    std::int64_t mNumCreaseEdges = 0;
+    std::int64_t mNumBoundaryEdges = 0;
+    std::vector<std::string> mWarnings;
+};
+
+/// Apply smooth Loop or Catmull-Clark subdivision to a surface mesh.
+MESHIOPLUSPLUS_API SubdivideSurfaceResult
+subdivide_surface(const Mesh& rMesh, const SubdivideSurfaceOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/subdivide_surface.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/subsample_points.hpp =====
 /**
  * @file operations/subsample_points.hpp
@@ -44456,6 +44535,17 @@ struct UndoGreenResult {
  */
 MESHIOPLUSPLUS_API UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine);
 
+/**
+ * @brief Restore `rFine`'s transitional (green) cells back to their parent
+ * cells without needing the coarse mesh (roadmap 9.6.1).
+ *
+ * Uses `refine:cell_id`, `refine:parent_id`, `refine:level` and `refine:entity`
+ * to identify green sibling groups and reconstruct each parent's corners
+ * directly from its children. Supports multi-level hierarchies.
+ * @throws std::invalid_argument if `rFine` lacks the required hierarchy arrays.
+ */
+MESHIOPLUSPLUS_API UndoGreenResult undo_green(const Mesh& rFine);
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/untangle.hpp =====
@@ -45463,6 +45553,36 @@ MESHIOPLUSPLUS_API std::shared_ptr<const QuadRemesherProvider> quad_remesher(
     const std::string& rName) noexcept;
 /// The names of every registered quad remesher, sorted.
 MESHIOPLUSPLUS_API std::vector<std::string> quad_remesher_names();
+
+/// Input to a graph partitioner provider (roadmap 9.7.1): a symmetric CSR dual graph.
+struct GraphPartitionerRequest {
+    const std::int64_t* mpXadj = nullptr;     ///< Row offsets, length `mNumVertices + 1`.
+    const std::int64_t* mpAdjncy = nullptr;   ///< Neighbour vertex ids.
+    std::size_t mNumVertices = 0;             ///< Number of graph vertices (cells).
+    int mNParts = 2;                          ///< Number of parts (>= 1).
+    double mImbalance = 0.03;                 ///< Allowed imbalance fraction in (0, 1).
+    int mMode = 1;                            ///< Quality mode: 0 = Fast, 1 = Eco, 2 = Strong.
+    int mSeed = 0;                            ///< Deterministic seed.
+    const std::int64_t* mpWeights = nullptr;  ///< Optional positive vertex weights (length `mNumVertices`).
+};
+
+/// A graph partitioner provider (KaHIP, METIS, Scotch, or a plugin; roadmap 9.7.1).
+struct GraphPartitionerProvider {
+    std::string mName;
+    std::string mVersion;
+    /// Returns per-vertex part ids in `[0, rReq.mNParts)`.
+    std::function<std::vector<std::int64_t>(const GraphPartitionerRequest&)> mPartition;
+};
+
+/// Registers a graph partitioner under its `mName`, replacing any earlier one of that name.
+MESHIOPLUSPLUS_API void add_graph_partitioner(GraphPartitionerProvider Provider);
+/// Removes the graph partitioner named `rName`.
+MESHIOPLUSPLUS_API void remove_graph_partitioner(const std::string& rName) noexcept;
+/// The graph partitioner named `rName`, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const GraphPartitionerProvider> graph_partitioner(
+    const std::string& rName) noexcept;
+/// The names of every registered graph partitioner, sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> graph_partitioner_names();
 
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
@@ -253257,6 +253377,7 @@ ConstrainPrimitivesResult constrain_primitives(const Mesh& rMesh,
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -254180,6 +254301,427 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
                                   ccells_identity_point_map(num_points));
 }
 
+// --- arbitrary-order Lagrange elevation & reduction (roadmap 9.5) -----------
+
+struct CcellsLagrangeMeta {
+    lagrange::Shape mShape = lagrange::Shape::Line;
+    int mOrder = 0;
+    bool mIsVtkOrder = false;
+    std::size_t mNumCorners = 0;
+};
+
+std::size_t ccells_shape_corners(lagrange::Shape s) {
+    switch (s) {
+        case lagrange::Shape::Line:
+            return 2;
+        case lagrange::Shape::Triangle:
+            return 3;
+        case lagrange::Shape::Quad:
+            return 4;
+        case lagrange::Shape::Tetra:
+            return 4;
+        case lagrange::Shape::Hexahedron:
+            return 8;
+        case lagrange::Shape::Wedge:
+            return 6;
+    }
+    return 0;
+}
+
+bool ccells_parse_lagrange_meta(const std::string& rType, std::size_t NumNodes,
+                                CcellsLagrangeMeta& rOut) {
+    auto set = [&](lagrange::Shape s, int p, bool vtk) {
+        rOut = {s, p, vtk, ccells_shape_corners(s)};
+        return true;
+    };
+    if (rType == "line")
+        return set(lagrange::Shape::Line, 1, false);
+    if (rType == "triangle")
+        return set(lagrange::Shape::Triangle, 1, false);
+    if (rType == "quad")
+        return set(lagrange::Shape::Quad, 1, false);
+    if (rType == "tetra")
+        return set(lagrange::Shape::Tetra, 1, false);
+    if (rType == "hexahedron")
+        return set(lagrange::Shape::Hexahedron, 1, false);
+    if (rType == "wedge")
+        return set(lagrange::Shape::Wedge, 1, false);
+
+    if (rType == "line3")
+        return set(lagrange::Shape::Line, 2, false);
+    if (rType == "triangle6")
+        return set(lagrange::Shape::Triangle, 2, false);
+    if (rType == "quad9")
+        return set(lagrange::Shape::Quad, 2, false);
+    if (rType == "tetra10")
+        return set(lagrange::Shape::Tetra, 2, false);
+    if (rType == "hexahedron27")
+        return set(lagrange::Shape::Hexahedron, 2, false);
+    if (rType == "wedge18")
+        return set(lagrange::Shape::Wedge, 2, false);
+
+    lagrange::FixedLagrange fl;
+    if (lagrange::fixed_lagrange(rType, fl))
+        return set(fl.mShape, fl.mOrder, false);
+
+    const std::pair<const char*, lagrange::Shape> vtk_types[] = {
+        {"VTK_LAGRANGE_CURVE", lagrange::Shape::Line},
+        {"VTK_LAGRANGE_TRIANGLE", lagrange::Shape::Triangle},
+        {"VTK_LAGRANGE_QUADRILATERAL", lagrange::Shape::Quad},
+        {"VTK_LAGRANGE_TETRAHEDRON", lagrange::Shape::Tetra},
+        {"VTK_LAGRANGE_HEXAHEDRON", lagrange::Shape::Hexahedron},
+        {"VTK_LAGRANGE_WEDGE", lagrange::Shape::Wedge},
+    };
+    for (const auto& [name, shape] : vtk_types) {
+        if (rType == name) {
+            for (int p = 1; p <= 20; ++p) {
+                if (lagrange::num_nodes(shape, p) == NumNodes)
+                    return set(shape, p, true);
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
+std::string ccells_target_lagrange_type(lagrange::Shape s, int q, bool& rUseVtkOrder) {
+    const int max_fixed =
+        (s == lagrange::Shape::Hexahedron || s == lagrange::Shape::Wedge) ? 9 : 10;
+    if (q == 1) {
+        rUseVtkOrder = false;
+        switch (s) {
+            case lagrange::Shape::Line:
+                return "line";
+            case lagrange::Shape::Triangle:
+                return "triangle";
+            case lagrange::Shape::Quad:
+                return "quad";
+            case lagrange::Shape::Tetra:
+                return "tetra";
+            case lagrange::Shape::Hexahedron:
+                return "hexahedron";
+            case lagrange::Shape::Wedge:
+                return "wedge";
+        }
+    }
+    if (q <= max_fixed) {
+        rUseVtkOrder = false;
+        const std::size_t nn = lagrange::num_nodes(s, q);
+        switch (s) {
+            case lagrange::Shape::Line:
+                return "line" + std::to_string(nn);
+            case lagrange::Shape::Triangle:
+                return "triangle" + std::to_string(nn);
+            case lagrange::Shape::Quad:
+                return "quad" + std::to_string(nn);
+            case lagrange::Shape::Tetra:
+                return "tetra" + std::to_string(nn);
+            case lagrange::Shape::Hexahedron:
+                return "hexahedron" + std::to_string(nn);
+            case lagrange::Shape::Wedge:
+                return "wedge" + std::to_string(nn);
+        }
+    }
+    rUseVtkOrder = true;
+    switch (s) {
+        case lagrange::Shape::Line:
+            return "VTK_LAGRANGE_CURVE";
+        case lagrange::Shape::Triangle:
+            return "VTK_LAGRANGE_TRIANGLE";
+        case lagrange::Shape::Quad:
+            return "VTK_LAGRANGE_QUADRILATERAL";
+        case lagrange::Shape::Tetra:
+            return "VTK_LAGRANGE_TETRAHEDRON";
+        case lagrange::Shape::Hexahedron:
+            return "VTK_LAGRANGE_HEXAHEDRON";
+        case lagrange::Shape::Wedge:
+            return "VTK_LAGRANGE_WEDGE";
+    }
+    return "";
+}
+
+std::vector<std::array<int, 3>> ccells_lattice_ijk(lagrange::Shape s, int p, bool vtk_order) {
+    return vtk_order ? lagrange::vtk_lattice(s, p) : lagrange::gmsh_lattice(s, p);
+}
+
+std::vector<std::array<double, 3>> ccells_ijk_to_coords(const std::vector<std::array<int, 3>>& rIjk,
+                                                        int p) {
+    std::vector<std::array<double, 3>> out(rIjk.size());
+    const double inv = 1.0 / static_cast<double>(p);
+    for (std::size_t i = 0; i < rIjk.size(); ++i)
+        out[i] = {static_cast<double>(rIjk[i][0]) * inv, static_cast<double>(rIjk[i][1]) * inv,
+                  static_cast<double>(rIjk[i][2]) * inv};
+    return out;
+}
+
+ConvertCellsResult ccells_change_order(const Mesh& rMesh, int TargetOrder, bool Elevate,
+                                       bool RecordParentIds) {
+    if (Elevate && TargetOrder < 2)
+        throw std::invalid_argument("convert_cells: elevate target order must be >= 2");
+    if (!Elevate && TargetOrder < 1)
+        throw std::invalid_argument("convert_cells: reduce target order must be >= 1");
+
+    const std::size_t n_pts_in = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+
+    // Read input coordinates as float64.
+    std::vector<double> in_pts(n_pts_in * pdim, 0.0);
+    if (n_pts_in > 0) {
+        const NDArray& pa = rMesh.Points();
+        if (pa.Dtype() == DType::Float64) {
+            std::memcpy(in_pts.data(), pa.As<double>(), n_pts_in * pdim * sizeof(double));
+        } else {
+            for (std::size_t i = 0; i < n_pts_in * pdim; ++i)
+                in_pts[i] = detail::read_double(pa, i);
+        }
+    }
+
+    // Prepare point_data buffers for interpolation.
+    struct CcellsPData {
+        std::string mName;
+        DType mDtype = DType::Float64;
+        bool mIsFloat = false;
+        std::vector<std::size_t> mTail;
+        std::size_t mWidth = 1;
+        std::vector<double> mInFloat;
+        std::vector<double> mOutFloat;
+        std::size_t mRowBytes = 0;
+        std::vector<std::byte> mOutRaw;
+    };
+    std::vector<CcellsPData> pdata;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& arr = rMesh.PointData(name);
+        if (arr.Ndim() == 0 || arr.Shape()[0] != n_pts_in)
+            continue;
+        CcellsPData pd;
+        pd.mName = name;
+        pd.mDtype = arr.Dtype();
+        pd.mIsFloat = (arr.Dtype() == DType::Float64 || arr.Dtype() == DType::Float32);
+        pd.mTail.assign(arr.Shape().begin() + 1, arr.Shape().end());
+        for (std::size_t d : pd.mTail)
+            pd.mWidth *= d;
+        if (pd.mIsFloat) {
+            pd.mInFloat.resize(n_pts_in * pd.mWidth);
+            if (arr.Dtype() == DType::Float64) {
+                std::memcpy(pd.mInFloat.data(), arr.As<double>(),
+                            n_pts_in * pd.mWidth * sizeof(double));
+            } else {
+                const float* sp = arr.As<float>();
+                for (std::size_t i = 0; i < n_pts_in * pd.mWidth; ++i)
+                    pd.mInFloat[i] = static_cast<double>(sp[i]);
+            }
+        } else {
+            pd.mRowBytes = pd.mWidth * dtype_size(arr.Dtype());
+        }
+        pdata.push_back(std::move(pd));
+    }
+
+    // Output point store. In Elevate mode, keep all input points [0..n_pts_in-1] in place.
+    // In Reduce mode, build a compact output point table (mapping old corners + new nodes).
+    std::vector<double> out_pts;
+    std::vector<std::int64_t> point_map(n_pts_in, -1);
+    if (Elevate) {
+        out_pts = in_pts;
+        for (std::size_t i = 0; i < n_pts_in; ++i)
+            point_map[i] = static_cast<std::int64_t>(i);
+        for (auto& pd : pdata) {
+            if (pd.mIsFloat) {
+                pd.mOutFloat = pd.mInFloat;
+            } else if (n_pts_in * pd.mRowBytes > 0) {
+                pd.mOutRaw.resize(n_pts_in * pd.mRowBytes);
+                std::memcpy(pd.mOutRaw.data(), rMesh.PointData(pd.mName).Data(),
+                            n_pts_in * pd.mRowBytes);
+            }
+        }
+    }
+
+    auto ensure_input_point = [&](std::int64_t old_id) -> std::int64_t {
+        const std::size_t u = static_cast<std::size_t>(old_id);
+        if (point_map[u] >= 0)
+            return point_map[u];
+        const std::int64_t nid = static_cast<std::int64_t>(out_pts.size() / pdim);
+        point_map[u] = nid;
+        out_pts.insert(out_pts.end(), in_pts.begin() + static_cast<std::ptrdiff_t>(u * pdim),
+                       in_pts.begin() + static_cast<std::ptrdiff_t>((u + 1) * pdim));
+        for (auto& pd : pdata) {
+            if (pd.mIsFloat) {
+                pd.mOutFloat.insert(
+                    pd.mOutFloat.end(),
+                    pd.mInFloat.begin() + static_cast<std::ptrdiff_t>(u * pd.mWidth),
+                    pd.mInFloat.begin() + static_cast<std::ptrdiff_t>((u + 1) * pd.mWidth));
+            } else if (pd.mRowBytes > 0) {
+                const std::byte* src = rMesh.PointData(pd.mName).Data();
+                pd.mOutRaw.insert(pd.mOutRaw.end(), src + u * pd.mRowBytes,
+                                  src + (u + 1) * pd.mRowBytes);
+            }
+        }
+        return nid;
+    };
+
+    // Canonical node key: sorted (global_corner_id, weight) pairs.
+    using NodeKey = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    std::map<NodeKey, std::int64_t> dedup;
+
+    std::vector<std::pair<std::string, NDArray>> out_blocks;
+    out_blocks.reserve(nblocks);
+
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        const std::string& btype = cb.Type();
+        if (cb.IsRagged() || ncells == 0) {
+            if (!Elevate && !cb.IsRagged()) {
+                const std::size_t k = cb.NodesPerCell();
+                const NDArray& sconn = cb.Conn();
+                NDArray conn = NDArray::Uninit(DType::Int64, {ncells, k});
+                auto* dst = conn.As<std::int64_t>();
+                for (std::size_t c = 0; c < ncells; ++c) {
+                    for (std::size_t j = 0; j < k; ++j)
+                        dst[c * k + j] = ensure_input_point(detail::read_int(sconn, c * k + j));
+                }
+                out_blocks.emplace_back(btype, std::move(conn));
+            } else {
+                out_blocks.emplace_back(btype, detail::data_owned_copy(cb.Conn()));
+            }
+            continue;
+        }
+
+        const std::size_t src_nn = cb.NodesPerCell();
+        const NDArray& sconn = cb.Conn();
+        CcellsLagrangeMeta meta;
+        const bool known = ccells_parse_lagrange_meta(btype, src_nn, meta);
+        const bool should_convert =
+            known && ((Elevate && meta.mOrder < TargetOrder) ||
+                      (!Elevate && meta.mOrder > TargetOrder));
+
+        if (!should_convert) {
+            NDArray conn = NDArray::Uninit(DType::Int64, {ncells, src_nn});
+            auto* dst = conn.As<std::int64_t>();
+            for (std::size_t c = 0; c < ncells; ++c) {
+                for (std::size_t j = 0; j < src_nn; ++j)
+                    dst[c * src_nn + j] =
+                        ensure_input_point(detail::read_int(sconn, c * src_nn + j));
+            }
+            out_blocks.emplace_back(btype, std::move(conn));
+            continue;
+        }
+
+        bool dst_vtk = false;
+        const std::string dst_type = ccells_target_lagrange_type(meta.mShape, TargetOrder, dst_vtk);
+        const auto src_ijk = ccells_lattice_ijk(meta.mShape, meta.mOrder, meta.mIsVtkOrder);
+        const auto dst_ijk = ccells_lattice_ijk(meta.mShape, TargetOrder, dst_vtk);
+        const auto src_coords = ccells_ijk_to_coords(src_ijk, meta.mOrder);
+        const auto dst_coords = ccells_ijk_to_coords(dst_ijk, TargetOrder);
+        const std::vector<double> interp =
+            lagrange::interpolation_matrix(meta.mShape, meta.mOrder, src_coords, dst_coords);
+        const std::size_t dst_nn = dst_ijk.size();
+
+        // Precompute lattice weights for each target node.
+        std::vector<std::vector<std::pair<int, std::int64_t>>> dst_weights(dst_nn);
+        for (std::size_t t = 0; t < dst_nn; ++t)
+            dst_weights[t] = lagrange::lattice_weights(meta.mShape, TargetOrder, dst_ijk[t]);
+
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, dst_nn});
+        auto* dst_conn = conn.As<std::int64_t>();
+        std::vector<std::int64_t> cell_nodes(src_nn);
+
+        for (std::size_t c = 0; c < ncells; ++c) {
+            for (std::size_t j = 0; j < src_nn; ++j)
+                cell_nodes[j] = detail::read_int(sconn, c * src_nn + j);
+
+            for (std::size_t t = 0; t < dst_nn; ++t) {
+                const auto& w = dst_weights[t];
+                if (w.size() == 1) {
+                    // Exact corner node: reuse original corner vertex id.
+                    const std::int64_t cid = cell_nodes[static_cast<std::size_t>(w[0].first)];
+                    dst_conn[c * dst_nn + t] = ensure_input_point(cid);
+                    continue;
+                }
+                NodeKey key;
+                key.reserve(w.size());
+                for (const auto& [lc, wt] : w)
+                    key.emplace_back(cell_nodes[static_cast<std::size_t>(lc)], wt);
+                std::sort(key.begin(), key.end());
+
+                auto it = dedup.find(key);
+                if (it != dedup.end()) {
+                    dst_conn[c * dst_nn + t] = it->second;
+                    continue;
+                }
+
+                // Create new interpolated node.
+                const std::int64_t nid = static_cast<std::int64_t>(out_pts.size() / pdim);
+                dedup.emplace(std::move(key), nid);
+                dst_conn[c * dst_nn + t] = nid;
+
+                const double* mrow = interp.data() + t * src_nn;
+                for (std::size_t d = 0; d < pdim; ++d) {
+                    double v = 0.0;
+                    for (std::size_t s = 0; s < src_nn; ++s)
+                        v += mrow[s] * in_pts[static_cast<std::size_t>(cell_nodes[s]) * pdim + d];
+                    out_pts.push_back(v);
+                }
+                for (auto& pd : pdata) {
+                    if (pd.mIsFloat) {
+                        for (std::size_t d = 0; d < pd.mWidth; ++d) {
+                            double v = 0.0;
+                            for (std::size_t s = 0; s < src_nn; ++s)
+                                v += mrow[s] *
+                                     pd.mInFloat[static_cast<std::size_t>(cell_nodes[s]) *
+                                                     pd.mWidth +
+                                                 d];
+                            pd.mOutFloat.push_back(v);
+                        }
+                    } else if (pd.mRowBytes > 0) {
+                        const std::size_t c0 = static_cast<std::size_t>(cell_nodes[0]);
+                        const std::byte* src = rMesh.PointData(pd.mName).Data();
+                        pd.mOutRaw.insert(pd.mOutRaw.end(), src + c0 * pd.mRowBytes,
+                                          src + (c0 + 1) * pd.mRowBytes);
+                    }
+                }
+            }
+        }
+        out_blocks.emplace_back(dst_type, std::move(conn));
+    }
+
+    const std::size_t n_pts_out = out_pts.size() / pdim;
+    Mesh out;
+    NDArray pts_arr = NDArray::Uninit(DType::Float64, {n_pts_out, pdim});
+    if (n_pts_out * pdim > 0)
+        std::memcpy(pts_arr.As<double>(), out_pts.data(), n_pts_out * pdim * sizeof(double));
+    out.AssignPoints(std::move(pts_arr));
+
+    for (auto& [tname, conn] : out_blocks)
+        out.AddCellBlock(tname, std::move(conn));
+
+    for (const auto& pd : pdata) {
+        std::vector<std::size_t> shape = {n_pts_out};
+        shape.insert(shape.end(), pd.mTail.begin(), pd.mTail.end());
+        NDArray arr = NDArray::Uninit(pd.mDtype, shape);
+        if (pd.mIsFloat) {
+            if (pd.mDtype == DType::Float64) {
+                if (!pd.mOutFloat.empty())
+                    std::memcpy(arr.As<double>(), pd.mOutFloat.data(),
+                                pd.mOutFloat.size() * sizeof(double));
+            } else {
+                float* dp = arr.As<float>();
+                for (std::size_t i = 0; i < pd.mOutFloat.size(); ++i)
+                    dp[i] = static_cast<float>(pd.mOutFloat[i]);
+            }
+        } else if (!pd.mOutRaw.empty()) {
+            std::memcpy(arr.Data(), pd.mOutRaw.data(), pd.mOutRaw.size());
+        }
+        out.AddPointData(pd.mName, std::move(arr));
+    }
+
+    NDArray pmap_arr = NDArray::Uninit(DType::Int64, {n_pts_in});
+    if (n_pts_in > 0)
+        std::memcpy(pmap_arr.As<std::int64_t>(), point_map.data(),
+                    n_pts_in * sizeof(std::int64_t));
+    return ccells_finish_identity(rMesh, std::move(out), RecordParentIds, nblocks,
+                                  std::move(pmap_arr));
+}
+
 }  // namespace
 
 // --- public API --------------------------------------------------------------
@@ -254191,8 +254733,10 @@ ConvertCellsMode convert_cells_mode_from_name(const std::string& rName) {
         return ConvertCellsMode::Simplexify;
     if (rName == "elevate")
         return ConvertCellsMode::Elevate;
+    if (rName == "reduce")
+        return ConvertCellsMode::Reduce;
     throw std::invalid_argument("convert_cells: unknown mode '" + rName +
-                                "' (expected 'linearize', 'simplexify', or 'elevate')");
+                                "' (expected 'linearize', 'simplexify', 'elevate', or 'reduce')");
 }
 
 namespace {
@@ -254234,7 +254778,16 @@ ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& r
             res = ccells_simplexify(rMesh, rOptions.mRecordParentIds);
             break;
         case ConvertCellsMode::Elevate:
-            res = ccells_elevate(rMesh, rOptions.mRecordParentIds);
+            if (rOptions.mOrder == 2 && !rOptions.mFull)
+                res = ccells_elevate(rMesh, rOptions.mRecordParentIds);
+            else
+                res = ccells_change_order(rMesh, rOptions.mOrder, true, rOptions.mRecordParentIds);
+            break;
+        case ConvertCellsMode::Reduce:
+            if (rOptions.mOrder == 1)
+                res = ccells_linearize(rMesh, rOptions.mRecordParentIds);
+            else
+                res = ccells_change_order(rMesh, rOptions.mOrder, false, rOptions.mRecordParentIds);
             break;
         default:
             throw std::invalid_argument("convert_cells: unhandled mode");
@@ -294463,7 +295016,6 @@ ParameterizeResult parameterize(const Mesh& rMesh, const ParameterizeOptions& rO
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
 // External includes
 #include <kaHIP_interface.h>  // IWYU pragma: keep
-// Project includes (private, not installed; KaHIP dual-graph path only)
 #endif
 
 namespace meshioplusplus {
@@ -294710,6 +295262,126 @@ std::vector<int> partition_kahip_parts(const Mesh& rMesh, const PartitionOptions
 // vanished, leaving halos silently too small; the shared helper reads through
 // `detail::read_int` instead.
 
+// Run a registered GraphPartitionerProvider on the mesh's facet dual graph.
+std::vector<int> partition_provider_parts(const Mesh& rMesh, const PartitionOptions& rOptions,
+                                          const GraphPartitionerProvider& rProvider,
+                                          const std::vector<double>& rWeights, std::size_t total) {
+    if (total == 0)
+        return {};
+    if (rOptions.mNParts == 1)
+        return std::vector<int>(total, 0);
+    if (!(rOptions.mImbalance > 0.0 && rOptions.mImbalance < 1.0))
+        throw std::invalid_argument("partition: imbalance must be in (0, 1), got " +
+                                    std::to_string(rOptions.mImbalance));
+    const detail::DualGraphCsr graph = detail::build_facet_dual_graph(rMesh, total);
+    std::vector<std::int64_t> scaled_w;
+    if (!rWeights.empty()) {
+        double max_w = 0.0;
+        for (double w : rWeights)
+            max_w = std::max(max_w, w);
+        const double scale = max_w > 0.0 ? (1.0e6 / max_w) : 1.0;
+        scaled_w.resize(total);
+        for (std::size_t i = 0; i < total; ++i)
+            scaled_w[i] = std::max<std::int64_t>(1, static_cast<std::int64_t>(rWeights[i] * scale + 0.5));
+    }
+    GraphPartitionerRequest req;
+    req.mpXadj = graph.mXadj.data();
+    req.mpAdjncy = graph.mAdjncy.data();
+    req.mNumVertices = total;
+    req.mNParts = rOptions.mNParts;
+    req.mImbalance = rOptions.mImbalance;
+    req.mMode = rOptions.mMode == PartitionMode::Fast ? 0
+                : rOptions.mMode == PartitionMode::Strong ? 2
+                                                          : 1;
+    req.mSeed = rOptions.mSeed;
+    req.mpWeights = scaled_w.empty() ? nullptr : scaled_w.data();
+    const std::vector<std::int64_t> raw = rProvider.mPartition(req);
+    if (raw.size() != total)
+        throw std::runtime_error("partition: provider '" + rProvider.mName +
+                                 "' returned wrong label count");
+    std::vector<int> out(total);
+    for (std::size_t i = 0; i < total; ++i)
+        out[i] = static_cast<int>(raw[i]);
+    return out;
+}
+
+// Connected-parts post-pass (roadmap 9.7.3): keep each part's largest facet-connected
+// component and reassign disconnected islands to the neighbour sharing the most facets.
+void partition_connected_postpass(const Mesh& rMesh, std::vector<int>& rParts, int NParts,
+                                  std::size_t Total) {
+    if (Total == 0 || NParts <= 1)
+        return;
+    const detail::DualGraphCsr graph =
+        detail::build_facet_dual_graph(rMesh, Total, /*PolygonRings=*/true);
+    std::vector<std::size_t> queue;
+    queue.reserve(Total);
+    std::vector<std::int32_t> comp_id(Total, -1);
+
+    for (int pass = 0; pass < 32; ++pass) {
+        bool changed = false;
+        std::fill(comp_id.begin(), comp_id.end(), -1);
+        for (int p = 0; p < NParts; ++p) {
+            std::vector<std::vector<std::size_t>> comps;
+            for (std::size_t i = 0; i < Total; ++i) {
+                if (rParts[i] != p || comp_id[i] >= 0)
+                    continue;
+                const std::int32_t cid = static_cast<std::int32_t>(comps.size());
+                comps.emplace_back();
+                auto& comp = comps.back();
+                queue.clear();
+                queue.push_back(i);
+                comp_id[i] = cid;
+                for (std::size_t qi = 0; qi < queue.size(); ++qi) {
+                    const std::size_t u = queue[qi];
+                    comp.push_back(u);
+                    for (std::int64_t ei = graph.mXadj[u]; ei < graph.mXadj[u + 1]; ++ei) {
+                        const std::size_t v = static_cast<std::size_t>(graph.mAdjncy[ei]);
+                        if (rParts[v] == p && comp_id[v] < 0) {
+                            comp_id[v] = cid;
+                            queue.push_back(v);
+                        }
+                    }
+                }
+            }
+            if (comps.size() <= 1)
+                continue;
+            // Keep the largest component (ties broken by smallest lowest cell id, i.e., earliest index).
+            std::size_t best = 0;
+            for (std::size_t k = 1; k < comps.size(); ++k) {
+                if (comps[k].size() > comps[best].size())
+                    best = k;
+            }
+            for (std::size_t k = 0; k < comps.size(); ++k) {
+                if (k == best)
+                    continue;
+                std::vector<std::size_t> border_counts(static_cast<std::size_t>(NParts), 0);
+                for (std::size_t u : comps[k]) {
+                    for (std::int64_t ei = graph.mXadj[u]; ei < graph.mXadj[u + 1]; ++ei) {
+                        const int np = rParts[static_cast<std::size_t>(graph.mAdjncy[ei])];
+                        if (np != p && np >= 0 && np < NParts)
+                            ++border_counts[static_cast<std::size_t>(np)];
+                    }
+                }
+                int target = -1;
+                std::size_t max_facets = 0;
+                for (int q = 0; q < NParts; ++q) {
+                    if (border_counts[static_cast<std::size_t>(q)] > max_facets) {
+                        max_facets = border_counts[static_cast<std::size_t>(q)];
+                        target = q;
+                    }
+                }
+                if (target >= 0) {
+                    for (std::size_t u : comps[k])
+                        rParts[u] = target;
+                    changed = true;
+                }
+            }
+        }
+        if (!changed)
+            break;
+    }
+}
+
 // Validate the options and resolve Auto to a concrete method.
 PartitionMethod partition_resolve_method(const PartitionOptions& rOptions) {
     if (rOptions.mNParts < 1)
@@ -294730,14 +295402,51 @@ PartitionMethod partition_resolve_method(const PartitionOptions& rOptions) {
 
 // The per-global-cell part assignment (values in [0, nparts)).
 std::vector<int> partition_compute_parts(const Mesh& rMesh, const PartitionOptions& rOptions) {
-    const PartitionMethod method = partition_resolve_method(rOptions);
+    if (rOptions.mNParts < 1)
+        throw std::invalid_argument("partition: nparts must be >= 1, got " +
+                                    std::to_string(rOptions.mNParts));
+    if (rOptions.mGhostLayers < 0)
+        throw std::invalid_argument("partition: ghost_layers must be >= 0, got " +
+                                    std::to_string(rOptions.mGhostLayers));
     const std::size_t total = partition_total_cells(rMesh);
     std::vector<double> weights;
     if (!rOptions.mWeightsKey.empty())
         weights = partition_weights(rMesh, rOptions.mWeightsKey, total);
-    if (method == PartitionMethod::KaHIP)
-        return partition_kahip_parts(rMesh, rOptions, weights, total);
-    return partition_sfc_parts(rMesh, rOptions, weights, total);
+
+    std::vector<int> parts;
+    if (!rOptions.mMethodName.empty()) {
+        const std::string& name = rOptions.mMethodName;
+        if (name == "sfc" || name == "hilbert") {
+            parts = partition_sfc_parts(rMesh, rOptions, weights, total);
+        } else if (name == "auto") {
+            if (auto prov = graph_partitioner("kahip"))
+                parts = partition_provider_parts(rMesh, rOptions, *prov, weights, total);
+            else if (partition_has_kahip())
+                parts = partition_kahip_parts(rMesh, rOptions, weights, total);
+            else
+                parts = partition_sfc_parts(rMesh, rOptions, weights, total);
+        } else if (auto prov = graph_partitioner(name)) {
+            parts = partition_provider_parts(rMesh, rOptions, *prov, weights, total);
+        } else if (name == "kahip") {
+            parts = partition_kahip_parts(rMesh, rOptions, weights, total);
+        } else {
+            throw std::invalid_argument("partition: unknown or unavailable method '" + name +
+                                        "' (register a GraphPartitionerProvider or use 'sfc')");
+        }
+    } else {
+        const PartitionMethod method = partition_resolve_method(rOptions);
+        if (method == PartitionMethod::KaHIP) {
+            if (auto prov = graph_partitioner("kahip"))
+                parts = partition_provider_parts(rMesh, rOptions, *prov, weights, total);
+            else
+                parts = partition_kahip_parts(rMesh, rOptions, weights, total);
+        } else {
+            parts = partition_sfc_parts(rMesh, rOptions, weights, total);
+        }
+    }
+    if (rOptions.mConnectedParts)
+        partition_connected_postpass(rMesh, parts, rOptions.mNParts, total);
+    return parts;
 }
 
 }  // namespace
@@ -306576,6 +307285,42 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     std::vector<char> seed;
     if (selective)
         seed = refine_resolve_selection(rMesh, rOptions);
+
+    if (rOptions.mUndoGreenFirst) {
+        if (!rOptions.mRecordHierarchy)
+            throw std::invalid_argument(
+                "refine: undo_green_first requires record_hierarchy=True");
+        if (rOptions.mLevels > 0 && selective) {
+            UndoGreenResult ug = undo_green(rMesh);
+            if (ug.mNumGroupsUndone > 0) {
+                const std::vector<std::int64_t> in_bases = detail::block_bases(rMesh);
+                const std::vector<std::int64_t> ug_bases = detail::block_bases(ug.mMesh);
+                std::vector<std::int64_t> mapped_ids;
+                std::vector<char> mapped_flag(static_cast<std::size_t>(ug_bases.back()), 0);
+                for (std::size_t bi = 0; bi < ug.mCellMaps.size(); ++bi) {
+                    const auto* cm = ug.mCellMaps[bi].As<std::int64_t>();
+                    const std::size_t n = ug.mCellMaps[bi].Size();
+                    for (std::size_t r = 0; r < n; ++r) {
+                        if (seed[static_cast<std::size_t>(in_bases[bi]) + r]) {
+                            const std::int64_t g = ug_bases[bi] + cm[r];
+                            if (!mapped_flag[static_cast<std::size_t>(g)]) {
+                                mapped_flag[static_cast<std::size_t>(g)] = 1;
+                                mapped_ids.push_back(g);
+                            }
+                        }
+                    }
+                }
+                RefineOptions next_opts = rOptions;
+                next_opts.mUndoGreenFirst = false;
+                next_opts.mRegion.clear();
+                next_opts.mPredicateArray.clear();
+                next_opts.mCells = std::move(mapped_ids);
+                next_opts.mRecordLevels = true;
+                next_opts.mRecordHierarchy = true;
+                return refine(ug.mMesh, next_opts);
+            }
+        }
+    }
 
     if (rOptions.mLevels <= 0) {
         RefineResult res;
@@ -325612,6 +326357,692 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/subdivide.cpp =====
+// ===== begin src/cpp/src/operations/subdivide_surface.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+// Core-private includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kSubdPrefix = "meshio++: subdivide_surface: ";
+constexpr double kSubdPi = 3.141592653589793238462643383279502884;
+
+std::uint64_t subd_edge_key(std::int64_t a, std::int64_t b) {
+    const std::uint64_t lo = static_cast<std::uint64_t>(std::min(a, b));
+    const std::uint64_t hi = static_cast<std::uint64_t>(std::max(a, b));
+    return (lo << 32) | hi;
+}
+
+std::string subd_lower(std::string s) {
+    for (char& c : s)
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+    return s;
+}
+
+struct SubdEdgeInfo {
+    std::int64_t mLo = 0;
+    std::int64_t mHi = 0;
+    std::vector<std::int64_t> mFaces;
+    std::vector<std::int64_t> mOppVerts;  // for Loop: opposite vertex per incident triangle
+    bool mIsCrease = false;
+    bool mIsBoundary = false;
+};
+
+struct SubdFloatField {
+    std::string mName;
+    DType mOrigDtype = DType::Float64;
+    std::vector<std::size_t> mTailShape;
+    std::size_t mWidth = 1;
+    std::vector<double> mData;  // n_points * mWidth
+};
+
+struct SubdOtherField {
+    std::string mName;
+    DType mDtype = DType::Int64;
+    std::vector<std::size_t> mTailShape;
+    std::size_t mRowBytes = 0;
+    std::vector<std::uint8_t> mData;  // n_points * mRowBytes
+};
+
+std::vector<SubdEdgeInfo> subd_build_edges(const std::vector<std::vector<std::int64_t>>& rFaces,
+                                           const std::unordered_set<std::uint64_t>& rCreases,
+                                           bool PreserveBoundary,
+                                           std::unordered_map<std::uint64_t, std::size_t>& rEdgeMap,
+                                           std::int64_t& rNumCrease, std::int64_t& rNumBoundary) {
+    std::vector<SubdEdgeInfo> edges;
+    rEdgeMap.clear();
+    rNumCrease = 0;
+    rNumBoundary = 0;
+
+    for (std::size_t f = 0; f < rFaces.size(); ++f) {
+        const auto& ring = rFaces[f];
+        const std::size_t m = ring.size();
+        for (std::size_t k = 0; k < m; ++k) {
+            const std::int64_t a = ring[k];
+            const std::int64_t b = ring[(k + 1) % m];
+            if (a == b)
+                continue;
+            const std::uint64_t key = subd_edge_key(a, b);
+            auto it = rEdgeMap.find(key);
+            std::size_t eid = 0;
+            if (it == rEdgeMap.end()) {
+                eid = edges.size();
+                rEdgeMap.emplace(key, eid);
+                SubdEdgeInfo e;
+                e.mLo = std::min(a, b);
+                e.mHi = std::max(a, b);
+                edges.push_back(std::move(e));
+            } else {
+                eid = it->second;
+            }
+            edges[eid].mFaces.push_back(static_cast<std::int64_t>(f));
+            if (m == 3)
+                edges[eid].mOppVerts.push_back(ring[(k + 2) % 3]);
+        }
+    }
+
+    // Sort edges deterministically by (mLo, mHi) so new edge-point ids are independent of hash order.
+    std::sort(edges.begin(), edges.end(), [](const SubdEdgeInfo& x, const SubdEdgeInfo& y) {
+        return x.mLo != y.mLo ? x.mLo < y.mLo : x.mHi < y.mHi;
+    });
+    rEdgeMap.clear();
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+        const std::uint64_t key = subd_edge_key(edges[i].mLo, edges[i].mHi);
+        rEdgeMap.emplace(key, i);
+        const bool is_bnd = edges[i].mFaces.size() == 1;
+        const bool is_nm = edges[i].mFaces.size() >= 3;
+        edges[i].mIsBoundary = is_bnd;
+        edges[i].mIsCrease =
+            rCreases.count(key) > 0 || is_nm || (PreserveBoundary && is_bnd);
+        if (is_bnd)
+            ++rNumBoundary;
+        if (edges[i].mIsCrease)
+            ++rNumCrease;
+    }
+    return edges;
+}
+
+void subd_step_loop(std::vector<double>& rPts, std::vector<std::vector<std::int64_t>>& rFaces,
+                    std::vector<std::int64_t>& rParents,
+                    std::unordered_set<std::uint64_t>& rCreases,
+                    std::vector<SubdFloatField>& rFloatFields,
+                    std::vector<SubdOtherField>& rOtherFields, bool PreserveBoundary,
+                    std::int64_t& rNumCrease, std::int64_t& rNumBoundary) {
+    const std::size_t n_old = rPts.size() / 3;
+    std::unordered_map<std::uint64_t, std::size_t> edge_map;
+    std::vector<SubdEdgeInfo> edges = subd_build_edges(rFaces, rCreases, PreserveBoundary, edge_map,
+                                                       rNumCrease, rNumBoundary);
+    const std::size_t n_edges = edges.size();
+    const std::size_t n_new = n_old + n_edges;
+
+    // Incident neighbors & incident crease neighbors per old vertex.
+    std::vector<std::vector<std::int64_t>> adj(n_old);
+    std::vector<std::vector<std::int64_t>> crease_adj(n_old);
+    std::vector<bool> non_manifold_vert(n_old, false);
+    for (const auto& e : edges) {
+        adj[static_cast<std::size_t>(e.mLo)].push_back(e.mHi);
+        adj[static_cast<std::size_t>(e.mHi)].push_back(e.mLo);
+        if (e.mFaces.size() >= 3) {
+            non_manifold_vert[static_cast<std::size_t>(e.mLo)] = true;
+            non_manifold_vert[static_cast<std::size_t>(e.mHi)] = true;
+        }
+        if (e.mIsCrease) {
+            crease_adj[static_cast<std::size_t>(e.mLo)].push_back(e.mHi);
+            crease_adj[static_cast<std::size_t>(e.mHi)].push_back(e.mLo);
+        }
+    }
+
+    auto apply_stencil = [&](const std::vector<double>& rSrc, std::size_t width) {
+        std::vector<double> dst(n_new * width, 0.0);
+        // 1. Old vertices
+        for (std::size_t v = 0; v < n_old; ++v) {
+            const auto& cadj = crease_adj[v];
+            if (non_manifold_vert[v] || cadj.size() == 1 || cadj.size() >= 3) {
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[v * width + c] = rSrc[v * width + c];
+            } else if (cadj.size() == 2) {
+                const std::size_t a = static_cast<std::size_t>(cadj[0]);
+                const std::size_t b = static_cast<std::size_t>(cadj[1]);
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[v * width + c] =
+                        0.75 * rSrc[v * width + c] +
+                        0.125 * (rSrc[a * width + c] + rSrc[b * width + c]);
+            } else {
+                const auto& nb = adj[v];
+                const std::size_t k = nb.size();
+                if (k == 0) {
+                    for (std::size_t c = 0; c < width; ++c)
+                        dst[v * width + c] = rSrc[v * width + c];
+                } else {
+                    const double cn = 0.375 + 0.25 * std::cos(2.0 * kSubdPi / static_cast<double>(k));
+                    const double beta = (0.625 - cn * cn) / static_cast<double>(k);
+                    const double self_w = 1.0 - static_cast<double>(k) * beta;
+                    for (std::size_t c = 0; c < width; ++c) {
+                        double sum = 0.0;
+                        for (std::int64_t u : nb)
+                            sum += rSrc[static_cast<std::size_t>(u) * width + c];
+                        dst[v * width + c] = self_w * rSrc[v * width + c] + beta * sum;
+                    }
+                }
+            }
+        }
+        // 2. Edge points
+        for (std::size_t ei = 0; ei < n_edges; ++ei) {
+            const auto& e = edges[ei];
+            const std::size_t out_v = n_old + ei;
+            const std::size_t u0 = static_cast<std::size_t>(e.mLo);
+            const std::size_t u1 = static_cast<std::size_t>(e.mHi);
+            if (e.mIsCrease || e.mOppVerts.size() != 2) {
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[out_v * width + c] = 0.5 * (rSrc[u0 * width + c] + rSrc[u1 * width + c]);
+            } else {
+                const std::size_t w0 = static_cast<std::size_t>(e.mOppVerts[0]);
+                const std::size_t w1 = static_cast<std::size_t>(e.mOppVerts[1]);
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[out_v * width + c] =
+                        0.375 * (rSrc[u0 * width + c] + rSrc[u1 * width + c]) +
+                        0.125 * (rSrc[w0 * width + c] + rSrc[w1 * width + c]);
+            }
+        }
+        return dst;
+    };
+
+    rPts = apply_stencil(rPts, 3);
+    for (auto& ff : rFloatFields)
+        ff.mData = apply_stencil(ff.mData, ff.mWidth);
+    for (auto& of : rOtherFields) {
+        std::vector<std::uint8_t> dst(n_new * of.mRowBytes, 0);
+        if (n_old > 0 && of.mRowBytes > 0)
+            std::memcpy(dst.data(), of.mData.data(), n_old * of.mRowBytes);
+        for (std::size_t ei = 0; ei < n_edges; ++ei) {
+            if (of.mRowBytes > 0)
+                std::memcpy(dst.data() + (n_old + ei) * of.mRowBytes,
+                            of.mData.data() + static_cast<std::size_t>(edges[ei].mLo) * of.mRowBytes,
+                            of.mRowBytes);
+        }
+        of.mData = std::move(dst);
+    }
+
+    // Propagate creases to the two half-edges of every crease edge.
+    std::unordered_set<std::uint64_t> next_creases;
+    for (std::size_t ei = 0; ei < n_edges; ++ei) {
+        if (edges[ei].mIsCrease) {
+            const std::int64_t mid = static_cast<std::int64_t>(n_old + ei);
+            next_creases.insert(subd_edge_key(edges[ei].mLo, mid));
+            next_creases.insert(subd_edge_key(mid, edges[ei].mHi));
+        }
+    }
+    rCreases = std::move(next_creases);
+
+    std::vector<std::vector<std::int64_t>> next_faces;
+    std::vector<std::int64_t> next_parents;
+    next_faces.reserve(rFaces.size() * 4);
+    next_parents.reserve(rFaces.size() * 4);
+    for (std::size_t f = 0; f < rFaces.size(); ++f) {
+        const std::int64_t a = rFaces[f][0];
+        const std::int64_t b = rFaces[f][1];
+        const std::int64_t c = rFaces[f][2];
+        const std::int64_t eab = static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(a, b)));
+        const std::int64_t ebc = static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(b, c)));
+        const std::int64_t eca = static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(c, a)));
+        const std::int64_t par = rParents[f];
+        next_faces.push_back({a, eab, eca});
+        next_faces.push_back({b, ebc, eab});
+        next_faces.push_back({c, eca, ebc});
+        next_faces.push_back({eab, ebc, eca});
+        for (int k = 0; k < 4; ++k)
+            next_parents.push_back(par);
+    }
+    rFaces = std::move(next_faces);
+    rParents = std::move(next_parents);
+}
+
+void subd_step_catmull_clark(std::vector<double>& rPts,
+                             std::vector<std::vector<std::int64_t>>& rFaces,
+                             std::vector<std::int64_t>& rParents,
+                             std::unordered_set<std::uint64_t>& rCreases,
+                             std::vector<SubdFloatField>& rFloatFields,
+                             std::vector<SubdOtherField>& rOtherFields, bool PreserveBoundary,
+                             std::int64_t& rNumCrease, std::int64_t& rNumBoundary) {
+    const std::size_t n_old = rPts.size() / 3;
+    const std::size_t n_faces = rFaces.size();
+    std::unordered_map<std::uint64_t, std::size_t> edge_map;
+    std::vector<SubdEdgeInfo> edges = subd_build_edges(rFaces, rCreases, PreserveBoundary, edge_map,
+                                                       rNumCrease, rNumBoundary);
+    const std::size_t n_edges = edges.size();
+    const std::size_t face_base = n_old;
+    const std::size_t edge_base = n_old + n_faces;
+    const std::size_t n_new = n_old + n_faces + n_edges;
+
+    std::vector<std::vector<std::size_t>> v_faces(n_old);
+    for (std::size_t f = 0; f < n_faces; ++f) {
+        for (std::int64_t v : rFaces[f])
+            v_faces[static_cast<std::size_t>(v)].push_back(f);
+    }
+    std::vector<std::vector<std::int64_t>> adj(n_old);
+    std::vector<std::vector<std::int64_t>> crease_adj(n_old);
+    std::vector<bool> non_manifold_vert(n_old, false);
+    for (const auto& e : edges) {
+        adj[static_cast<std::size_t>(e.mLo)].push_back(e.mHi);
+        adj[static_cast<std::size_t>(e.mHi)].push_back(e.mLo);
+        if (e.mFaces.size() >= 3) {
+            non_manifold_vert[static_cast<std::size_t>(e.mLo)] = true;
+            non_manifold_vert[static_cast<std::size_t>(e.mHi)] = true;
+        }
+        if (e.mIsCrease) {
+            crease_adj[static_cast<std::size_t>(e.mLo)].push_back(e.mHi);
+            crease_adj[static_cast<std::size_t>(e.mHi)].push_back(e.mLo);
+        }
+    }
+
+    auto apply_stencil = [&](const std::vector<double>& rSrc, std::size_t width) {
+        std::vector<double> dst(n_new * width, 0.0);
+        // 1. Face points
+        for (std::size_t f = 0; f < n_faces; ++f) {
+            const auto& ring = rFaces[f];
+            const double inv = 1.0 / static_cast<double>(ring.size());
+            for (std::int64_t v : ring) {
+                const std::size_t sv = static_cast<std::size_t>(v);
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[(face_base + f) * width + c] += rSrc[sv * width + c] * inv;
+            }
+        }
+        // 2. Edge points
+        for (std::size_t ei = 0; ei < n_edges; ++ei) {
+            const auto& e = edges[ei];
+            const std::size_t u0 = static_cast<std::size_t>(e.mLo);
+            const std::size_t u1 = static_cast<std::size_t>(e.mHi);
+            const std::size_t out_v = edge_base + ei;
+            if (e.mIsCrease || e.mFaces.size() != 2) {
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[out_v * width + c] = 0.5 * (rSrc[u0 * width + c] + rSrc[u1 * width + c]);
+            } else {
+                const std::size_t f0 = face_base + static_cast<std::size_t>(e.mFaces[0]);
+                const std::size_t f1 = face_base + static_cast<std::size_t>(e.mFaces[1]);
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[out_v * width + c] =
+                        0.25 * (rSrc[u0 * width + c] + rSrc[u1 * width + c] +
+                                dst[f0 * width + c] + dst[f1 * width + c]);
+            }
+        }
+        // 3. Old vertices
+        for (std::size_t v = 0; v < n_old; ++v) {
+            const auto& cadj = crease_adj[v];
+            if (non_manifold_vert[v] || cadj.size() == 1 || cadj.size() >= 3) {
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[v * width + c] = rSrc[v * width + c];
+            } else if (cadj.size() == 2) {
+                const std::size_t a = static_cast<std::size_t>(cadj[0]);
+                const std::size_t b = static_cast<std::size_t>(cadj[1]);
+                for (std::size_t c = 0; c < width; ++c)
+                    dst[v * width + c] =
+                        0.75 * rSrc[v * width + c] +
+                        0.125 * (rSrc[a * width + c] + rSrc[b * width + c]);
+            } else {
+                const std::size_t nf = v_faces[v].size();
+                const std::size_t ne = adj[v].size();
+                if (nf == 0 || ne == 0 || nf != ne) {
+                    for (std::size_t c = 0; c < width; ++c)
+                        dst[v * width + c] = rSrc[v * width + c];
+                } else {
+                    const double n = static_cast<double>(nf);
+                    for (std::size_t c = 0; c < width; ++c) {
+                        double f_avg = 0.0;
+                        for (std::size_t f : v_faces[v])
+                            f_avg += dst[(face_base + f) * width + c];
+                        f_avg /= n;
+                        double r_avg = 0.0;
+                        for (std::int64_t u : adj[v])
+                            r_avg += 0.5 * (rSrc[v * width + c] +
+                                            rSrc[static_cast<std::size_t>(u) * width + c]);
+                        r_avg /= n;
+                        dst[v * width + c] = (f_avg + 2.0 * r_avg + (n - 3.0) * rSrc[v * width + c]) / n;
+                    }
+                }
+            }
+        }
+        return dst;
+    };
+
+    rPts = apply_stencil(rPts, 3);
+    for (auto& ff : rFloatFields)
+        ff.mData = apply_stencil(ff.mData, ff.mWidth);
+    for (auto& of : rOtherFields) {
+        std::vector<std::uint8_t> dst(n_new * of.mRowBytes, 0);
+        if (n_old > 0 && of.mRowBytes > 0)
+            std::memcpy(dst.data(), of.mData.data(), n_old * of.mRowBytes);
+        for (std::size_t f = 0; f < n_faces; ++f) {
+            if (of.mRowBytes > 0 && !rFaces[f].empty())
+                std::memcpy(dst.data() + (face_base + f) * of.mRowBytes,
+                            of.mData.data() + static_cast<std::size_t>(rFaces[f][0]) * of.mRowBytes,
+                            of.mRowBytes);
+        }
+        for (std::size_t ei = 0; ei < n_edges; ++ei) {
+            if (of.mRowBytes > 0)
+                std::memcpy(dst.data() + (edge_base + ei) * of.mRowBytes,
+                            of.mData.data() + static_cast<std::size_t>(edges[ei].mLo) * of.mRowBytes,
+                            of.mRowBytes);
+        }
+        of.mData = std::move(dst);
+    }
+
+    std::unordered_set<std::uint64_t> next_creases;
+    for (std::size_t ei = 0; ei < n_edges; ++ei) {
+        if (edges[ei].mIsCrease) {
+            const std::int64_t mid = static_cast<std::int64_t>(edge_base + ei);
+            next_creases.insert(subd_edge_key(edges[ei].mLo, mid));
+            next_creases.insert(subd_edge_key(mid, edges[ei].mHi));
+        }
+    }
+    rCreases = std::move(next_creases);
+
+    std::vector<std::vector<std::int64_t>> next_faces;
+    std::vector<std::int64_t> next_parents;
+    for (std::size_t f = 0; f < n_faces; ++f) {
+        const auto& ring = rFaces[f];
+        const std::size_t m = ring.size();
+        const std::int64_t fp = static_cast<std::int64_t>(face_base + f);
+        const std::int64_t par = rParents[f];
+        for (std::size_t k = 0; k < m; ++k) {
+            const std::int64_t vk = ring[k];
+            const std::int64_t v_next = ring[(k + 1) % m];
+            const std::int64_t v_prev = ring[(k + m - 1) % m];
+            const std::int64_t e_next =
+                static_cast<std::int64_t>(edge_base + edge_map.at(subd_edge_key(vk, v_next)));
+            const std::int64_t e_prev =
+                static_cast<std::int64_t>(edge_base + edge_map.at(subd_edge_key(v_prev, vk)));
+            next_faces.push_back({vk, e_next, fp, e_prev});
+            next_parents.push_back(par);
+        }
+    }
+    rFaces = std::move(next_faces);
+    rParents = std::move(next_parents);
+}
+
+}  // namespace
+
+SubdivisionScheme subdivision_scheme_from_name(const std::string& rName) {
+    const std::string low = subd_lower(rName);
+    if (low == "loop")
+        return SubdivisionScheme::Loop;
+    if (low == "catmull_clark" || low == "catmull-clark" || low == "catmullclark" || low == "cc")
+        return SubdivisionScheme::CatmullClark;
+    throw std::invalid_argument(std::string(kSubdPrefix) + "unknown scheme '" + rName +
+                                "' (expected 'loop' or 'catmull_clark')");
+}
+
+SubdivideSurfaceResult subdivide_surface(const Mesh& rMesh,
+                                         const SubdivideSurfaceOptions& rOptions) {
+    if (rOptions.mLevels < 0)
+        throw std::invalid_argument(std::string(kSubdPrefix) + "levels must be >= 0");
+    if (!std::isfinite(rOptions.mCreaseAngle))
+        throw std::invalid_argument(std::string(kSubdPrefix) + "crease_angle must be finite");
+
+    SubdivideSurfaceResult res;
+    if (rOptions.mLevels == 0) {
+        res.mMesh = detail::clone_mesh(rMesh);
+        return res;
+    }
+
+    const std::size_t n_pts_in = rMesh.NumPoints();
+    std::size_t total_cells = 0;
+    for (const auto cb : rMesh.CellRange())
+        total_cells += cb.NumCells();
+
+    std::vector<std::uint8_t> selected(total_cells, 1);
+    detail::SurfaceRings rings = detail::surface_rings(rMesh, selected, kSubdPrefix);
+    if (rings.NumFaces() == 0)
+        throw std::invalid_argument(std::string(kSubdPrefix) +
+                                    "mesh contains no 2-D surface cells");
+
+    std::vector<std::vector<std::int64_t>> faces(rings.NumFaces());
+    std::vector<std::int64_t> parents(rings.NumFaces());
+    for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+        const std::int64_t s0 = rings.mStart[f];
+        const std::int64_t s1 = rings.mStart[f + 1];
+        const std::size_t m = static_cast<std::size_t>(s1 - s0);
+        if (rOptions.mScheme == SubdivisionScheme::Loop && m != 3)
+            throw std::invalid_argument(
+                std::string(kSubdPrefix) +
+                "Loop subdivision requires triangles only (use 'catmull_clark' or 'simplexify' first)");
+        faces[f].assign(rings.mNodes.begin() + s0, rings.mNodes.begin() + s1);
+        parents[f] = rings.mCell[f];
+    }
+
+    std::vector<double> pts = detail::surface_xyz(rMesh);
+
+    // Initial creases via shared detail::crease_edges (takes per-face unit normals).
+    std::unordered_set<std::uint64_t> creases;
+    if (rOptions.mCreaseAngle > 0.0 && rOptions.mCreaseAngle < 180.0) {
+        std::vector<double> face_normals(faces.size() * 3, 0.0);
+        for (std::size_t f = 0; f < faces.size(); ++f) {
+            const auto& ring = faces[f];
+            const std::size_t m = ring.size();
+            double nx = 0.0, ny = 0.0, nz = 0.0;
+            for (std::size_t k = 0; k < m; ++k) {
+                const std::size_t i0 = static_cast<std::size_t>(ring[k]);
+                const std::size_t i1 = static_cast<std::size_t>(ring[(k + 1) % m]);
+                const double x0 = pts[3 * i0 + 0], y0 = pts[3 * i0 + 1], z0 = pts[3 * i0 + 2];
+                const double x1 = pts[3 * i1 + 0], y1 = pts[3 * i1 + 1], z1 = pts[3 * i1 + 2];
+                nx += (y0 - y1) * (z0 + z1);
+                ny += (z0 - z1) * (x0 + x1);
+                nz += (x0 - x1) * (y0 + y1);
+            }
+            const double len = std::sqrt(nx * nx + ny * ny + nz * nz);
+            if (len > 0.0) {
+                face_normals[3 * f + 0] = nx / len;
+                face_normals[3 * f + 1] = ny / len;
+                face_normals[3 * f + 2] = nz / len;
+            }
+        }
+        const std::vector<detail::CreaseEdge> ce = detail::crease_edges(
+            rings.mStart, rings.mNodes, face_normals, rOptions.mCreaseAngle);
+        for (const auto& e : ce) {
+            if (e.IsCrease())
+                creases.insert(subd_edge_key(e.mLo, e.mHi));
+        }
+    }
+
+    // Extract point_data for interpolation / inheritance.
+    std::vector<SubdFloatField> float_fields;
+    std::vector<SubdOtherField> other_fields;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& arr = rMesh.PointData(name);
+        if (arr.Ndim() == 0 || arr.Shape()[0] != n_pts_in)
+            continue;
+        std::vector<std::size_t> tail(arr.Shape().begin() + 1, arr.Shape().end());
+        std::size_t width = 1;
+        for (std::size_t d : tail)
+            width *= d;
+        if (rOptions.mInterpolatePointData &&
+            (arr.Dtype() == DType::Float64 || arr.Dtype() == DType::Float32)) {
+            SubdFloatField ff;
+            ff.mName = name;
+            ff.mOrigDtype = arr.Dtype();
+            ff.mTailShape = std::move(tail);
+            ff.mWidth = width;
+            ff.mData.resize(n_pts_in * width);
+            if (arr.Dtype() == DType::Float64) {
+                std::memcpy(ff.mData.data(), arr.As<double>(), n_pts_in * width * sizeof(double));
+            } else {
+                const float* sp = arr.As<float>();
+                for (std::size_t i = 0; i < n_pts_in * width; ++i)
+                    ff.mData[i] = static_cast<double>(sp[i]);
+            }
+            float_fields.push_back(std::move(ff));
+        } else {
+            SubdOtherField of;
+            of.mName = name;
+            of.mDtype = arr.Dtype();
+            of.mTailShape = std::move(tail);
+            of.mRowBytes = width * dtype_size(arr.Dtype());
+            of.mData.resize(n_pts_in * of.mRowBytes);
+            if (n_pts_in * of.mRowBytes > 0)
+                std::memcpy(of.mData.data(), arr.Data(), n_pts_in * of.mRowBytes);
+            other_fields.push_back(std::move(of));
+        }
+    }
+
+    std::int64_t n_crease = 0;
+    std::int64_t n_bnd = 0;
+    for (int lvl = 0; lvl < rOptions.mLevels; ++lvl) {
+        if (rOptions.mScheme == SubdivisionScheme::Loop) {
+            subd_step_loop(pts, faces, parents, creases, float_fields, other_fields,
+                           rOptions.mPreserveBoundary, n_crease, n_bnd);
+        } else {
+            subd_step_catmull_clark(pts, faces, parents, creases, float_fields, other_fields,
+                                    rOptions.mPreserveBoundary, n_crease, n_bnd);
+        }
+    }
+    res.mNumCreaseEdges = n_crease;
+    res.mNumBoundaryEdges = n_bnd;
+
+    // Assemble output Mesh.
+    const std::size_t n_out_pts = pts.size() / 3;
+    const std::size_t out_dim = rMesh.PointDim() == 2 ? 2 : 3;
+    NDArray out_pts = NDArray::Uninit(DType::Float64, {n_out_pts, out_dim});
+    auto* op = out_pts.As<double>();
+    for (std::size_t i = 0; i < n_out_pts; ++i) {
+        op[i * out_dim + 0] = pts[3 * i + 0];
+        op[i * out_dim + 1] = pts[3 * i + 1];
+        if (out_dim == 3)
+            op[i * out_dim + 2] = pts[3 * i + 2];
+    }
+
+    Mesh out;
+    out.AssignPoints(std::move(out_pts));
+
+    const std::size_t n_out_faces = faces.size();
+    const std::size_t k_nodes = rOptions.mScheme == SubdivisionScheme::Loop ? 3 : 4;
+    const char* cell_type = rOptions.mScheme == SubdivisionScheme::Loop ? "triangle" : "quad";
+    NDArray conn = NDArray::Uninit(DType::Int64, {n_out_faces, k_nodes});
+    auto* cp = conn.As<std::int64_t>();
+    for (std::size_t f = 0; f < n_out_faces; ++f) {
+        for (std::size_t k = 0; k < k_nodes; ++k)
+            cp[f * k_nodes + k] = faces[f][k];
+    }
+    out.AddCellBlock(cell_type, std::move(conn));
+
+    // Attach point_data.
+    for (const auto& ff : float_fields) {
+        std::vector<std::size_t> shape = {n_out_pts};
+        shape.insert(shape.end(), ff.mTailShape.begin(), ff.mTailShape.end());
+        NDArray arr = NDArray::Uninit(ff.mOrigDtype, shape);
+        if (ff.mOrigDtype == DType::Float64) {
+            std::memcpy(arr.As<double>(), ff.mData.data(), n_out_pts * ff.mWidth * sizeof(double));
+        } else {
+            float* dp = arr.As<float>();
+            for (std::size_t i = 0; i < n_out_pts * ff.mWidth; ++i)
+                dp[i] = static_cast<float>(ff.mData[i]);
+        }
+        out.AddPointData(ff.mName, std::move(arr));
+    }
+    for (const auto& of : other_fields) {
+        std::vector<std::size_t> shape = {n_out_pts};
+        shape.insert(shape.end(), of.mTailShape.begin(), of.mTailShape.end());
+        NDArray arr = NDArray::Uninit(of.mDtype, shape);
+        if (n_out_pts * of.mRowBytes > 0)
+            std::memcpy(arr.Data(), of.mData.data(), n_out_pts * of.mRowBytes);
+        out.AddPointData(of.mName, std::move(arr));
+    }
+
+    // Replicate cell_data from parent cells.
+    if (rMesh.NumCellBlocks() > 0) {
+        std::vector<std::size_t> blk_base(rMesh.NumCellBlocks() + 1, 0);
+        std::size_t bi = 0;
+        for (const auto cb : rMesh.CellRange()) {
+            blk_base[bi + 1] = blk_base[bi] + cb.NumCells();
+            ++bi;
+        }
+        for (const std::string& name : rMesh.CellDataNames()) {
+            if (rMesh.CellDataNumBlocks(name) != rMesh.NumCellBlocks())
+                continue;
+            const NDArray& first = rMesh.CellData(name, 0);
+            std::vector<std::size_t> shape = {n_out_faces};
+            if (first.Ndim() > 1)
+                shape.insert(shape.end(), first.Shape().begin() + 1, first.Shape().end());
+            std::size_t width = 1;
+            for (std::size_t d = 1; d < shape.size(); ++d)
+                width *= shape[d];
+            const std::size_t row_bytes = width * dtype_size(first.Dtype());
+            NDArray dst = NDArray::Uninit(first.Dtype(), shape);
+            std::byte* dp = dst.Data();
+            bool ok = true;
+            for (std::size_t f = 0; f < n_out_faces; ++f) {
+                const std::size_t g = static_cast<std::size_t>(parents[f]);
+                const auto it = std::upper_bound(blk_base.begin(), blk_base.end(), g);
+                const std::size_t b = static_cast<std::size_t>((it - blk_base.begin()) - 1);
+                const std::size_t loc = g - blk_base[b];
+                const NDArray& src = rMesh.CellData(name, b);
+                if (src.Dtype() != first.Dtype()) {
+                    ok = false;
+                    break;
+                }
+                if (row_bytes > 0)
+                    std::memcpy(dp + f * row_bytes, src.Data() + loc * row_bytes, row_bytes);
+            }
+            if (ok)
+                out.AddCellData(name, {std::move(dst)});
+        }
+    }
+
+    if (rOptions.mRecordParentIds) {
+        NDArray par = NDArray::Uninit(DType::Int64, {n_out_faces});
+        std::copy(parents.begin(), parents.end(), par.As<std::int64_t>());
+        out.AddCellData(kSubdivideParentCellName, {std::move(par)});
+    }
+
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    // Remap Point and Cell regions.
+    std::vector<std::vector<std::int64_t>> parent_to_children(total_cells);
+    for (std::size_t f = 0; f < n_out_faces; ++f)
+        parent_to_children[static_cast<std::size_t>(parents[f])].push_back(
+            static_cast<std::int64_t>(f));
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& reg = rMesh.Region(r);
+        if (reg.mKind == RegionKind::Point) {
+            out.AddRegion(Region(reg.mName, reg.mKind, reg.mDim, reg.mTag,
+                                 detail::data_owned_copy(reg.mEntries)));
+        } else if (reg.mKind == RegionKind::Cell) {
+            std::vector<std::int64_t> mapped;
+            const std::int64_t* ents = reg.Entries();
+            for (std::size_t e = 0; e < reg.NumEntries(); ++e) {
+                const std::int64_t c = ents[e];
+                if (c >= 0 && static_cast<std::size_t>(c) < total_cells) {
+                    const auto& ch = parent_to_children[static_cast<std::size_t>(c)];
+                    mapped.insert(mapped.end(), ch.begin(), ch.end());
+                }
+            }
+            NDArray arr = NDArray::Uninit(DType::Int64, {mapped.size()});
+            std::copy(mapped.begin(), mapped.end(), arr.As<std::int64_t>());
+            out.AddRegion(Region(reg.mName, RegionKind::Cell, reg.mDim, reg.mTag, std::move(arr)));
+        }
+    }
+
+    res.mMesh = std::move(out);
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/subdivide_surface.cpp =====
 // ===== begin src/cpp/src/operations/subsample_points.cpp =====
 #include <algorithm>
 #include <array>
@@ -330653,6 +332084,8 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 // ===== end src/cpp/src/operations/transform.cpp =====
 // ===== begin src/cpp/src/operations/undo_green.cpp =====
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -330660,6 +332093,7 @@ Mesh transform(const Mesh& rMesh, const AffineTransform& rXform, bool rotate_vec
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -331118,6 +332552,316 @@ UndoGreenResult undo_green(const Mesh& rCoarse, const Mesh& rFine) {
     res.mMesh = std::move(out);
     res.mCellMaps = std::move(cell_maps);
     res.mNumGroupsUndone = static_cast<std::int64_t>(num_groups);
+    res.mNumCellsRemoved = num_removed;
+
+    detail::RegionRemap rmap;
+    rmap.mCellMapKind = detail::CellMapKind::Direct;
+    rmap.pCellMaps = &res.mCellMaps;
+    rmap.mOpName = "undo_green";
+    detail::remap_regions(rFine, res.mMesh, rmap);
+
+    return res;
+}
+
+namespace {
+
+std::size_t ug_red_child_count(const std::string& rType) {
+    if (rType == "line")
+        return 2;
+    if (rType == "triangle" || rType == "quad")
+        return 4;
+    if (rType == "tetra" || rType == "wedge" || rType == "hexahedron")
+        return 8;
+    return 0;
+}
+
+std::array<double, 3> ug_read_pt(const NDArray& rPts, std::size_t idx, std::size_t dim) {
+    std::array<double, 3> p{0.0, 0.0, 0.0};
+    for (std::size_t d = 0; d < std::min<std::size_t>(dim, 3); ++d)
+        p[d] = detail::read_double(rPts, idx * dim + d);
+    return p;
+}
+
+double ug_tet_signed_vol(const NDArray& rPts, std::size_t dim,
+                         const std::vector<std::int64_t>& rN) {
+    const auto a = ug_read_pt(rPts, static_cast<std::size_t>(rN[0]), dim);
+    const auto b = ug_read_pt(rPts, static_cast<std::size_t>(rN[1]), dim);
+    const auto c = ug_read_pt(rPts, static_cast<std::size_t>(rN[2]), dim);
+    const auto d = ug_read_pt(rPts, static_cast<std::size_t>(rN[3]), dim);
+    const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    const double wx = d[0] - a[0], wy = d[1] - a[1], wz = d[2] - a[2];
+    return ux * (vy * wz - vz * wy) - uy * (vx * wz - vz * wx) + uz * (vx * wy - vy * wx);
+}
+
+std::array<double, 3> ug_tri_normal(const NDArray& rPts, std::size_t dim, std::int64_t i0,
+                                    std::int64_t i1, std::int64_t i2) {
+    const auto a = ug_read_pt(rPts, static_cast<std::size_t>(i0), dim);
+    const auto b = ug_read_pt(rPts, static_cast<std::size_t>(i1), dim);
+    const auto c = ug_read_pt(rPts, static_cast<std::size_t>(i2), dim);
+    const double ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const double vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    return {uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx};
+}
+
+}  // namespace
+
+UndoGreenResult undo_green(const Mesh& rFine) {
+    if (!rFine.HasPointData(kRefineEntityName))
+        throw std::invalid_argument(
+            std::string(kUgPrefix) + "single-mesh undo_green requires '" + kRefineEntityName +
+            "' point_data; run refine(..., record_hierarchy=True, record_levels=True) first");
+    const NDArray& entity_arr = rFine.PointData(kRefineEntityName);
+    const std::size_t npts = rFine.NumPoints();
+    if (detail::rows(entity_arr) != npts || (npts != 0 && entity_arr.Size() / npts != 4))
+        throw std::invalid_argument(std::string(kUgPrefix) + "'" + kRefineEntityName +
+                                    "' must have shape (num_points, 4)");
+    std::vector<std::array<std::int64_t, 4>> entity_keys(npts);
+    for (std::size_t p = 0; p < npts; ++p)
+        for (std::size_t k = 0; k < 4; ++k)
+            entity_keys[p][k] = detail::read_int(entity_arr, p * 4 + k);
+
+    const std::vector<std::int64_t> fine_bases = detail::block_bases(rFine);
+    const std::size_t nblocks = rFine.NumCellBlocks();
+    const std::size_t total_fine = static_cast<std::size_t>(fine_bases.back());
+    UgColumn fine_cid(rFine, fine_bases, kRefineCellIdName);
+    UgColumn fine_pid(rFine, fine_bases, kRefineParentIdName);
+    UgColumn fine_lvl(rFine, fine_bases, kRefineLevelName);
+
+    const NDArray& pts = rFine.Points();
+    const std::size_t pdim = rFine.PointDim();
+
+    enum class UgSingleRole : std::uint8_t { Keep = 0, Anchor = 1, Suppressed = 2 };
+    std::vector<UgSingleRole> role(total_fine, UgSingleRole::Keep);
+    std::vector<std::vector<std::int64_t>> anchor_corners(total_fine);
+    std::vector<std::int64_t> anchor_pid(total_fine, -1);
+    std::vector<std::size_t> group_anchor(total_fine, 0);
+    std::int64_t num_groups = 0;
+    std::int64_t num_removed = 0;
+
+    std::size_t bi = 0;
+    for (const auto cb : rFine.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        const std::size_t red_count = ug_red_child_count(cb.Type());
+        const std::size_t nc = cb.IsRagged() ? 0 : cb.NodesPerCell();
+        if (red_count <= 2 || nc == 0 || ncells == 0) {
+            ++bi;
+            continue;
+        }
+        // Group cells in this block by parent_id (where parent_id != cell_id).
+        std::unordered_map<std::int64_t, std::vector<std::size_t>> groups;
+        for (std::size_t r = 0; r < ncells; ++r) {
+            const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+            const std::int64_t pid = fine_pid.At(g);
+            const std::int64_t cid = fine_cid.At(g);
+            if (pid != cid)
+                groups[pid].push_back(r);
+        }
+        const NDArray& sconn = cb.Conn();
+        for (const auto& [pid, rows] : groups) {
+            if (rows.size() <= 1 || rows.size() >= red_count)
+                continue;
+            // Collect all distinct vertices used by this green sibling group.
+            std::vector<std::int64_t> verts;
+            for (std::size_t r : rows) {
+                for (std::size_t k = 0; k < nc; ++k)
+                    verts.push_back(detail::read_int(sconn, r * nc + k));
+            }
+            std::sort(verts.begin(), verts.end());
+            verts.erase(std::unique(verts.begin(), verts.end()), verts.end());
+
+            // A vertex is a mid-entity node of THIS split iff its refine:entity has >= 2 valid
+            // parent corners AND every valid corner in refine:entity is present in `verts`.
+            auto in_verts = [&](std::int64_t v) {
+                return std::binary_search(verts.begin(), verts.end(), v);
+            };
+            std::vector<std::int64_t> corners;
+            for (std::int64_t v : verts) {
+                bool is_mid = false;
+                if (v >= 0 && static_cast<std::size_t>(v) < npts) {
+                    const auto& ek = entity_keys[static_cast<std::size_t>(v)];
+                    int valid = 0;
+                    bool all_in = true;
+                    for (int k = 0; k < 4; ++k) {
+                        if (ek[k] >= 0) {
+                            ++valid;
+                            if (!in_verts(ek[k]))
+                                all_in = false;
+                        }
+                    }
+                    if (valid >= 2 && all_in)
+                        is_mid = true;
+                }
+                if (!is_mid)
+                    corners.push_back(v);
+            }
+            if (corners.size() != nc)
+                continue;
+
+            // Orient corners to match child 0's orientation.
+            const std::size_t r0 = rows[0];
+            if (cb.Type() == "triangle") {
+                const auto n0 = ug_tri_normal(pts, pdim, detail::read_int(sconn, r0 * nc + 0),
+                                              detail::read_int(sconn, r0 * nc + 1),
+                                              detail::read_int(sconn, r0 * nc + 2));
+                const auto np = ug_tri_normal(pts, pdim, corners[0], corners[1], corners[2]);
+                if (n0[0] * np[0] + n0[1] * np[1] + n0[2] * np[2] < 0.0)
+                    std::swap(corners[1], corners[2]);
+            } else if (cb.Type() == "tetra") {
+                std::vector<std::int64_t> c0 = {detail::read_int(sconn, r0 * nc + 0),
+                                                detail::read_int(sconn, r0 * nc + 1),
+                                                detail::read_int(sconn, r0 * nc + 2),
+                                                detail::read_int(sconn, r0 * nc + 3)};
+                const double v0 = ug_tet_signed_vol(pts, pdim, c0);
+                const double vp = ug_tet_signed_vol(pts, pdim, corners);
+                if (v0 * vp < 0.0)
+                    std::swap(corners[2], corners[3]);
+            } else if (cb.Type() == "quad") {
+                // Order 4 corners cyclically around their centroid using child 0's normal.
+                const auto n0 = ug_tri_normal(pts, pdim, detail::read_int(sconn, r0 * nc + 0),
+                                              detail::read_int(sconn, r0 * nc + 1),
+                                              detail::read_int(sconn, r0 * nc + 2));
+                std::array<double, 3> ctr{0.0, 0.0, 0.0};
+                for (std::int64_t v : corners) {
+                    const auto p = ug_read_pt(pts, static_cast<std::size_t>(v), pdim);
+                    ctr[0] += p[0] * 0.25;
+                    ctr[1] += p[1] * 0.25;
+                    ctr[2] += p[2] * 0.25;
+                }
+                const auto p0 = ug_read_pt(pts, static_cast<std::size_t>(corners[0]), pdim);
+                std::array<double, 3> e1{p0[0] - ctr[0], p0[1] - ctr[1], p0[2] - ctr[2]};
+                std::array<double, 3> e2{n0[1] * e1[2] - n0[2] * e1[1],
+                                         n0[2] * e1[0] - n0[0] * e1[2],
+                                         n0[0] * e1[1] - n0[1] * e1[0]};
+                std::sort(corners.begin(), corners.end(), [&](std::int64_t a, std::int64_t b) {
+                    const auto pa = ug_read_pt(pts, static_cast<std::size_t>(a), pdim);
+                    const auto pb = ug_read_pt(pts, static_cast<std::size_t>(b), pdim);
+                    const double ax = (pa[0] - ctr[0]) * e1[0] + (pa[1] - ctr[1]) * e1[1] +
+                                      (pa[2] - ctr[2]) * e1[2];
+                    const double ay = (pa[0] - ctr[0]) * e2[0] + (pa[1] - ctr[1]) * e2[1] +
+                                      (pa[2] - ctr[2]) * e2[2];
+                    const double bx = (pb[0] - ctr[0]) * e1[0] + (pb[1] - ctr[1]) * e1[1] +
+                                      (pb[2] - ctr[2]) * e1[2];
+                    const double by = (pb[0] - ctr[0]) * e2[0] + (pb[1] - ctr[1]) * e2[1] +
+                                      (pb[2] - ctr[2]) * e2[2];
+                    return std::atan2(ay, ax) < std::atan2(by, bx);
+                });
+            }
+
+            const std::size_t anchor_g = static_cast<std::size_t>(fine_bases[bi]) + rows[0];
+            role[anchor_g] = UgSingleRole::Anchor;
+            anchor_corners[anchor_g] = std::move(corners);
+            anchor_pid[anchor_g] = pid;
+            group_anchor[anchor_g] = anchor_g;
+            for (std::size_t k = 1; k < rows.size(); ++k) {
+                const std::size_t sg = static_cast<std::size_t>(fine_bases[bi]) + rows[k];
+                role[sg] = UgSingleRole::Suppressed;
+                group_anchor[sg] = anchor_g;
+            }
+            ++num_groups;
+            num_removed += static_cast<std::int64_t>(rows.size());
+        }
+        ++bi;
+    }
+
+    Mesh out;
+    out.AssignPoints(detail::data_owned_copy(rFine.Points()));
+    for (const std::string& name : rFine.PointDataNames())
+        out.AddPointData(name, detail::data_owned_copy(rFine.PointData(name)));
+    for (const std::string& name : rFine.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rFine.FieldData(name)));
+
+    std::vector<NDArray> cell_maps(nblocks);
+    std::vector<std::size_t> out_ncells(nblocks, 0);
+    std::vector<std::int64_t> anchor_out_row(total_fine, -1);
+
+    bi = 0;
+    for (const auto cb : rFine.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        std::size_t kept = 0;
+        for (std::size_t r = 0; r < ncells; ++r) {
+            const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+            if (role[g] != UgSingleRole::Suppressed)
+                ++kept;
+        }
+        out_ncells[bi] = kept;
+        NDArray cmap = NDArray::Uninit(DType::Int64, {ncells});
+        auto* cm = cmap.As<std::int64_t>();
+        if (cb.IsRagged()) {
+            out.AddCellBlock(cb.Type(), detail::data_owned_copy(cb.Conn()));
+            for (std::size_t r = 0; r < ncells; ++r)
+                cm[r] = static_cast<std::int64_t>(r);
+        } else {
+            const std::size_t nc = cb.NodesPerCell();
+            const NDArray& sconn = cb.Conn();
+            NDArray conn = NDArray::Uninit(DType::Int64, {kept, nc});
+            auto* dst = conn.As<std::int64_t>();
+            std::size_t out_row = 0;
+            for (std::size_t r = 0; r < ncells; ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgSingleRole::Suppressed)
+                    continue;
+                if (role[g] == UgSingleRole::Keep) {
+                    for (std::size_t k = 0; k < nc; ++k)
+                        dst[out_row * nc + k] = detail::read_int(sconn, r * nc + k);
+                } else {
+                    for (std::size_t k = 0; k < nc; ++k)
+                        dst[out_row * nc + k] = anchor_corners[g][k];
+                    anchor_out_row[g] = static_cast<std::int64_t>(out_row);
+                }
+                cm[r] = static_cast<std::int64_t>(out_row);
+                ++out_row;
+            }
+            for (std::size_t r = 0; r < ncells; ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgSingleRole::Suppressed)
+                    cm[r] = anchor_out_row[group_anchor[g]];
+            }
+            out.AddCellBlock(cb.Type(), std::move(conn));
+        }
+        cell_maps[bi] = std::move(cmap);
+        ++bi;
+    }
+
+    // Carry cell_data (restoring cell_id = parent_id on undone anchors).
+    for (const std::string& name : rFine.CellDataNames()) {
+        if (rFine.CellDataNumBlocks(name) != nblocks)
+            continue;
+        std::vector<NDArray> out_blocks(nblocks);
+        bi = 0;
+        for (const auto cb : rFine.CellRange()) {
+            const NDArray& fsrc = rFine.CellData(name, bi);
+            std::vector<std::size_t> shape = fsrc.Shape();
+            shape[0] = out_ncells[bi];
+            NDArray dst = NDArray::Uninit(fsrc.Dtype(), shape);
+            const std::size_t row_bytes =
+                fsrc.Nbytes() / std::max<std::size_t>(1, detail::rows(fsrc));
+            std::byte* p_dst = dst.Data();
+            const std::byte* p_fsrc = fsrc.Data();
+            std::size_t out_row = 0;
+            for (std::size_t r = 0; r < cb.NumCells(); ++r) {
+                const std::size_t g = static_cast<std::size_t>(fine_bases[bi]) + r;
+                if (role[g] == UgSingleRole::Suppressed)
+                    continue;
+                if (role[g] == UgSingleRole::Anchor &&
+                    (name == kRefineCellIdName || name == kRefineParentIdName) &&
+                    fsrc.Dtype() == DType::Int64) {
+                    dst.As<std::int64_t>()[out_row] = anchor_pid[g];
+                } else if (row_bytes > 0) {
+                    std::memcpy(p_dst + out_row * row_bytes, p_fsrc + r * row_bytes, row_bytes);
+                }
+                ++out_row;
+            }
+            out_blocks[bi] = std::move(dst);
+            ++bi;
+        }
+        out.AddCellData(name, std::move(out_blocks));
+    }
+
+    UndoGreenResult res;
+    res.mMesh = std::move(out);
+    res.mCellMaps = std::move(cell_maps);
+    res.mNumGroupsUndone = num_groups;
     res.mNumCellsRemoved = num_removed;
 
     detail::RegionRemap rmap;
@@ -332750,6 +334494,11 @@ struct ProvidersState {
         MIO_GUARDED_BY(mMutex);
     std::vector<std::shared_ptr<const ProfileSolidProvider>> mProfileRetained
         MIO_GUARDED_BY(mMutex);
+    /// The graph partitioner providers (roadmap 9.7.1), by name.
+    std::map<std::string, std::shared_ptr<const GraphPartitionerProvider>> mPartitioners
+        MIO_GUARDED_BY(mMutex);
+    std::vector<std::shared_ptr<const GraphPartitionerProvider>> mPartitionersRetained
+        MIO_GUARDED_BY(mMutex);
     bool mProfileBuiltinDone MIO_GUARDED_BY(mMutex) = false;
     bool mExternalDone MIO_GUARDED_BY(mMutex) = false;
 };
@@ -332908,6 +334657,41 @@ std::vector<std::string> quad_remesher_names() {
     const detail::AnnotatedLockGuard lock(r_state.mMutex);
     std::vector<std::string> names;
     for (const auto& r_entry : r_state.mQuad)
+        names.push_back(r_entry.first);
+    return names;
+}
+
+void add_graph_partitioner(GraphPartitionerProvider Provider) {
+    ProvidersState& r_state = providers_state();
+    auto p_new = std::make_shared<const GraphPartitionerProvider>(std::move(Provider));
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
+    if (t_loading_plugin && r_state.mPartitioners.count(p_new->mName))
+        return;
+    r_state.mPartitionersRetained.push_back(p_new);
+    r_state.mPartitioners[p_new->mName] = std::move(p_new);
+}
+
+void remove_graph_partitioner(const std::string& rName) noexcept {
+    ProvidersState& r_state = providers_state();
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
+    r_state.mPartitioners.erase(rName);
+}
+
+std::shared_ptr<const GraphPartitionerProvider> graph_partitioner(
+    const std::string& rName) noexcept {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
+    const auto it = r_state.mPartitioners.find(rName);
+    return it == r_state.mPartitioners.end() ? nullptr : it->second;
+}
+
+std::vector<std::string> graph_partitioner_names() {
+    register_builtin_providers();
+    ProvidersState& r_state = providers_state();
+    const detail::AnnotatedLockGuard lock(r_state.mMutex);
+    std::vector<std::string> names;
+    for (const auto& r_entry : r_state.mPartitioners)
         names.push_back(r_entry.first);
     return names;
 }

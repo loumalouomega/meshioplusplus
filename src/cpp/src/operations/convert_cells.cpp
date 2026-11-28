@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -53,6 +54,7 @@
 // Project includes (private, not installed)
 #include "../detail/always_inline.hpp"
 #include "../detail/data_plumbing.hpp"
+#include "../detail/reference_element.hpp"
 #include "../detail/simplexify.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -971,6 +973,427 @@ ConvertCellsResult ccells_elevate(const Mesh& rMesh, bool RecordParentIds) {
                                   ccells_identity_point_map(num_points));
 }
 
+// --- arbitrary-order Lagrange elevation & reduction (roadmap 9.5) -----------
+
+struct CcellsLagrangeMeta {
+    lagrange::Shape mShape = lagrange::Shape::Line;
+    int mOrder = 0;
+    bool mIsVtkOrder = false;
+    std::size_t mNumCorners = 0;
+};
+
+std::size_t ccells_shape_corners(lagrange::Shape s) {
+    switch (s) {
+        case lagrange::Shape::Line:
+            return 2;
+        case lagrange::Shape::Triangle:
+            return 3;
+        case lagrange::Shape::Quad:
+            return 4;
+        case lagrange::Shape::Tetra:
+            return 4;
+        case lagrange::Shape::Hexahedron:
+            return 8;
+        case lagrange::Shape::Wedge:
+            return 6;
+    }
+    return 0;
+}
+
+bool ccells_parse_lagrange_meta(const std::string& rType, std::size_t NumNodes,
+                                CcellsLagrangeMeta& rOut) {
+    auto set = [&](lagrange::Shape s, int p, bool vtk) {
+        rOut = {s, p, vtk, ccells_shape_corners(s)};
+        return true;
+    };
+    if (rType == "line")
+        return set(lagrange::Shape::Line, 1, false);
+    if (rType == "triangle")
+        return set(lagrange::Shape::Triangle, 1, false);
+    if (rType == "quad")
+        return set(lagrange::Shape::Quad, 1, false);
+    if (rType == "tetra")
+        return set(lagrange::Shape::Tetra, 1, false);
+    if (rType == "hexahedron")
+        return set(lagrange::Shape::Hexahedron, 1, false);
+    if (rType == "wedge")
+        return set(lagrange::Shape::Wedge, 1, false);
+
+    if (rType == "line3")
+        return set(lagrange::Shape::Line, 2, false);
+    if (rType == "triangle6")
+        return set(lagrange::Shape::Triangle, 2, false);
+    if (rType == "quad9")
+        return set(lagrange::Shape::Quad, 2, false);
+    if (rType == "tetra10")
+        return set(lagrange::Shape::Tetra, 2, false);
+    if (rType == "hexahedron27")
+        return set(lagrange::Shape::Hexahedron, 2, false);
+    if (rType == "wedge18")
+        return set(lagrange::Shape::Wedge, 2, false);
+
+    lagrange::FixedLagrange fl;
+    if (lagrange::fixed_lagrange(rType, fl))
+        return set(fl.mShape, fl.mOrder, false);
+
+    const std::pair<const char*, lagrange::Shape> vtk_types[] = {
+        {"VTK_LAGRANGE_CURVE", lagrange::Shape::Line},
+        {"VTK_LAGRANGE_TRIANGLE", lagrange::Shape::Triangle},
+        {"VTK_LAGRANGE_QUADRILATERAL", lagrange::Shape::Quad},
+        {"VTK_LAGRANGE_TETRAHEDRON", lagrange::Shape::Tetra},
+        {"VTK_LAGRANGE_HEXAHEDRON", lagrange::Shape::Hexahedron},
+        {"VTK_LAGRANGE_WEDGE", lagrange::Shape::Wedge},
+    };
+    for (const auto& [name, shape] : vtk_types) {
+        if (rType == name) {
+            for (int p = 1; p <= 20; ++p) {
+                if (lagrange::num_nodes(shape, p) == NumNodes)
+                    return set(shape, p, true);
+            }
+            return false;
+        }
+    }
+    return false;
+}
+
+std::string ccells_target_lagrange_type(lagrange::Shape s, int q, bool& rUseVtkOrder) {
+    const int max_fixed =
+        (s == lagrange::Shape::Hexahedron || s == lagrange::Shape::Wedge) ? 9 : 10;
+    if (q == 1) {
+        rUseVtkOrder = false;
+        switch (s) {
+            case lagrange::Shape::Line:
+                return "line";
+            case lagrange::Shape::Triangle:
+                return "triangle";
+            case lagrange::Shape::Quad:
+                return "quad";
+            case lagrange::Shape::Tetra:
+                return "tetra";
+            case lagrange::Shape::Hexahedron:
+                return "hexahedron";
+            case lagrange::Shape::Wedge:
+                return "wedge";
+        }
+    }
+    if (q <= max_fixed) {
+        rUseVtkOrder = false;
+        const std::size_t nn = lagrange::num_nodes(s, q);
+        switch (s) {
+            case lagrange::Shape::Line:
+                return "line" + std::to_string(nn);
+            case lagrange::Shape::Triangle:
+                return "triangle" + std::to_string(nn);
+            case lagrange::Shape::Quad:
+                return "quad" + std::to_string(nn);
+            case lagrange::Shape::Tetra:
+                return "tetra" + std::to_string(nn);
+            case lagrange::Shape::Hexahedron:
+                return "hexahedron" + std::to_string(nn);
+            case lagrange::Shape::Wedge:
+                return "wedge" + std::to_string(nn);
+        }
+    }
+    rUseVtkOrder = true;
+    switch (s) {
+        case lagrange::Shape::Line:
+            return "VTK_LAGRANGE_CURVE";
+        case lagrange::Shape::Triangle:
+            return "VTK_LAGRANGE_TRIANGLE";
+        case lagrange::Shape::Quad:
+            return "VTK_LAGRANGE_QUADRILATERAL";
+        case lagrange::Shape::Tetra:
+            return "VTK_LAGRANGE_TETRAHEDRON";
+        case lagrange::Shape::Hexahedron:
+            return "VTK_LAGRANGE_HEXAHEDRON";
+        case lagrange::Shape::Wedge:
+            return "VTK_LAGRANGE_WEDGE";
+    }
+    return "";
+}
+
+std::vector<std::array<int, 3>> ccells_lattice_ijk(lagrange::Shape s, int p, bool vtk_order) {
+    return vtk_order ? lagrange::vtk_lattice(s, p) : lagrange::gmsh_lattice(s, p);
+}
+
+std::vector<std::array<double, 3>> ccells_ijk_to_coords(const std::vector<std::array<int, 3>>& rIjk,
+                                                        int p) {
+    std::vector<std::array<double, 3>> out(rIjk.size());
+    const double inv = 1.0 / static_cast<double>(p);
+    for (std::size_t i = 0; i < rIjk.size(); ++i)
+        out[i] = {static_cast<double>(rIjk[i][0]) * inv, static_cast<double>(rIjk[i][1]) * inv,
+                  static_cast<double>(rIjk[i][2]) * inv};
+    return out;
+}
+
+ConvertCellsResult ccells_change_order(const Mesh& rMesh, int TargetOrder, bool Elevate,
+                                       bool RecordParentIds) {
+    if (Elevate && TargetOrder < 2)
+        throw std::invalid_argument("convert_cells: elevate target order must be >= 2");
+    if (!Elevate && TargetOrder < 1)
+        throw std::invalid_argument("convert_cells: reduce target order must be >= 1");
+
+    const std::size_t n_pts_in = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    const std::size_t nblocks = rMesh.NumCellBlocks();
+
+    // Read input coordinates as float64.
+    std::vector<double> in_pts(n_pts_in * pdim, 0.0);
+    if (n_pts_in > 0) {
+        const NDArray& pa = rMesh.Points();
+        if (pa.Dtype() == DType::Float64) {
+            std::memcpy(in_pts.data(), pa.As<double>(), n_pts_in * pdim * sizeof(double));
+        } else {
+            for (std::size_t i = 0; i < n_pts_in * pdim; ++i)
+                in_pts[i] = detail::read_double(pa, i);
+        }
+    }
+
+    // Prepare point_data buffers for interpolation.
+    struct CcellsPData {
+        std::string mName;
+        DType mDtype = DType::Float64;
+        bool mIsFloat = false;
+        std::vector<std::size_t> mTail;
+        std::size_t mWidth = 1;
+        std::vector<double> mInFloat;
+        std::vector<double> mOutFloat;
+        std::size_t mRowBytes = 0;
+        std::vector<std::byte> mOutRaw;
+    };
+    std::vector<CcellsPData> pdata;
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& arr = rMesh.PointData(name);
+        if (arr.Ndim() == 0 || arr.Shape()[0] != n_pts_in)
+            continue;
+        CcellsPData pd;
+        pd.mName = name;
+        pd.mDtype = arr.Dtype();
+        pd.mIsFloat = (arr.Dtype() == DType::Float64 || arr.Dtype() == DType::Float32);
+        pd.mTail.assign(arr.Shape().begin() + 1, arr.Shape().end());
+        for (std::size_t d : pd.mTail)
+            pd.mWidth *= d;
+        if (pd.mIsFloat) {
+            pd.mInFloat.resize(n_pts_in * pd.mWidth);
+            if (arr.Dtype() == DType::Float64) {
+                std::memcpy(pd.mInFloat.data(), arr.As<double>(),
+                            n_pts_in * pd.mWidth * sizeof(double));
+            } else {
+                const float* sp = arr.As<float>();
+                for (std::size_t i = 0; i < n_pts_in * pd.mWidth; ++i)
+                    pd.mInFloat[i] = static_cast<double>(sp[i]);
+            }
+        } else {
+            pd.mRowBytes = pd.mWidth * dtype_size(arr.Dtype());
+        }
+        pdata.push_back(std::move(pd));
+    }
+
+    // Output point store. In Elevate mode, keep all input points [0..n_pts_in-1] in place.
+    // In Reduce mode, build a compact output point table (mapping old corners + new nodes).
+    std::vector<double> out_pts;
+    std::vector<std::int64_t> point_map(n_pts_in, -1);
+    if (Elevate) {
+        out_pts = in_pts;
+        for (std::size_t i = 0; i < n_pts_in; ++i)
+            point_map[i] = static_cast<std::int64_t>(i);
+        for (auto& pd : pdata) {
+            if (pd.mIsFloat) {
+                pd.mOutFloat = pd.mInFloat;
+            } else if (n_pts_in * pd.mRowBytes > 0) {
+                pd.mOutRaw.resize(n_pts_in * pd.mRowBytes);
+                std::memcpy(pd.mOutRaw.data(), rMesh.PointData(pd.mName).Data(),
+                            n_pts_in * pd.mRowBytes);
+            }
+        }
+    }
+
+    auto ensure_input_point = [&](std::int64_t old_id) -> std::int64_t {
+        const std::size_t u = static_cast<std::size_t>(old_id);
+        if (point_map[u] >= 0)
+            return point_map[u];
+        const std::int64_t nid = static_cast<std::int64_t>(out_pts.size() / pdim);
+        point_map[u] = nid;
+        out_pts.insert(out_pts.end(), in_pts.begin() + static_cast<std::ptrdiff_t>(u * pdim),
+                       in_pts.begin() + static_cast<std::ptrdiff_t>((u + 1) * pdim));
+        for (auto& pd : pdata) {
+            if (pd.mIsFloat) {
+                pd.mOutFloat.insert(
+                    pd.mOutFloat.end(),
+                    pd.mInFloat.begin() + static_cast<std::ptrdiff_t>(u * pd.mWidth),
+                    pd.mInFloat.begin() + static_cast<std::ptrdiff_t>((u + 1) * pd.mWidth));
+            } else if (pd.mRowBytes > 0) {
+                const std::byte* src = rMesh.PointData(pd.mName).Data();
+                pd.mOutRaw.insert(pd.mOutRaw.end(), src + u * pd.mRowBytes,
+                                  src + (u + 1) * pd.mRowBytes);
+            }
+        }
+        return nid;
+    };
+
+    // Canonical node key: sorted (global_corner_id, weight) pairs.
+    using NodeKey = std::vector<std::pair<std::int64_t, std::int64_t>>;
+    std::map<NodeKey, std::int64_t> dedup;
+
+    std::vector<std::pair<std::string, NDArray>> out_blocks;
+    out_blocks.reserve(nblocks);
+
+    for (const auto cb : rMesh.CellRange()) {
+        const std::size_t ncells = cb.NumCells();
+        const std::string& btype = cb.Type();
+        if (cb.IsRagged() || ncells == 0) {
+            if (!Elevate && !cb.IsRagged()) {
+                const std::size_t k = cb.NodesPerCell();
+                const NDArray& sconn = cb.Conn();
+                NDArray conn = NDArray::Uninit(DType::Int64, {ncells, k});
+                auto* dst = conn.As<std::int64_t>();
+                for (std::size_t c = 0; c < ncells; ++c) {
+                    for (std::size_t j = 0; j < k; ++j)
+                        dst[c * k + j] = ensure_input_point(detail::read_int(sconn, c * k + j));
+                }
+                out_blocks.emplace_back(btype, std::move(conn));
+            } else {
+                out_blocks.emplace_back(btype, detail::data_owned_copy(cb.Conn()));
+            }
+            continue;
+        }
+
+        const std::size_t src_nn = cb.NodesPerCell();
+        const NDArray& sconn = cb.Conn();
+        CcellsLagrangeMeta meta;
+        const bool known = ccells_parse_lagrange_meta(btype, src_nn, meta);
+        const bool should_convert =
+            known && ((Elevate && meta.mOrder < TargetOrder) ||
+                      (!Elevate && meta.mOrder > TargetOrder));
+
+        if (!should_convert) {
+            NDArray conn = NDArray::Uninit(DType::Int64, {ncells, src_nn});
+            auto* dst = conn.As<std::int64_t>();
+            for (std::size_t c = 0; c < ncells; ++c) {
+                for (std::size_t j = 0; j < src_nn; ++j)
+                    dst[c * src_nn + j] =
+                        ensure_input_point(detail::read_int(sconn, c * src_nn + j));
+            }
+            out_blocks.emplace_back(btype, std::move(conn));
+            continue;
+        }
+
+        bool dst_vtk = false;
+        const std::string dst_type = ccells_target_lagrange_type(meta.mShape, TargetOrder, dst_vtk);
+        const auto src_ijk = ccells_lattice_ijk(meta.mShape, meta.mOrder, meta.mIsVtkOrder);
+        const auto dst_ijk = ccells_lattice_ijk(meta.mShape, TargetOrder, dst_vtk);
+        const auto src_coords = ccells_ijk_to_coords(src_ijk, meta.mOrder);
+        const auto dst_coords = ccells_ijk_to_coords(dst_ijk, TargetOrder);
+        const std::vector<double> interp =
+            lagrange::interpolation_matrix(meta.mShape, meta.mOrder, src_coords, dst_coords);
+        const std::size_t dst_nn = dst_ijk.size();
+
+        // Precompute lattice weights for each target node.
+        std::vector<std::vector<std::pair<int, std::int64_t>>> dst_weights(dst_nn);
+        for (std::size_t t = 0; t < dst_nn; ++t)
+            dst_weights[t] = lagrange::lattice_weights(meta.mShape, TargetOrder, dst_ijk[t]);
+
+        NDArray conn = NDArray::Uninit(DType::Int64, {ncells, dst_nn});
+        auto* dst_conn = conn.As<std::int64_t>();
+        std::vector<std::int64_t> cell_nodes(src_nn);
+
+        for (std::size_t c = 0; c < ncells; ++c) {
+            for (std::size_t j = 0; j < src_nn; ++j)
+                cell_nodes[j] = detail::read_int(sconn, c * src_nn + j);
+
+            for (std::size_t t = 0; t < dst_nn; ++t) {
+                const auto& w = dst_weights[t];
+                if (w.size() == 1) {
+                    // Exact corner node: reuse original corner vertex id.
+                    const std::int64_t cid = cell_nodes[static_cast<std::size_t>(w[0].first)];
+                    dst_conn[c * dst_nn + t] = ensure_input_point(cid);
+                    continue;
+                }
+                NodeKey key;
+                key.reserve(w.size());
+                for (const auto& [lc, wt] : w)
+                    key.emplace_back(cell_nodes[static_cast<std::size_t>(lc)], wt);
+                std::sort(key.begin(), key.end());
+
+                auto it = dedup.find(key);
+                if (it != dedup.end()) {
+                    dst_conn[c * dst_nn + t] = it->second;
+                    continue;
+                }
+
+                // Create new interpolated node.
+                const std::int64_t nid = static_cast<std::int64_t>(out_pts.size() / pdim);
+                dedup.emplace(std::move(key), nid);
+                dst_conn[c * dst_nn + t] = nid;
+
+                const double* mrow = interp.data() + t * src_nn;
+                for (std::size_t d = 0; d < pdim; ++d) {
+                    double v = 0.0;
+                    for (std::size_t s = 0; s < src_nn; ++s)
+                        v += mrow[s] * in_pts[static_cast<std::size_t>(cell_nodes[s]) * pdim + d];
+                    out_pts.push_back(v);
+                }
+                for (auto& pd : pdata) {
+                    if (pd.mIsFloat) {
+                        for (std::size_t d = 0; d < pd.mWidth; ++d) {
+                            double v = 0.0;
+                            for (std::size_t s = 0; s < src_nn; ++s)
+                                v += mrow[s] *
+                                     pd.mInFloat[static_cast<std::size_t>(cell_nodes[s]) *
+                                                     pd.mWidth +
+                                                 d];
+                            pd.mOutFloat.push_back(v);
+                        }
+                    } else if (pd.mRowBytes > 0) {
+                        const std::size_t c0 = static_cast<std::size_t>(cell_nodes[0]);
+                        const std::byte* src = rMesh.PointData(pd.mName).Data();
+                        pd.mOutRaw.insert(pd.mOutRaw.end(), src + c0 * pd.mRowBytes,
+                                          src + (c0 + 1) * pd.mRowBytes);
+                    }
+                }
+            }
+        }
+        out_blocks.emplace_back(dst_type, std::move(conn));
+    }
+
+    const std::size_t n_pts_out = out_pts.size() / pdim;
+    Mesh out;
+    NDArray pts_arr = NDArray::Uninit(DType::Float64, {n_pts_out, pdim});
+    if (n_pts_out * pdim > 0)
+        std::memcpy(pts_arr.As<double>(), out_pts.data(), n_pts_out * pdim * sizeof(double));
+    out.AssignPoints(std::move(pts_arr));
+
+    for (auto& [tname, conn] : out_blocks)
+        out.AddCellBlock(tname, std::move(conn));
+
+    for (const auto& pd : pdata) {
+        std::vector<std::size_t> shape = {n_pts_out};
+        shape.insert(shape.end(), pd.mTail.begin(), pd.mTail.end());
+        NDArray arr = NDArray::Uninit(pd.mDtype, shape);
+        if (pd.mIsFloat) {
+            if (pd.mDtype == DType::Float64) {
+                if (!pd.mOutFloat.empty())
+                    std::memcpy(arr.As<double>(), pd.mOutFloat.data(),
+                                pd.mOutFloat.size() * sizeof(double));
+            } else {
+                float* dp = arr.As<float>();
+                for (std::size_t i = 0; i < pd.mOutFloat.size(); ++i)
+                    dp[i] = static_cast<float>(pd.mOutFloat[i]);
+            }
+        } else if (!pd.mOutRaw.empty()) {
+            std::memcpy(arr.Data(), pd.mOutRaw.data(), pd.mOutRaw.size());
+        }
+        out.AddPointData(pd.mName, std::move(arr));
+    }
+
+    NDArray pmap_arr = NDArray::Uninit(DType::Int64, {n_pts_in});
+    if (n_pts_in > 0)
+        std::memcpy(pmap_arr.As<std::int64_t>(), point_map.data(),
+                    n_pts_in * sizeof(std::int64_t));
+    return ccells_finish_identity(rMesh, std::move(out), RecordParentIds, nblocks,
+                                  std::move(pmap_arr));
+}
+
 }  // namespace
 
 // --- public API --------------------------------------------------------------
@@ -982,8 +1405,10 @@ ConvertCellsMode convert_cells_mode_from_name(const std::string& rName) {
         return ConvertCellsMode::Simplexify;
     if (rName == "elevate")
         return ConvertCellsMode::Elevate;
+    if (rName == "reduce")
+        return ConvertCellsMode::Reduce;
     throw std::invalid_argument("convert_cells: unknown mode '" + rName +
-                                "' (expected 'linearize', 'simplexify', or 'elevate')");
+                                "' (expected 'linearize', 'simplexify', 'elevate', or 'reduce')");
 }
 
 namespace {
@@ -1025,7 +1450,16 @@ ConvertCellsResult convert_cells(const Mesh& rMesh, const ConvertCellsOptions& r
             res = ccells_simplexify(rMesh, rOptions.mRecordParentIds);
             break;
         case ConvertCellsMode::Elevate:
-            res = ccells_elevate(rMesh, rOptions.mRecordParentIds);
+            if (rOptions.mOrder == 2 && !rOptions.mFull)
+                res = ccells_elevate(rMesh, rOptions.mRecordParentIds);
+            else
+                res = ccells_change_order(rMesh, rOptions.mOrder, true, rOptions.mRecordParentIds);
+            break;
+        case ConvertCellsMode::Reduce:
+            if (rOptions.mOrder == 1)
+                res = ccells_linearize(rMesh, rOptions.mRecordParentIds);
+            else
+                res = ccells_change_order(rMesh, rOptions.mOrder, false, rOptions.mRecordParentIds);
             break;
         default:
             throw std::invalid_argument("convert_cells: unhandled mode");

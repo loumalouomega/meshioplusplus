@@ -203,6 +203,36 @@ MESHIOPLUSPLUS_API std::shared_ptr<const QuadRemesherProvider> quad_remesher(
 /// The names of every registered quad remesher, sorted.
 MESHIOPLUSPLUS_API std::vector<std::string> quad_remesher_names();
 
+/// Input to a graph partitioner provider (roadmap 9.7.1): a symmetric CSR dual graph.
+struct GraphPartitionerRequest {
+    const std::int64_t* mpXadj = nullptr;     ///< Row offsets, length `mNumVertices + 1`.
+    const std::int64_t* mpAdjncy = nullptr;   ///< Neighbour vertex ids.
+    std::size_t mNumVertices = 0;             ///< Number of graph vertices (cells).
+    int mNParts = 2;                          ///< Number of parts (>= 1).
+    double mImbalance = 0.03;                 ///< Allowed imbalance fraction in (0, 1).
+    int mMode = 1;                            ///< Quality mode: 0 = Fast, 1 = Eco, 2 = Strong.
+    int mSeed = 0;                            ///< Deterministic seed.
+    const std::int64_t* mpWeights = nullptr;  ///< Optional positive vertex weights (length `mNumVertices`).
+};
+
+/// A graph partitioner provider (KaHIP, METIS, Scotch, or a plugin; roadmap 9.7.1).
+struct GraphPartitionerProvider {
+    std::string mName;
+    std::string mVersion;
+    /// Returns per-vertex part ids in `[0, rReq.mNParts)`.
+    std::function<std::vector<std::int64_t>(const GraphPartitionerRequest&)> mPartition;
+};
+
+/// Registers a graph partitioner under its `mName`, replacing any earlier one of that name.
+MESHIOPLUSPLUS_API void add_graph_partitioner(GraphPartitionerProvider Provider);
+/// Removes the graph partitioner named `rName`.
+MESHIOPLUSPLUS_API void remove_graph_partitioner(const std::string& rName) noexcept;
+/// The graph partitioner named `rName`, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const GraphPartitionerProvider> graph_partitioner(
+    const std::string& rName) noexcept;
+/// The names of every registered graph partitioner, sorted.
+MESHIOPLUSPLUS_API std::vector<std::string> graph_partitioner_names();
+
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
 /// Removes the registered remesher (the builtin is not re-registered).

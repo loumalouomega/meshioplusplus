@@ -34,6 +34,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/detail/cell_adjacency.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
@@ -44,14 +45,13 @@
 
 // Project includes (private, not installed)
 #include "../detail/cell_centroids.hpp"
+#include "../detail/dual_graph.hpp"
 #include "../detail/ghost_names.hpp"
 #include "../detail/sfc_quantize.hpp"
 
 #ifdef MESHIOPLUSPLUS_HAS_KAHIP
 // External includes
 #include <kaHIP_interface.h>  // IWYU pragma: keep
-// Project includes (private, not installed; KaHIP dual-graph path only)
-#include "../detail/dual_graph.hpp"
 #endif
 
 namespace meshioplusplus {
@@ -298,6 +298,126 @@ std::vector<int> partition_kahip_parts(const Mesh& rMesh, const PartitionOptions
 // vanished, leaving halos silently too small; the shared helper reads through
 // `detail::read_int` instead.
 
+// Run a registered GraphPartitionerProvider on the mesh's facet dual graph.
+std::vector<int> partition_provider_parts(const Mesh& rMesh, const PartitionOptions& rOptions,
+                                          const GraphPartitionerProvider& rProvider,
+                                          const std::vector<double>& rWeights, std::size_t total) {
+    if (total == 0)
+        return {};
+    if (rOptions.mNParts == 1)
+        return std::vector<int>(total, 0);
+    if (!(rOptions.mImbalance > 0.0 && rOptions.mImbalance < 1.0))
+        throw std::invalid_argument("partition: imbalance must be in (0, 1), got " +
+                                    std::to_string(rOptions.mImbalance));
+    const detail::DualGraphCsr graph = detail::build_facet_dual_graph(rMesh, total);
+    std::vector<std::int64_t> scaled_w;
+    if (!rWeights.empty()) {
+        double max_w = 0.0;
+        for (double w : rWeights)
+            max_w = std::max(max_w, w);
+        const double scale = max_w > 0.0 ? (1.0e6 / max_w) : 1.0;
+        scaled_w.resize(total);
+        for (std::size_t i = 0; i < total; ++i)
+            scaled_w[i] = std::max<std::int64_t>(1, static_cast<std::int64_t>(rWeights[i] * scale + 0.5));
+    }
+    GraphPartitionerRequest req;
+    req.mpXadj = graph.mXadj.data();
+    req.mpAdjncy = graph.mAdjncy.data();
+    req.mNumVertices = total;
+    req.mNParts = rOptions.mNParts;
+    req.mImbalance = rOptions.mImbalance;
+    req.mMode = rOptions.mMode == PartitionMode::Fast ? 0
+                : rOptions.mMode == PartitionMode::Strong ? 2
+                                                          : 1;
+    req.mSeed = rOptions.mSeed;
+    req.mpWeights = scaled_w.empty() ? nullptr : scaled_w.data();
+    const std::vector<std::int64_t> raw = rProvider.mPartition(req);
+    if (raw.size() != total)
+        throw std::runtime_error("partition: provider '" + rProvider.mName +
+                                 "' returned wrong label count");
+    std::vector<int> out(total);
+    for (std::size_t i = 0; i < total; ++i)
+        out[i] = static_cast<int>(raw[i]);
+    return out;
+}
+
+// Connected-parts post-pass (roadmap 9.7.3): keep each part's largest facet-connected
+// component and reassign disconnected islands to the neighbour sharing the most facets.
+void partition_connected_postpass(const Mesh& rMesh, std::vector<int>& rParts, int NParts,
+                                  std::size_t Total) {
+    if (Total == 0 || NParts <= 1)
+        return;
+    const detail::DualGraphCsr graph =
+        detail::build_facet_dual_graph(rMesh, Total, /*PolygonRings=*/true);
+    std::vector<std::size_t> queue;
+    queue.reserve(Total);
+    std::vector<std::int32_t> comp_id(Total, -1);
+
+    for (int pass = 0; pass < 32; ++pass) {
+        bool changed = false;
+        std::fill(comp_id.begin(), comp_id.end(), -1);
+        for (int p = 0; p < NParts; ++p) {
+            std::vector<std::vector<std::size_t>> comps;
+            for (std::size_t i = 0; i < Total; ++i) {
+                if (rParts[i] != p || comp_id[i] >= 0)
+                    continue;
+                const std::int32_t cid = static_cast<std::int32_t>(comps.size());
+                comps.emplace_back();
+                auto& comp = comps.back();
+                queue.clear();
+                queue.push_back(i);
+                comp_id[i] = cid;
+                for (std::size_t qi = 0; qi < queue.size(); ++qi) {
+                    const std::size_t u = queue[qi];
+                    comp.push_back(u);
+                    for (std::int64_t ei = graph.mXadj[u]; ei < graph.mXadj[u + 1]; ++ei) {
+                        const std::size_t v = static_cast<std::size_t>(graph.mAdjncy[ei]);
+                        if (rParts[v] == p && comp_id[v] < 0) {
+                            comp_id[v] = cid;
+                            queue.push_back(v);
+                        }
+                    }
+                }
+            }
+            if (comps.size() <= 1)
+                continue;
+            // Keep the largest component (ties broken by smallest lowest cell id, i.e., earliest index).
+            std::size_t best = 0;
+            for (std::size_t k = 1; k < comps.size(); ++k) {
+                if (comps[k].size() > comps[best].size())
+                    best = k;
+            }
+            for (std::size_t k = 0; k < comps.size(); ++k) {
+                if (k == best)
+                    continue;
+                std::vector<std::size_t> border_counts(static_cast<std::size_t>(NParts), 0);
+                for (std::size_t u : comps[k]) {
+                    for (std::int64_t ei = graph.mXadj[u]; ei < graph.mXadj[u + 1]; ++ei) {
+                        const int np = rParts[static_cast<std::size_t>(graph.mAdjncy[ei])];
+                        if (np != p && np >= 0 && np < NParts)
+                            ++border_counts[static_cast<std::size_t>(np)];
+                    }
+                }
+                int target = -1;
+                std::size_t max_facets = 0;
+                for (int q = 0; q < NParts; ++q) {
+                    if (border_counts[static_cast<std::size_t>(q)] > max_facets) {
+                        max_facets = border_counts[static_cast<std::size_t>(q)];
+                        target = q;
+                    }
+                }
+                if (target >= 0) {
+                    for (std::size_t u : comps[k])
+                        rParts[u] = target;
+                    changed = true;
+                }
+            }
+        }
+        if (!changed)
+            break;
+    }
+}
+
 // Validate the options and resolve Auto to a concrete method.
 PartitionMethod partition_resolve_method(const PartitionOptions& rOptions) {
     if (rOptions.mNParts < 1)
@@ -318,14 +438,51 @@ PartitionMethod partition_resolve_method(const PartitionOptions& rOptions) {
 
 // The per-global-cell part assignment (values in [0, nparts)).
 std::vector<int> partition_compute_parts(const Mesh& rMesh, const PartitionOptions& rOptions) {
-    const PartitionMethod method = partition_resolve_method(rOptions);
+    if (rOptions.mNParts < 1)
+        throw std::invalid_argument("partition: nparts must be >= 1, got " +
+                                    std::to_string(rOptions.mNParts));
+    if (rOptions.mGhostLayers < 0)
+        throw std::invalid_argument("partition: ghost_layers must be >= 0, got " +
+                                    std::to_string(rOptions.mGhostLayers));
     const std::size_t total = partition_total_cells(rMesh);
     std::vector<double> weights;
     if (!rOptions.mWeightsKey.empty())
         weights = partition_weights(rMesh, rOptions.mWeightsKey, total);
-    if (method == PartitionMethod::KaHIP)
-        return partition_kahip_parts(rMesh, rOptions, weights, total);
-    return partition_sfc_parts(rMesh, rOptions, weights, total);
+
+    std::vector<int> parts;
+    if (!rOptions.mMethodName.empty()) {
+        const std::string& name = rOptions.mMethodName;
+        if (name == "sfc" || name == "hilbert") {
+            parts = partition_sfc_parts(rMesh, rOptions, weights, total);
+        } else if (name == "auto") {
+            if (auto prov = graph_partitioner("kahip"))
+                parts = partition_provider_parts(rMesh, rOptions, *prov, weights, total);
+            else if (partition_has_kahip())
+                parts = partition_kahip_parts(rMesh, rOptions, weights, total);
+            else
+                parts = partition_sfc_parts(rMesh, rOptions, weights, total);
+        } else if (auto prov = graph_partitioner(name)) {
+            parts = partition_provider_parts(rMesh, rOptions, *prov, weights, total);
+        } else if (name == "kahip") {
+            parts = partition_kahip_parts(rMesh, rOptions, weights, total);
+        } else {
+            throw std::invalid_argument("partition: unknown or unavailable method '" + name +
+                                        "' (register a GraphPartitionerProvider or use 'sfc')");
+        }
+    } else {
+        const PartitionMethod method = partition_resolve_method(rOptions);
+        if (method == PartitionMethod::KaHIP) {
+            if (auto prov = graph_partitioner("kahip"))
+                parts = partition_provider_parts(rMesh, rOptions, *prov, weights, total);
+            else
+                parts = partition_kahip_parts(rMesh, rOptions, weights, total);
+        } else {
+            parts = partition_sfc_parts(rMesh, rOptions, weights, total);
+        }
+    }
+    if (rOptions.mConnectedParts)
+        partition_connected_postpass(rMesh, parts, rOptions.mNParts, total);
+    return parts;
 }
 
 }  // namespace

@@ -134,7 +134,7 @@ _ELEVATE = {
 #: Full-Lagrange targets that need face/body-centre nodes — out of scope here.
 _FULL_LAGRANGE = {"quad9", "hexahedron27", "wedge18", "pyramid14"}
 
-MODES = ("linearize", "simplexify", "elevate")
+MODES = ("linearize", "simplexify", "elevate", "reduce")
 
 
 # --------------------------------------------------------------------------- #
@@ -372,6 +372,9 @@ def convert_cells(
     mesh,
     mode: str = "linearize",
     record_parent_ids: bool = False,
+    *,
+    order: int = 2,
+    full: bool = False,
 ) -> Mesh:
     """Convert the element representation of a mesh.
 
@@ -380,12 +383,18 @@ def convert_cells(
     mesh :
         the mesh to convert (unmodified).
     mode :
-        ``"linearize"`` (default), ``"simplexify"``, or ``"elevate"`` — see the
-        module docstring.
+        ``"linearize"`` (default), ``"simplexify"``, ``"elevate"``, or
+        ``"reduce"`` — see the module docstring.
     record_parent_ids :
         when true, attach an Int64 ``convert:parent_cell`` cell_data array
         recording, per output cell, the index of the input cell it came from
         within its own block. Mainly useful under ``"simplexify"``.
+    order :
+        target polynomial order for ``"elevate"`` (>= 2, default 2) or
+        ``"reduce"`` (>= 1, default 1 when ``order`` is not given or explicit).
+    full :
+        for order-2 ``"elevate"``, emit full-Lagrange (``quad9``,
+        ``hexahedron27``, ``wedge18``) instead of serendipity.
 
     Returns
     -------
@@ -396,8 +405,7 @@ def convert_cells(
     Raises
     ------
     ValueError
-        for an unknown ``mode``, a polyhedron block under ``"simplexify"``, or a
-        full-Lagrange target (``quad9``/``hexahedron27``) under ``"elevate"``.
+        for an unknown ``mode`` or invalid ``order``.
     """
     if mode not in MODES:
         raise ValueError(
@@ -410,7 +418,9 @@ def convert_cells(
     try:
         from . import _core
 
-        res = _core.convert_cells(mesh, mode, bool(record_parent_ids))
+        res = _core.convert_cells(
+            mesh, mode, bool(record_parent_ids), int(order), bool(full)
+        )
         out = res["mesh"]
         point_map = np.asarray(res["point_map"])
         cell_maps = [np.asarray(a) for a in res["cell_maps"]]

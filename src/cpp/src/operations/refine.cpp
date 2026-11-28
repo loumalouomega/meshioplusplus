@@ -55,6 +55,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/refine.hpp"
+#include "meshioplusplus/operations/undo_green.hpp"
 #include "meshioplusplus/detail/region_remap.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
@@ -1326,6 +1327,42 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
     std::vector<char> seed;
     if (selective)
         seed = refine_resolve_selection(rMesh, rOptions);
+
+    if (rOptions.mUndoGreenFirst) {
+        if (!rOptions.mRecordHierarchy)
+            throw std::invalid_argument(
+                "refine: undo_green_first requires record_hierarchy=True");
+        if (rOptions.mLevels > 0 && selective) {
+            UndoGreenResult ug = undo_green(rMesh);
+            if (ug.mNumGroupsUndone > 0) {
+                const std::vector<std::int64_t> in_bases = detail::block_bases(rMesh);
+                const std::vector<std::int64_t> ug_bases = detail::block_bases(ug.mMesh);
+                std::vector<std::int64_t> mapped_ids;
+                std::vector<char> mapped_flag(static_cast<std::size_t>(ug_bases.back()), 0);
+                for (std::size_t bi = 0; bi < ug.mCellMaps.size(); ++bi) {
+                    const auto* cm = ug.mCellMaps[bi].As<std::int64_t>();
+                    const std::size_t n = ug.mCellMaps[bi].Size();
+                    for (std::size_t r = 0; r < n; ++r) {
+                        if (seed[static_cast<std::size_t>(in_bases[bi]) + r]) {
+                            const std::int64_t g = ug_bases[bi] + cm[r];
+                            if (!mapped_flag[static_cast<std::size_t>(g)]) {
+                                mapped_flag[static_cast<std::size_t>(g)] = 1;
+                                mapped_ids.push_back(g);
+                            }
+                        }
+                    }
+                }
+                RefineOptions next_opts = rOptions;
+                next_opts.mUndoGreenFirst = false;
+                next_opts.mRegion.clear();
+                next_opts.mPredicateArray.clear();
+                next_opts.mCells = std::move(mapped_ids);
+                next_opts.mRecordLevels = true;
+                next_opts.mRecordHierarchy = true;
+                return refine(ug.mMesh, next_opts);
+            }
+        }
+    }
 
     if (rOptions.mLevels <= 0) {
         RefineResult res;

@@ -368,6 +368,7 @@ if TYPE_CHECKING:
     from ._step_elements import write_step_elements
     from ._streamlines import streamlines
     from ._subdivide import subdivide
+    from ._subdivide_surface import subdivide_surface
     from ._surface import extract_surface
     from ._tensor_invariants import tensor_invariants
     from ._tessellation import Tessellation, tessellate
@@ -615,6 +616,7 @@ _LAZY_ATTRS = {
     "PointBudget": "_point_budget",
     "select_points": "_point_budget",
     "subsample_points": "_point_budget",
+    "subdivide_surface": "_subdivide_surface",
     "CancelToken": "_progress",
     "progress_context": "_progress",
     "BistrideHierarchy": "_proximity",
@@ -1101,6 +1103,7 @@ __all__ = [
     "PointBudget",
     "select_points",
     "subsample_points",
+    "subdivide_surface",
     "GeometryGuard",
     "geometry_descriptors",
     "BistrideHierarchy",
