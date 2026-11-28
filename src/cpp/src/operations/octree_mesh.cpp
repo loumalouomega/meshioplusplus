@@ -43,6 +43,7 @@
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/octree_mesh.hpp"
 #include "meshioplusplus/operations/quality.hpp"
+#include "meshioplusplus/progress.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 namespace meshioplusplus {
@@ -720,7 +721,9 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
     result.mOutput = rOptions.mOutput;
     detail::OctreeMeshClock clock;
     auto setup = std::make_unique<detail::OctreeMeshSetup>();
+    progress_checkpoint(0.0, "octree_mesh:prepare");
     octm_prepare(rSkin, rOptions, *setup, result, clock);
+    progress_checkpoint(0.15, "octree_mesh:build");
     switch (rOptions.mOutput) {
         case OctreeMeshOutput::Castellated:
             detail::octree_mesh_castellated(*setup, rOptions, result);
@@ -729,12 +732,15 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             detail::OctreeMeshTets tets;
             detail::octree_mesh_stuffed_lattice(*setup, rOptions, result, tets);
             clock.Lap(result, "stuffing");
+            progress_checkpoint(0.35, "octree_mesh:features");
             detail::octree_mesh_snap_features(*setup, rOptions, result, tets);
             clock.Lap(result, "features");
+            progress_checkpoint(0.50, "octree_mesh:optimize");
             detail::octree_mesh_optimize(*setup, rOptions, result, tets);
             if (rOptions.mPreserveFeatures && rOptions.mFitIterations > 0)
                 detail::octree_mesh_release_features(*setup, rOptions, result, tets);
             clock.Lap(result, "optimize");
+            progress_checkpoint(0.70, "octree_mesh:emit");
             detail::octree_mesh_fill_chain_gaps(*setup, rOptions, result, tets);
             if (rOptions.mVolumeFix)
                 detail::octree_mesh_fix_volumes(*setup, rOptions, result, tets);
@@ -751,11 +757,14 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
     }
     clock.Lap(result, "output");
     if (rOptions.mPostAdapt && rOptions.mOutput == OctreeMeshOutput::Tetra) {
+        progress_checkpoint(0.80, "octree_mesh:adapt");
         octm_post_adapt(*setup, rOptions, result);
         clock.Lap(result, "adapt");
     }
+    progress_checkpoint(0.95, "octree_mesh:quality");
     octm_report_mesh(rOptions, result);
     clock.Lap(result, "quality");
+    progress_checkpoint(1.0, "octree_mesh:done");
     return result;
 }
 

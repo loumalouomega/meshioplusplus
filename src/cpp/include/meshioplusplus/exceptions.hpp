@@ -80,4 +80,18 @@ struct Unsupported : std::runtime_error {
     explicit Unsupported(const std::string& rMsg) : std::runtime_error(rMsg) {}
 };
 
+/**
+ * @brief Thrown when a long-running operation is cancelled cooperatively.
+ *
+ * Raised by `progress_checkpoint()` when the active thread-local
+ * `ProgressContext`'s cancel flag is set or its progress callback returns
+ * `false`. Maps to `MIO_ERR_CANCELLED` in the C API and to
+ * `meshioplusplus.CancelledError` (or `KeyboardInterrupt` on `SIGINT`) in
+ * Python.
+ */
+struct CancelledError : std::runtime_error {
+    CancelledError() : std::runtime_error("operation cancelled") {}
+    explicit CancelledError(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
 }  // namespace meshioplusplus

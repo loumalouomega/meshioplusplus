@@ -1430,14 +1430,29 @@ module meshioplusplus
         integer(c_int64_t) :: min_neighbors = 4
         real(c_double) :: voxel_size = 0.0_c_double
         real(c_double) :: min_distance = 0.0_c_double
-        integer(c_int64_t) :: reserved(4) = 0
+        integer(c_int64_t) :: voxel_mode = 0
+        integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_subsample_points_opts` (120 bytes).
+    type, bind(c) :: mio_subsample_points_opts_t
+        integer(c_int64_t) :: count = 0
+        integer(c_int32_t) :: method = 0
+        integer(c_int32_t) :: has_bounds = 0
+        integer(c_int64_t) :: seed = 0
+        integer(c_int64_t) :: start = -1
+        real(c_double) :: bounds(6) = 0.0_c_double
+        integer(c_int64_t) :: max_cells = 16000000
+        integer(c_int64_t) :: record_ids = 0
+        integer(c_int64_t) :: reserved(3) = 0
     end type
 
     !> Interop mirror of C `mio_cast_rays_opts` (64 bytes).
     type, bind(c) :: mio_cast_rays_opts_t
         real(c_double) :: max_distance = 0.0_c_double
         type(c_ptr) :: region = c_null_ptr
-        integer(c_int64_t) :: reserved(6) = 0
+        integer(c_int64_t) :: all_hits = 0
+        integer(c_int64_t) :: reserved(5) = 0
     end type
 
     !> Interop mirror of C `mio_locate_points_opts` (64 bytes).
@@ -3010,6 +3025,7 @@ module meshioplusplus
         procedure :: mass_properties => mesh_mass_properties
         procedure :: cast_rays => mesh_cast_rays
         procedure :: filter_points => mesh_filter_points
+        procedure :: subsample_points => mesh_subsample_points
         procedure :: locate_points => mesh_locate_points
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
@@ -5092,6 +5108,15 @@ module meshioplusplus
             type(c_ptr), value :: h
             type(mio_filter_points_opts_t), intent(in) :: opts
             integer(c_int64_t), intent(out) :: point_map(*), num_removed(4)
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_subsample_points(h, opts, point_map) &
+                bind(c, name="mio_subsample_points") result(r)
+            import :: c_ptr, c_int64_t, mio_subsample_points_opts_t
+            type(c_ptr), value :: h
+            type(mio_subsample_points_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: point_map(*)
             type(c_ptr) :: r
         end function
 
@@ -13172,6 +13197,55 @@ contains
             return
         end if
         if (present(num_removed)) num_removed = int(removed, int64)
+        if (present(point_map)) then
+            n_out = int(c_mio_mesh_num_points(out%handle), int64)
+            allocate (point_map(n_out))
+            point_map = int(cmap(1:n_out), int64) + 1_int64
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Subsample a point cloud to an exact count budget (roadmap 9.9.2).
+    !> `method` is 0 (farthest), 1 (grid), or 2 (random).
+    function mesh_subsample_points(self, count, method, seed, start, bounds, max_cells, &
+                                   record_ids, point_map, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        integer(int64), intent(in) :: count
+        integer, intent(in), optional :: method
+        integer(int64), intent(in), optional :: seed, start, max_cells
+        real(real64), intent(in), optional :: bounds(6)
+        logical, intent(in), optional :: record_ids
+        integer(int64), allocatable, intent(out), optional :: point_map(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_subsample_points_opts_t) :: opts
+        integer(c_int64_t), allocatable :: cmap(:)
+        integer(int64) :: n_in, n_out
+
+        if (c_sizeof(c_null_ptr) == 8_c_size_t .and. c_sizeof(opts) /= 120_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: subsample_points layout mismatch'
+            error stop 1
+        end if
+        opts%count = int(count, c_int64_t)
+        if (present(method)) opts%method = int(method, c_int32_t)
+        if (present(seed)) opts%seed = int(seed, c_int64_t)
+        if (present(start)) opts%start = int(start - 1_int64, c_int64_t)
+        if (present(bounds)) then
+            opts%has_bounds = 1_c_int32_t
+            opts%bounds = real(bounds, c_double)
+        end if
+        if (present(max_cells)) opts%max_cells = int(max_cells, c_int64_t)
+        if (present(record_ids)) then
+            if (record_ids) opts%record_ids = 1_c_int64_t
+        end if
+        n_in = int(c_mio_mesh_num_points(self%handle), int64)
+        allocate (cmap(max(n_in, 1_int64)))
+        out%handle = c_mio_subsample_points(self%handle, opts, cmap)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('subsample_points', mio_error_message(), stat, errmsg)
+            return
+        end if
         if (present(point_map)) then
             n_out = int(c_mio_mesh_num_points(out%handle), int64)
             allocate (point_map(n_out))

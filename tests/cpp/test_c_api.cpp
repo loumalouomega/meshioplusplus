@@ -9869,3 +9869,88 @@ TEST(CApi, Roadmap9And15Operations) {
     mio_mesh_free(sph);
     mio_mesh_free(tet);
 }
+
+TEST(CApi, Wave1CancelRaysFilterSubsample) {
+    // 1. Cancellation token lifecycle (9.16)
+    mio_cancel_token* tok = mio_cancel_token_create();
+    ASSERT_NE(tok, nullptr);
+    EXPECT_EQ(mio_cancel_token_is_cancelled(tok), 0);
+    mio_cancel_token_cancel(tok);
+    EXPECT_EQ(mio_cancel_token_is_cancelled(tok), 1);
+    mio_cancel_token_reset(tok);
+    EXPECT_EQ(mio_cancel_token_is_cancelled(tok), 0);
+    mio_cancel_token_free(tok);
+
+    // 2. All-hits ray casting through two parallel triangles (9.3.1)
+    const double tri_pts[18] = {
+        0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 2.0, 0.0,
+        0.0, 0.0, 3.0, 2.0, 0.0, 3.0, 0.0, 2.0, 3.0,
+    };
+    const int64_t tri_conn[6] = {0, 1, 2, 3, 4, 5};
+    mio_mesh* tris = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(tris, MIO_FLOAT64, 6, 3, tri_pts), MIO_OK);
+    ASSERT_EQ(mio_mesh_add_cell_block(tris, "triangle", 2, 3, MIO_INT64, tri_conn), MIO_OK);
+
+    mio_cast_rays_opts ropts;
+    mio_cast_rays_opts_init(&ropts);
+    ropts.all_hits = 1;
+    const double origin[3] = {0.25, 0.25, -1.0};
+    const double dir[3] = {0.0, 0.0, 1.0};
+    mio_cast_rays_result* rh = mio_cast_rays_all(tris, origin, 1, dir, 1, &ropts);
+    ASSERT_NE(rh, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_cast_rays_result_num_rays(rh), 1);
+    EXPECT_EQ(mio_cast_rays_result_num_hits(rh), 2);
+    const int64_t* offsets = mio_cast_rays_result_ray_offset(rh);
+    const double* dists = mio_cast_rays_result_distance(rh);
+    ASSERT_NE(offsets, nullptr);
+    ASSERT_NE(dists, nullptr);
+    EXPECT_EQ(offsets[0], 0);
+    EXPECT_EQ(offsets[1], 2);
+    EXPECT_NEAR(dists[0], 1.0, 1e-12);
+    EXPECT_NEAR(dists[1], 4.0, 1e-12);
+    mio_cast_rays_result_free(rh);
+    mio_mesh_free(tris);
+
+    // 3. Filter points with VoxelMode::Average (9.9.1) + subsample_points (9.9.2)
+    const double cpts[12] = {
+        0.0, 0.0, 0.0,
+        0.2, 0.0, 0.0,
+        5.0, 0.0, 0.0,
+        5.4, 0.0, 0.0,
+    };
+    mio_mesh* cloud = mio_mesh_create();
+    ASSERT_EQ(mio_mesh_set_points(cloud, MIO_FLOAT64, 4, 3, cpts), MIO_OK);
+
+    mio_filter_points_opts fopts;
+    mio_filter_points_opts_init(&fopts);
+    fopts.voxel_size = 1.0;
+    fopts.voxel_mode = MIO_VOXEL_AVERAGE;
+    int64_t fmap[4] = {};
+    int64_t removed[4] = {};
+    mio_mesh* fmesh = mio_filter_points(cloud, &fopts, fmap, removed);
+    ASSERT_NE(fmesh, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(fmesh), 2);
+    const void* out_pts_ptr = nullptr;
+    mio_dtype out_dt = MIO_FLOAT64;
+    ASSERT_EQ(mio_mesh_get_points(fmesh, &out_pts_ptr, &out_dt), MIO_OK);
+    ASSERT_EQ(out_dt, MIO_FLOAT64);
+    const double* out_pts = static_cast<const double*>(out_pts_ptr);
+    EXPECT_NEAR(out_pts[0], 0.1, 1e-12);
+    EXPECT_NEAR(out_pts[3], 5.2, 1e-12);
+    mio_mesh_free(fmesh);
+
+    mio_subsample_points_opts sopts;
+    mio_subsample_points_opts_init(&sopts);
+    sopts.count = 2;
+    sopts.method = MIO_SUBSAMPLE_FARTHEST;
+    sopts.start = 0;
+    int64_t smap[4] = {};
+    mio_mesh* smesh = mio_subsample_points(cloud, &sopts, smap);
+    ASSERT_NE(smesh, nullptr) << mio_last_error();
+    EXPECT_EQ(mio_mesh_num_points(smesh), 2);
+    EXPECT_EQ(smap[0], 0);
+    EXPECT_EQ(smap[1], 3);
+    mio_mesh_free(smesh);
+    mio_mesh_free(cloud);
+}
+

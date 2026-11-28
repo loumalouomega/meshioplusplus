@@ -119,8 +119,8 @@ MDPA-to-MDPA `convert` preserves nested sub-model-part geometry/constraint membe
 | `info` | fast file summary via `read_metadata` — counts, cell blocks, data names, regions, time steps |
 | `stats` | bbox, centroid, areas/volumes, per-type counts, inverted cells |
 | `mass_properties` | mass, centre of mass, inertia tensor, principal moments and axes of a volume mesh, closed surface or shell, per cell region |
-| `cast_rays` | nearest surface hit of the rays of a point file; writes the hit points with distance, cell and normal |
-| `filter_points` | outlier removal and thinning of a point cloud: statistical and radius outliers, voxel and Poisson-disk thinning; writes the survivors and counts per step |
+| `cast_rays` | nearest or all (`all_hits=True`) surface hits of the rays of a point file; writes the hit points with distance, cell and normal |
+| `filter_points` | outlier removal and thinning of a point cloud: statistical and radius outliers, voxel (`voxel_mode="nearest"` or `"average"`) and Poisson-disk thinning; writes the survivors and counts per step |
 | `locate_points` | the cell of a volume or planar triangle mesh containing each point of a file; writes the located points with cell, nodes and barycentric weights |
 | `quality` | per-metric summaries + histograms; pass `output_path` to write the mesh with `quality:<metric>` cell data |
 | `fvm_quality` | finite-volume interior face-pair quality (`fvm:non_orthogonality`, `fvm:face_skewness`, `fvm:volume_ratio`, `fvm:interpolation_weight`) summaries; pass `output_path` to write the mesh with those cell arrays attached |

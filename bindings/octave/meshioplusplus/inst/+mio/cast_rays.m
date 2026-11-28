@@ -11,7 +11,7 @@ function r = cast_rays(mesh, origins, directions, varargin)
 %   a miss), cell (n x 1, the 1-based input cell hit, 0 on a miss) and
 %   num_hits.
 
-    o = mio.internal.opts(varargin, {'max_distance', 0, 'region', ''}, 'mio.cast_rays');
+    o = mio.internal.opts(varargin, {'max_distance', 0, 'region', '', 'all_hits', false}, 'mio.cast_rays');
     r = meshioplusplus_mex('mio_cast_rays', mesh, double(origins), double(directions), ...
-        double(o.max_distance), mio.internal.str(o.region, 'region'));
+        double(o.max_distance), mio.internal.str(o.region, 'region'), logical(o.all_hits));
 end

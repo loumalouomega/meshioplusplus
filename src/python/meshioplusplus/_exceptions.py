@@ -8,3 +8,7 @@ class WriteError(Exception):
 
 class CorruptionError(Exception):
     pass
+
+
+class CancelledError(Exception):
+    pass

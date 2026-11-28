@@ -134,3 +134,36 @@ def test_cli_verbs(tmp_path, capsys):
     assert main(["locate", box, pts, out2, "--json"]) in (0, None)
     rep = json.loads(capsys.readouterr().out)
     assert rep["num_points"] == 2 and rep["num_located"] == 1
+
+
+def test_cast_rays_all_hits(tmp_path, capsys):
+    from meshioplusplus._cli._main import main
+
+    cube = _cube()
+    r = mio.cast_rays(
+        cube,
+        [[-1, 0.25, 0.5], [-1, 9, 9], [-1, 0.5, 0.5]],
+        [1, 0, 0],
+        all_hits=True,
+    )
+    assert list(r["hit"]) == [True, False, True]
+    assert list(r["ray_offset"]) == [0, 2, 2, 4]
+    assert r["num_hits"] == 4
+    assert r["distance"] == pytest.approx([1.0, 2.0, 1.0, 2.0])
+    assert r["point"].shape == (4, 3)
+    assert r["normal"].shape == (4, 3)
+
+    # CLI --all-hits
+    s = str(tmp_path / "cube_all.vtu")
+    mio.write(s, cube)
+    rays = str(tmp_path / "rays_all.vtu")
+    mio.write(rays, mio.Mesh([[-1, 0.25, 0.5], [-1, 9, 9]], []))
+    out = str(tmp_path / "hits_all.vtu")
+    assert main(
+        ["cast-rays", s, rays, out, "--direction", "1,0,0", "--all-hits", "--json"]
+    ) in (0, None)
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["num_rays"] == 2 and rep["num_hits"] == 2
+    hm = mio.read(out)
+    assert list(hm.point_data["ray:index"]) == [0, 0]
+    assert hm.point_data["ray:distance"] == pytest.approx([1.0, 2.0])

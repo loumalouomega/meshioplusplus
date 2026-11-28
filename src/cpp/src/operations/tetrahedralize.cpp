@@ -43,6 +43,7 @@
 #include "meshioplusplus/operations/optimize_volume.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/tetrahedralize.hpp"
+#include "meshioplusplus/progress.hpp"
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "../detail/edge_use_table.hpp"
@@ -547,6 +548,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         if (!fitted_mesher)
             points.assign(x.begin(), x.end());
         for (std::size_t s = 0; s < ns; ++s) {
+            progress_checkpoint(static_cast<double>(s) / static_cast<double>(std::max<std::size_t>(1, ns)),
+                                "tetrahedralize:region");
             // The region's triangles; the points they use, ascending.
             const std::vector<std::array<std::int64_t, 3>> faces = region_faces(s);
             std::vector<std::int64_t> used;
@@ -568,6 +571,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             TetMeshRegionResult region;
             try {
                 region = p_mesher->mMeshRegion(request);
+            } catch (const CancelledError&) {
+                throw;
             } catch (const std::runtime_error& rErr) {
                 throw std::runtime_error(std::string(kTetPrefix) + "region " + std::to_string(s) +
                                          ": " + rErr.what());
@@ -640,6 +645,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         const double mean_edge = edge_sum / (3.0 * static_cast<double>(nt));
         const double skin_size = maxh > 0.0 ? std::min(maxh, mean_edge) : mean_edge;
         for (std::size_t s = 0; s < ns; ++s) {
+            progress_checkpoint(static_cast<double>(s) / static_cast<double>(std::max<std::size_t>(1, ns)),
+                                "tetrahedralize:region");
             const std::vector<std::array<std::int64_t, 3>> faces = region_faces(s);
             std::map<std::int64_t, std::int64_t> local;
             std::vector<std::int64_t> used;

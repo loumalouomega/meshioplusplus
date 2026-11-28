@@ -689,10 +689,6 @@ NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch, std::int32
                  std::to_string(rInfo.mPatches.size()) + ")");
     if (!std::isfinite(Tolerance) || Tolerance < 0.0)
         iga_fail("the tolerance must be finite and not negative");
-    if (rInfo.mTopology.mDimension != 0 && rInfo.mPatches.size() > 1)
-        iga_fail("a model whose patch topology joins " + std::to_string(rInfo.mPatches.size()) +
-                 " patches shares knot vectors between them; remove knots from a model of one "
-                 "patch");
     const NurbsPatch& patch = rInfo.mPatches[Patch];
     const std::string what = "patch " + std::to_string(Patch);
     const IgaShape sh = iga_check_patch(patch, what);
@@ -748,41 +744,118 @@ NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch, std::int32
                      std::to_string(asked[i]));
     }
 
-    // TOL = d * wmin / (1 + Pmax), with a floor at the net's rounding level.
-    double wmin = 1.0, pmax = 0.0, big = 0.0;
-    const double* w = patch.mWeights.As<double>();
-    const double* x = patch.mControlPoints.As<double>();
-    for (std::size_t i = 0; i < sh.mNumPoints; ++i) {
-        if (rational)
-            wmin = i == 0 ? w[0] : std::min(wmin, w[i]);
-        double norm = 0.0;
-        for (std::size_t d = 0; d < sh.mSdim; ++d)
-            norm += x[i * sh.mSdim + d] * x[i * sh.mSdim + d];
-        pmax = std::max(pmax, std::sqrt(norm));
-    }
-    for (const double v : net.mValues)
-        big = std::max(big, std::abs(v));
-    const double tol = std::max(Tolerance * wmin / (1.0 + pmax), 1e-12 * (1.0 + big));
-
-    IgaRemoveKnotsReport report;
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        const int done = detail::iga_net_remove_knot(net, dir, values[i], asked[i], tol);
-        report.mKnots.push_back(values[i]);
-        report.mRequested.push_back(asked[i]);
-        report.mRemoved.push_back(done);
-        report.mNumRemoved += done;
-    }
+    auto compute_tol = [](const NurbsPatch& rP, const IgaShape& rSh, bool Rat,
+                          const detail::IgaNet& rNet, double Tol) {
+        double wmin = 1.0, pmax = 0.0, big = 0.0;
+        const double* w = rP.mWeights.As<double>();
+        const double* x = rP.mControlPoints.As<double>();
+        for (std::size_t i = 0; i < rSh.mNumPoints; ++i) {
+            if (Rat)
+                wmin = i == 0 ? w[0] : std::min(wmin, w[i]);
+            double norm = 0.0;
+            for (std::size_t d = 0; d < rSh.mSdim; ++d)
+                norm += x[i * rSh.mSdim + d] * x[i * rSh.mSdim + d];
+            pmax = std::max(pmax, std::sqrt(norm));
+        }
+        for (const double v : rNet.mValues)
+            big = std::max(big, std::abs(v));
+        return std::max(Tol * wmin / (1.0 + pmax), 1e-12 * (1.0 + big));
+    };
 
     NurbsInfo out;
     out.mFieldNames = rInfo.mFieldNames;
     out.mTopology = rInfo.mTopology;
     out.mPatches = rInfo.mPatches;
-    out.mPatches[Patch] = iga_patch_from_net(net, sh, rational);
+
+    IgaRemoveKnotsReport report;
+    if (rInfo.mTopology.mDimension != 0 && rInfo.mPatches.size() > 1) {
+        // Joined patches (roadmap 9.8.7): collect every (patch, direction) sharing
+        // this knot vector and remove a knot only to the multiplicity every
+        // sharing patch accepts within its tolerance.
+        struct SharedDir {
+            std::size_t mPatch = 0;
+            std::size_t mDir = 0;
+            IgaShape mShape;
+            bool mRational = false;
+            detail::IgaNet mNet;
+            double mTol = 0.0;
+        };
+        std::vector<SharedDir> shared;
+        for (std::size_t pi = 0; pi < rInfo.mPatches.size(); ++pi) {
+            const NurbsPatch& rp = rInfo.mPatches[pi];
+            const std::string pwhat = "patch " + std::to_string(pi);
+            const IgaShape rsh = iga_check_patch(rp, pwhat);
+            const bool rrat = iga_is_rational(rp);
+            if (rrat)
+                iga_check_weights(rp, pwhat);
+            for (std::size_t d = 0; d < rsh.mDim; ++d) {
+                if (rp.mDegrees[d] == p && rp.mKnots[d] == k) {
+                    SharedDir sd;
+                    sd.mPatch = pi;
+                    sd.mDir = d;
+                    sd.mShape = rsh;
+                    sd.mRational = rrat;
+                    sd.mNet = iga_make_net(rp, rsh, rrat);
+                    sd.mTol = compute_tol(rp, rsh, rrat, sd.mNet, Tolerance);
+                    shared.push_back(std::move(sd));
+                }
+            }
+        }
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            int agreed = asked[i];
+            for (const SharedDir& sd : shared) {
+                detail::IgaNet probe = sd.mNet;
+                const int done = detail::iga_net_remove_knot(probe, sd.mDir, values[i], agreed,
+                                                             sd.mTol);
+                agreed = std::min(agreed, done);
+                if (agreed == 0)
+                    break;
+            }
+            if (agreed > 0) {
+                for (SharedDir& sd : shared)
+                    (void)detail::iga_net_remove_knot(sd.mNet, sd.mDir, values[i], agreed, sd.mTol);
+            }
+            report.mKnots.push_back(values[i]);
+            report.mRequested.push_back(asked[i]);
+            report.mRemoved.push_back(agreed);
+            report.mNumRemoved += agreed;
+        }
+        for (const SharedDir& sd : shared)
+            out.mPatches[sd.mPatch] = iga_patch_from_net(sd.mNet, sd.mShape, sd.mRational);
+    } else {
+        const double tol = compute_tol(patch, sh, rational, net, Tolerance);
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            const int done = detail::iga_net_remove_knot(net, dir, values[i], asked[i], tol);
+            report.mKnots.push_back(values[i]);
+            report.mRequested.push_back(asked[i]);
+            report.mRemoved.push_back(done);
+            report.mNumRemoved += done;
+        }
+        out.mPatches[Patch] = iga_patch_from_net(net, sh, rational);
+    }
+
     out.mCellPatch = NDArray(DType::Int64, {0});
     out.mCellSpan = NDArray(DType::Int64, {0, 3});
     out.mBoundaryCellPatch = NDArray(DType::Int64, {0});
     if (pReport)
         *pReport = std::move(report);
+    return out;
+}
+
+BrepInfo iga_remove_knots(const BrepInfo& rInfo, std::size_t Face, std::int32_t Direction,
+                          const std::vector<double>& rKnots, double Tolerance,
+                          IgaRemoveKnotsReport* pReport) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is out of range (the model has " +
+                 std::to_string(rInfo.mFaces.size()) + ")");
+    const std::int64_t pid = rInfo.mFaces[Face].mPatch;
+    if (pid < 0 || static_cast<std::size_t>(pid) >= rInfo.mPatches.size())
+        iga_fail("face " + std::to_string(Face) + " names no patch");
+    NurbsInfo single;
+    single.mPatches.push_back(rInfo.mPatches[static_cast<std::size_t>(pid)]);
+    NurbsInfo reduced = iga_remove_knots(single, 0, Direction, rKnots, Tolerance, pReport);
+    BrepInfo out = rInfo;
+    out.mPatches[static_cast<std::size_t>(pid)] = std::move(reduced.mPatches[0]);
     return out;
 }
 
@@ -798,9 +871,8 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
     const IgaTable t = iga_make_table(patch, what, rational);
     const IgaShape& sh = t.mShape;
     const std::size_t dim = sh.mDim, sdim = sh.mSdim;
-    if (dim > 2)
-        iga_fail("the closest point on a volume is not computed; " + what + " has " +
-                 std::to_string(dim) + " parametric directions (curves and surfaces only)");
+    if (dim < 1 || dim > 3)
+        iga_fail("closest_point expects 1, 2 or 3 parametric directions");
     if (rPoints.Dtype() != DType::Float64 || rPoints.Shape().size() != 2 ||
         rPoints.Shape()[1] != sdim)
         iga_fail("points are not Float64 (N, " + std::to_string(sdim) + ")");
@@ -810,7 +882,7 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         if (!std::isfinite(q[i]))
             iga_fail("a query point has a non-finite coordinate");
 
-    std::array<double, 2> lo{0, 0}, hi{0, 0};
+    std::array<double, 3> lo{0, 0, 0}, hi{0, 0, 0};
     for (std::size_t d = 0; d < dim; ++d) {
         lo[d] = patch.mKnots[d][static_cast<std::size_t>(patch.mDegrees[d])];
         hi[d] = patch.mKnots[d][sh.mCounts[d]];
@@ -830,7 +902,7 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
     };
 
     // The seed lattice: degree + 1 samples per nonzero knot span.
-    std::array<std::vector<double>, 2> axis;
+    std::array<std::vector<double>, 3> axis;
     for (std::size_t d = 0; d < dim; ++d) {
         const std::vector<double>& k = patch.mKnots[d];
         std::size_t spans = 0;
@@ -839,7 +911,7 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         if (spans == 0)
             iga_fail("closest_point knot vector in direction " + std::to_string(d) +
                      " has zero active span length");
-        const std::size_t cap = dim == 1 ? 4096 : 64;
+        const std::size_t cap = dim == 1 ? 4096 : (dim == 2 ? 64 : 16);
         std::size_t per = static_cast<std::size_t>(patch.mDegrees[d]) + 1;
         per = std::max<std::size_t>(1, std::min(per, cap > spans ? (cap - 1) / spans : 1));
         axis[d].push_back(lo[d]);
@@ -850,13 +922,19 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
                                                : k[s] + (k[s + 1] - k[s]) * static_cast<double>(j) /
                                                             static_cast<double>(per));
     }
-    const std::size_t n0 = axis[0].size(), n1 = dim == 2 ? axis[1].size() : 1;
-    std::vector<double> seed_x(n0 * n1 * sdim);
-    for (std::size_t b = 0; b < n1; ++b)
-        for (std::size_t a = 0; a < n0; ++a) {
-            const double u[2] = {axis[0][a], dim == 2 ? axis[1][b] : 0.0};
-            eval(u, seed_x.data() + (a + n0 * b) * sdim, nullptr, nullptr);
-        }
+    const std::size_t n0 = axis[0].size();
+    const std::size_t n1 = dim >= 2 ? axis[1].size() : 1;
+    const std::size_t n2 = dim == 3 ? axis[2].size() : 1;
+    const std::size_t nseeds = n0 * n1 * n2;
+    std::vector<double> seed_x(nseeds * sdim);
+    for (std::size_t c = 0; c < n2; ++c)
+        for (std::size_t b = 0; b < n1; ++b)
+            for (std::size_t a = 0; a < n0; ++a) {
+                const double u[3] = {axis[0][a], dim >= 2 ? axis[1][b] : 0.0,
+                                     dim == 3 ? axis[2][c] : 0.0};
+                const std::size_t idx = a + n0 * (b + n1 * c);
+                eval(u, seed_x.data() + idx * sdim, nullptr, nullptr);
+            }
 
     IgaClosestPoint out;
     out.mParams = NDArray(DType::Float64, {n, dim});
@@ -870,7 +948,7 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         // The three nearest samples, ascending distance then index.
         std::array<std::size_t, 3> best{0, 0, 0};
         std::array<double, 3> bestd{1e300, 1e300, 1e300};
-        for (std::size_t s = 0; s < n0 * n1; ++s) {
+        for (std::size_t s = 0; s < nseeds; ++s) {
             double d2 = 0.0;
             for (std::size_t d = 0; d < sdim; ++d)
                 d2 += (seed_x[s * sdim + d] - p[d]) * (seed_x[s * sdim + d] - p[d]);
@@ -886,14 +964,20 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
                 }
         }
         double win_f = 1e300;
-        std::array<double, 2> win_u{lo[0], dim == 2 ? lo[1] : 0.0};
+        std::array<double, 3> win_u{lo[0], dim >= 2 ? lo[1] : 0.0, dim == 3 ? lo[2] : 0.0};
         std::array<double, 3> x{0, 0, 0};
-        std::array<double, 12> dd1{}, dd2{};
+        std::array<double, 9> dd1{};
+        std::array<double, 27> dd2{};
         for (std::size_t r = 0; r < 3; ++r) {
             if (bestd[r] >= 1e300)
                 break;
-            std::array<double, 2> u{axis[0][best[r] % n0], dim == 2 ? axis[1][best[r] / n0] : 0.0};
-            const auto residual = [&](const std::array<double, 2>& rU, double* pX, double* pRes) {
+            const std::size_t s = best[r];
+            const std::size_t a = s % n0;
+            const std::size_t b = (s / n0) % n1;
+            const std::size_t c = s / (n0 * n1);
+            std::array<double, 3> u{axis[0][a], dim >= 2 ? axis[1][b] : 0.0,
+                                    dim == 3 ? axis[2][c] : 0.0};
+            const auto residual = [&](const std::array<double, 3>& rU, double* pX, double* pRes) {
                 eval(rU.data(), pX, nullptr, nullptr);
                 double f = 0.0;
                 for (std::size_t d = 0; d < sdim; ++d) {
@@ -906,7 +990,9 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
             double f = residual(u, x.data(), res.data());
             for (int iter = 0; iter < 80; ++iter) {
                 eval(u.data(), x.data(), dd1.data(), dd2.data());
-                double g[2] = {0, 0}, H[2][2] = {{0, 0}, {0, 0}}, G[2][2] = {{0, 0}, {0, 0}};
+                double g[3] = {0, 0, 0};
+                double H[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+                double G[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
                 for (std::size_t d = 0; d < sdim; ++d)
                     res[d] = x[d] - p[d];
                 for (std::size_t k = 0; k < dim; ++k) {
@@ -919,49 +1005,65 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
                                        res[d] * dd2[(k * dim + l) * sdim + d];
                         }
                 }
-                bool free_[2] = {true, true};
+                std::size_t free_idx[3];
                 std::size_t nfree = 0;
                 for (std::size_t k = 0; k < dim; ++k) {
-                    if ((u[k] <= lo[k] && g[k] > 0.0) || (u[k] >= hi[k] && g[k] < 0.0))
-                        free_[k] = false;
-                    nfree += free_[k] ? 1 : 0;
+                    if (!((u[k] <= lo[k] && g[k] > 0.0) || (u[k] >= hi[k] && g[k] < 0.0)))
+                        free_idx[nfree++] = k;
                 }
                 if (nfree == 0)
                     break;
-                double step[2] = {0, 0};
-                if (dim == 2 && nfree == 2) {
-                    auto solve = [&](double A[2][2]) {
-                        const double det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
-                        if (!(A[0][0] > 0.0 && det > 0.0))
-                            return false;
-                        step[0] = -(A[1][1] * g[0] - A[0][1] * g[1]) / det;
-                        step[1] = -(-A[1][0] * g[0] + A[0][0] * g[1]) / det;
-                        return true;
-                    };
-                    if (!solve(H) && !solve(G)) {
-                        const double scale = G[0][0] + G[1][1] + 1e-300;
-                        step[0] = -g[0] / scale;
-                        step[1] = -g[1] / scale;
+                double step[3] = {0, 0, 0};
+                auto solve_spd = [&](double A[3][3]) -> bool {
+                    double L[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+                    for (std::size_t ri = 0; ri < nfree; ++ri) {
+                        for (std::size_t ci = 0; ci <= ri; ++ci) {
+                            double sum = A[free_idx[ri]][free_idx[ci]];
+                            for (std::size_t mi = 0; mi < ci; ++mi)
+                                sum -= L[ri][mi] * L[ci][mi];
+                            if (ri == ci) {
+                                if (!(sum > 0.0))
+                                    return false;
+                                L[ri][ri] = std::sqrt(sum);
+                            } else {
+                                L[ri][ci] = sum / L[ci][ci];
+                            }
+                        }
                     }
-                } else {
-                    for (std::size_t k = 0; k < dim; ++k) {
-                        if (!free_[k])
-                            continue;
-                        const double h = H[k][k] > 0.0 ? H[k][k] : G[k][k] > 0.0 ? G[k][k] : 1e300;
-                        step[k] = -g[k] / h;
+                    double y[3] = {0, 0, 0};
+                    for (std::size_t ri = 0; ri < nfree; ++ri) {
+                        double sum = -g[free_idx[ri]];
+                        for (std::size_t mi = 0; mi < ri; ++mi)
+                            sum -= L[ri][mi] * y[mi];
+                        y[ri] = sum / L[ri][ri];
                     }
+                    double z[3] = {0, 0, 0};
+                    for (std::size_t ri = nfree; ri-- > 0;) {
+                        double sum = y[ri];
+                        for (std::size_t mi = ri + 1; mi < nfree; ++mi)
+                            sum -= L[mi][ri] * z[mi];
+                        z[ri] = sum / L[ri][ri];
+                    }
+                    for (std::size_t ri = 0; ri < nfree; ++ri)
+                        step[free_idx[ri]] = z[ri];
+                    return true;
+                };
+                if (!solve_spd(H) && !solve_spd(G)) {
+                    double scale = 1e-300;
+                    for (std::size_t ri = 0; ri < nfree; ++ri)
+                        scale += G[free_idx[ri]][free_idx[ri]];
+                    for (std::size_t ri = 0; ri < nfree; ++ri)
+                        step[free_idx[ri]] = -g[free_idx[ri]] / scale;
                 }
                 double alpha = 1.0;
                 bool moved = false;
-                std::array<double, 2> trial = u;
+                std::array<double, 3> trial = u;
                 std::array<double, 3> xt{0, 0, 0}, rt{0, 0, 0};
                 double ft = f;
                 for (int half = 0; half < 40 && !moved; ++half, alpha *= 0.5) {
                     for (std::size_t k = 0; k < dim; ++k)
                         trial[k] = std::min(std::max(u[k] + alpha * step[k], lo[k]), hi[k]);
                     ft = residual(trial, xt.data(), rt.data());
-                    // A step that does not raise f beyond rounding: near the minimum f is flat,
-                    // and a strict test would stop a few ulps short of it.
                     moved = ft <= f + 1e-14 * f;
                 }
                 if (!moved)
@@ -991,6 +1093,18 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         od[i] = std::sqrt(dist2);
     });
     return out;
+}
+
+IgaClosestPoint iga_closest_point(const BrepInfo& rInfo, std::size_t Face, const NDArray& rPoints) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is out of range (the model has " +
+                 std::to_string(rInfo.mFaces.size()) + ")");
+    const std::int64_t pid = rInfo.mFaces[Face].mPatch;
+    if (pid < 0 || static_cast<std::size_t>(pid) >= rInfo.mPatches.size())
+        iga_fail("face " + std::to_string(Face) + " names no patch");
+    NurbsInfo single;
+    single.mPatches.push_back(rInfo.mPatches[static_cast<std::size_t>(pid)]);
+    return iga_closest_point(single, 0, rPoints);
 }
 
 Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch) {
@@ -1128,6 +1242,158 @@ Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch) {
     for (std::size_t f = 0; f < fields.size(); ++f)
         mesh.AddPointData(rInfo.mFieldNames[f], std::move(fields[f]));
     return mesh;
+}
+
+Mesh iga_bezier_extract(const BrepInfo& rInfo, std::size_t Face) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is out of range (the model has " +
+                 std::to_string(rInfo.mFaces.size()) + ")");
+    const std::int64_t pid = rInfo.mFaces[Face].mPatch;
+    if (pid < 0 || static_cast<std::size_t>(pid) >= rInfo.mPatches.size())
+        iga_fail("face " + std::to_string(Face) + " names no patch");
+    NurbsInfo single;
+    single.mPatches.push_back(rInfo.mPatches[static_cast<std::size_t>(pid)]);
+    return iga_bezier_extract(single, 0);
+}
+
+namespace {
+
+struct IgaExtraction1D {
+    std::vector<std::vector<double>> mC;  // each (p+1)x(p+1) row-major: N^e = C^e * B
+    std::vector<std::size_t> mSpanStart;  // first B-spline basis index for each element
+};
+
+IgaExtraction1D iga_bezier_extraction_1d(const std::vector<double>& rU, int P) {
+    const auto p = static_cast<std::size_t>(P);
+    const std::size_t m = rU.size();
+    const std::size_t np = p + 1;
+    auto eye = [&]() {
+        std::vector<double> mat(np * np, 0.0);
+        for (std::size_t i = 0; i < np; ++i)
+            mat[i * np + i] = 1.0;
+        return mat;
+    };
+
+    IgaExtraction1D res;
+    std::size_t a = p;
+    std::size_t b = a + 1;
+    std::vector<double> cur = eye();
+    std::vector<double> alphas(np, 0.0);
+    while (b < m) {
+        std::vector<double> next = eye();
+        const std::size_t i = b;
+        while (b + 1 < m && rU[b + 1] == rU[b])
+            ++b;
+        const std::size_t mult = b - i + 1;
+        res.mSpanStart.push_back(a - p);
+        if (mult < p) {
+            const double numer = rU[b] - rU[a];
+            for (std::size_t j = p; j > mult; --j)
+                alphas[j - mult - 1] = numer / (rU[a + j] - rU[a]);
+            const std::size_t r = p - mult;
+            for (std::size_t j = 1; j <= r; ++j) {
+                const std::size_t save = r - j;
+                const std::size_t s = mult + j;
+                for (std::size_t k = p; k >= s; --k) {
+                    const double alpha = alphas[k - s];
+                    for (std::size_t row = 0; row < np; ++row)
+                        cur[row * np + k] =
+                            alpha * cur[row * np + k] + (1.0 - alpha) * cur[row * np + (k - 1)];
+                }
+                if (b + 1 < m) {
+                    for (std::size_t l = 0; l <= j; ++l)
+                        next[(save + l) * np + save] = cur[(p - j + l) * np + p];
+                }
+            }
+        }
+        res.mC.push_back(std::move(cur));
+        if (b + 1 < m) {
+            a = b;
+            ++b;
+            cur = std::move(next);
+        } else {
+            break;
+        }
+    }
+    return res;
+}
+
+}  // namespace
+
+IgaBezierExtraction iga_bezier_extract_operators(const NurbsInfo& rInfo, std::size_t Patch) {
+    IgaBezierExtraction out;
+    out.mMesh = iga_bezier_extract(rInfo, Patch);
+    const NurbsPatch& patch = rInfo.mPatches[Patch];
+    const IgaShape sh = iga_check_patch(patch, "patch " + std::to_string(Patch));
+    const std::size_t dim = sh.mDim;
+    const int p = patch.mDegrees[0];
+    const auto np = static_cast<std::size_t>(p + 1);
+
+    std::array<IgaExtraction1D, 3> ex;
+    for (std::size_t d = 0; d < 3; ++d) {
+        if (d < dim) {
+            ex[d] = iga_bezier_extraction_1d(patch.mKnots[d], p);
+        } else {
+            ex[d].mC.push_back({1.0});
+            ex[d].mSpanStart.push_back(0);
+        }
+    }
+    const std::size_t nu = dim >= 1 ? np : 1;
+    const std::size_t nv = dim >= 2 ? np : 1;
+    const std::size_t nw = dim >= 3 ? np : 1;
+    const std::size_t nn = nu * nv * nw;
+
+    for (std::size_t ew = 0; ew < ex[2].mC.size(); ++ew) {
+        for (std::size_t ev = 0; ev < ex[1].mC.size(); ++ev) {
+            for (std::size_t eu = 0; eu < ex[0].mC.size(); ++eu) {
+                const auto& cu = ex[0].mC[eu];
+                const auto& cv = ex[1].mC[ev];
+                const auto& cw = ex[2].mC[ew];
+                NDArray op = NDArray::Uninit(DType::Float64, {nn, nn});
+                double* po = op.As<double>();
+                for (std::size_t rw = 0; rw < nw; ++rw)
+                    for (std::size_t rv = 0; rv < nv; ++rv)
+                        for (std::size_t ru = 0; ru < nu; ++ru) {
+                            const std::size_t row = ru + nu * (rv + nv * rw);
+                            for (std::size_t kw = 0; kw < nw; ++kw)
+                                for (std::size_t kv = 0; kv < nv; ++kv)
+                                    for (std::size_t ku = 0; ku < nu; ++ku) {
+                                        const std::size_t col = ku + nu * (kv + nv * kw);
+                                        po[row * nn + col] = cu[ru * nu + ku] * cv[rv * nv + kv] *
+                                                             cw[rw * nw + kw];
+                                    }
+                        }
+                NDArray cp = NDArray::Uninit(DType::Int64, {nn});
+                std::int64_t* pcp = cp.As<std::int64_t>();
+                const std::size_t su = ex[0].mSpanStart[eu];
+                const std::size_t sv = ex[1].mSpanStart[ev];
+                const std::size_t sw = ex[2].mSpanStart[ew];
+                for (std::size_t rw = 0; rw < nw; ++rw)
+                    for (std::size_t rv = 0; rv < nv; ++rv)
+                        for (std::size_t ru = 0; ru < nu; ++ru) {
+                            const std::size_t row = ru + nu * (rv + nv * rw);
+                            const std::size_t g =
+                                (su + ru) + sh.mCounts[0] * ((sv + rv) + sh.mCounts[1] * (sw + rw));
+                            pcp[row] = static_cast<std::int64_t>(g);
+                        }
+                out.mOperators.push_back(std::move(op));
+                out.mElementControlPoints.push_back(std::move(cp));
+            }
+        }
+    }
+    return out;
+}
+
+IgaBezierExtraction iga_bezier_extract_operators(const BrepInfo& rInfo, std::size_t Face) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is out of range (the model has " +
+                 std::to_string(rInfo.mFaces.size()) + ")");
+    const std::int64_t pid = rInfo.mFaces[Face].mPatch;
+    if (pid < 0 || static_cast<std::size_t>(pid) >= rInfo.mPatches.size())
+        iga_fail("face " + std::to_string(Face) + " names no patch");
+    NurbsInfo single;
+    single.mPatches.push_back(rInfo.mPatches[static_cast<std::size_t>(pid)]);
+    return iga_bezier_extract_operators(single, 0);
 }
 
 }  // namespace meshioplusplus

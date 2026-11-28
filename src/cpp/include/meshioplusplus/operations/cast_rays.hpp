@@ -63,16 +63,20 @@ struct CastRaysOptions {
     double mMaxDistance = 0.0;
     /// Restrict the surface to this named `Cell` region; empty takes every surface cell.
     std::string mRegion;
+    /// When `true`, return every crossing along each ray in CSR layout (`mRayOffset`).
+    bool mAllHits = false;
 };
 
-/// One entry per ray, in the order the rays were given.
+/// One entry per ray (or per hit when `mAllHits` is `true`, indexed by `mRayOffset`).
 struct CastRaysResult {
     std::vector<std::uint8_t> mHit;
-    std::vector<double> mDistance;    ///< `NaN` on a miss.
-    std::vector<double> mPoint;       ///< Three per ray; `NaN` on a miss.
-    std::vector<double> mNormal;      ///< Three per ray, unit; `NaN` on a miss.
-    std::vector<std::int64_t> mCell;  ///< Global input cell; -1 on a miss.
+    std::vector<double> mDistance;    ///< `NaN` on a miss (nearest mode); per hit when `mAllHits`.
+    std::vector<double> mPoint;       ///< Three per ray (or per hit when `mAllHits`).
+    std::vector<double> mNormal;      ///< Three per ray (or per hit), unit.
+    std::vector<std::int64_t> mCell;  ///< Global input cell; -1 on a miss (nearest mode).
     std::int64_t mNumHits = 0;
+    /// CSR offsets of length `num_rays + 1` when `mAllHits` is `true`; empty otherwise.
+    std::vector<std::int64_t> mRayOffset;
 };
 
 /**

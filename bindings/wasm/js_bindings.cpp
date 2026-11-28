@@ -132,6 +132,7 @@
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
 #include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/subsample_points.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/normals.hpp"
@@ -7714,11 +7715,12 @@ std::vector<double> js_flat_doubles(const val& rArr) {
  * -1 on a miss), the rest `Float64Array`s.
  */
 val cast_rays_js(const val& rMesh, const val& rOrigins, const val& rDirections, double maxDistance,
-                 const std::string& rRegion) {
+                 const std::string& rRegion, bool allHits) {
     return with_js_errors([&]() -> val {
         meshioplusplus::CastRaysOptions options;
         options.mMaxDistance = maxDistance;
         options.mRegion = rRegion;
+        options.mAllHits = allHits;
         const meshioplusplus::CastRaysResult r = meshioplusplus::cast_rays(
             val_to_mesh(rMesh), js_flat_doubles(rOrigins), js_flat_doubles(rDirections), options);
         std::vector<std::int32_t> hit(r.mHit.begin(), r.mHit.end());
@@ -7730,6 +7732,10 @@ val cast_rays_js(const val& rMesh, const val& rOrigins, const val& rDirections, 
         out.set("normal", float64_array_from(r.mNormal.data(), r.mNormal.size()));
         out.set("cell", int32_array_from(cell.data(), cell.size()));
         out.set("numHits", static_cast<double>(r.mNumHits));
+        if (allHits) {
+            std::vector<std::int32_t> ro(r.mRayOffset.begin(), r.mRayOffset.end());
+            out.set("rayOffset", int32_array_from(ro.data(), ro.size()));
+        }
         return out;
     });
 }
@@ -8991,9 +8997,9 @@ val filter_points_js(const val& rMeshObj, const val& rOptions) {
     return with_js_errors([&]() -> val {
         meshioplusplus::PointFilterOptions options;
         if (!rOptions.isUndefined() && !rOptions.isNull()) {
-            check_settings_keys(
-                rOptions, "filterPoints options",
-                {"statisticalK", "stdRatio", "radius", "minNeighbors", "voxelSize", "minDistance"});
+            check_settings_keys(rOptions, "filterPoints options",
+                                {"statisticalK", "stdRatio", "radius", "minNeighbors", "voxelSize",
+                                 "minDistance", "voxelMode"});
             if (rOptions.hasOwnProperty("statisticalK"))
                 options.mStatisticalK =
                     static_cast<std::int64_t>(rOptions["statisticalK"].as<double>());
@@ -9008,6 +9014,16 @@ val filter_points_js(const val& rMeshObj, const val& rOptions) {
                 options.mVoxelSize = rOptions["voxelSize"].as<double>();
             if (rOptions.hasOwnProperty("minDistance"))
                 options.mMinDistance = rOptions["minDistance"].as<double>();
+            if (rOptions.hasOwnProperty("voxelMode")) {
+                const std::string vm = rOptions["voxelMode"].as<std::string>();
+                if (vm == "nearest")
+                    options.mVoxelMode = meshioplusplus::VoxelMode::Nearest;
+                else if (vm == "average")
+                    options.mVoxelMode = meshioplusplus::VoxelMode::Average;
+                else
+                    throw std::invalid_argument(
+                        "meshio++: filterPoints: voxelMode must be 'nearest' or 'average'");
+            }
         }
         meshioplusplus::PointFilterResult r =
             meshioplusplus::filter_points(val_to_mesh(rMeshObj), options);
@@ -9024,6 +9040,60 @@ val filter_points_js(const val& rMeshObj, const val& rOptions) {
         out.set("mesh", mesh_to_val(r.mMesh));
         out.set("pointMap", int32_array_from(map.data(), map.size()));
         out.set("numRemoved", removed);
+        out.set("warnings", warnings);
+        return out;
+    });
+}
+
+val subsample_points_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SubsamplePointsOptions options;
+        if (rOptions.isUndefined() || rOptions.isNull())
+            throw std::invalid_argument("meshio++: subsamplePoints: options with count required");
+        check_settings_keys(rOptions, "subsamplePoints options",
+                            {"count", "method", "seed", "start", "bounds", "maxCells",
+                             "recordIds"});
+        if (!rOptions.hasOwnProperty("count"))
+            throw std::invalid_argument("meshio++: subsamplePoints: count is required");
+        options.mCount = static_cast<std::int64_t>(rOptions["count"].as<double>());
+        if (rOptions.hasOwnProperty("method")) {
+            const std::string m = rOptions["method"].as<std::string>();
+            if (m == "farthest")
+                options.mMethod = meshioplusplus::SubsampleMethod::Farthest;
+            else if (m == "grid")
+                options.mMethod = meshioplusplus::SubsampleMethod::Grid;
+            else if (m == "random")
+                options.mMethod = meshioplusplus::SubsampleMethod::Random;
+            else
+                throw std::invalid_argument(
+                    "meshio++: subsamplePoints: method must be 'farthest', 'grid' or 'random'");
+        }
+        if (rOptions.hasOwnProperty("seed"))
+            options.mSeed = static_cast<std::int64_t>(rOptions["seed"].as<double>());
+        if (rOptions.hasOwnProperty("start"))
+            options.mStart = static_cast<std::int64_t>(rOptions["start"].as<double>());
+        if (rOptions.hasOwnProperty("bounds") && !rOptions["bounds"].isNull() &&
+            !rOptions["bounds"].isUndefined()) {
+            const std::vector<double> b = js_flat_doubles(rOptions["bounds"]);
+            if (b.size() != 6)
+                throw std::invalid_argument("meshio++: subsamplePoints: bounds must have 6 values");
+            options.mHasBounds = true;
+            for (std::size_t k = 0; k < 6; ++k)
+                options.mBounds[k] = b[k];
+        }
+        if (rOptions.hasOwnProperty("maxCells"))
+            options.mMaxCells = static_cast<std::int64_t>(rOptions["maxCells"].as<double>());
+        if (rOptions.hasOwnProperty("recordIds"))
+            options.mRecordIds = rOptions["recordIds"].as<bool>();
+        meshioplusplus::SubsamplePointsResult r =
+            meshioplusplus::subsample_points(val_to_mesh(rMeshObj), options);
+        std::vector<std::int32_t> map(r.mPointMap.begin(), r.mPointMap.end());
+        val warnings = val::array();
+        for (std::size_t i = 0; i < r.mWarnings.size(); ++i)
+            warnings.set(static_cast<unsigned>(i), r.mWarnings[i]);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", int32_array_from(map.data(), map.size()));
         out.set("warnings", warnings);
         return out;
     });
@@ -11941,6 +12011,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("massProperties", &mass_properties_js);
     emscripten::function("castRays", &cast_rays_js);
     emscripten::function("filterPoints", &filter_points_js);
+    emscripten::function("subsamplePoints", &subsample_points_js);
     emscripten::function("locatePoints", &locate_points_js);
     emscripten::function("editRegions", &edit_regions_js);
     emscripten::function("regionAdjacency", &region_adjacency_js);

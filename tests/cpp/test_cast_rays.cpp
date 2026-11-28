@@ -171,3 +171,35 @@ TEST(CastRays, Refusals) {
     EXPECT_THROW(cast_rays(tets, {2, 2, 2}, {-1, -1, -1}), std::invalid_argument);
     EXPECT_TRUE(cast_rays(cube, {}, {1, 0, 0}).mHit.empty());
 }
+
+TEST(CastRays, AllHitsReturnsEveryCrossingInCsr) {
+    const Mesh cube = cr_cube();
+    CastRaysOptions o;
+    o.mAllHits = true;
+    // Ray 0 pierces x=0 and x=1 (2 hits at t=1 and t=2); ray 1 misses;
+    // ray 2 hits the diagonal edge of both x=0 and x=1 faces (still 2 deduplicated hits).
+    const auto r = cast_rays(cube, {-1, 0.25, 0.5, -1, 9, 9, -1, 0.5, 0.5}, {1, 0, 0}, o);
+    ASSERT_EQ(r.mHit.size(), 3u);
+    EXPECT_EQ(r.mHit[0], 1u);
+    EXPECT_EQ(r.mHit[1], 0u);
+    EXPECT_EQ(r.mHit[2], 1u);
+    ASSERT_EQ(r.mRayOffset.size(), 4u);
+    EXPECT_EQ(r.mRayOffset[0], 0);
+    EXPECT_EQ(r.mRayOffset[1], 2);
+    EXPECT_EQ(r.mRayOffset[2], 2);
+    EXPECT_EQ(r.mRayOffset[3], 4);
+    EXPECT_EQ(r.mNumHits, 4);
+    EXPECT_NEAR(r.mDistance[0], 1.0, 1e-12);
+    EXPECT_NEAR(r.mDistance[1], 2.0, 1e-12);
+    EXPECT_NEAR(r.mDistance[2], 1.0, 1e-12);
+    EXPECT_NEAR(r.mDistance[3], 2.0, 1e-12);
+    EXPECT_NE(r.mCell[0], r.mCell[1]);
+
+    // max_distance clips the far face.
+    o.mMaxDistance = 1.5;
+    const auto r_clip = cast_rays(cube, {-1, 0.25, 0.5}, {1, 0, 0}, o);
+    EXPECT_EQ(r_clip.mNumHits, 1);
+    ASSERT_EQ(r_clip.mRayOffset.size(), 2u);
+    EXPECT_EQ(r_clip.mRayOffset[1], 1);
+    EXPECT_NEAR(r_clip.mDistance[0], 1.0, 1e-12);
+}

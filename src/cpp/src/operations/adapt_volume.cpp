@@ -72,6 +72,7 @@
 #include "meshioplusplus/operations/hausdorff.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/progress.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
@@ -2108,8 +2109,12 @@ void AdvRemesher::Run() {
     mrResult.mMeanQualityBefore = before.mMeanQuality;
     mrResult.mVolumeBefore = before.mVolume;
     Time("setup", t0);
+    progress_checkpoint(0.05, "adapt_volume:setup");
 
+    const int max_it = std::max(1, mrOptions.mMaxIterations);
     for (int it = 0; it < mrOptions.mMaxIterations; ++it) {
+        progress_checkpoint(0.05 + 0.80 * (static_cast<double>(it) / static_cast<double>(max_it)),
+                            "adapt_volume:iteration");
         std::int64_t changed = 0;
         if (mrOptions.mEnableCollapse) {
             t0 = AdvClock::now();
@@ -2159,6 +2164,8 @@ void AdvRemesher::Run() {
     if (mrOptions.mEnableSwap || mrOptions.mEnableSmooth) {
         t0 = AdvClock::now();
         for (int round = 0; round < 3; ++round) {
+            progress_checkpoint(0.85 + 0.10 * (static_cast<double>(round) / 3.0),
+                                "adapt_volume:polish");
             std::int64_t n = 0;
             if (mrOptions.mEnableSwap) {
                 const std::int64_t k = SwapPass();

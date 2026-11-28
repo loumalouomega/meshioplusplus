@@ -114,6 +114,9 @@ _C_WITHOUT_JS = {
     # already exposes the per-cell metrics as cell_data, and
     # `surfaceWatertightCheck` covers the surface-quality summary case.
     "quality_counts",
+    # `mio_cast_rays_all` is the CSR all-hits entry point of `cast_rays`
+    # (roadmap 9.3.1); JS `castRays(..., allHits = true)` already covers it.
+    "cast_rays_all",
     # `mio_fit_cad2` is `mio_fit_cad` with the options its fixed struct has
     # no room for; the JS `fitCad` already takes every one of them (and
     # reports every field) as object keys, so there is no second wrapper.

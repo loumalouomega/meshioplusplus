@@ -226,6 +226,12 @@ MESHIOPLUSPLUS_API NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_
                                               const std::vector<double>& rKnots, double Tolerance,
                                               IgaRemoveKnotsReport* pReport = nullptr);
 
+/// Knot removal on a face of a B-rep model (roadmap 9.8.7).
+MESHIOPLUSPLUS_API BrepInfo iga_remove_knots(const BrepInfo& rInfo, std::size_t Face,
+                                             std::int32_t Direction,
+                                             const std::vector<double>& rKnots, double Tolerance,
+                                             IgaRemoveKnotsReport* pReport = nullptr);
+
 /// What `iga_closest_point` found, one row per query point.
 struct IgaClosestPoint {
     /// Float64 `(N, d)`: the parameters of the closest point on the patch.
@@ -237,45 +243,48 @@ struct IgaClosestPoint {
 };
 
 /**
- * @brief The point of patch @p Patch closest to each of @p rPoints (roadmap 9.8.4).
+ * @brief The point of patch @p Patch closest to each of @p rPoints (roadmap 9.8.4, 9.8.6).
  *
- * For a curve (one parametric direction, in 1, 2 or 3 space dimensions) or a
- * surface (two directions, in 2 or 3), rational or not: a lattice of samples
- * (`degree + 1` per knot span and direction, at most about 64 per direction on
- * a surface) seeds a Newton iteration on `|x(u) - p|^2` with the exact second
- * derivatives (`iga_evaluate` with `Derivatives = 2`), clamped to the knot
- * range (a point beyond the patch's edge lands on the edge), falling back on
- * Gauss-Newton where the Hessian is not positive definite and halving the step
- * until the distance drops; the three nearest samples seed three runs and the
- * closest result wins, so a point near a fold of the patch usually finds the
- * global minimum, though a global guarantee is not given. Each point is
- * independent and the result does not depend on the thread count. A volume
- * (three directions) is refused: the closest point of a solid is the point
- * itself unless it is outside, and that is a different problem.
+ * Supports curves (1D), surfaces (2D), and volumes (3D), rational or not.
+ * For a volume, points inside the solid converge to themselves with distance 0;
+ * exterior points clamp onto the boundary.
  * @param rPoints Float64 `(N, space dim)`, finite.
- * @throws std::invalid_argument for a bad patch, a volume, or points that are
- *         not Float64 `(N, space dim)` and finite.
+ * @throws std::invalid_argument for a bad patch, or points that are not
+ *         Float64 `(N, space dim)` and finite.
  */
 MESHIOPLUSPLUS_API IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
                                                      const NDArray& rPoints);
 
+/// Closest point on a face of a B-rep model (roadmap 9.8.7).
+MESHIOPLUSPLUS_API IgaClosestPoint iga_closest_point(const BrepInfo& rInfo, std::size_t Face,
+                                                     const NDArray& rPoints);
+
 /**
  * @brief Bezier extraction of one patch (roadmap 9.8.2): the patch as VTK Bezier cells.
- *
- * Every interior knot is inserted up to multiplicity `p` in each direction
- * (exactly, on the homogeneous net, so a rational patch stays exact), and the
- * refined net is cut at its nonzero knot spans: one `VTK_BEZIER_CURVE`,
- * `VTK_BEZIER_QUADRILATERAL` or `VTK_BEZIER_HEXAHEDRON` cell per span product,
- * with `(p+1)^dim` points in VTK's Lagrange node order, in Cartesian
- * coordinates (the homogeneous values divided by the weight). Points are not
- * shared between cells. Cell data `HigherOrderDegrees` (Float64, `(cells, 3)`,
- * unused directions 0), `iga:patch` and `iga:span` (as `iga_sample` writes
- * them); point data `RationalWeights` when the patch is rational (any weight
- * other than 1) and one array per NURBS field.
- * @throws std::invalid_argument for a bad patch index or patch, or unequal
- *         degrees in the patch's directions (elevate with `iga_elevate_degree`).
  */
 MESHIOPLUSPLUS_API Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch);
+
+/// Bezier extraction of a face of a B-rep model (roadmap 9.8.7).
+MESHIOPLUSPLUS_API Mesh iga_bezier_extract(const BrepInfo& rInfo, std::size_t Face);
+
+/// Bezier cells plus per-element extraction operators (roadmap 9.8.5).
+struct IgaBezierExtraction {
+    /// The extracted VTK Bezier mesh (identical to `iga_bezier_extract`).
+    Mesh mMesh;
+    /// Per element: Float64 `(nn, nn)` extraction matrix `C^e` (B-spline -> Bernstein,
+    /// in tensor-product basis order) such that `N^e = C^e * B` and `P_bezier = (C^e)^T * P`.
+    std::vector<NDArray> mOperators;
+    /// Per element: Int64 `(nn,)` flat control-point indices into the patch's control net.
+    std::vector<NDArray> mElementControlPoints;
+};
+
+/// Bezier extraction returning both cells and per-element extraction operators (roadmap 9.8.5).
+MESHIOPLUSPLUS_API IgaBezierExtraction iga_bezier_extract_operators(const NurbsInfo& rInfo,
+                                                                    std::size_t Patch);
+
+/// Bezier extraction with operators on a B-rep face (roadmap 9.8.5, 9.8.7).
+MESHIOPLUSPLUS_API IgaBezierExtraction iga_bezier_extract_operators(const BrepInfo& rInfo,
+                                                                    std::size_t Face);
 
 /// Sample a B-rep as `sample_brep` does (`mSubdivisions`, `mTrimSamples`, `mTrim`, `mEdges`).
 MESHIOPLUSPLUS_API Mesh iga_sample(const BrepInfo& rInfo, const IgaSampleOptions& rOptions = {});

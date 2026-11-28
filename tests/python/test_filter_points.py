@@ -105,3 +105,31 @@ def test_cli_json(tmp_path, capsys):
     assert rep["num_input"] == len(pts)
     assert rep["num_kept"] == len(mio.read(out).points)
     assert rep["num_removed_statistical"] >= 6
+
+
+def test_voxel_mode_average_and_pipeline():
+    # Two points inside one cube of side 1.0 -> averaged coordinates and float
+    # point_data, nearest-to-mean integer point_data, and point_map == -1.
+    pts = np.array([[0.1, 0.2, 0.3], [0.5, 0.6, 0.7]], dtype=np.float64)
+    mesh = mio.Mesh(
+        pts,
+        [],
+        point_data={
+            "temp": np.array([10.0, 20.0], dtype=np.float64),
+            "label": np.array([7, 9], dtype=np.int64),
+        },
+    )
+    out, rep = mio.filter_points(
+        mesh, voxel_size=1.0, voxel_mode="average", return_report=True
+    )
+    assert len(out.points) == 1
+    np.testing.assert_allclose(out.points[0], [0.3, 0.4, 0.5])
+    np.testing.assert_allclose(out.point_data["temp"], [15.0])
+    assert out.point_data["label"][0] in (7, 9)
+    assert list(rep["point_map"]) == [-1]
+
+    pipe_out, _ = mio.apply_operations(
+        mesh, [{"Op": "FilterPoints", "VoxelSize": 1.0, "VoxelMode": "average"}]
+    )
+    np.testing.assert_allclose(pipe_out.points, out.points)
+    np.testing.assert_allclose(pipe_out.point_data["temp"], [15.0])

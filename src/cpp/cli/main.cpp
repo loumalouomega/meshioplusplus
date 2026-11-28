@@ -4769,6 +4769,7 @@ int cmd_filter_points(const std::vector<std::string>& rArgs) {
                                           {"radius", {}, true},
                                           {"min-neighbors", {}, true},
                                           {"voxel", {}, true},
+                                          {"voxel-mode", {}, true},
                                           {"poisson", {}, true},
                                           {"json", {}, false}}}));
     if (p.positionals.size() != 2)
@@ -4784,6 +4785,15 @@ int cmd_filter_points(const std::vector<std::string>& rArgs) {
     cli_opt_double(p, "radius", o.mRadius);
     cli_opt_int64(p, "min-neighbors", o.mMinNeighbors);
     cli_opt_double(p, "voxel", o.mVoxelSize);
+    if (has_opt(p, "voxel-mode")) {
+        const std::string vm = opt_value(p, "voxel-mode");
+        if (vm == "nearest")
+            o.mVoxelMode = meshioplusplus::VoxelMode::Nearest;
+        else if (vm == "average")
+            o.mVoxelMode = meshioplusplus::VoxelMode::Average;
+        else
+            throw std::runtime_error("filter-points: --voxel-mode must be 'nearest' or 'average'");
+    }
     cli_opt_double(p, "poisson", o.mMinDistance);
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::PointFilterResult r = meshioplusplus::filter_points(mesh, o);
@@ -4820,6 +4830,7 @@ int cmd_cast_rays(const std::vector<std::string>& rArgs) {
                                          {{"direction", {}, true},
                                           {"max-distance", {}, true},
                                           {"region", {}, true},
+                                          {"all-hits", {}, false},
                                           {"json", {}, false}}}));
     if (p.positionals.size() != 3)
         throw std::runtime_error("cast-rays requires SURFACE RAYS and OUTFILE");
@@ -4845,20 +4856,34 @@ int cmd_cast_rays(const std::vector<std::string>& rArgs) {
     cli_opt_double(p, "max-distance", options.mMaxDistance);
     if (has_opt(p, "region"))
         options.mRegion = opt_value(p, "region");
+    options.mAllHits = has_flag(p, "all-hits");
     const std::vector<double> origins = cli_flat_points(rays);
     const meshioplusplus::CastRaysResult r =
         meshioplusplus::cast_rays(surface, origins, directions, options);
 
     std::vector<double> xyz, distance, normal;
     std::vector<std::int64_t> index, cell;
-    for (std::size_t i = 0; i < r.mHit.size(); ++i) {
-        if (!r.mHit[i])
-            continue;
-        xyz.insert(xyz.end(), r.mPoint.begin() + 3 * i, r.mPoint.begin() + 3 * i + 3);
-        normal.insert(normal.end(), r.mNormal.begin() + 3 * i, r.mNormal.begin() + 3 * i + 3);
-        distance.push_back(r.mDistance[i]);
-        index.push_back(static_cast<std::int64_t>(i));
-        cell.push_back(r.mCell[i]);
+    if (options.mAllHits) {
+        xyz = r.mPoint;
+        normal = r.mNormal;
+        distance = r.mDistance;
+        cell = r.mCell;
+        index.reserve(r.mDistance.size());
+        for (std::size_t i = 0; i < r.mHit.size(); ++i) {
+            const std::int64_t count = r.mRayOffset[i + 1] - r.mRayOffset[i];
+            for (std::int64_t k = 0; k < count; ++k)
+                index.push_back(static_cast<std::int64_t>(i));
+        }
+    } else {
+        for (std::size_t i = 0; i < r.mHit.size(); ++i) {
+            if (!r.mHit[i])
+                continue;
+            xyz.insert(xyz.end(), r.mPoint.begin() + 3 * i, r.mPoint.begin() + 3 * i + 3);
+            normal.insert(normal.end(), r.mNormal.begin() + 3 * i, r.mNormal.begin() + 3 * i + 3);
+            distance.push_back(r.mDistance[i]);
+            index.push_back(static_cast<std::int64_t>(i));
+            cell.push_back(r.mCell[i]);
+        }
     }
     const Mesh out = cli_vertex_mesh(xyz, {{"ray:index", cli_i64_array(index)},
                                            {"ray:distance", cli_f64_array(distance, 1)},

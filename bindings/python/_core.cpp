@@ -47,6 +47,8 @@
 #include "../../src/cpp/cli/tui/series.hpp"
 #include "meshioplusplus/formats/abaqus.hpp"
 #include "meshioplusplus/formats/cad_json.hpp"
+#include <chrono>
+#include "meshioplusplus/progress.hpp"
 #include "meshioplusplus/formats/iges.hpp"
 #include "meshioplusplus/formats/frd.hpp"
 #include "meshioplusplus/formats/lsdyna.hpp"
@@ -191,6 +193,7 @@
 #include "meshioplusplus/operations/hull.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
 #include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/subsample_points.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
@@ -383,8 +386,63 @@ auto guard_read(const char* pFormat, TFn fn) {
  * two from deadlocking; the one path back into Python from under it
  * (`gid_write_series`' callback) re-acquires the GIL itself.
  */
+struct CoreCancelToken {
+    std::atomic<bool> mCancelled{false};
+};
+
+struct CorePyProgressSlot {
+    PyObject* mCallback = nullptr;
+    std::shared_ptr<CoreCancelToken> mToken;
+};
+
+thread_local CorePyProgressSlot gCorePyProgress;
+
+struct CoreNogilProgress {
+    PyObject* mCallback = nullptr;
+    std::chrono::steady_clock::time_point mLastSignalCheck;
+    meshioplusplus::ProgressContext mCtx{};
+};
+
+inline bool core_nogil_progress_cb(double Fraction, const char* pStage, void* pUserData) {
+    auto* pState = static_cast<CoreNogilProgress*>(pUserData);
+    if (pState->mCallback != nullptr) {
+        py::gil_scoped_acquire gil;
+        if (PyErr_CheckSignals() != 0)
+            return false;
+        try {
+            py::object res =
+                py::reinterpret_borrow<py::object>(pState->mCallback)(Fraction,
+                                                                      pStage ? pStage : "");
+            if (py::isinstance<py::bool_>(res) && !res.cast<bool>())
+                return false;
+        } catch (py::error_already_set& e) {
+            e.restore();
+            return false;
+        }
+        return true;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now - pState->mLastSignalCheck >= std::chrono::milliseconds(100)) {
+        pState->mLastSignalCheck = now;
+        py::gil_scoped_acquire gil;
+        if (PyErr_CheckSignals() != 0)
+            return false;
+    }
+    return true;
+}
+
 template <class TFn>
 decltype(auto) core_nogil(TFn&& fn) {
+    CoreNogilProgress prog;
+    prog.mCallback = gCorePyProgress.mCallback;
+    prog.mLastSignalCheck = std::chrono::steady_clock::now();
+    prog.mCtx.mCancel =
+        gCorePyProgress.mToken ? &gCorePyProgress.mToken->mCancelled : nullptr;
+    prog.mCtx.mCallback = &core_nogil_progress_cb;
+    prog.mCtx.mUserData = &prog;
+    const bool already_set = meshioplusplus::current_progress_context() != nullptr;
+    meshioplusplus::ScopedProgressContext guard(
+        already_set ? meshioplusplus::current_progress_context() : &prog.mCtx);
     py::gil_scoped_release release;
     return std::forward<TFn>(fn)();
 }
@@ -2373,7 +2431,47 @@ PYBIND11_MODULE(_core, m) {
         } catch (const meshioplusplus::Unsupported& e) {
             // An operation's recognised decline: core_op_declined's signal.
             PyErr_SetString(PyExc_NotImplementedError, e.what());
+        } catch (const meshioplusplus::CancelledError& e) {
+            if (!PyErr_Occurred()) {
+                py::object exc = py::module_::import("meshioplusplus").attr("CancelledError");
+                PyErr_SetString(exc.ptr(), e.what());
+            }
         }
+    });
+
+    py::class_<CoreCancelToken, std::shared_ptr<CoreCancelToken>>(m, "CancelToken")
+        .def(py::init<>())
+        .def("cancel", [](CoreCancelToken& rSelf) {
+            rSelf.mCancelled.store(true, std::memory_order_relaxed);
+        })
+        .def("reset", [](CoreCancelToken& rSelf) {
+            rSelf.mCancelled.store(false, std::memory_order_relaxed);
+        })
+        .def_property_readonly("is_cancelled", [](const CoreCancelToken& rSelf) {
+            return rSelf.mCancelled.load(std::memory_order_relaxed);
+        });
+
+    m.def("_push_progress_context",
+          [](py::object cb, std::shared_ptr<CoreCancelToken> token) {
+              py::object prev_cb = gCorePyProgress.mCallback
+                                       ? py::reinterpret_steal<py::object>(gCorePyProgress.mCallback)
+                                       : py::none();
+              std::shared_ptr<CoreCancelToken> prev_tok = std::move(gCorePyProgress.mToken);
+              gCorePyProgress.mCallback = cb.is_none() ? nullptr : cb.inc_ref().ptr();
+              gCorePyProgress.mToken = std::move(token);
+              return py::make_tuple(prev_cb, prev_tok);
+          });
+
+    m.def("_pop_progress_context", [](py::tuple prev) {
+        if (gCorePyProgress.mCallback != nullptr) {
+            Py_DECREF(gCorePyProgress.mCallback);
+            gCorePyProgress.mCallback = nullptr;
+        }
+        py::object prev_cb = prev[0];
+        gCorePyProgress.mCallback = prev_cb.is_none() ? nullptr : prev_cb.inc_ref().ptr();
+        gCorePyProgress.mToken = prev[1].is_none()
+                                     ? nullptr
+                                     : prev[1].cast<std::shared_ptr<CoreCancelToken>>();
     });
 
     // Shared cell-type metadata (single source of truth with Python).
@@ -7380,7 +7478,8 @@ PYBIND11_MODULE(_core, m) {
     m.def(
         "filter_points",
         [](py::object pymesh, std::int64_t statistical_k, double std_ratio, double radius,
-           std::int64_t min_neighbors, double voxel_size, double min_distance) {
+           std::int64_t min_neighbors, double voxel_size, double min_distance,
+           const std::string& voxel_mode) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
@@ -7391,6 +7490,13 @@ PYBIND11_MODULE(_core, m) {
             options.mMinNeighbors = min_neighbors;
             options.mVoxelSize = voxel_size;
             options.mMinDistance = min_distance;
+            if (voxel_mode == "nearest")
+                options.mVoxelMode = meshioplusplus::VoxelMode::Nearest;
+            else if (voxel_mode == "average")
+                options.mVoxelMode = meshioplusplus::VoxelMode::Average;
+            else
+                throw std::invalid_argument(
+                    "meshio++: filter_points: voxel_mode must be 'nearest' or 'average'");
             meshioplusplus::PointFilterResult r =
                 core_nogil([&] { return meshioplusplus::filter_points(cpp, options); });
             py::dict out;
@@ -7407,7 +7513,52 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("mesh"), py::arg("statistical_k") = 0, py::arg("std_ratio") = 1.0,
         py::arg("radius") = 0.0, py::arg("min_neighbors") = 4, py::arg("voxel_size") = 0.0,
-        py::arg("min_distance") = 0.0);
+        py::arg("min_distance") = 0.0, py::arg("voxel_mode") = std::string("nearest"));
+
+    m.def(
+        "subsample_points",
+        [](py::object pymesh, std::int64_t count, const std::string& method, std::int64_t seed,
+           py::object start, py::object bounds, std::int64_t max_cells, bool record_ids) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::SubsamplePointsOptions options;
+            options.mCount = count;
+            if (method == "farthest")
+                options.mMethod = meshioplusplus::SubsampleMethod::Farthest;
+            else if (method == "grid")
+                options.mMethod = meshioplusplus::SubsampleMethod::Grid;
+            else if (method == "random")
+                options.mMethod = meshioplusplus::SubsampleMethod::Random;
+            else
+                throw std::invalid_argument(
+                    "meshio++: subsample_points: unknown method '" + method +
+                    "' (expected farthest, grid or random)");
+            options.mSeed = seed;
+            options.mStart = start.is_none() ? -1 : start.cast<std::int64_t>();
+            if (!bounds.is_none()) {
+                auto seq = bounds.cast<std::vector<double>>();
+                if (seq.size() != 6)
+                    throw std::invalid_argument(
+                        "meshio++: subsample_points: bounds must be six numbers");
+                options.mHasBounds = true;
+                for (std::size_t k = 0; k < 6; ++k)
+                    options.mBounds[k] = seq[k];
+            }
+            options.mMaxCells = max_cells;
+            options.mRecordIds = record_ids;
+            meshioplusplus::SubsamplePointsResult r =
+                core_nogil([&] { return meshioplusplus::subsample_points(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["point_map"] = py::array_t<std::int64_t>(
+                static_cast<py::ssize_t>(r.mPointMap.size()), r.mPointMap.data());
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("count"), py::arg("method") = std::string("farthest"),
+        py::arg("seed") = 0, py::arg("start") = 0, py::arg("bounds") = py::none(),
+        py::arg("max_cells") = 16000000, py::arg("record_ids") = false);
 
     // Rays against a surface and point location in a mesh: arrays in, arrays
     // out. See operations/cast_rays.hpp and operations/locate_points.hpp.
@@ -7416,7 +7567,7 @@ PYBIND11_MODULE(_core, m) {
         [](py::object pymesh,
            py::array_t<double, py::array::c_style | py::array::forcecast> origins,
            py::array_t<double, py::array::c_style | py::array::forcecast> directions,
-           double max_distance, const std::string& region) {
+           double max_distance, const std::string& region, bool all_hits) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
@@ -7433,25 +7584,31 @@ PYBIND11_MODULE(_core, m) {
             meshioplusplus::CastRaysOptions options;
             options.mMaxDistance = max_distance;
             options.mRegion = region;
+            options.mAllHits = all_hits;
             const meshioplusplus::CastRaysResult r =
                 core_nogil([&] { return meshioplusplus::cast_rays(cpp, o, d, options); });
             const auto n = static_cast<py::ssize_t>(r.mHit.size());
+            const auto m = static_cast<py::ssize_t>(r.mDistance.size());
             py::array_t<bool> hit(n);
             for (py::ssize_t i = 0; i < n; ++i)
                 hit.mutable_data()[i] = r.mHit[static_cast<std::size_t>(i)] != 0;
-            py::array_t<double> point({n, py::ssize_t{3}}, r.mPoint.data());
-            py::array_t<double> normal({n, py::ssize_t{3}}, r.mNormal.data());
+            py::array_t<double> point({m, py::ssize_t{3}}, r.mPoint.data());
+            py::array_t<double> normal({m, py::ssize_t{3}}, r.mNormal.data());
             py::dict out;
             out["hit"] = hit;
-            out["distance"] = py::array_t<double>(n, r.mDistance.data());
+            out["distance"] = py::array_t<double>(m, r.mDistance.data());
             out["point"] = point;
             out["normal"] = normal;
-            out["cell"] = py::array_t<std::int64_t>(n, r.mCell.data());
+            out["cell"] = py::array_t<std::int64_t>(m, r.mCell.data());
             out["num_hits"] = r.mNumHits;
+            if (all_hits) {
+                const auto ro_n = static_cast<py::ssize_t>(r.mRayOffset.size());
+                out["ray_offset"] = py::array_t<std::int64_t>(ro_n, r.mRayOffset.data());
+            }
             return out;
         },
         py::arg("mesh"), py::arg("origins"), py::arg("directions"), py::arg("max_distance") = 0.0,
-        py::arg("region") = std::string());
+        py::arg("region") = std::string(), py::arg("all_hits") = false);
     m.def(
         "locate_points",
         [](py::object pymesh, py::array_t<double, py::array::c_style | py::array::forcecast> points,
@@ -9675,6 +9832,82 @@ PYBIND11_MODULE(_core, m) {
                     core_nogil([&] { return meshioplusplus::iga_bezier_extract(in, patch); }));
             },
             py::arg("nurbs"), py::arg("patch") = 0);
+        m.def(
+            "iga_bezier_extract_brep",
+            [=](py::object brep, std::size_t face) {
+                const meshioplusplus::BrepInfo in = core_brep_from_py(brep);
+                return meshioplusplus_py::mesh_to_py(
+                    core_nogil([&] { return meshioplusplus::iga_bezier_extract(in, face); }));
+            },
+            py::arg("brep"), py::arg("face") = 0);
+        auto extraction_to_py = [](meshioplusplus::IgaBezierExtraction ex) {
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(ex.mMesh));
+            py::list ops, cps;
+            for (auto& op : ex.mOperators)
+                ops.append(meshioplusplus_py::numpy_from_ndarray(std::move(op)));
+            for (auto& cp : ex.mElementControlPoints)
+                cps.append(meshioplusplus_py::numpy_from_ndarray(std::move(cp)));
+            out["operators"] = std::move(ops);
+            out["element_control_points"] = std::move(cps);
+            return out;
+        };
+        m.def(
+            "iga_bezier_extract_operators_nurbs",
+            [=](py::object nurbs, std::size_t patch) {
+                const meshioplusplus::NurbsInfo in = nurbs_info_from_py(nurbs);
+                return extraction_to_py(core_nogil(
+                    [&] { return meshioplusplus::iga_bezier_extract_operators(in, patch); }));
+            },
+            py::arg("nurbs"), py::arg("patch") = 0);
+        m.def(
+            "iga_bezier_extract_operators_brep",
+            [=](py::object brep, std::size_t face) {
+                const meshioplusplus::BrepInfo in = core_brep_from_py(brep);
+                return extraction_to_py(core_nogil(
+                    [&] { return meshioplusplus::iga_bezier_extract_operators(in, face); }));
+            },
+            py::arg("brep"), py::arg("face") = 0);
+        m.def(
+            "iga_remove_knots_brep",
+            [=](py::object brep, std::size_t face, std::int32_t direction,
+                std::vector<double> knots, double tolerance, int sample_subdivisions) {
+                const meshioplusplus::BrepInfo in = core_brep_from_py(brep);
+                meshioplusplus::IgaSampleOptions so;
+                so.mSubdivisions = sample_subdivisions;
+                meshioplusplus::IgaRemoveKnotsReport report;
+                meshioplusplus::BrepInfo reduced;
+                meshioplusplus::Mesh mesh = core_nogil([&] {
+                    reduced = meshioplusplus::iga_remove_knots(in, face, direction, knots,
+                                                               tolerance, &report);
+                    return meshioplusplus::iga_sample(reduced, so);
+                });
+                py::object pymesh = meshioplusplus_py::mesh_to_py(std::move(mesh));
+                attach(pymesh, "brep", core_brep_to_py(std::move(reduced)));
+                py::dict rep;
+                rep["knots"] = report.mKnots;
+                rep["requested"] = report.mRequested;
+                rep["removed"] = report.mRemoved;
+                rep["num_removed"] = report.mNumRemoved;
+                return py::make_tuple(std::move(pymesh), std::move(rep));
+            },
+            py::arg("brep"), py::arg("face") = 0, py::arg("direction") = 0,
+            py::arg("knots") = std::vector<double>{}, py::arg("tolerance") = 0.0,
+            py::arg("sample_subdivisions") = 0);
+        m.def(
+            "iga_closest_point_brep",
+            [=](py::object brep, std::size_t face, py::object points) {
+                const meshioplusplus::BrepInfo in = core_brep_from_py(brep);
+                const meshioplusplus::NDArray q = params_view(points);
+                meshioplusplus::IgaClosestPoint r =
+                    core_nogil([&] { return meshioplusplus::iga_closest_point(in, face, q); });
+                py::dict out;
+                out["params"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mParams));
+                out["points"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mPoints));
+                out["distances"] = meshioplusplus_py::numpy_from_ndarray(std::move(r.mDistances));
+                return out;
+            },
+            py::arg("brep"), py::arg("face"), py::arg("points"));
         m.def(
             "iga_evaluate_nurbs",
             [=](py::object nurbs, std::size_t patch, py::object params, int derivatives) {

@@ -1625,6 +1625,14 @@ static mxArray* O_mio_filter_points(const mxArray** a) {
     opts.min_neighbors = (int64_t)mio_o_double(a[4], "min_neighbors");
     opts.voxel_size = mio_o_double(a[5], "voxel_size");
     opts.min_distance = mio_o_double(a[6], "min_distance");
+    const char* vm = mio_o_string(a[7], "voxel_mode");
+    if (strcmp(vm, "nearest") == 0)
+        opts.voxel_mode = MIO_VOXEL_NEAREST;
+    else if (strcmp(vm, "average") == 0)
+        opts.voxel_mode = MIO_VOXEL_AVERAGE;
+    else
+        mexErrMsgIdAndTxt("meshioplusplus:invalid_arg",
+                          "meshio++: filter_points: voxel_mode must be 'nearest' or 'average'");
     const mio_mesh* in = mio_o_mesh(a[0]);
     int64_t n_in = mio_mesh_num_points(in);
     int64_t* map = (int64_t*)mxCalloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
@@ -1643,6 +1651,54 @@ static mxArray* O_mio_filter_points(const mxArray** a) {
                          mio_o_getbuffer(mio_filter_points_warnings, "filter_points")};
     mxFree(map);
     return mio_o_struct(4, names, values);
+}
+
+/* subsample_points(mesh, count, method, seed, start, bounds, max_cells, record_ids) */
+static mxArray* O_mio_subsample_points(const mxArray** a) {
+    mio_subsample_points_opts opts;
+    mio_subsample_points_opts_init(&opts);
+    opts.count = (int64_t)mio_o_double(a[1], "count");
+    const char* m = mio_o_string(a[2], "method");
+    if (strcmp(m, "farthest") == 0)
+        opts.method = MIO_SUBSAMPLE_FARTHEST;
+    else if (strcmp(m, "grid") == 0)
+        opts.method = MIO_SUBSAMPLE_GRID;
+    else if (strcmp(m, "random") == 0)
+        opts.method = MIO_SUBSAMPLE_RANDOM;
+    else
+        mexErrMsgIdAndTxt("meshioplusplus:invalid_arg",
+                          "meshio++: subsample_points: method must be 'farthest', 'grid', or 'random'");
+    opts.seed = (int64_t)mio_o_double(a[3], "seed");
+    if (a[4] != NULL && !mxIsEmpty(a[4])) {
+        int64_t s = (int64_t)mio_o_double(a[4], "start");
+        opts.start = s > 0 ? s - 1 : -1;
+    }
+    if (a[5] != NULL && !mxIsEmpty(a[5])) {
+        if (mxGetNumberOfElements(a[5]) != 6)
+            mexErrMsgIdAndTxt("meshioplusplus:invalid_arg",
+                              "meshio++: subsample_points: bounds must have 6 values");
+        opts.has_bounds = 1;
+        const double* bp = mxGetPr(a[5]);
+        for (int k = 0; k < 6; ++k)
+            opts.bounds[k] = bp[k];
+    }
+    opts.max_cells = (int64_t)mio_o_double(a[6], "max_cells");
+    opts.record_ids = mio_o_bool(a[7], "record_ids") ? 1 : 0;
+
+    const mio_mesh* in = mio_o_mesh(a[0]);
+    int64_t n_in = mio_mesh_num_points(in);
+    int64_t* map = (int64_t*)mxCalloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
+    mio_mesh* res = mio_subsample_points(in, &opts, map);
+    if (res == NULL) {
+        mxFree(map);
+        mio_o_fail("subsample_points");
+    }
+    int64_t n_out = mio_mesh_num_points(res);
+    const char* names[] = {"mesh", "point_map", "warnings"};
+    mxArray* values[] = {mio_o_wrap_mesh(res), mio_o_shift_map(map, n_out),
+                         mio_o_getbuffer(mio_subsample_points_warnings, "subsample_points")};
+    mxFree(map);
+    return mio_o_struct(3, names, values);
 }
 
 /* --- ray casting and point location (roadmap 9.3) ------------------------ */
@@ -1666,6 +1722,45 @@ static mxArray* O_mio_cast_rays(const mxArray** a) {
     mio_cast_rays_opts_init(&opts);
     opts.max_distance = mio_o_double(a[3], "max_distance");
     opts.region = mio_o_opt_string(a[4]);
+    const int do_all = mio_o_bool(a[5], "all_hits");
+
+    if (do_all) {
+        opts.all_hits = 1;
+        mio_cast_rays_result* res =
+            mio_cast_rays_all(mio_o_mesh(a[0]), o, n, d, nd, &opts);
+        mxFree(o);
+        mxFree(d);
+        if (!res)
+            mio_o_fail("cast_rays");
+        const int64_t nh = mio_cast_rays_result_num_hits(res);
+        const int64_t* ro = mio_cast_rays_result_ray_offset(res);
+        const double* dist = mio_cast_rays_result_distance(res);
+        const double* pt = mio_cast_rays_result_point(res);
+        const double* nm = mio_cast_rays_result_normal(res);
+        const int64_t* cl = mio_cast_rays_result_cell(res);
+
+        mxArray* rhit = mio_o_logical_column(n);
+        mxLogical* hl = mxGetLogicals(rhit);
+        for (int64_t i = 0; i < n; ++i)
+            hl[i] = ro[i + 1] > ro[i];
+        mxArray* rro = mio_o_column(n + 1);
+        for (int64_t i = 0; i <= n; ++i)
+            mxGetPr(rro)[i] = (double)ro[i];
+        mxArray* rdist = mio_o_column(nh);
+        for (int64_t i = 0; i < nh; ++i)
+            mxGetPr(rdist)[i] = dist[i];
+        const char* names[] = {"hit",  "distance", "point",     "normal",
+                               "cell", "num_hits", "ray_offset"};
+        mxArray* values[] = {rhit,
+                             rdist,
+                             mio_o_rows_from_c(pt, MIO_FLOAT64, nh, 3, 0.0),
+                             mio_o_rows_from_c(nm, MIO_FLOAT64, nh, 3, 0.0),
+                             mio_o_shift_map(cl, nh),
+                             mio_o_scalar((double)nh),
+                             rro};
+        mio_cast_rays_result_free(res);
+        return mio_o_struct(7, names, values);
+    }
 
     int32_t* hit = (int32_t*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
     double* distance = (double*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(double));
@@ -2488,8 +2583,9 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_check_quality, 4),
     MIO_O_ENTRY(mio_hausdorff_distance, 5),
     MIO_O_ENTRY(mio_mass_properties, 6),
-    MIO_O_ENTRY(mio_cast_rays, 5),
-    MIO_O_ENTRY(mio_filter_points, 7),
+    MIO_O_ENTRY(mio_cast_rays, 6),
+    MIO_O_ENTRY(mio_filter_points, 8),
+    MIO_O_ENTRY(mio_subsample_points, 8),
     MIO_O_ENTRY(mio_locate_points, 3),
     MIO_O_ENTRY(mio_repair, 9),
     MIO_O_ENTRY(mio_shrinkwrap, 9),

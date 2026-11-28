@@ -79,6 +79,46 @@ CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
     const double nan = std::nan("");
 
     CastRaysResult out;
+    if (rOptions.mAllHits) {
+        std::vector<std::vector<detail::TriRayHit>> per_ray(n);
+        parallel_for(n, [&](std::size_t i) {
+            const detail::Vec3 origin{rOrigins[3 * i], rOrigins[3 * i + 1], rOrigins[3 * i + 2]};
+            const detail::Vec3& dir = dirs[common ? 0 : i];
+            per_ray[i] = detail::tri_bvh_ray_all_hits(tree, origin, dir, 0.0, t_max);
+        });
+        out.mHit.assign(n, 0);
+        out.mRayOffset.assign(n + 1, 0);
+        for (std::size_t i = 0; i < n; ++i) {
+            out.mHit[i] = per_ray[i].empty() ? 0 : 1;
+            out.mRayOffset[i + 1] =
+                out.mRayOffset[i] + static_cast<std::int64_t>(per_ray[i].size());
+        }
+        const auto total = static_cast<std::size_t>(out.mRayOffset[n]);
+        out.mNumHits = static_cast<std::int64_t>(total);
+        out.mDistance.assign(total, nan);
+        out.mPoint.assign(3 * total, nan);
+        out.mNormal.assign(3 * total, nan);
+        out.mCell.assign(total, -1);
+        parallel_for(n, [&](std::size_t i) {
+            const detail::Vec3 origin{rOrigins[3 * i], rOrigins[3 * i + 1], rOrigins[3 * i + 2]};
+            const detail::Vec3& dir = dirs[common ? 0 : i];
+            const auto base = static_cast<std::size_t>(out.mRayOffset[i]);
+            const auto& hits = per_ray[i];
+            for (std::size_t h = 0; h < hits.size(); ++h) {
+                const std::size_t dst = base + h;
+                out.mDistance[dst] = hits[h].mT;
+                for (std::size_t k = 0; k < 3; ++k)
+                    out.mPoint[3 * dst + k] = origin[k] + hits[h].mT * dir[k];
+                const double len = detail::vec3_norm(hits[h].mNormal);
+                if (len > 0.0)
+                    for (std::size_t k = 0; k < 3; ++k)
+                        out.mNormal[3 * dst + k] = hits[h].mNormal[k] / len;
+                out.mCell[dst] = soup.mSourceCell[static_cast<std::size_t>(hits[h].mTriangle)];
+            }
+        });
+        return out;
+    }
+
     out.mHit.assign(n, 0);
     out.mDistance.assign(n, nan);
     out.mPoint.assign(3 * n, nan);

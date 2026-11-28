@@ -2521,6 +2521,7 @@ def _apply_step(mesh, step, steps, warnings):
             min_neighbors=_fp_integer("MinNeighbors", 4),
             voxel_size=_number(step, "VoxelSize", 0.0),
             min_distance=_number(step, "MinDistance", 0.0),
+            voxel_mode=_text(step, "VoxelMode", "nearest"),
             return_report=True,
         )
         entry["NumRemovedStatistical"] = float(report["num_removed_statistical"])

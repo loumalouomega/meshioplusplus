@@ -2610,6 +2610,9 @@ _NOT_TOOLS = {
     "write_points_cells",  # constructor variant of write(); convert covers I/O
     "register_format",
     "deregister_format",
+    "CancelledError",  # exception class (roadmap 9.16)
+    "CancelToken",  # in-memory cooperative cancellation handle (roadmap 9.16)
+    "progress_context",  # in-memory thread-local progress callback guard (roadmap 9.16)
     "partition_labels",  # in-memory variant of partition
     "apply_operations",  # in-memory variant of the pipeline tool
     "complex_pairs",  # in-memory numpy helper; data_info reports complex pairs

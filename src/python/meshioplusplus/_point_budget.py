@@ -504,6 +504,34 @@ def subsample_points(mesh, budget, *, record_ids: bool = False, **select_kwargs)
                 "alongside an already-made budget; pass a count to select here"
             )
     else:
+        method = select_kwargs.get("method", "farthest")
+        start = select_kwargs.get("start", 0)
+        if method in ("farthest", "grid") and start is not None:
+            from ._fallback import core_op_declined
+
+            try:
+                from . import _core
+            except ImportError:
+                _core = None
+            fn = getattr(_core, "subsample_points", None)
+            if fn is not None:
+                try:
+                    res = fn(
+                        mesh,
+                        int(budget),
+                        str(method),
+                        int(select_kwargs.get("seed", 0)),
+                        int(start),
+                        select_kwargs.get("bounds", None),
+                        int(select_kwargs.get("max_cells", DEFAULT_MAX_CELLS)),
+                        bool(record_ids),
+                    )
+                    if res["warnings"]:
+                        _emit("subsample_points", res["warnings"])
+                    return res["mesh"]
+                except Exception as exc:
+                    if not core_op_declined(exc, "subsample_points"):
+                        raise
         budget = select_points(mesh, budget, **select_kwargs)
     n = len(mesh.points)
     idx = budget.indices

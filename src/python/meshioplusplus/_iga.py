@@ -1201,31 +1201,26 @@ def _evaluate_brep_py(brep, face_index, params, derivatives, trim_samples):
     return res
 
 
-def iga_bezier_extract(mesh, patch=0, model="auto"):
-    """Bezier extraction of one patch of a NURBS model (roadmap 9.8.2).
+def iga_bezier_extract(mesh, patch=0, model="auto", return_operators=False):
+    """Bezier extraction of one patch or B-rep face (roadmap 9.8.2, 9.8.5, 9.8.7).
 
-    Every interior knot is inserted up to multiplicity ``p`` in each
-    direction (exactly, on the homogeneous net) and the refined net is cut at
-    its nonzero knot spans: one ``VTK_BEZIER_CURVE``,
-    ``VTK_BEZIER_QUADRILATERAL`` or ``VTK_BEZIER_HEXAHEDRON`` cell per span
-    product, ``(p+1)**d`` points each in VTK's Lagrange node order, in
-    Cartesian coordinates. Points are not shared between cells.
-
-    :param patch: the patch of the ``nurbs`` model to extract.
-    :returns: a mesh with cell data ``HigherOrderDegrees`` ``(cells, 3)``,
-        ``iga:patch`` and ``iga:span`` (as :func:`iga_sample`), point data
-        ``RationalWeights`` when the patch is rational (any weight other than
-        1) and one array per NURBS field; it writes to VTU as it is.
-    :raises ValueError: on a bad patch, a ``brep`` model or unequal degrees
-        (elevate with :func:`iga_refine` first).
-    :raises NotImplementedError: when the compiled C++ core is unavailable.
+    :param patch: the patch (for ``nurbs``) or face (for ``brep``) to extract.
+    :param return_operators: when ``True``, return a dict ``{"mesh", "operators",
+        "element_control_points"}`` with per-element extraction matrices ``C^e``.
+    :returns: a VTK Bezier mesh, or the dict above when ``return_operators=True``.
     """
     from ._hull import _core_op
 
     kind, data = _model(mesh, model)
-    if kind != "nurbs":
-        _fail("Bezier extraction takes a 'nurbs' model, not a 'brep'")
-    return _core_op("iga_bezier_extract_nurbs")(data, int(patch))
+    if return_operators:
+        fn = (
+            "iga_bezier_extract_operators_nurbs"
+            if kind == "nurbs"
+            else "iga_bezier_extract_operators_brep"
+        )
+        return _core_op(fn)(data, int(patch))
+    fn = "iga_bezier_extract_nurbs" if kind == "nurbs" else "iga_bezier_extract_brep"
+    return _core_op(fn)(data, int(patch))
 
 
 def iga_remove_knots(
@@ -1238,37 +1233,12 @@ def iga_remove_knots(
     sample_subdivisions=0,
     return_report=False,
 ):
-    """Remove knots from one patch of a NURBS model (The NURBS Book's A5.8).
-
-    Interior knots are removed from ``direction`` of ``patch`` while the
-    geometry (and the NURBS fields) stays within ``tolerance``, in the book's
-    bound ``d * wmin / (1 + Pmax)`` on the homogeneous net: the curve or
-    surface moves by at most ``tolerance``. ``tolerance=0`` removes only what
-    is exact up to rounding (``1e-12`` of the net's size), which undoes a
-    knot insertion. A knot of a surface or volume goes only if it goes from
-    every line of the net.
-
-    :param direction: the parametric direction (0-based).
-    :param knots: knot values to remove, each listing one copy (a value listed
-        twice asks for two); empty asks for every copy of every interior knot.
-    :param sample_subdivisions: cells per knot span of the returned sampling
-        (0: automatic, as :func:`iga_sample`).
-    :param return_report: also return ``{"knots", "requested", "removed",
-        "num_removed"}`` (per distinct knot value, ascending).
-    :returns: the model with that patch replaced, sampled again, with the new
-        model in ``mesh.info["nurbs"]``; or ``(mesh, report)``.
-    :raises ValueError: on a bad patch or direction, a negative tolerance, a
-        knot that is not an interior knot (or is listed more often than its
-        multiplicity), a ``brep`` model, or a model whose patch topology joins
-        several patches.
-    :raises NotImplementedError: when the compiled C++ core is unavailable.
-    """
+    """Remove knots from one patch (or joined patches / B-rep face; roadmap 9.8.3, 9.8.7)."""
     from ._hull import _core_op
 
     kind, data = _model(mesh, model)
-    if kind != "nurbs":
-        _fail("knot removal takes a 'nurbs' model, not a 'brep'")
-    out, report = _core_op("iga_remove_knots_nurbs")(
+    fn = "iga_remove_knots_nurbs" if kind == "nurbs" else "iga_remove_knots_brep"
+    out, report = _core_op(fn)(
         data,
         int(patch),
         int(direction),
@@ -1280,31 +1250,13 @@ def iga_remove_knots(
 
 
 def iga_closest_point(mesh, points, patch=0, model="auto"):
-    """The point of a NURBS patch closest to each of ``points`` (roadmap 9.8.4).
-
-    A curve (one parametric direction, in 1-3 space dimensions) or a surface
-    (two directions, in 2 or 3), rational or not. A lattice of samples seeds a
-    Newton iteration on the squared distance with the exact second
-    derivatives (``iga_evaluate(..., derivatives=2)``), clamped to the knot
-    range: a point beyond the patch's edge lands on the edge. The three
-    nearest samples seed three runs and the closest result wins, so a point
-    near a fold usually finds the global minimum, though that is not
-    guaranteed. A volume is refused.
-
-    :param points: ``(N, space dim)`` finite coordinates.
-    :param patch: the patch of the ``nurbs`` model.
-    :returns: a dict with ``params`` ``(N, d)``, ``points`` ``(N, space dim)``
-        (the closest points) and ``distances`` ``(N,)``.
-    :raises ValueError: on a bad patch, a volume, a ``brep`` model or points
-        that are not finite ``(N, space dim)``.
-    :raises NotImplementedError: when the compiled C++ core is unavailable.
-    """
+    """The point of a NURBS patch (curve, surface or volume) or B-rep face
+    closest to each of ``points`` (roadmap 9.8.4, 9.8.6, 9.8.7)."""
     from ._hull import _core_op
 
     kind, data = _model(mesh, model)
-    if kind != "nurbs":
-        _fail("the closest point takes a 'nurbs' model, not a 'brep'")
-    return _core_op("iga_closest_point_nurbs")(
+    fn = "iga_closest_point_nurbs" if kind == "nurbs" else "iga_closest_point_brep"
+    return _core_op(fn)(
         data, int(patch), np.ascontiguousarray(np.asarray(points, dtype=np.float64))
     )
 

@@ -2799,6 +2799,14 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mMinNeighbors = integer("MinNeighbors", 4);
         opts.mVoxelSize = pipe_number(rStep, "VoxelSize", 0.0);
         opts.mMinDistance = pipe_number(rStep, "MinDistance", 0.0);
+        const std::string vmode = pipe_text(rStep, "VoxelMode", "nearest");
+        if (vmode == "nearest")
+            opts.mVoxelMode = VoxelMode::Nearest;
+        else if (vmode == "average")
+            opts.mVoxelMode = VoxelMode::Average;
+        else
+            throw std::invalid_argument(
+                "pipeline: FilterPoints: VoxelMode must be 'nearest' or 'average'");
         PointFilterResult fr = filter_points(mesh, opts);
         for (const std::string& w : fr.mWarnings)
             rReport.mWarnings.push_back("filter_points: " + w);

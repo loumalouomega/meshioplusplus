@@ -49,6 +49,55 @@
     ]
    }
   },
+  "CancelToken": {
+   "kind": "class",
+   "members": {
+    "__init__": {
+     "kind": "method",
+     "signature": {
+      "parameters": [
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "self"
+       }
+      ]
+     }
+    },
+    "cancel": {
+     "kind": "method",
+     "signature": {
+      "parameters": [
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "self"
+       }
+      ]
+     }
+    },
+    "is_cancelled": {
+     "kind": "property"
+    },
+    "reset": {
+     "kind": "method",
+     "signature": {
+      "parameters": [
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "self"
+       }
+      ]
+     }
+    }
+   },
+   "signature": {
+    "parameters": []
+   }
+  },
+  "CancelledError": {
+   "kind": "class",
+   "members": {},
+   "signature": null
+  },
   "CellBlock": {
    "kind": "class",
    "members": {
@@ -3045,6 +3094,11 @@
       "default": "None",
       "kind": "KEYWORD_ONLY",
       "name": "region"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "all_hits"
      }
     ]
    }
@@ -5702,6 +5756,11 @@
       "name": "min_distance"
      },
      {
+      "default": "'nearest'",
+      "kind": "KEYWORD_ONLY",
+      "name": "voxel_mode"
+     },
+     {
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "return_report"
@@ -7027,6 +7086,11 @@
       "default": "'auto'",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "model"
+     },
+     {
+      "default": "False",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "return_operators"
      }
     ]
    }
@@ -9263,6 +9327,23 @@
    "kind": "function",
    "signature": {
     "parameters": []
+   }
+  },
+  "progress_context": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "callback"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "cancel_token"
+     }
+    ]
    }
   },
   "project_to_cad": {

@@ -28,6 +28,11 @@ def add_args(parser):
     parser.add_argument(
         "--region", type=str, default=None, help="restrict to this cell region"
     )
+    parser.add_argument(
+        "--all-hits",
+        action="store_true",
+        help="report every crossing along each ray instead of only the nearest hit",
+    )
     parser.add_argument("--json", action="store_true", help="emit the report as JSON")
 
 
@@ -51,6 +56,7 @@ def cast_rays_cmd(args):
         directions,
         max_distance=args.max_distance,
         region=args.region,
+        all_hits=args.all_hits,
     )
     write(args.outfile, _hits_mesh(res), file_format=args.output_format)
     n = len(res["hit"])

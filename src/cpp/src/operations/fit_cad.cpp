@@ -44,6 +44,7 @@
 #include "meshioplusplus/operations/refine_patches.hpp"
 #include "meshioplusplus/operations/sdf.hpp"
 #include "meshioplusplus/operations/segment.hpp"
+#include "meshioplusplus/progress.hpp"
 
 // Project includes (private, not installed)
 #include "../detail/brep_deviation.hpp"
@@ -1778,13 +1779,16 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
         general.mExtendSurfaces = true;
         return fit_cad_build(rMesh, rStepPath, general);
     }
+    progress_checkpoint(0.0, "fit_cad:start");
     const auto p_kernel = cad_kernel();
     if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad) {
         FitCadResult kernel = p_kernel->mFitCad(rMesh, rStepPath, rOptions);
         if (rOptions.mValidationReport) {
+            progress_checkpoint(0.90, "fit_cad:validate");
             const detail::ClosedFacets fc = detail::closed_facets(rMesh, kFcnPrefix);
             fcn_validate(fc, kernel.mBrep, rStepPath, kernel);
         }
+        progress_checkpoint(1.0, "fit_cad:done");
         return kernel;
     }
     if (rOptions.mBackend == FitCadBackend::Occt)
@@ -1808,7 +1812,9 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
                 "from the meshioplusplus-occt package; a source build finds one with "
                 "-DMESHIOPLUSPLUS_WITH_OCCT=ON (the default)");
     }
-    return fcn_native_fit_cad(rMesh, rStepPath, rOptions);
+    FitCadResult native_res = fcn_native_fit_cad(rMesh, rStepPath, rOptions);
+    progress_checkpoint(1.0, "fit_cad:done");
+    return native_res;
 }
 
 FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
@@ -1821,7 +1827,9 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     // demotes no more patches than the unconstrained one. The constrained solid
     // is written to `rStepPath`; the unconstrained one is built unwritten, and
     // written only when it is the one kept.
+    progress_checkpoint(0.0, "fit_cad:constrained");
     FitCadResult on = fit_cad_build(rMesh, rStepPath, rOptions);
+    progress_checkpoint(0.5, "fit_cad:unconstrained");
     FitCadOptions plain = rOptions;
     plain.mConstrainPrimitives = false;
     const FitCadResult off = fit_cad_build(rMesh, "", plain);

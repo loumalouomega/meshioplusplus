@@ -144,6 +144,13 @@ using TriRayFilter = std::function<bool(std::int64_t, const Vec3&)>;
 TriRayHit tri_bvh_ray_filtered(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir,
                                double TMin, double TMax, const TriRayFilter& rAccept);
 
+/// Every triangle hit by `rOrigin + t rDir` with `TMin < t <= TMax`, ascending
+/// in `t`; crossings of several triangles at one point (a shared edge or
+/// vertex, within `1e-9 * max(1, |t|)`) are deduplicated, keeping the lowest
+/// triangle id.
+std::vector<TriRayHit> tri_bvh_ray_all_hits(const TriBvh& rTree, const Vec3& rOrigin,
+                                            const Vec3& rDir, double TMin, double TMax);
+
 /// Where a segment crosses the skin.
 struct TriSegmentHit {
     double mT = 0.0;  ///< Segment parameter in [0, 1].

@@ -2980,11 +2980,41 @@ mio_hausdorff_distance <- function(a, b, face_samples = 0, region_a = "", region
 #'   `poisson`) and `warnings` (a character vector).
 #' @export
 mio_filter_points <- function(mesh, statistical_k = 0, std_ratio = 1, radius = 0,
-                              min_neighbors = 4, voxel_size = 0, min_distance = 0) {
+                              min_neighbors = 4, voxel_size = 0, min_distance = 0,
+                              voxel_mode = "nearest") {
   res <- .Call(
     R_mio_filter_points, mesh, as.numeric(statistical_k), as.numeric(std_ratio),
     as.numeric(radius), as.numeric(min_neighbors), as.numeric(voxel_size),
-    as.numeric(min_distance)
+    as.numeric(min_distance), as.character(voxel_mode)
+  )
+  res$warnings <- if (nzchar(res$warnings)) strsplit(res$warnings, "\n", fixed = TRUE)[[1]] else character()
+  res
+}
+
+#' Subsample a point cloud to an exact count budget
+#'
+#' Selects `count` points using `'farthest'` (farthest-point sampling), `'grid'`
+#' (voxel-grid stratified), or `'random'` (without replacement). See
+#' `doc/filter_points.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param count Target point count (>= 1).
+#' @param method `'farthest'`, `'grid'`, or `'random'`.
+#' @param seed RNG seed.
+#' @param start Optional 1-based starting point index for `'farthest'`.
+#' @param bounds Optional 6-element vector `c(xlo, ylo, zlo, xhi, yhi, zhi)`.
+#' @param max_cells Maximum lattice cell count for `'grid'`.
+#' @param record_ids Logical; attach `budget:original_point_id` when `TRUE`.
+#' @return A list of `mesh`, `point_map` (1-based), and `warnings`.
+#' @export
+mio_subsample_points <- function(mesh, count, method = "farthest", seed = 0,
+                                 start = NULL, bounds = NULL, max_cells = 16000000,
+                                 record_ids = FALSE) {
+  res <- .Call(
+    R_mio_subsample_points, mesh, as.numeric(count), as.character(method),
+    as.numeric(seed), if (is.null(start)) NULL else as.numeric(start),
+    if (is.null(bounds)) NULL else as.numeric(bounds),
+    as.numeric(max_cells), as.logical(record_ids)
   )
   res$warnings <- if (nzchar(res$warnings)) strsplit(res$warnings, "\n", fixed = TRUE)[[1]] else character()
   res
@@ -3009,10 +3039,10 @@ mio_filter_points <- function(mesh, statistical_k = 0, std_ratio = 1, radius = 0
 #'   `NaN` on a miss), `cell` (n, the 1-based input cell hit, 0 on a miss) and
 #'   `num_hits`.
 #' @export
-mio_cast_rays <- function(mesh, origins, directions, max_distance = 0, region = "") {
+mio_cast_rays <- function(mesh, origins, directions, max_distance = 0, region = "", all_hits = FALSE) {
   .Call(
     R_mio_cast_rays, mesh, as.matrix(origins), if (is.matrix(directions)) directions else as.numeric(directions),
-    as.numeric(max_distance), as.character(region)
+    as.numeric(max_distance), as.character(region), as.logical(all_hits)
   )
 }
 

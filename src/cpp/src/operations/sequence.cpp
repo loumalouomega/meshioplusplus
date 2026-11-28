@@ -73,6 +73,7 @@
 #include "meshioplusplus/formats/exodus.hpp"
 #include "meshioplusplus/operations/blend.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
+#include "meshioplusplus/progress.hpp"
 
 namespace meshioplusplus {
 
@@ -833,6 +834,8 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
         write_gid_series(rOutput.mPath, [&](std::size_t i, double& rTime, Mesh& rMesh) {
             if (i >= entries.size())
                 return false;
+            progress_checkpoint(static_cast<double>(i) / static_cast<double>(entries.size()),
+                                "sequence:step");
             rMesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
             rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
@@ -850,6 +853,8 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
         seq_make_series_sink(ofmt, rOutput.mPath, rOutput.mOptions);
     bool grid_written = false;
     for (std::size_t i = 0; i < entries.size(); ++i) {
+        progress_checkpoint(static_cast<double>(i) / static_cast<double>(entries.size()),
+                            "sequence:step");
         Mesh mesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
         double time = entries[i].mTime;
         if (entries[i].mTimeSource == SequenceTimeSource::Index &&
@@ -884,6 +889,8 @@ void timeseries_to_sequence(const std::string& rInPath, const std::string& rInFo
     const std::vector<SequenceEntry> entries = sequence_expand(in);
 
     for (std::size_t i = 0; i < entries.size(); ++i) {
+        progress_checkpoint(static_cast<double>(i) / static_cast<double>(entries.size()),
+                            "sequence:step");
         Mesh mesh = sequence_read_step(entries, i, rInFormat, rOptions);
         seq_attach_time(mesh, entries[i].mTime);
         registry_write_ex(sequence_expand_pattern(rOutput.mPath, i, entries.size()), mesh,
@@ -1172,9 +1179,13 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
 
     const std::size_t n = rs.mTimes.size();
     if (sequence_pattern_has_token(rPipeline.mOutput.mPath)) {
-        for (std::size_t k = 0; k < n; ++k)
+        for (std::size_t k = 0; k < n; ++k) {
+            progress_checkpoint(
+                static_cast<double>(k) / static_cast<double>(std::max<std::size_t>(1, n)),
+                "sequence:resample");
             registry_write_ex(sequence_expand_pattern(rPipeline.mOutput.mPath, k, n), target(k),
                               rPipeline.mOutput.mFormat, rPipeline.mOutput.mOptions);
+        }
         return report;
     }
     const std::string ofmt = seq_resolve_write_format(rPipeline.mOutput, n);
@@ -1186,6 +1197,9 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
         write_gid_series(rPipeline.mOutput.mPath, [&](std::size_t k, double& rTime, Mesh& rMesh) {
             if (k >= n)
                 return false;
+            progress_checkpoint(
+                static_cast<double>(k) / static_cast<double>(std::max<std::size_t>(1, n)),
+                "sequence:resample");
             rMesh = target(k);
             rTime = rs.mTimes[k];
             return true;
@@ -1195,6 +1209,9 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
     const std::unique_ptr<SeqSeriesSink> writer =
         seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
     for (std::size_t k = 0; k < n; ++k) {
+        progress_checkpoint(
+            static_cast<double>(k) / static_cast<double>(std::max<std::size_t>(1, n)),
+            "sequence:resample");
         Mesh mesh = target(k);
         if (k == 0)
             writer->WritePointsCells(mesh);
@@ -1303,6 +1320,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
                            rPipeline.mPrefetch);
         auto step = [&](std::size_t i, double& rTime) {
+            progress_checkpoint(
+                static_cast<double>(i) /
+                    static_cast<double>(std::max<std::size_t>(1, entries.size())),
+                "sequence:pipeline");
             Mesh mesh = ahead.Read(i);
             rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
@@ -1348,6 +1369,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
     SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
                        rPipeline.mPrefetch);
     for (std::size_t i = 0; i < entries.size(); ++i) {
+        progress_checkpoint(
+            static_cast<double>(i) /
+                static_cast<double>(std::max<std::size_t>(1, entries.size())),
+            "sequence:pipeline");
         Mesh mesh = ahead.Read(i);
         double time = entries[i].mTime;
         if (entries[i].mTimeSource == SequenceTimeSource::Index &&

@@ -44,7 +44,14 @@ from collections import OrderedDict
 
 import numpy as np
 
-from .. import GeometryGuard, GridArray, GridSpec, adapt, adapt_volume, agglomerate
+from .. import (
+    GeometryGuard,
+    GridArray,
+    GridSpec,
+    adapt,
+    adapt_volume,
+    agglomerate,
+)
 from .. import align_datums as _align_datums_op
 from .. import (
     annulus,
@@ -6804,14 +6811,15 @@ def tool_filter_points(
     min_neighbors=4,
     voxel_size=0.0,
     min_distance=0.0,
+    voxel_mode="nearest",
 ):
     """Remove outliers from, and thin, a point cloud.
 
     Steps run in order and are off at 0: statistical outlier removal
     (statistical_k, std_ratio), radius outlier removal (radius, min_neighbors),
-    voxel thinning (voxel_size) and Poisson-disk thinning (min_distance). The
-    output is the surviving points as a point cloud; the report counts what each
-    step removed.
+    voxel thinning (voxel_size, voxel_mode='nearest'|'average') and Poisson-disk
+    thinning (min_distance). The output is the surviving points as a point
+    cloud; the report counts what each step removed.
     """
     mesh = _load(input_path, input_format, readonly=True)
     out, report = _filter_points_op(
@@ -6822,6 +6830,7 @@ def tool_filter_points(
         min_neighbors=min_neighbors,
         voxel_size=voxel_size,
         min_distance=min_distance,
+        voxel_mode=voxel_mode,
         return_report=True,
     )
     report.pop("point_map", None)
@@ -6838,6 +6847,7 @@ def tool_cast_rays(
     direction=None,
     max_distance=0.0,
     region=None,
+    all_hits=False,
 ):
     """Shoot rays at a surface and write the hit points.
 
@@ -6857,6 +6867,7 @@ def tool_cast_rays(
         _directions_of(rays, direction),
         max_distance=max_distance,
         region=region,
+        all_hits=all_hits,
     )
     out = _hits_mesh(res)
     report = {"num_rays": int(len(res["hit"])), "num_hits": int(res["num_hits"])}

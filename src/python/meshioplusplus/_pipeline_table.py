@@ -525,6 +525,7 @@ OP_TABLE = {
         "MinNeighbors",
         "VoxelSize",
         "MinDistance",
+        "VoxelMode",
     ),
     "ReconstructSurface": (
         "Normals",
@@ -1612,6 +1613,7 @@ KEY_DEFAULTS = {
         ("Radius", "number", 0.0),
         ("VoxelSize", "number", 0.0),
         ("MinDistance", "number", 0.0),
+        ("VoxelMode", "text", "nearest"),
     ),
     "ReconstructSurface": (
         ("Normals", "text", "normals"),

@@ -69,6 +69,12 @@
 
 namespace meshioplusplus {
 
+/// How voxel-grid thinning represents each occupied cube (roadmap 9.9.1).
+enum class VoxelMode : std::int32_t {
+    Nearest = 0,  ///< Keep the real input point nearest the cube's mean (default).
+    Average = 1,  ///< Emit the mean of each cube's coordinates and float arrays (`mPointMap` = -1).
+};
+
 /// Which steps `filter_points` runs and how strictly.
 struct PointFilterOptions {
     /// Statistical outlier removal: neighbours per mean distance; 0 is off.
@@ -83,6 +89,8 @@ struct PointFilterOptions {
     double mVoxelSize = 0.0;
     /// Poisson-disk thinning: the minimum distance between kept points; 0 is off.
     double mMinDistance = 0.0;
+    /// Voxel thinning representative: nearest real point or cube mean.
+    VoxelMode mVoxelMode = VoxelMode::Nearest;
 };
 
 /// What `filter_points` kept.

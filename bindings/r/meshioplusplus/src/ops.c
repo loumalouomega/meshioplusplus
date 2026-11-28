@@ -1663,7 +1663,7 @@ SEXP R_mio_hausdorff_distance(SEXP a, SEXP b, SEXP face_samples, SEXP region_a,
 /* --- point-cloud conditioning (roadmap 9.9) ------------------------------ */
 
 SEXP R_mio_filter_points(SEXP mesh, SEXP statistical_k, SEXP std_ratio, SEXP radius,
-                         SEXP min_neighbors, SEXP voxel_size, SEXP min_distance) {
+                         SEXP min_neighbors, SEXP voxel_size, SEXP min_distance, SEXP voxel_mode) {
     mio_filter_points_opts opts;
     mio_filter_points_opts_init(&opts);
     opts.statistical_k = (int64_t)mio_r_double(statistical_k, "statistical_k");
@@ -1672,6 +1672,13 @@ SEXP R_mio_filter_points(SEXP mesh, SEXP statistical_k, SEXP std_ratio, SEXP rad
     opts.min_neighbors = (int64_t)mio_r_double(min_neighbors, "min_neighbors");
     opts.voxel_size = mio_r_double(voxel_size, "voxel_size");
     opts.min_distance = mio_r_double(min_distance, "min_distance");
+    const char* vm = mio_r_string(voxel_mode, "voxel_mode");
+    if (strcmp(vm, "nearest") == 0)
+        opts.voxel_mode = MIO_VOXEL_NEAREST;
+    else if (strcmp(vm, "average") == 0)
+        opts.voxel_mode = MIO_VOXEL_AVERAGE;
+    else
+        Rf_error("meshio++: filter_points: voxel_mode must be 'nearest' or 'average'");
     const mio_mesh* in = mio_r_mesh(mesh);
     int64_t n_in = mio_mesh_num_points(in);
     int64_t* map = (int64_t*)R_alloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
@@ -1706,6 +1713,63 @@ SEXP R_mio_filter_points(SEXP mesh, SEXP statistical_k, SEXP std_ratio, SEXP rad
     return out;
 }
 
+SEXP R_mio_subsample_points(SEXP mesh, SEXP count, SEXP method, SEXP seed, SEXP start, SEXP bounds,
+                            SEXP max_cells, SEXP record_ids) {
+    mio_subsample_points_opts opts;
+    mio_subsample_points_opts_init(&opts);
+    opts.count = (int64_t)mio_r_double(count, "count");
+    const char* m = mio_r_string(method, "method");
+    if (strcmp(m, "farthest") == 0)
+        opts.method = MIO_SUBSAMPLE_FARTHEST;
+    else if (strcmp(m, "grid") == 0)
+        opts.method = MIO_SUBSAMPLE_GRID;
+    else if (strcmp(m, "random") == 0)
+        opts.method = MIO_SUBSAMPLE_RANDOM;
+    else
+        Rf_error("meshio++: subsample_points: method must be 'farthest', 'grid', or 'random'");
+    opts.seed = (int64_t)mio_r_double(seed, "seed");
+    if (start != R_NilValue && Rf_length(start) > 0) {
+        int64_t s = (int64_t)mio_r_double(start, "start");
+        opts.start = s > 0 ? s - 1 : -1;
+    }
+    if (bounds != R_NilValue && Rf_length(bounds) > 0) {
+        SEXP b = PROTECT(Rf_coerceVector(bounds, REALSXP));
+        if (Rf_xlength(b) != 6) {
+            UNPROTECT(1);
+            Rf_error("meshio++: subsample_points: bounds must have 6 values");
+        }
+        opts.has_bounds = 1;
+        for (int k = 0; k < 6; ++k)
+            opts.bounds[k] = REAL(b)[k];
+        UNPROTECT(1);
+    }
+    opts.max_cells = (int64_t)mio_r_double(max_cells, "max_cells");
+    opts.record_ids = mio_r_bool(record_ids, "record_ids") ? 1 : 0;
+
+    const mio_mesh* in = mio_r_mesh(mesh);
+    int64_t n_in = mio_mesh_num_points(in);
+    int64_t* map = (int64_t*)R_alloc((size_t)(n_in > 0 ? n_in : 1), sizeof(int64_t));
+    mio_mesh* res = mio_subsample_points(in, &opts, map);
+    if (res == NULL)
+        mio_r_fail("subsample_points");
+    int64_t n_out = mio_mesh_num_points(res);
+
+    SEXP out = PROTECT(Rf_allocVector(VECSXP, 3));
+    SEXP nm = PROTECT(Rf_allocVector(STRSXP, 3));
+    const char* names[] = {"mesh", "point_map", "warnings"};
+    for (int k = 0; k < 3; ++k)
+        SET_STRING_ELT(nm, k, Rf_mkChar(names[k]));
+    SET_VECTOR_ELT(out, 0, mio_r_wrap_mesh(res));
+    SEXP pm = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n_out));
+    for (int64_t i = 0; i < n_out; ++i)
+        REAL(pm)[i] = (double)(map[i] + 1);
+    SET_VECTOR_ELT(out, 1, pm);
+    SET_VECTOR_ELT(out, 2, mio_r_getbuffer(mio_subsample_points_warnings, "subsample_points"));
+    Rf_setAttrib(out, R_NamesSymbol, nm);
+    UNPROTECT(3);
+    return out;
+}
+
 /* --- ray casting and point location (roadmap 9.3) ------------------------ */
 
 /* A (rows x n) numeric matrix argument as a protected REALSXP; `*pN` gets n.
@@ -1729,7 +1793,8 @@ static SEXP rays_matrix(SEXP m, int64_t rows, int allow_vector, const char* what
     return p;
 }
 
-SEXP R_mio_cast_rays(SEXP mesh, SEXP origins, SEXP directions, SEXP max_distance, SEXP region) {
+SEXP R_mio_cast_rays(SEXP mesh, SEXP origins, SEXP directions, SEXP max_distance, SEXP region,
+                     SEXP all_hits) {
     int64_t n = 0, nd = 0;
     SEXP o = PROTECT(rays_matrix(origins, 3, 0, "origins", &n));
     SEXP d = PROTECT(rays_matrix(directions, 3, 1, "directions", &nd));
@@ -1737,6 +1802,50 @@ SEXP R_mio_cast_rays(SEXP mesh, SEXP origins, SEXP directions, SEXP max_distance
     mio_cast_rays_opts_init(&opts);
     opts.max_distance = mio_r_double(max_distance, "max_distance");
     opts.region = mio_r_opt_string(region);
+    const int do_all = mio_r_bool(all_hits, "all_hits");
+
+    if (do_all) {
+        opts.all_hits = 1;
+        mio_cast_rays_result* res =
+            mio_cast_rays_all(mio_r_mesh(mesh), REAL(o), n, REAL(d), nd, &opts);
+        if (!res) {
+            UNPROTECT(2);
+            mio_r_fail("cast_rays");
+        }
+        const int64_t nh = mio_cast_rays_result_num_hits(res);
+        const int64_t* ro = mio_cast_rays_result_ray_offset(res);
+        const double* dist = mio_cast_rays_result_distance(res);
+        const double* pt = mio_cast_rays_result_point(res);
+        const double* nm = mio_cast_rays_result_normal(res);
+        const int64_t* cl = mio_cast_rays_result_cell(res);
+
+        SEXP rhit = PROTECT(Rf_allocVector(LGLSXP, (R_xlen_t)n));
+        SEXP rro = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)(n + 1)));
+        for (int64_t i = 0; i < n; ++i)
+            LOGICAL(rhit)[i] = ro[i + 1] > ro[i];
+        for (int64_t i = 0; i <= n; ++i)
+            REAL(rro)[i] = (double)ro[i];
+        SEXP rdist = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)nh));
+        SEXP rpt = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)nh));
+        SEXP rnm = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)nh));
+        SEXP rcell = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)nh));
+        for (int64_t i = 0; i < nh; ++i) {
+            REAL(rdist)[i] = dist[i];
+            REAL(rcell)[i] = (double)(cl[i] + 1);
+            for (int k = 0; k < 3; ++k) {
+                REAL(rpt)[3 * i + k] = pt[3 * i + k];
+                REAL(rnm)[3 * i + k] = nm[3 * i + k];
+            }
+        }
+        mio_cast_rays_result_free(res);
+        SEXP rnh = PROTECT(Rf_ScalarReal((double)nh));
+        const char* names[] = {"hit",  "distance", "point",     "normal",
+                               "cell", "num_hits", "ray_offset"};
+        SEXP values[] = {rhit, rdist, rpt, rnm, rcell, rnh, rro};
+        SEXP out = PROTECT(mio_r_named_list(7, names, values));
+        UNPROTECT(10);
+        return out;
+    }
 
     int32_t* hit = (int32_t*)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
     int64_t* cell = (int64_t*)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));

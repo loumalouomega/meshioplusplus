@@ -4,7 +4,7 @@ import sys as _sys
 from typing import TYPE_CHECKING
 
 from .__about__ import __version__
-from ._exceptions import ReadError, WriteError
+from ._exceptions import CancelledError, ReadError, WriteError
 from ._helpers import (
     deregister_format,
     extension_to_filetypes,
@@ -615,6 +615,8 @@ _LAZY_ATTRS = {
     "PointBudget": "_point_budget",
     "select_points": "_point_budget",
     "subsample_points": "_point_budget",
+    "CancelToken": "_progress",
+    "progress_context": "_progress",
     "BistrideHierarchy": "_proximity",
     "bistride_hierarchy": "_proximity",
     "edge_vectors": "_proximity",
@@ -1121,6 +1123,9 @@ __all__ = [
     "Region",
     "ReadError",
     "WriteError",
+    "CancelledError",
+    "CancelToken",
+    "progress_context",
     "topological_dimension",
     "__version__",
 ]

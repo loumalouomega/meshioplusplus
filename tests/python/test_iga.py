@@ -850,7 +850,7 @@ def test_bezier_extraction_round_trips_through_vtu(tmp_path):
 def test_bezier_extraction_refuses_bad_input():
     with pytest.raises(ValueError, match="patch 1"):
         mp.iga_bezier_extract(_arc_model(), patch=1)
-    with pytest.raises(ValueError, match="'nurbs' model"):
+    with pytest.raises(ValueError, match="missing 'breps'|face 0"):
         mp.iga_bezier_extract({"faces": [], "patches": []})
 
 
@@ -911,7 +911,7 @@ def test_knot_removal_refuses_bad_input():
         mp.iga_remove_knots(fine, direction=1)
     with pytest.raises(ValueError, match="tolerance"):
         mp.iga_remove_knots(fine, tolerance=-1.0)
-    with pytest.raises(ValueError, match="'nurbs' model"):
+    with pytest.raises(ValueError, match="missing 'breps'|face 0"):
         mp.iga_remove_knots({"faces": [], "patches": []})
 
 
@@ -1047,15 +1047,20 @@ def test_closest_point_refuses_volumes_and_bad_points():
             }
         ]
     }
-    with pytest.raises(ValueError, match="volume"):
-        mp.iga_closest_point(box, [[0.5, 0.5, 0.5]])
+    # Volume closest point (roadmap 9.8.6): interior point has distance 0,
+    # exterior point clamps to boundary.
+    vol_res = mp.iga_closest_point(box, [[0.5, 0.5, 0.5], [2.0, 0.5, 0.5]])
+    np.testing.assert_allclose(vol_res["distances"], [0.0, 1.0], atol=1e-12)
+    np.testing.assert_allclose(
+        vol_res["points"], [[0.5, 0.5, 0.5], [1.0, 0.5, 0.5]], atol=1e-12
+    )
     with pytest.raises(ValueError, match="Float64"):
         mp.iga_closest_point(_arc_model(), [[0.0, 0.0, 0.0]])
     with pytest.raises(ValueError, match="non-finite"):
         mp.iga_closest_point(_arc_model(), [[float("nan"), 0.0]])
     with pytest.raises(ValueError, match="patch 3"):
         mp.iga_closest_point(_arc_model(), [[0.0, 0.0]], patch=3)
-    with pytest.raises(ValueError, match="'nurbs' model"):
+    with pytest.raises(ValueError, match="missing 'breps'|face 0"):
         mp.iga_closest_point({"faces": [], "patches": []}, [[0.0, 0.0]])
     degen = {
         "patches": [
@@ -1089,3 +1094,40 @@ def test_closest_point_through_the_cli_and_the_mcp_tool(tmp_path, capsys):
     res = _tools.tool_iga_closest_point(str(square), [[2.0, 2.0]])
     res = json.loads(res) if isinstance(res, str) else res
     assert res["points"] == [[1.0, 1.0]] and res["num_points"] == 1
+
+
+def test_bezier_extraction_operators():
+    # Quadratic curve with one interior knot 0.5 -> two elements, each 3x3 C^e
+    # satisfying C^e.T @ P_bspline == P_bezier (homogeneous).
+    model = mp.iga_refine(_arc_model(), subdivisions=2)
+    ex = mp.iga_bezier_extract(model, return_operators=True)
+    assert len(ex["operators"]) == 2
+    assert len(ex["element_control_points"]) == 2
+    patch = model.info["nurbs"]["patches"][0]
+    P = np.asarray(patch["control_points"], dtype=np.float64)
+    W = np.asarray(patch["weights"], dtype=np.float64)[:, None]
+    Pw = np.hstack([P * W, W])
+    for e, (C, cp_ids) in enumerate(zip(ex["operators"], ex["element_control_points"])):
+        assert C.shape == (3, 3)
+        np.testing.assert_allclose(C.sum(axis=0), np.ones(3), atol=1e-13)
+        Qw = C.T @ Pw[cp_ids]
+        Q = Qw[:, :2] / Qw[:, 2:3]
+        # Compare against the extracted VTK Bezier cell endpoints (first & last).
+        cell_pts = np.asarray(ex["mesh"].points)[ex["mesh"].cells[0].data[e]]
+        np.testing.assert_allclose(Q[0], cell_pts[0, :2], atol=1e-13)
+        np.testing.assert_allclose(Q[-1], cell_pts[1, :2], atol=1e-13)
+
+
+def test_brep_iga_operations():
+    # BrepInfo face support for bezier_extract, remove_knots, closest_point (9.8.7).
+    mesh = _cad("plate_with_hole.cad.json")
+    bz = mp.iga_bezier_extract(mesh, patch=0, model="brep")
+    assert len(bz.cells) > 0
+    cp = mp.iga_closest_point(mesh, [[0.5, 0.5, 0.0]], patch=0, model="brep")
+    assert cp["distances"][0] >= 0.0
+    refined = mp.iga_refine(mesh, subdivisions=2, model="brep")
+    reduced, rep = mp.iga_remove_knots(
+        refined, direction=0, tolerance=1e-12, patch=0, model="brep", return_report=True
+    )
+    assert rep["num_removed"] >= 1
+    assert "brep" in reduced.info

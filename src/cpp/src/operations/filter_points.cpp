@@ -231,6 +231,119 @@ FpIds fp_poisson(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double MinD
     return out;
 }
 
+struct FpVoxelAverageResult {
+    std::vector<Vec3> mCoords;
+    std::vector<std::int64_t> mNearest;
+    std::vector<std::vector<std::int64_t>> mMembers;
+};
+
+FpVoxelAverageResult fp_voxel_average(const std::vector<Vec3>& rXyz, const FpIds& rAlive,
+                                      double Size) {
+    FpVoxelAverageResult res;
+    const std::size_t m = rAlive.size();
+    if (m == 0)
+        return res;
+    const std::vector<Vec3> cloud = fp_cloud(rXyz, rAlive);
+    double lo[3], hi[3];
+    detail::BoundingBoxUtils::FromCoords(m, [&](std::size_t i) { return cloud[i]; }, lo, hi);
+    for (int d = 0; d < 3; ++d)
+        if (!((hi[d] - lo[d]) / Size < 1e15))
+            throw std::invalid_argument(
+                "meshio++: filter_points: the voxel size is too small for the extent of the cloud");
+    std::vector<FpVoxelRow> rows(m);
+    parallel_for(m, [&](std::size_t i) {
+        rows[i] = FpVoxelRow{static_cast<std::int64_t>(std::floor((cloud[i][0] - lo[0]) / Size)),
+                             static_cast<std::int64_t>(std::floor((cloud[i][1] - lo[1]) / Size)),
+                             static_cast<std::int64_t>(std::floor((cloud[i][2] - lo[2]) / Size)),
+                             static_cast<std::int64_t>(i)};
+    });
+    std::sort(rows.begin(), rows.end());
+    for (std::size_t a = 0; a < m;) {
+        std::size_t b = a;
+        Vec3 mean{0.0, 0.0, 0.0};
+        std::vector<std::int64_t> members;
+        while (b < m && rows[b].SameVoxel(rows[a])) {
+            mean = detail::vec3_add(mean, cloud[static_cast<std::size_t>(rows[b].mId)]);
+            members.push_back(rAlive[static_cast<std::size_t>(rows[b].mId)]);
+            ++b;
+        }
+        mean = detail::vec3_scale(mean, 1.0 / static_cast<double>(b - a));
+        std::int64_t best = rows[a].mId;
+        double best_d2 = std::numeric_limits<double>::infinity();
+        for (std::size_t j = a; j < b; ++j) {
+            const double d2 = detail::vec3_norm_sq(
+                detail::vec3_sub(cloud[static_cast<std::size_t>(rows[j].mId)], mean));
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best = rows[j].mId;
+            }
+        }
+        res.mCoords.push_back(mean);
+        res.mNearest.push_back(rAlive[static_cast<std::size_t>(best)]);
+        res.mMembers.push_back(std::move(members));
+        a = b;
+    }
+    return res;
+}
+
+void fp_gather_averaged(const Mesh& rMesh, const FpVoxelAverageResult& rAvg,
+                        const FpIds& rKeepVoxels, Mesh& rOut) {
+    const std::size_t kept = rKeepVoxels.size();
+    const std::size_t pdim = rMesh.PointDim() > 0 ? rMesh.PointDim() : 3;
+    const DType pdt = rMesh.Points().Size() > 0 ? rMesh.Points().Dtype() : DType::Float64;
+    NDArray pts = NDArray::Uninit(pdt, {kept, pdim});
+    for (std::size_t i = 0; i < kept; ++i) {
+        const Vec3& c = rAvg.mCoords[static_cast<std::size_t>(rKeepVoxels[i])];
+        for (std::size_t d = 0; d < pdim; ++d) {
+            const double val = d < 3 ? c[d] : 0.0;
+            if (pdt == DType::Float32)
+                pts.As<float>()[i * pdim + d] = static_cast<float>(val);
+            else
+                pts.As<double>()[i * pdim + d] = val;
+        }
+    }
+    rOut.AssignPoints(std::move(pts));
+
+    const std::size_t n_in = rMesh.NumPoints();
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& src = rMesh.PointData(name);
+        if (src.Shape().empty() || src.Shape()[0] != n_in) {
+            rOut.AddPointData(name, detail::data_owned_copy(src));
+            continue;
+        }
+        std::vector<std::size_t> shape = src.Shape();
+        shape[0] = kept;
+        const std::size_t stride = n_in > 0 ? src.Size() / n_in : 1;
+        const DType dt = src.Dtype();
+        if (dt == DType::Float64 || dt == DType::Float32) {
+            NDArray dst = NDArray::Uninit(dt, shape);
+            for (std::size_t i = 0; i < kept; ++i) {
+                const auto& members = rAvg.mMembers[static_cast<std::size_t>(rKeepVoxels[i])];
+                const double inv = 1.0 / static_cast<double>(members.size());
+                for (std::size_t c = 0; c < stride; ++c) {
+                    double acc = 0.0;
+                    for (const std::int64_t pid : members) {
+                        const std::size_t idx = static_cast<std::size_t>(pid) * stride + c;
+                        acc += dt == DType::Float32 ? static_cast<double>(src.As<float>()[idx])
+                                                    : src.As<double>()[idx];
+                    }
+                    const double mean = acc * inv;
+                    if (dt == DType::Float32)
+                        dst.As<float>()[i * stride + c] = static_cast<float>(mean);
+                    else
+                        dst.As<double>()[i * stride + c] = mean;
+                }
+            }
+            rOut.AddPointData(name, std::move(dst));
+        } else {
+            FpIds nearest_ids(kept);
+            for (std::size_t i = 0; i < kept; ++i)
+                nearest_ids[i] = rAvg.mNearest[static_cast<std::size_t>(rKeepVoxels[i])];
+            rOut.AddPointData(name, detail::subset_gather_rows(src, nearest_ids));
+        }
+    }
+}
+
 }  // namespace
 
 PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOptions) {
@@ -250,6 +363,8 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
         bad("voxel_size must be a finite number, zero or above");
     if (!std::isfinite(rOptions.mMinDistance) || rOptions.mMinDistance < 0.0)
         bad("min_distance must be a finite number, zero or above");
+    if (rOptions.mVoxelMode != VoxelMode::Nearest && rOptions.mVoxelMode != VoxelMode::Average)
+        bad("voxel_mode must be 'nearest' or 'average'");
     const bool do_stat = rOptions.mStatisticalK > 0;
     const bool do_radius = rOptions.mRadius > 0.0;
     const bool do_voxel = rOptions.mVoxelSize > 0.0;
@@ -281,21 +396,43 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
         alive = fp_radius(xyz, alive, rOptions.mRadius, rOptions.mMinNeighbors);
         result.mNumRemovedRadius = static_cast<std::int64_t>(before - alive.size());
     }
-    if (do_voxel) {
+    const bool avg_voxel = do_voxel && rOptions.mVoxelMode == VoxelMode::Average;
+    FpVoxelAverageResult voxel_avg;
+    FpIds voxel_kept;
+    if (avg_voxel) {
         const std::size_t before = alive.size();
-        alive = fp_voxel(xyz, alive, rOptions.mVoxelSize);
-        result.mNumRemovedVoxel = static_cast<std::int64_t>(before - alive.size());
-    }
-    if (do_poisson) {
-        const std::size_t before = alive.size();
-        alive = fp_poisson(xyz, alive, rOptions.mMinDistance);
-        result.mNumRemovedPoisson = static_cast<std::int64_t>(before - alive.size());
+        voxel_avg = fp_voxel_average(xyz, alive, rOptions.mVoxelSize);
+        result.mNumRemovedVoxel = static_cast<std::int64_t>(before - voxel_avg.mCoords.size());
+        voxel_kept.resize(voxel_avg.mCoords.size());
+        std::iota(voxel_kept.begin(), voxel_kept.end(), std::int64_t{0});
+        if (do_poisson) {
+            const std::size_t before_p = voxel_kept.size();
+            voxel_kept = fp_poisson(voxel_avg.mCoords, voxel_kept, rOptions.mMinDistance);
+            result.mNumRemovedPoisson = static_cast<std::int64_t>(before_p - voxel_kept.size());
+        }
+    } else {
+        if (do_voxel) {
+            const std::size_t before = alive.size();
+            alive = fp_voxel(xyz, alive, rOptions.mVoxelSize);
+            result.mNumRemovedVoxel = static_cast<std::int64_t>(before - alive.size());
+        }
+        if (do_poisson) {
+            const std::size_t before = alive.size();
+            alive = fp_poisson(xyz, alive, rOptions.mMinDistance);
+            result.mNumRemovedPoisson = static_cast<std::int64_t>(before - alive.size());
+        }
     }
 
     // The point cloud: points and per-point arrays gathered, one vertex block.
     Mesh out;
-    detail::subset_gather_points(rMesh, alive, out);
-    const std::size_t kept = alive.size();
+    std::size_t kept = 0;
+    if (avg_voxel) {
+        fp_gather_averaged(rMesh, voxel_avg, voxel_kept, out);
+        kept = voxel_kept.size();
+    } else {
+        detail::subset_gather_points(rMesh, alive, out);
+        kept = alive.size();
+    }
     if (kept > 0) {
         NDArray conn = NDArray::Uninit(DType::Int64, {kept, std::size_t{1}});
         for (std::size_t i = 0; i < kept; ++i)
@@ -307,8 +444,15 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
 
     // Point regions follow the surviving points; the rest cannot.
     std::vector<std::int64_t> inverse(n, -1);
-    for (std::size_t j = 0; j < kept; ++j)
-        inverse[static_cast<std::size_t>(alive[j])] = static_cast<std::int64_t>(j);
+    if (avg_voxel) {
+        for (std::size_t j = 0; j < kept; ++j)
+            inverse[static_cast<std::size_t>(
+                voxel_avg.mNearest[static_cast<std::size_t>(voxel_kept[j])])] =
+                static_cast<std::int64_t>(j);
+    } else {
+        for (std::size_t j = 0; j < kept; ++j)
+            inverse[static_cast<std::size_t>(alive[j])] = static_cast<std::int64_t>(j);
+    }
     std::size_t dropped_regions = 0;
     for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
         const Region& region = rMesh.Region(r);
@@ -339,7 +483,10 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
         result.mWarnings.push_back(std::to_string(dropped_regions) +
                                    " cell or side region(s) dropped: the result is a point cloud");
     result.mMesh = std::move(out);
-    result.mPointMap = std::move(alive);
+    if (avg_voxel)
+        result.mPointMap.assign(kept, -1);
+    else
+        result.mPointMap = std::move(alive);
     return result;
 }
 

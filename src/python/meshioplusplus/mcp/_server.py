@@ -5007,13 +5007,14 @@ def _register_operations(server: FastMCP) -> None:
         min_neighbors: int = 4,
         voxel_size: float = 0.0,
         min_distance: float = 0.0,
+        voxel_mode: str = "nearest",
     ) -> dict:
         """Remove outliers from and thin a point cloud; steps run in order and
         are off at 0: statistical outlier removal (statistical_k neighbours,
         std_ratio), radius outlier removal (radius, min_neighbors), voxel
-        thinning (voxel_size: one real point per cube) and Poisson-disk thinning
-        (min_distance). Writes the surviving points; the report counts what
-        each step removed."""
+        thinning (voxel_size; voxel_mode 'nearest' or 'average') and
+        Poisson-disk thinning (min_distance). Writes the surviving points; the
+        report counts what each step removed."""
 
     @server.tool()
     @_forward(_tools.tool_cast_rays)
@@ -5027,12 +5028,13 @@ def _register_operations(server: FastMCP) -> None:
         direction: Optional[List[float]] = None,
         max_distance: float = 0.0,
         region: Optional[str] = None,
+        all_hits: bool = False,
     ) -> dict:
         """Shoot rays at a surface (triangle, quad or polygon cells) and write
         a vertex mesh of the hit points with ray:index, ray:distance, ray:cell
         and ray:normal. rays_path holds the origins as points; direction is
         [x, y, z] for every ray, else its point array 'directions'.
-        max_distance 0 means no limit."""
+        max_distance 0 means no limit; all_hits=True returns every crossing."""
 
     @server.tool()
     @_forward(_tools.tool_locate_points)

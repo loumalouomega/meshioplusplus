@@ -38,6 +38,12 @@ def add_args(parser):
         help="voxel thinning: one point per cube of this side",
     )
     parser.add_argument(
+        "--voxel-mode",
+        choices=("nearest", "average"),
+        default="nearest",
+        help="voxel representative: 'nearest' real point (default) or cube 'average'",
+    )
+    parser.add_argument(
         "--poisson",
         type=float,
         default=0.0,
@@ -56,6 +62,7 @@ def filter_points_cmd(args):
             min_neighbors=args.min_neighbors,
             voxel_size=args.voxel,
             min_distance=args.poisson,
+            voxel_mode=args.voxel_mode,
             return_report=True,
         )
     except ValueError as exc:

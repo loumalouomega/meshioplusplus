@@ -511,7 +511,8 @@
       {"name": "Radius", "kind": "number", "default": 0.0},
       {"name": "MinNeighbors"},
       {"name": "VoxelSize", "kind": "number", "default": 0.0},
-      {"name": "MinDistance", "kind": "number", "default": 0.0}
+      {"name": "MinDistance", "kind": "number", "default": 0.0},
+      {"name": "VoxelMode", "kind": "text", "default": "nearest"}
     ]},
     {"op": "ReconstructSurface", "keys": [
       {"name": "Normals", "kind": "text", "default": "normals"},

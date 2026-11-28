@@ -689,13 +689,28 @@ TEST(Iga, ClosestPointOnASurfaceAgreesWithTheSurfaceProjector) {
 }
 
 TEST(Iga, ClosestPointRefusesWhatItCannotDo) {
-    const NDArray p3 = doubles({1, 3}, {0.5, 0.5, 0.5});
-    EXPECT_THROW(meshioplusplus::iga_closest_point(one_patch(hexahedron()), 0, p3),
-                 std::invalid_argument);
+    const NDArray p3 = doubles({2, 3}, {0.5, 0.5, 0.5, 2.0, 0.5, 0.5});
+    const meshioplusplus::IgaClosestPoint vr =
+        meshioplusplus::iga_closest_point(one_patch(hexahedron()), 0, p3);
+    EXPECT_NEAR(vr.mDistances.As<double>()[0], 0.0, 1e-12);
+    // hexahedron() has a skewed +x face (x in [1.0, 1.2]), so the exterior query clamps to u = 1.
+    EXPECT_NEAR(vr.mParams.As<double>()[3], 1.0, 1e-12);
+    EXPECT_GT(vr.mDistances.As<double>()[1], 0.8);
+    EXPECT_LT(vr.mDistances.As<double>()[1], 1.0);
+    // On an exact unit cube, (2, 0.5, 0.5) projects to (1, 0.5, 0.5) with distance 1.0.
+    const NurbsPatch unit_cube = make_patch(
+        {1, 1, 1}, {{0, 0, 1, 1}, {0, 0, 1, 1}, {0, 0, 1, 1}}, 3,
+        {0, 0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 1, 1, 1, 1, 1});
+    const meshioplusplus::IgaClosestPoint vc =
+        meshioplusplus::iga_closest_point(one_patch(unit_cube), 0, p3);
+    EXPECT_NEAR(vc.mDistances.As<double>()[0], 0.0, 1e-12);
+    EXPECT_NEAR(vc.mDistances.As<double>()[1], 1.0, 1e-12);
+    EXPECT_NEAR(vc.mPoints.As<double>()[3], 1.0, 1e-12);
     const NurbsInfo in = one_patch(arc());
     EXPECT_THROW(meshioplusplus::iga_closest_point(in, 1, doubles({1, 2}, {0, 0})),
                  std::invalid_argument);
-    EXPECT_THROW(meshioplusplus::iga_closest_point(in, 0, p3), std::invalid_argument);
+    EXPECT_THROW(meshioplusplus::iga_closest_point(in, 0, doubles({1, 3}, {0.5, 0.5, 0.5})),
+                 std::invalid_argument);
     EXPECT_THROW(meshioplusplus::iga_closest_point(in, 0, doubles({1, 2}, {std::nan(""), 0.0})),
                  std::invalid_argument);
     NurbsPatch degen;

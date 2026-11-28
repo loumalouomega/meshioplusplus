@@ -390,6 +390,62 @@ TriRayHit tri_bvh_ray_filtered(const TriBvh& rTree, const Vec3& rOrigin, const V
     return tribvh_ray_impl(rTree, rOrigin, rDir, TMin, TMax, rAccept);
 }
 
+std::vector<TriRayHit> tri_bvh_ray_all_hits(const TriBvh& rTree, const Vec3& rOrigin,
+                                            const Vec3& rDir, double TMin, double TMax) {
+    std::vector<TriRayHit> raw;
+    if (rTree.mNodes.empty())
+        return raw;
+    const TriangleSoup& soup = *rTree.mpSoup;
+    std::int32_t stack[128];
+    int top = 0;
+    stack[top++] = 0;
+    while (top > 0) {
+        const auto i = static_cast<std::size_t>(stack[--top]);
+        const TriBvhNode& node = rTree.mNodes[i];
+        if (!tribvh_slab(node.mLo, node.mHi, rOrigin, rDir, TMin, TMax))
+            continue;
+        if (node.mRight >= 0) {
+            stack[top++] = node.mRight;
+            stack[top++] = static_cast<std::int32_t>(i + 1);
+            continue;
+        }
+        for (std::int32_t k = 0; k < node.mCount; ++k) {
+            const std::int64_t t = rTree.mOrder[node.mBegin + k];
+            const Vec3* c = &soup.mCorners[3 * static_cast<std::size_t>(t)];
+            double th = 0.0;
+            if (!ray_triangle(rOrigin, rDir, c[0], c[1], c[2], th))
+                continue;
+            if (th <= TMin || th > TMax)
+                continue;
+            TriRayHit hit;
+            hit.mT = th;
+            hit.mTriangle = t;
+            hit.mNormal = vec3_cross(vec3_sub(c[1], c[0]), vec3_sub(c[2], c[0]));
+            raw.push_back(hit);
+        }
+    }
+    std::sort(raw.begin(), raw.end(), [](const TriRayHit& rA, const TriRayHit& rB) {
+        if (rA.mT != rB.mT)
+            return rA.mT < rB.mT;
+        return rA.mTriangle < rB.mTriangle;
+    });
+    std::vector<TriRayHit> out;
+    out.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size();) {
+        const double tol = 1e-9 * std::max(1.0, std::abs(raw[i].mT));
+        std::size_t best = i;
+        std::size_t j = i + 1;
+        while (j < raw.size() && raw[j].mT - raw[i].mT <= tol) {
+            if (raw[j].mTriangle < raw[best].mTriangle)
+                best = j;
+            ++j;
+        }
+        out.push_back(raw[best]);
+        i = j;
+    }
+    return out;
+}
+
 std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3& rA,
                                                 const Vec3& rB) {
     std::vector<std::pair<double, double>> raw;  // (t, side)

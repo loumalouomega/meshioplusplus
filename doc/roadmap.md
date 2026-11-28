@@ -959,11 +959,9 @@ Reopened from the non-goals, which record why a native `mesh_boolean` was not qu
 
 ### 9.3 Ray and nearest-point queries: remaining
 
-`cast_rays` and `locate_points` landed on every surface ([ray casting and point location](./ray_queries.md)): the nearest hit of each ray, and the containing cell with its barycentric weights, in the core, Python, both CLIs, the MCP server and the flat bindings. What remains is the two things that page lists as not offered. **S–M**
+`cast_rays` (nearest hit and `all_hits=True` CSR crossings, 9.3.1) and `locate_points` have landed on every surface ([ray casting and point location](./ray_queries.md)). What remains is only on request:
 
-- **9.3.1 Every crossing along a ray.** `cast_rays` reports the nearest hit only. `tri_bvh_segment_hits` (`detail/tri_bvh.hpp`) returns every crossing of a segment, de-duplicated across shared edges and vertices, but names no triangle, so an all-hits mode needs a traversal that keeps the triangle id (`tri_bvh_ray_filtered` is the nearest-hit analogue). Result shape: a CSR pair (`mRayOffset`, per-hit `mDistance`, `mCell`, `mPoint`), which every flat binding can return as arrays.
 - **9.3.2 A query handle.** Only if a caller needs many batches on one mesh: a `SurfaceQuery` that owns the triangle soup and its hierarchy, following the existing handle conventions (C `mio_surface_query_create`/`_free` as `mio_sequence`; Julia a mutable struct with a finalizer; R an external pointer; WASM an integer handle in the module table; pybind a `py::class_`).
-- **Done when.** `cast_rays(..., all_hits=True)` returns every crossing on every surface; the handle only on request.
 
 ### 9.5 Elevation beyond order 2
 
@@ -989,24 +987,9 @@ Reopened from the non-goals, which record why a native `mesh_boolean` was not qu
   - **9.7.3 Connected parts.** KaHIP's `--connected_blocks` is not reachable through the `kaffpa` C interface ([partition](./partition.md) records it). A method-independent post-pass `mConnectedParts`: label components per part with `cell_components` (`detail/cell_components.hpp` lines 55–60), keep each part's largest, and reassign every other component to the neighbouring part it shares most facets with, repeating until none remains; report the balance after it.
 - **Done when.** `partition(mesh, 8, method="metis")` works with the provider present and refuses by name without, and `connected_parts=True` gives one component per part on the space-filling curve's output. **S–M**
 
-### 9.8 The isogeometric layer's open list: remaining
+*(9.8 IGA extraction operators, volume closest point, B-rep face operations, and joined-patch knot removal have landed; see [IGA](./iga.md).)*
 
-[IGA](./iga.md) shipped second derivatives (`iga_evaluate(..., derivatives=2)`), `iga_bezier_extract`, `iga_remove_knots` and `iga_closest_point` for NURBS patches. What is left of the list is the cases those refuse. **S–M**
-
-- **State today.** The three new operations take a `NurbsInfo` patch; a `BrepInfo` model is refused by name; knot removal refuses a model whose patch topology joins several patches (they share knot vectors); Bézier extraction produces cells, not operators; the closest point takes curves and surfaces.
-- **Steps.**
-  - **9.8.5 Extraction operators.** `iga_bezier_extract` could also return the extraction operator per element (the matrix taking the B-spline basis of the element to the Bernstein basis, what an IGA code assembles with), beside the cells it returns now. **S**
-  - **9.8.6 Closest point on a volume.** A volume needs a point-in-solid test first (the closest point of a solid is the query point itself unless it is outside): the parameters by Newton inversion, then the boundary patches for a point outside. **S–M**
-  - **9.8.7 B-rep faces and joined patches.** `iga_bezier_extract`, `iga_remove_knots` and `iga_closest_point` on the faces of a `BrepInfo` (the trims would follow the parametrisation, which removal only preserves within the tolerance), and knot removal on a model whose patch topology joins several patches (a knot goes only if it goes from every patch sharing the knot vector). **M**
-- **Done when.** The *Not yet* line of the page holds only refinement of one patch of an MFEM model.
-
-### 9.9 Point-cloud conditioning: remaining
-
-`filter_points` landed on every surface ([point-cloud conditioning](./filter_points.md)): statistical and radius outlier removal, voxel and Poisson-disk thinning, with the pipeline step `FilterPoints`. What remains is the two things that page lists as not offered. **S**
-
-- **9.9.1 An averaged voxel point.** The voxel step keeps the real point nearest each cube's mean, so the result never invents a point and `point_map` is exact. A second representative, the mean of each cube's coordinates and float arrays (an integer array taken from the member nearest the mean), needs a point map that says "new point" (-1) and an array-reducing step in the gather; add it as `mVoxelMode` beside `mVoxelSize`.
-- **9.9.2 `subsample_points` in the core.** `select_points` and `subsample_points` (`src/python/meshioplusplus/_point_budget.py`) keep their count-driven `grid` and `farthest` methods in Python over `farthest_point_order` (`detail/farthest_points.hpp`, bound to Python alone). Moving them behind the same core operation gives the flat bindings the count-driven forms too, and needs the Python function's drop-and-remap of cells, regions and arrays reproduced on the C++ side (`filter_points` already does the gather and the Point regions); the Python functions stay as shims with unchanged output.
-- **Done when.** `FilterPoints` reads `VoxelMode` with the averaged point, and `subsample_points(..., method="farthest")` runs through the core on every surface with its output byte-identical to today's.
+*(9.9 point-cloud conditioning: `filter_points(..., voxel_mode="average")` and core `subsample_points` have landed on every surface; see [point-cloud conditioning](./filter_points.md).)*
 
 ### 9.10 Units and coordinate systems
 
@@ -1022,14 +1005,7 @@ Now actionable: 2.4.3 (UGRID NetCDF, ADCIRC, Selafin) and 2.4.6.1 (LAS, whose VL
 
 *(9.11 FVM face-pair quality, 9.12 bilateral/guided surface denoising, 9.13 MCF curve-skeleton extraction, 9.14 shortest geodesic paths and surface Voronoi, and 9.15 parametric FFD and RBF morphing have landed.)*
 
-### 9.16 Cancellation and progress reporting for long-running operations {#progress-cancel}
-
-Heavy operations (`fit_cad`, `octree_mesh`, `adapt_volume`, `optimize_volume`, `tetrahedralize`, `sequence`) run for seconds to minutes with the Python GIL released (`doc/architecture.md#threads-and-the-gil`), so `KeyboardInterrupt` (`SIGINT`) cannot interrupt them, and interactive callers (CLI, Jupyter widget 4.12, browser Web Workers, hosted MCP 4.18.7) receive no progress updates and cannot enforce timeouts. **M, design pass first**
-
-- **State today.** No operation header under `src/cpp/include/meshioplusplus/operations/` accepts a cancellation token or progress callback.
-- **Decisions to take first.** (1) Zero-overhead hot-loop rule: a lightweight `ProgressContext {std::atomic<bool>* mCancel; std::function<bool(double, const char*)> mCallback;}` (or a C-compatible function pointer + `void*` user data so it crosses the C API unchanged), passed via an optional parameter or a scoped thread-local guard (`ScopedProgressContext`) so existing option-struct layouts do not change (no ABI break on every operation struct!). Checked only at outer-pass boundaries (never inside per-cell inner loops), so tier S instruction counts stay within the 1% gate. (2) Semantics on cancel: throw a dedicated `CancelledError` (mapped to `MIO_ERR_CANCELLED` in C and `KeyboardInterrupt` / `CancelledError` in Python). (3) Python wiring: periodically call `PyErr_CheckSignals()` (briefly acquiring the GIL every ~100 ms or outer pass) so Ctrl-C interrupts C++ loops cleanly, plus an optional `progress=` callable. (4) WASM and MCP: forward progress to Web Worker `postMessage` in the browser viewer and wire wall-clock deadlines in hosted MCP (4.18.7) onto `mCancel`.
-- **Steps.** `include/meshioplusplus/progress.hpp` + `CancelledError`; instrument the six heaviest operations (`fit_cad`, `octree_mesh`, `adapt_volume`, `optimize_volume`, `tetrahedralize`, `sequence`) at outer-loop boundaries; expose `mio_cancel_token` and `mio_set_progress_callback` in the C API and Python GIL-safe signal check in `bindings/python/_core.cpp`.
-- **Done when.** Setting the cancel flag stops `adapt_volume` and `octree_mesh` within one outer pass under ASan/TSan, Ctrl-C interrupts a long Python call cleanly, and `tools/bench_instructions.py --check benchmark/instructions_S.csv` passes with default (null) progress context.
+*(9.16 cooperative cancellation and progress reporting: `progress.hpp`, `CancelledError`, `ScopedProgressContext`, C `mio_cancel_token*`/`mio_set_progress_callback`, Python `CancelToken`/`progress_context` with throttled `PyErr_CheckSignals()`, and outer-loop checkpoints in `optimize_volume`, `adapt_volume`, `octree_mesh`, `fit_cad`, `tetrahedralize`, and `sequence` have landed.)*
 
 ---
 

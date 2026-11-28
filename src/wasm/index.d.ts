@@ -4674,11 +4674,32 @@ export interface MeshioPlusPlusModule {
       minNeighbors?: number;
       voxelSize?: number;
       minDistance?: number;
+      voxelMode?: "nearest" | "average";
     },
   ): {
     mesh: Mesh;
     pointMap: Int32Array;
     numRemoved: { statistical: number; radius: number; voxel: number; poisson: number };
+    warnings: string[];
+  };
+
+  /**
+   * Select a fixed count of points from a point cloud or mesh (roadmap 9.9.2).
+   */
+  subsamplePoints(
+    mesh: Mesh,
+    options: {
+      count: number;
+      method?: "farthest" | "grid" | "random";
+      seed?: number;
+      start?: number;
+      bounds?: number[];
+      maxCells?: number;
+      recordIds?: boolean;
+    },
+  ): {
+    mesh: Mesh;
+    pointMap: Int32Array;
     warnings: string[];
   };
 
@@ -4698,6 +4719,7 @@ export interface MeshioPlusPlusModule {
     directions: Float64Array | number[],
     maxDistance?: number,
     region?: string,
+    allHits?: boolean,
   ): {
     hit: Int32Array;
     distance: Float64Array;
@@ -4705,6 +4727,7 @@ export interface MeshioPlusPlusModule {
     normal: Float64Array;
     cell: Int32Array;
     numHits: number;
+    rayOffset?: Int32Array;
   };
 
   /**

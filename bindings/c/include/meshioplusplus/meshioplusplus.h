@@ -141,7 +141,8 @@ typedef enum mio_status {
     MIO_ERR_INVALID_ARG = 3, /**< NULL handle/pointer, bad dtype, bad shape, ... */
     MIO_ERR_NOT_FOUND = 4,   /**< unknown format/data name/block index */
     MIO_ERR_UNSUPPORTED = 5, /**< valid but unsupported (e.g. ragged connectivity) */
-    MIO_ERR_INTERNAL = 6     /**< unexpected failure; see mio_last_error() */
+    MIO_ERR_INTERNAL = 6,    /**< unexpected failure; see mio_last_error() */
+    MIO_ERR_CANCELLED = 7    /**< operation cancelled via cancel token or progress callback */
 } mio_status;
 
 /** Overall outcome of comparing two meshes (see mio_diff()), in increasing
@@ -9576,7 +9577,8 @@ MIO_API void mio_mass_report_free(mio_mass_report* report);
 typedef struct mio_cast_rays_opts {
     double max_distance; /**< ignore hits farther than this; 0 for no limit */
     const char* region;  /**< restrict the surface to this cell region; NULL or "" for all */
-    int64_t reserved[6]; /**< must be zero; room for additive growth */
+    int64_t all_hits;    /**< non-zero: every crossing (used by mio_cast_rays_all) */
+    int64_t reserved[5]; /**< must be zero; room for additive growth */
 } mio_cast_rays_opts;
 
 /** Initialize ray-casting options: no distance limit, every surface cell. */
@@ -9599,6 +9601,23 @@ MIO_API mio_status mio_cast_rays(const mio_mesh* mesh, const double* origins, in
                                  const double* directions, int64_t num_directions,
                                  const mio_cast_rays_opts* opts, int32_t* hit, double* distance,
                                  double* point, double* normal, int64_t* cell, int64_t* num_hits);
+
+/** Opaque all-hits ray-casting result in CSR layout (roadmap 9.3.1). */
+typedef struct mio_cast_rays_result mio_cast_rays_result;
+
+/** Cast rays and return every crossing along each ray in CSR layout. */
+MIO_API mio_cast_rays_result* mio_cast_rays_all(const mio_mesh* mesh, const double* origins,
+                                                int64_t num_rays, const double* directions,
+                                                int64_t num_directions,
+                                                const mio_cast_rays_opts* opts);
+MIO_API int64_t mio_cast_rays_result_num_rays(const mio_cast_rays_result* res);
+MIO_API int64_t mio_cast_rays_result_num_hits(const mio_cast_rays_result* res);
+MIO_API const int64_t* mio_cast_rays_result_ray_offset(const mio_cast_rays_result* res);
+MIO_API const double* mio_cast_rays_result_distance(const mio_cast_rays_result* res);
+MIO_API const double* mio_cast_rays_result_point(const mio_cast_rays_result* res);
+MIO_API const double* mio_cast_rays_result_normal(const mio_cast_rays_result* res);
+MIO_API const int64_t* mio_cast_rays_result_cell(const mio_cast_rays_result* res);
+MIO_API void mio_cast_rays_result_free(mio_cast_rays_result* res);
 
 /**
  * Options for mio_locate_points (roadmap 9.3). Size: 64 bytes.
@@ -9632,6 +9651,9 @@ MIO_API mio_status mio_locate_points(const mio_mesh* mesh, const double* points,
  * initialize through mio_filter_points_opts_init(). Size: 80 bytes. A step is
  * off at 0; at least one must be on.
  */
+#define MIO_VOXEL_NEAREST 0
+#define MIO_VOXEL_AVERAGE 1
+
 typedef struct mio_filter_points_opts {
     int64_t statistical_k; /**< statistical outlier removal: neighbours per mean distance */
     double std_ratio;      /**< ... standard deviations above the mean (default 1) */
@@ -9639,7 +9661,8 @@ typedef struct mio_filter_points_opts {
     int64_t min_neighbors; /**< ... other points needed within `radius` (default 4) */
     double voxel_size;     /**< voxel thinning: the cube side */
     double min_distance;   /**< Poisson-disk thinning: minimum distance between kept points */
-    int64_t reserved[4];   /**< must be zero; room for additive growth */
+    int64_t voxel_mode;    /**< MIO_VOXEL_NEAREST (0) or MIO_VOXEL_AVERAGE (1) */
+    int64_t reserved[3];   /**< must be zero; room for additive growth */
 } mio_filter_points_opts;
 
 /** Initialize point-filter options: every step off, std_ratio 1, min_neighbors 4. */
@@ -9666,6 +9689,28 @@ MIO_API mio_mesh* mio_filter_points(const mio_mesh* mesh, const mio_filter_point
 /** The warnings of the calling thread's last mio_filter_points, joined by '\n'
  *  (string-getter rule 5); -1 on error. */
 MIO_API int64_t mio_filter_points_warnings(char* buf, int64_t buflen);
+
+#define MIO_SUBSAMPLE_FARTHEST 0
+#define MIO_SUBSAMPLE_GRID 1
+#define MIO_SUBSAMPLE_RANDOM 2
+
+/** Options for mio_subsample_points (roadmap 9.9.2). Size: 120 bytes. */
+typedef struct mio_subsample_points_opts {
+    int64_t count;       /**< number of points to select (>= 1) */
+    int32_t method;      /**< MIO_SUBSAMPLE_FARTHEST / GRID / RANDOM */
+    int32_t has_bounds;  /**< non-zero to filter candidates to `bounds` */
+    int64_t seed;        /**< RNG seed for RANDOM or start < 0 */
+    int64_t start;       /**< starting point index (0-based), or -1 for seeded draw */
+    double bounds[6];    /**< [xlo, ylo, zlo, xhi, yhi, zhi] when has_bounds != 0 */
+    int64_t max_cells;   /**< lattice ceiling for GRID (default 16000000) */
+    int64_t record_ids;  /**< non-zero to attach budget:original_point_id */
+    int64_t reserved[3]; /**< must be zero; room for additive growth */
+} mio_subsample_points_opts;
+
+MIO_API void mio_subsample_points_opts_init(mio_subsample_points_opts* opts);
+MIO_API mio_mesh* mio_subsample_points(const mio_mesh* mesh, const mio_subsample_points_opts* opts,
+                                       int64_t* point_map);
+MIO_API int64_t mio_subsample_points_warnings(char* buf, int64_t buflen);
 
 /* ------------------------------------------------------------------------
  * Discrete operators, streamlines, transfer operators, spectral descriptors,
@@ -9900,6 +9945,31 @@ MIO_API void mio_critical_points_opts_init(mio_critical_points_opts* opts);
 MIO_API mio_mesh* mio_critical_points(const mio_mesh* mesh, const mio_critical_points_opts* opts,
                                       int64_t* num_minima, int64_t* num_maxima,
                                       int64_t* num_saddles);
+
+/* --------------------------------------------------------------------------
+ * Cooperative cancellation and progress reporting (roadmap 9.16)
+ * -------------------------------------------------------------------------- */
+
+/** Opaque thread-safe cancellation token. Destroy with mio_cancel_token_free(). */
+typedef struct mio_cancel_token mio_cancel_token;
+
+/** Progress callback returning non-zero to continue, 0 to cancel. */
+typedef int (*mio_progress_cb)(double fraction, const char* stage, void* user_data);
+
+MIO_API mio_cancel_token* mio_cancel_token_create(void);
+MIO_API void mio_cancel_token_cancel(mio_cancel_token* token);
+MIO_API void mio_cancel_token_reset(mio_cancel_token* token);
+MIO_API int mio_cancel_token_is_cancelled(const mio_cancel_token* token);
+MIO_API void mio_cancel_token_free(mio_cancel_token* token);
+
+/** Install a thread-local progress callback and/or cancel token for subsequent
+ *  operations on the calling thread. Either argument may be NULL; passing both
+ *  NULL clears the thread-local context. */
+MIO_API void mio_set_progress_callback(mio_progress_cb cb, void* user_data,
+                                       mio_cancel_token* token);
+
+/** Clear any thread-local progress callback and cancel token on the calling thread. */
+MIO_API void mio_clear_progress_callback(void);
 
 #ifdef __cplusplus
 }

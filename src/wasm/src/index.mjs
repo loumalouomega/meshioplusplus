@@ -385,8 +385,9 @@ export class MeshioPlusPlusLoadError extends Error {
  *   renderText: (mesh: Mesh, options?: RenderOptions, text?: RenderTextOptions) => string,
  *   renderPng: (mesh: Mesh, options?: RenderOptions, compress?: number) => Uint8Array,
  *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
- *   filterPoints: (mesh: Mesh, options?: {statisticalK?: number, stdRatio?: number, radius?: number, minNeighbors?: number, voxelSize?: number, minDistance?: number}) => {mesh: Mesh, pointMap: Int32Array, numRemoved: {statistical: number, radius: number, voxel: number, poisson: number}, warnings: string[]},
- *   castRays: (mesh: Mesh, origins: Float64Array | number[], directions: Float64Array | number[], maxDistance?: number, region?: string) => {hit: Int32Array, distance: Float64Array, point: Float64Array, normal: Float64Array, cell: Int32Array, numHits: number},
+ *   filterPoints: (mesh: Mesh, options?: {statisticalK?: number, stdRatio?: number, radius?: number, minNeighbors?: number, voxelSize?: number, minDistance?: number, voxelMode?: string}) => {mesh: Mesh, pointMap: Int32Array, numRemoved: {statistical: number, radius: number, voxel: number, poisson: number}, warnings: string[]},
+ *   subsamplePoints: (mesh: Mesh, options: {count: number, method?: string, seed?: number, start?: number, bounds?: number[], maxCells?: number, recordIds?: boolean}) => {mesh: Mesh, pointMap: Int32Array, warnings: string[]},
+ *   castRays: (mesh: Mesh, origins: Float64Array | number[], directions: Float64Array | number[], maxDistance?: number, region?: string, allHits?: boolean) => {hit: Int32Array, distance: Float64Array, point: Float64Array, normal: Float64Array, cell: Int32Array, numHits: number, rayOffset?: Int32Array},
  *   locatePoints: (mesh: Mesh, points: Float64Array | number[], tolerance?: number) => {cell: Int32Array, nodes: Int32Array, barycentric: Float64Array, numLocated: number},
  *   massProperties: (mesh: Mesh, density?: number, densityArray?: string, region?: string, thickness?: number, about?: string) => {kind: string, total: object, regions: object[], warnings: string[]},
  *   editRegions: (mesh: Mesh, edits: Array<{op: string, inputs: Array<string | {name: string, kind?: string, dim?: number, tag?: number}>, output?: string, dim?: number, tag?: number, keepInputs?: boolean}>) => Mesh,
@@ -1346,8 +1347,9 @@ export async function loadMeshioPlusPlus(
         hausdorffDistance: (a, b, faceSamples = 0, regionA = '', regionB = '') =>
             Module.hausdorffDistance(a, b, faceSamples, regionA, regionB),
         filterPoints: (mesh, options) => Module.filterPoints(mesh, options),
-        castRays: (mesh, origins, directions, maxDistance = 0, region = '') =>
-            Module.castRays(mesh, origins, directions, maxDistance, region),
+        subsamplePoints: (mesh, options) => Module.subsamplePoints(mesh, options),
+        castRays: (mesh, origins, directions, maxDistance = 0, region = '', allHits = false) =>
+            Module.castRays(mesh, origins, directions, maxDistance, region, Boolean(allHits)),
         locatePoints: (mesh, points, tolerance = 1e-12) =>
             Module.locatePoints(mesh, points, tolerance),
         massProperties: (mesh, density = 1, densityArray = '', region = '', thickness = 0, about = 'centroid') =>

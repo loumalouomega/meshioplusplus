@@ -6811,6 +6811,20 @@ struct Unsupported : std::runtime_error {
     explicit Unsupported(const std::string& rMsg) : std::runtime_error(rMsg) {}
 };
 
+/**
+ * @brief Thrown when a long-running operation is cancelled cooperatively.
+ *
+ * Raised by `progress_checkpoint()` when the active thread-local
+ * `ProgressContext`'s cancel flag is set or its progress callback returns
+ * `false`. Maps to `MIO_ERR_CANCELLED` in the C API and to
+ * `meshioplusplus.CancelledError` (or `KeyboardInterrupt` on `SIGINT`) in
+ * Python.
+ */
+struct CancelledError : std::runtime_error {
+    CancelledError() : std::runtime_error("operation cancelled") {}
+    explicit CancelledError(const std::string& rMsg) : std::runtime_error(rMsg) {}
+};
+
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/exceptions.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/detail/binary_stream.hpp =====
@@ -27177,16 +27191,20 @@ struct CastRaysOptions {
     double mMaxDistance = 0.0;
     /// Restrict the surface to this named `Cell` region; empty takes every surface cell.
     std::string mRegion;
+    /// When `true`, return every crossing along each ray in CSR layout (`mRayOffset`).
+    bool mAllHits = false;
 };
 
-/// One entry per ray, in the order the rays were given.
+/// One entry per ray (or per hit when `mAllHits` is `true`, indexed by `mRayOffset`).
 struct CastRaysResult {
     std::vector<std::uint8_t> mHit;
-    std::vector<double> mDistance;    ///< `NaN` on a miss.
-    std::vector<double> mPoint;       ///< Three per ray; `NaN` on a miss.
-    std::vector<double> mNormal;      ///< Three per ray, unit; `NaN` on a miss.
-    std::vector<std::int64_t> mCell;  ///< Global input cell; -1 on a miss.
+    std::vector<double> mDistance;    ///< `NaN` on a miss (nearest mode); per hit when `mAllHits`.
+    std::vector<double> mPoint;       ///< Three per ray (or per hit when `mAllHits`).
+    std::vector<double> mNormal;      ///< Three per ray (or per hit), unit.
+    std::vector<std::int64_t> mCell;  ///< Global input cell; -1 on a miss (nearest mode).
     std::int64_t mNumHits = 0;
+    /// CSR offsets of length `num_rays + 1` when `mAllHits` is `true`; empty otherwise.
+    std::vector<std::int64_t> mRayOffset;
 };
 
 /**
@@ -31131,6 +31149,12 @@ MESHIOPLUSPLUS_API FeatureEdgeResult feature_edges(const Mesh& rMesh,
 
 namespace meshioplusplus {
 
+/// How voxel-grid thinning represents each occupied cube (roadmap 9.9.1).
+enum class VoxelMode : std::int32_t {
+    Nearest = 0,  ///< Keep the real input point nearest the cube's mean (default).
+    Average = 1,  ///< Emit the mean of each cube's coordinates and float arrays (`mPointMap` = -1).
+};
+
 /// Which steps `filter_points` runs and how strictly.
 struct PointFilterOptions {
     /// Statistical outlier removal: neighbours per mean distance; 0 is off.
@@ -31145,6 +31169,8 @@ struct PointFilterOptions {
     double mVoxelSize = 0.0;
     /// Poisson-disk thinning: the minimum distance between kept points; 0 is off.
     double mMinDistance = 0.0;
+    /// Voxel thinning representative: nearest real point or cube mean.
+    VoxelMode mVoxelMode = VoxelMode::Nearest;
 };
 
 /// What `filter_points` kept.
@@ -33827,6 +33853,12 @@ MESHIOPLUSPLUS_API NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_
                                               const std::vector<double>& rKnots, double Tolerance,
                                               IgaRemoveKnotsReport* pReport = nullptr);
 
+/// Knot removal on a face of a B-rep model (roadmap 9.8.7).
+MESHIOPLUSPLUS_API BrepInfo iga_remove_knots(const BrepInfo& rInfo, std::size_t Face,
+                                             std::int32_t Direction,
+                                             const std::vector<double>& rKnots, double Tolerance,
+                                             IgaRemoveKnotsReport* pReport = nullptr);
+
 /// What `iga_closest_point` found, one row per query point.
 struct IgaClosestPoint {
     /// Float64 `(N, d)`: the parameters of the closest point on the patch.
@@ -33838,45 +33870,48 @@ struct IgaClosestPoint {
 };
 
 /**
- * @brief The point of patch @p Patch closest to each of @p rPoints (roadmap 9.8.4).
+ * @brief The point of patch @p Patch closest to each of @p rPoints (roadmap 9.8.4, 9.8.6).
  *
- * For a curve (one parametric direction, in 1, 2 or 3 space dimensions) or a
- * surface (two directions, in 2 or 3), rational or not: a lattice of samples
- * (`degree + 1` per knot span and direction, at most about 64 per direction on
- * a surface) seeds a Newton iteration on `|x(u) - p|^2` with the exact second
- * derivatives (`iga_evaluate` with `Derivatives = 2`), clamped to the knot
- * range (a point beyond the patch's edge lands on the edge), falling back on
- * Gauss-Newton where the Hessian is not positive definite and halving the step
- * until the distance drops; the three nearest samples seed three runs and the
- * closest result wins, so a point near a fold of the patch usually finds the
- * global minimum, though a global guarantee is not given. Each point is
- * independent and the result does not depend on the thread count. A volume
- * (three directions) is refused: the closest point of a solid is the point
- * itself unless it is outside, and that is a different problem.
+ * Supports curves (1D), surfaces (2D), and volumes (3D), rational or not.
+ * For a volume, points inside the solid converge to themselves with distance 0;
+ * exterior points clamp onto the boundary.
  * @param rPoints Float64 `(N, space dim)`, finite.
- * @throws std::invalid_argument for a bad patch, a volume, or points that are
- *         not Float64 `(N, space dim)` and finite.
+ * @throws std::invalid_argument for a bad patch, or points that are not
+ *         Float64 `(N, space dim)` and finite.
  */
 MESHIOPLUSPLUS_API IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
                                                      const NDArray& rPoints);
 
+/// Closest point on a face of a B-rep model (roadmap 9.8.7).
+MESHIOPLUSPLUS_API IgaClosestPoint iga_closest_point(const BrepInfo& rInfo, std::size_t Face,
+                                                     const NDArray& rPoints);
+
 /**
  * @brief Bezier extraction of one patch (roadmap 9.8.2): the patch as VTK Bezier cells.
- *
- * Every interior knot is inserted up to multiplicity `p` in each direction
- * (exactly, on the homogeneous net, so a rational patch stays exact), and the
- * refined net is cut at its nonzero knot spans: one `VTK_BEZIER_CURVE`,
- * `VTK_BEZIER_QUADRILATERAL` or `VTK_BEZIER_HEXAHEDRON` cell per span product,
- * with `(p+1)^dim` points in VTK's Lagrange node order, in Cartesian
- * coordinates (the homogeneous values divided by the weight). Points are not
- * shared between cells. Cell data `HigherOrderDegrees` (Float64, `(cells, 3)`,
- * unused directions 0), `iga:patch` and `iga:span` (as `iga_sample` writes
- * them); point data `RationalWeights` when the patch is rational (any weight
- * other than 1) and one array per NURBS field.
- * @throws std::invalid_argument for a bad patch index or patch, or unequal
- *         degrees in the patch's directions (elevate with `iga_elevate_degree`).
  */
 MESHIOPLUSPLUS_API Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch);
+
+/// Bezier extraction of a face of a B-rep model (roadmap 9.8.7).
+MESHIOPLUSPLUS_API Mesh iga_bezier_extract(const BrepInfo& rInfo, std::size_t Face);
+
+/// Bezier cells plus per-element extraction operators (roadmap 9.8.5).
+struct IgaBezierExtraction {
+    /// The extracted VTK Bezier mesh (identical to `iga_bezier_extract`).
+    Mesh mMesh;
+    /// Per element: Float64 `(nn, nn)` extraction matrix `C^e` (B-spline -> Bernstein,
+    /// in tensor-product basis order) such that `N^e = C^e * B` and `P_bezier = (C^e)^T * P`.
+    std::vector<NDArray> mOperators;
+    /// Per element: Int64 `(nn,)` flat control-point indices into the patch's control net.
+    std::vector<NDArray> mElementControlPoints;
+};
+
+/// Bezier extraction returning both cells and per-element extraction operators (roadmap 9.8.5).
+MESHIOPLUSPLUS_API IgaBezierExtraction iga_bezier_extract_operators(const NurbsInfo& rInfo,
+                                                                    std::size_t Patch);
+
+/// Bezier extraction with operators on a B-rep face (roadmap 9.8.5, 9.8.7).
+MESHIOPLUSPLUS_API IgaBezierExtraction iga_bezier_extract_operators(const BrepInfo& rInfo,
+                                                                    std::size_t Face);
 
 /// Sample a B-rep as `sample_brep` does (`mSubdivisions`, `mTrimSamples`, `mTrim`, `mEdges`).
 MESHIOPLUSPLUS_API Mesh iga_sample(const BrepInfo& rInfo, const IgaSampleOptions& rOptions = {});
@@ -43341,6 +43376,86 @@ MESHIOPLUSPLUS_API SubdivideResult subdivide(const Mesh& rMesh,
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/subdivide.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/subsample_points.hpp =====
+/**
+ * @file operations/subsample_points.hpp
+ * @brief Count-driven point-cloud subsampling (roadmap 9.9.2).
+ *
+ * `subsample_points(mesh, options)` selects exactly `mCount` points from
+ * `mesh` (optionally restricted to an axis-aligned box `mBounds`) in
+ * selection order using one of three methods:
+ *
+ * - `Farthest`: exact greedy farthest-point sampling (`detail/farthest_points.hpp`),
+ *   deterministic given `mStart`.
+ * - `Grid`: isotropic lattice refinement picking the nearest-to-centre
+ *   representative of each occupied cell, followed by farthest-point sampling
+ *   over those representatives.
+ * - `Random`: uniform random draw without replacement seeded by `mSeed`.
+ *
+ * The output is a point cloud carrying one `vertex` block, gathered
+ * `point_data`, copied `field_data`, and remapped `Point` regions (empty
+ * groups kept). Non-vertex cells, `cell_data`, and `Cell`/`Side` regions are
+ * dropped with warnings. Setting `mRecordIds = true` attaches
+ * `budget:original_point_id`.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// The point_data array attached when `mRecordIds` is `true`.
+inline constexpr const char* kBudgetOriginalPointIdName = "budget:original_point_id";
+
+/// Selection method for `subsample_points`.
+enum class SubsampleMethod : std::int32_t {
+    Farthest = 0,
+    Grid = 1,
+    Random = 2,
+};
+
+/// Options for `subsample_points`.
+struct SubsamplePointsOptions {
+    /// Number of points to select (>= 1, <= number of candidates).
+    std::int64_t mCount = 0;
+    /// Selection method (`Farthest`, `Grid`, or `Random`).
+    SubsampleMethod mMethod = SubsampleMethod::Farthest;
+    /// Seed for `Random` and for `mStart < 0`.
+    std::int64_t mSeed = 0;
+    /// Index of the first selected point for `Farthest`/`Grid`; `< 0` draws from `mSeed`.
+    std::int64_t mStart = 0;
+    /// When `true`, restrict candidates to `[xlo, ylo, zlo, xhi, yhi, zhi]`.
+    bool mHasBounds = false;
+    std::array<double, 6> mBounds{0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    /// Lattice cell ceiling for `Grid` (default matches Python `DEFAULT_MAX_CELLS`).
+    std::int64_t mMaxCells = 16000000;
+    /// Attach `budget:original_point_id` to `point_data`.
+    bool mRecordIds = false;
+};
+
+/// Output of `subsample_points`.
+struct SubsamplePointsResult {
+    Mesh mMesh;
+    /// Selected input point indices in selection order.
+    std::vector<std::int64_t> mPointMap;
+    std::vector<std::string> mWarnings;
+};
+
+/**
+ * @brief Select a fixed count of points and return them as a point cloud.
+ * @throws std::invalid_argument on invalid count, method, bounds, start index,
+ *         or too few distinct positions / lattice cells.
+ */
+MESHIOPLUSPLUS_API SubsamplePointsResult subsample_points(const Mesh& rMesh,
+                                                          const SubsamplePointsOptions& rOptions);
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/subsample_points.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/surface.hpp =====
 /**
  * @file operations/surface.hpp
@@ -45089,6 +45204,96 @@ T parallel_exclusive_scan(const U* pIn, std::size_t n, T* pOut, T init) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/parallel.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/progress.hpp =====
+/**
+ * @file progress.hpp
+ * @brief Thread-local cooperative cancellation and progress reporting.
+ *
+ * Long-running operations call `progress_checkpoint()` at outer-pass and
+ * stage boundaries (never inside per-cell inner loops). When no
+ * `ProgressContext` is active on the calling thread, the check reduces to a
+ * single null-pointer test with negligible overhead. Passing the context via
+ * a scoped thread-local guard (`ScopedProgressContext`) avoids adding fields
+ * to every operation's options struct.
+ */
+
+// System includes
+#include <atomic>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/**
+ * @brief C-compatible progress callback signature.
+ *
+ * @param Fraction Progress in `[0.0, 1.0]` (or `< 0.0` when indeterminate).
+ * @param pStage Non-null NUL-terminated stage label (may be empty `""`).
+ * @param pUserData Caller-owned opaque pointer forwarded unchanged.
+ * @return `true` to continue, `false` to request cancellation.
+ */
+using ProgressCallbackFn = bool (*)(double Fraction, const char* pStage, void* pUserData);
+
+/**
+ * @brief Lightweight, non-owning cancellation and progress context.
+ *
+ * Both members are optional; a context with both null is a no-op.
+ */
+struct ProgressContext {
+    std::atomic<bool>* mCancel = nullptr;
+    ProgressCallbackFn mCallback = nullptr;
+    void* mUserData = nullptr;
+};
+
+/**
+ * @brief Returns the active thread-local `ProgressContext`, or `nullptr`.
+ */
+MESHIOPLUSPLUS_API const ProgressContext* current_progress_context() noexcept;
+
+/**
+ * @brief Replaces the active thread-local `ProgressContext` and returns the
+ * previous one. Prefer `ScopedProgressContext` in C++ code.
+ */
+MESHIOPLUSPLUS_API const ProgressContext* set_progress_context(
+    const ProgressContext* pContext) noexcept;
+
+/**
+ * @brief RAII guard installing a `ProgressContext` for the current thread.
+ *
+ * Non-copyable and non-movable; restores the previous context on destruction.
+ * The referenced `ProgressContext` must outlive the guard.
+ */
+class MESHIOPLUSPLUS_API ScopedProgressContext {
+public:
+    explicit ScopedProgressContext(const ProgressContext* pContext) noexcept;
+    ~ScopedProgressContext() noexcept;
+
+    ScopedProgressContext(const ScopedProgressContext&) = delete;
+    ScopedProgressContext& operator=(const ScopedProgressContext&) = delete;
+    ScopedProgressContext(ScopedProgressContext&&) = delete;
+    ScopedProgressContext& operator=(ScopedProgressContext&&) = delete;
+
+private:
+    const ProgressContext* mPrevious = nullptr;
+};
+
+/**
+ * @brief Returns `true` if the active context's cancel flag is currently set.
+ *
+ * Does not invoke the progress callback and never throws.
+ */
+MESHIOPLUSPLUS_API bool progress_is_cancelled() noexcept;
+
+/**
+ * @brief Reports progress and checks for cancellation at an outer-loop boundary.
+ *
+ * Throws `CancelledError` if the active context's `mCancel` flag is set or if
+ * `mCallback` returns `false`. No-op when no context is installed.
+ */
+MESHIOPLUSPLUS_API void progress_checkpoint(double Fraction, const char* pStage = "");
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/progress.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/providers.hpp =====
 #include <array>
 #include <cstdint>
@@ -58777,6 +58982,13 @@ using TriRayFilter = std::function<bool(std::int64_t, const Vec3&)>;
 TriRayHit tri_bvh_ray_filtered(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir,
                                double TMin, double TMax, const TriRayFilter& rAccept);
 
+/// Every triangle hit by `rOrigin + t rDir` with `TMin < t <= TMax`, ascending
+/// in `t`; crossings of several triangles at one point (a shared edge or
+/// vertex, within `1e-9 * max(1, |t|)`) are deduplicated, keeping the lowest
+/// triangle id.
+std::vector<TriRayHit> tri_bvh_ray_all_hits(const TriBvh& rTree, const Vec3& rOrigin,
+                                            const Vec3& rDir, double TMin, double TMax);
+
 /// Where a segment crosses the skin.
 struct TriSegmentHit {
     double mT = 0.0;  ///< Segment parameter in [0, 1].
@@ -69905,7 +70117,8 @@ inline const std::vector<PipeOpSpec>& pipe_op_table() {
         {"Delaunay2D", {}},
         {"EstimateNormals", {"K", "Orientation", "Viewpoint", "RecordVariation"}},
         {"FilterPoints",
-         {"StatisticalK", "StdRatio", "Radius", "MinNeighbors", "VoxelSize", "MinDistance"}},
+         {"StatisticalK", "StdRatio", "Radius", "MinNeighbors", "VoxelSize", "MinDistance",
+          "VoxelMode"}},
         {"ReconstructSurface",
          {"Normals", "K", "CellSize", "Resolution", "MaxDistance", "EstimateNormals", "NormalsK",
           "MaxCells"}},
@@ -132625,6 +132838,62 @@ TriRayHit tri_bvh_ray(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir
 TriRayHit tri_bvh_ray_filtered(const TriBvh& rTree, const Vec3& rOrigin, const Vec3& rDir,
                                double TMin, double TMax, const TriRayFilter& rAccept) {
     return tribvh_ray_impl(rTree, rOrigin, rDir, TMin, TMax, rAccept);
+}
+
+std::vector<TriRayHit> tri_bvh_ray_all_hits(const TriBvh& rTree, const Vec3& rOrigin,
+                                            const Vec3& rDir, double TMin, double TMax) {
+    std::vector<TriRayHit> raw;
+    if (rTree.mNodes.empty())
+        return raw;
+    const TriangleSoup& soup = *rTree.mpSoup;
+    std::int32_t stack[128];
+    int top = 0;
+    stack[top++] = 0;
+    while (top > 0) {
+        const auto i = static_cast<std::size_t>(stack[--top]);
+        const TriBvhNode& node = rTree.mNodes[i];
+        if (!tribvh_slab(node.mLo, node.mHi, rOrigin, rDir, TMin, TMax))
+            continue;
+        if (node.mRight >= 0) {
+            stack[top++] = node.mRight;
+            stack[top++] = static_cast<std::int32_t>(i + 1);
+            continue;
+        }
+        for (std::int32_t k = 0; k < node.mCount; ++k) {
+            const std::int64_t t = rTree.mOrder[node.mBegin + k];
+            const Vec3* c = &soup.mCorners[3 * static_cast<std::size_t>(t)];
+            double th = 0.0;
+            if (!ray_triangle(rOrigin, rDir, c[0], c[1], c[2], th))
+                continue;
+            if (th <= TMin || th > TMax)
+                continue;
+            TriRayHit hit;
+            hit.mT = th;
+            hit.mTriangle = t;
+            hit.mNormal = vec3_cross(vec3_sub(c[1], c[0]), vec3_sub(c[2], c[0]));
+            raw.push_back(hit);
+        }
+    }
+    std::sort(raw.begin(), raw.end(), [](const TriRayHit& rA, const TriRayHit& rB) {
+        if (rA.mT != rB.mT)
+            return rA.mT < rB.mT;
+        return rA.mTriangle < rB.mTriangle;
+    });
+    std::vector<TriRayHit> out;
+    out.reserve(raw.size());
+    for (std::size_t i = 0; i < raw.size();) {
+        const double tol = 1e-9 * std::max(1.0, std::abs(raw[i].mT));
+        std::size_t best = i;
+        std::size_t j = i + 1;
+        while (j < raw.size() && raw[j].mT - raw[i].mT <= tol) {
+            if (raw[j].mTriangle < raw[best].mTriangle)
+                best = j;
+            ++j;
+        }
+        out.push_back(raw[best]);
+        i = j;
+    }
+    return out;
 }
 
 std::vector<TriSegmentHit> tri_bvh_segment_hits(const TriBvh& rTree, const Vec3& rA,
@@ -247692,8 +247961,12 @@ void AdvRemesher::Run() {
     mrResult.mMeanQualityBefore = before.mMeanQuality;
     mrResult.mVolumeBefore = before.mVolume;
     Time("setup", t0);
+    progress_checkpoint(0.05, "adapt_volume:setup");
 
+    const int max_it = std::max(1, mrOptions.mMaxIterations);
     for (int it = 0; it < mrOptions.mMaxIterations; ++it) {
+        progress_checkpoint(0.05 + 0.80 * (static_cast<double>(it) / static_cast<double>(max_it)),
+                            "adapt_volume:iteration");
         std::int64_t changed = 0;
         if (mrOptions.mEnableCollapse) {
             t0 = AdvClock::now();
@@ -247743,6 +248016,8 @@ void AdvRemesher::Run() {
     if (mrOptions.mEnableSwap || mrOptions.mEnableSmooth) {
         t0 = AdvClock::now();
         for (int round = 0; round < 3; ++round) {
+            progress_checkpoint(0.85 + 0.10 * (static_cast<double>(round) / 3.0),
+                                "adapt_volume:polish");
             std::int64_t n = 0;
             if (mrOptions.mEnableSwap) {
                 const std::int64_t k = SwapPass();
@@ -250055,6 +250330,46 @@ CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
     const double nan = std::nan("");
 
     CastRaysResult out;
+    if (rOptions.mAllHits) {
+        std::vector<std::vector<detail::TriRayHit>> per_ray(n);
+        parallel_for(n, [&](std::size_t i) {
+            const detail::Vec3 origin{rOrigins[3 * i], rOrigins[3 * i + 1], rOrigins[3 * i + 2]};
+            const detail::Vec3& dir = dirs[common ? 0 : i];
+            per_ray[i] = detail::tri_bvh_ray_all_hits(tree, origin, dir, 0.0, t_max);
+        });
+        out.mHit.assign(n, 0);
+        out.mRayOffset.assign(n + 1, 0);
+        for (std::size_t i = 0; i < n; ++i) {
+            out.mHit[i] = per_ray[i].empty() ? 0 : 1;
+            out.mRayOffset[i + 1] =
+                out.mRayOffset[i] + static_cast<std::int64_t>(per_ray[i].size());
+        }
+        const auto total = static_cast<std::size_t>(out.mRayOffset[n]);
+        out.mNumHits = static_cast<std::int64_t>(total);
+        out.mDistance.assign(total, nan);
+        out.mPoint.assign(3 * total, nan);
+        out.mNormal.assign(3 * total, nan);
+        out.mCell.assign(total, -1);
+        parallel_for(n, [&](std::size_t i) {
+            const detail::Vec3 origin{rOrigins[3 * i], rOrigins[3 * i + 1], rOrigins[3 * i + 2]};
+            const detail::Vec3& dir = dirs[common ? 0 : i];
+            const auto base = static_cast<std::size_t>(out.mRayOffset[i]);
+            const auto& hits = per_ray[i];
+            for (std::size_t h = 0; h < hits.size(); ++h) {
+                const std::size_t dst = base + h;
+                out.mDistance[dst] = hits[h].mT;
+                for (std::size_t k = 0; k < 3; ++k)
+                    out.mPoint[3 * dst + k] = origin[k] + hits[h].mT * dir[k];
+                const double len = detail::vec3_norm(hits[h].mNormal);
+                if (len > 0.0)
+                    for (std::size_t k = 0; k < 3; ++k)
+                        out.mNormal[3 * dst + k] = hits[h].mNormal[k] / len;
+                out.mCell[dst] = soup.mSourceCell[static_cast<std::size_t>(hits[h].mTriangle)];
+            }
+        });
+        return out;
+    }
+
     out.mHit.assign(n, 0);
     out.mDistance.assign(n, nan);
     out.mPoint.assign(3 * n, nan);
@@ -264714,6 +265029,119 @@ FpIds fp_poisson(const std::vector<Vec3>& rXyz, const FpIds& rAlive, double MinD
     return out;
 }
 
+struct FpVoxelAverageResult {
+    std::vector<Vec3> mCoords;
+    std::vector<std::int64_t> mNearest;
+    std::vector<std::vector<std::int64_t>> mMembers;
+};
+
+FpVoxelAverageResult fp_voxel_average(const std::vector<Vec3>& rXyz, const FpIds& rAlive,
+                                      double Size) {
+    FpVoxelAverageResult res;
+    const std::size_t m = rAlive.size();
+    if (m == 0)
+        return res;
+    const std::vector<Vec3> cloud = fp_cloud(rXyz, rAlive);
+    double lo[3], hi[3];
+    detail::BoundingBoxUtils::FromCoords(m, [&](std::size_t i) { return cloud[i]; }, lo, hi);
+    for (int d = 0; d < 3; ++d)
+        if (!((hi[d] - lo[d]) / Size < 1e15))
+            throw std::invalid_argument(
+                "meshio++: filter_points: the voxel size is too small for the extent of the cloud");
+    std::vector<FpVoxelRow> rows(m);
+    parallel_for(m, [&](std::size_t i) {
+        rows[i] = FpVoxelRow{static_cast<std::int64_t>(std::floor((cloud[i][0] - lo[0]) / Size)),
+                             static_cast<std::int64_t>(std::floor((cloud[i][1] - lo[1]) / Size)),
+                             static_cast<std::int64_t>(std::floor((cloud[i][2] - lo[2]) / Size)),
+                             static_cast<std::int64_t>(i)};
+    });
+    std::sort(rows.begin(), rows.end());
+    for (std::size_t a = 0; a < m;) {
+        std::size_t b = a;
+        Vec3 mean{0.0, 0.0, 0.0};
+        std::vector<std::int64_t> members;
+        while (b < m && rows[b].SameVoxel(rows[a])) {
+            mean = detail::vec3_add(mean, cloud[static_cast<std::size_t>(rows[b].mId)]);
+            members.push_back(rAlive[static_cast<std::size_t>(rows[b].mId)]);
+            ++b;
+        }
+        mean = detail::vec3_scale(mean, 1.0 / static_cast<double>(b - a));
+        std::int64_t best = rows[a].mId;
+        double best_d2 = std::numeric_limits<double>::infinity();
+        for (std::size_t j = a; j < b; ++j) {
+            const double d2 = detail::vec3_norm_sq(
+                detail::vec3_sub(cloud[static_cast<std::size_t>(rows[j].mId)], mean));
+            if (d2 < best_d2) {
+                best_d2 = d2;
+                best = rows[j].mId;
+            }
+        }
+        res.mCoords.push_back(mean);
+        res.mNearest.push_back(rAlive[static_cast<std::size_t>(best)]);
+        res.mMembers.push_back(std::move(members));
+        a = b;
+    }
+    return res;
+}
+
+void fp_gather_averaged(const Mesh& rMesh, const FpVoxelAverageResult& rAvg,
+                        const FpIds& rKeepVoxels, Mesh& rOut) {
+    const std::size_t kept = rKeepVoxels.size();
+    const std::size_t pdim = rMesh.PointDim() > 0 ? rMesh.PointDim() : 3;
+    const DType pdt = rMesh.Points().Size() > 0 ? rMesh.Points().Dtype() : DType::Float64;
+    NDArray pts = NDArray::Uninit(pdt, {kept, pdim});
+    for (std::size_t i = 0; i < kept; ++i) {
+        const Vec3& c = rAvg.mCoords[static_cast<std::size_t>(rKeepVoxels[i])];
+        for (std::size_t d = 0; d < pdim; ++d) {
+            const double val = d < 3 ? c[d] : 0.0;
+            if (pdt == DType::Float32)
+                pts.As<float>()[i * pdim + d] = static_cast<float>(val);
+            else
+                pts.As<double>()[i * pdim + d] = val;
+        }
+    }
+    rOut.AssignPoints(std::move(pts));
+
+    const std::size_t n_in = rMesh.NumPoints();
+    for (const std::string& name : rMesh.PointDataNames()) {
+        const NDArray& src = rMesh.PointData(name);
+        if (src.Shape().empty() || src.Shape()[0] != n_in) {
+            rOut.AddPointData(name, detail::data_owned_copy(src));
+            continue;
+        }
+        std::vector<std::size_t> shape = src.Shape();
+        shape[0] = kept;
+        const std::size_t stride = n_in > 0 ? src.Size() / n_in : 1;
+        const DType dt = src.Dtype();
+        if (dt == DType::Float64 || dt == DType::Float32) {
+            NDArray dst = NDArray::Uninit(dt, shape);
+            for (std::size_t i = 0; i < kept; ++i) {
+                const auto& members = rAvg.mMembers[static_cast<std::size_t>(rKeepVoxels[i])];
+                const double inv = 1.0 / static_cast<double>(members.size());
+                for (std::size_t c = 0; c < stride; ++c) {
+                    double acc = 0.0;
+                    for (const std::int64_t pid : members) {
+                        const std::size_t idx = static_cast<std::size_t>(pid) * stride + c;
+                        acc += dt == DType::Float32 ? static_cast<double>(src.As<float>()[idx])
+                                                    : src.As<double>()[idx];
+                    }
+                    const double mean = acc * inv;
+                    if (dt == DType::Float32)
+                        dst.As<float>()[i * stride + c] = static_cast<float>(mean);
+                    else
+                        dst.As<double>()[i * stride + c] = mean;
+                }
+            }
+            rOut.AddPointData(name, std::move(dst));
+        } else {
+            FpIds nearest_ids(kept);
+            for (std::size_t i = 0; i < kept; ++i)
+                nearest_ids[i] = rAvg.mNearest[static_cast<std::size_t>(rKeepVoxels[i])];
+            rOut.AddPointData(name, detail::subset_gather_rows(src, nearest_ids));
+        }
+    }
+}
+
 }  // namespace
 
 PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOptions) {
@@ -264733,6 +265161,8 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
         bad("voxel_size must be a finite number, zero or above");
     if (!std::isfinite(rOptions.mMinDistance) || rOptions.mMinDistance < 0.0)
         bad("min_distance must be a finite number, zero or above");
+    if (rOptions.mVoxelMode != VoxelMode::Nearest && rOptions.mVoxelMode != VoxelMode::Average)
+        bad("voxel_mode must be 'nearest' or 'average'");
     const bool do_stat = rOptions.mStatisticalK > 0;
     const bool do_radius = rOptions.mRadius > 0.0;
     const bool do_voxel = rOptions.mVoxelSize > 0.0;
@@ -264764,21 +265194,43 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
         alive = fp_radius(xyz, alive, rOptions.mRadius, rOptions.mMinNeighbors);
         result.mNumRemovedRadius = static_cast<std::int64_t>(before - alive.size());
     }
-    if (do_voxel) {
+    const bool avg_voxel = do_voxel && rOptions.mVoxelMode == VoxelMode::Average;
+    FpVoxelAverageResult voxel_avg;
+    FpIds voxel_kept;
+    if (avg_voxel) {
         const std::size_t before = alive.size();
-        alive = fp_voxel(xyz, alive, rOptions.mVoxelSize);
-        result.mNumRemovedVoxel = static_cast<std::int64_t>(before - alive.size());
-    }
-    if (do_poisson) {
-        const std::size_t before = alive.size();
-        alive = fp_poisson(xyz, alive, rOptions.mMinDistance);
-        result.mNumRemovedPoisson = static_cast<std::int64_t>(before - alive.size());
+        voxel_avg = fp_voxel_average(xyz, alive, rOptions.mVoxelSize);
+        result.mNumRemovedVoxel = static_cast<std::int64_t>(before - voxel_avg.mCoords.size());
+        voxel_kept.resize(voxel_avg.mCoords.size());
+        std::iota(voxel_kept.begin(), voxel_kept.end(), std::int64_t{0});
+        if (do_poisson) {
+            const std::size_t before_p = voxel_kept.size();
+            voxel_kept = fp_poisson(voxel_avg.mCoords, voxel_kept, rOptions.mMinDistance);
+            result.mNumRemovedPoisson = static_cast<std::int64_t>(before_p - voxel_kept.size());
+        }
+    } else {
+        if (do_voxel) {
+            const std::size_t before = alive.size();
+            alive = fp_voxel(xyz, alive, rOptions.mVoxelSize);
+            result.mNumRemovedVoxel = static_cast<std::int64_t>(before - alive.size());
+        }
+        if (do_poisson) {
+            const std::size_t before = alive.size();
+            alive = fp_poisson(xyz, alive, rOptions.mMinDistance);
+            result.mNumRemovedPoisson = static_cast<std::int64_t>(before - alive.size());
+        }
     }
 
     // The point cloud: points and per-point arrays gathered, one vertex block.
     Mesh out;
-    detail::subset_gather_points(rMesh, alive, out);
-    const std::size_t kept = alive.size();
+    std::size_t kept = 0;
+    if (avg_voxel) {
+        fp_gather_averaged(rMesh, voxel_avg, voxel_kept, out);
+        kept = voxel_kept.size();
+    } else {
+        detail::subset_gather_points(rMesh, alive, out);
+        kept = alive.size();
+    }
     if (kept > 0) {
         NDArray conn = NDArray::Uninit(DType::Int64, {kept, std::size_t{1}});
         for (std::size_t i = 0; i < kept; ++i)
@@ -264790,8 +265242,15 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
 
     // Point regions follow the surviving points; the rest cannot.
     std::vector<std::int64_t> inverse(n, -1);
-    for (std::size_t j = 0; j < kept; ++j)
-        inverse[static_cast<std::size_t>(alive[j])] = static_cast<std::int64_t>(j);
+    if (avg_voxel) {
+        for (std::size_t j = 0; j < kept; ++j)
+            inverse[static_cast<std::size_t>(
+                voxel_avg.mNearest[static_cast<std::size_t>(voxel_kept[j])])] =
+                static_cast<std::int64_t>(j);
+    } else {
+        for (std::size_t j = 0; j < kept; ++j)
+            inverse[static_cast<std::size_t>(alive[j])] = static_cast<std::int64_t>(j);
+    }
     std::size_t dropped_regions = 0;
     for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
         const Region& region = rMesh.Region(r);
@@ -264822,7 +265281,10 @@ PointFilterResult filter_points(const Mesh& rMesh, const PointFilterOptions& rOp
         result.mWarnings.push_back(std::to_string(dropped_regions) +
                                    " cell or side region(s) dropped: the result is a point cloud");
     result.mMesh = std::move(out);
-    result.mPointMap = std::move(alive);
+    if (avg_voxel)
+        result.mPointMap.assign(kept, -1);
+    else
+        result.mPointMap = std::move(alive);
     return result;
 }
 
@@ -266739,13 +267201,16 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
         general.mExtendSurfaces = true;
         return fit_cad_build(rMesh, rStepPath, general);
     }
+    progress_checkpoint(0.0, "fit_cad:start");
     const auto p_kernel = cad_kernel();
     if (rOptions.mBackend != FitCadBackend::Native && p_kernel && p_kernel->mFitCad) {
         FitCadResult kernel = p_kernel->mFitCad(rMesh, rStepPath, rOptions);
         if (rOptions.mValidationReport) {
+            progress_checkpoint(0.90, "fit_cad:validate");
             const detail::ClosedFacets fc = detail::closed_facets(rMesh, kFcnPrefix);
             fcn_validate(fc, kernel.mBrep, rStepPath, kernel);
         }
+        progress_checkpoint(1.0, "fit_cad:done");
         return kernel;
     }
     if (rOptions.mBackend == FitCadBackend::Occt)
@@ -266769,7 +267234,9 @@ static FitCadResult fit_cad_build(const Mesh& rMesh, const std::string& rStepPat
                 "from the meshioplusplus-occt package; a source build finds one with "
                 "-DMESHIOPLUSPLUS_WITH_OCCT=ON (the default)");
     }
-    return fcn_native_fit_cad(rMesh, rStepPath, rOptions);
+    FitCadResult native_res = fcn_native_fit_cad(rMesh, rStepPath, rOptions);
+    progress_checkpoint(1.0, "fit_cad:done");
+    return native_res;
 }
 
 FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
@@ -266782,7 +267249,9 @@ FitCadResult fit_cad(const Mesh& rMesh, const std::string& rStepPath,
     // demotes no more patches than the unconstrained one. The constrained solid
     // is written to `rStepPath`; the unconstrained one is built unwritten, and
     // written only when it is the one kept.
+    progress_checkpoint(0.0, "fit_cad:constrained");
     FitCadResult on = fit_cad_build(rMesh, rStepPath, rOptions);
+    progress_checkpoint(0.5, "fit_cad:unconstrained");
     FitCadOptions plain = rOptions;
     plain.mConstrainPrimitives = false;
     const FitCadResult off = fit_cad_build(rMesh, "", plain);
@@ -272386,10 +272855,6 @@ NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch, std::int32
                  std::to_string(rInfo.mPatches.size()) + ")");
     if (!std::isfinite(Tolerance) || Tolerance < 0.0)
         iga_fail("the tolerance must be finite and not negative");
-    if (rInfo.mTopology.mDimension != 0 && rInfo.mPatches.size() > 1)
-        iga_fail("a model whose patch topology joins " + std::to_string(rInfo.mPatches.size()) +
-                 " patches shares knot vectors between them; remove knots from a model of one "
-                 "patch");
     const NurbsPatch& patch = rInfo.mPatches[Patch];
     const std::string what = "patch " + std::to_string(Patch);
     const IgaShape sh = iga_check_patch(patch, what);
@@ -272445,41 +272910,118 @@ NurbsInfo iga_remove_knots(const NurbsInfo& rInfo, std::size_t Patch, std::int32
                      std::to_string(asked[i]));
     }
 
-    // TOL = d * wmin / (1 + Pmax), with a floor at the net's rounding level.
-    double wmin = 1.0, pmax = 0.0, big = 0.0;
-    const double* w = patch.mWeights.As<double>();
-    const double* x = patch.mControlPoints.As<double>();
-    for (std::size_t i = 0; i < sh.mNumPoints; ++i) {
-        if (rational)
-            wmin = i == 0 ? w[0] : std::min(wmin, w[i]);
-        double norm = 0.0;
-        for (std::size_t d = 0; d < sh.mSdim; ++d)
-            norm += x[i * sh.mSdim + d] * x[i * sh.mSdim + d];
-        pmax = std::max(pmax, std::sqrt(norm));
-    }
-    for (const double v : net.mValues)
-        big = std::max(big, std::abs(v));
-    const double tol = std::max(Tolerance * wmin / (1.0 + pmax), 1e-12 * (1.0 + big));
-
-    IgaRemoveKnotsReport report;
-    for (std::size_t i = 0; i < values.size(); ++i) {
-        const int done = detail::iga_net_remove_knot(net, dir, values[i], asked[i], tol);
-        report.mKnots.push_back(values[i]);
-        report.mRequested.push_back(asked[i]);
-        report.mRemoved.push_back(done);
-        report.mNumRemoved += done;
-    }
+    auto compute_tol = [](const NurbsPatch& rP, const IgaShape& rSh, bool Rat,
+                          const detail::IgaNet& rNet, double Tol) {
+        double wmin = 1.0, pmax = 0.0, big = 0.0;
+        const double* w = rP.mWeights.As<double>();
+        const double* x = rP.mControlPoints.As<double>();
+        for (std::size_t i = 0; i < rSh.mNumPoints; ++i) {
+            if (Rat)
+                wmin = i == 0 ? w[0] : std::min(wmin, w[i]);
+            double norm = 0.0;
+            for (std::size_t d = 0; d < rSh.mSdim; ++d)
+                norm += x[i * rSh.mSdim + d] * x[i * rSh.mSdim + d];
+            pmax = std::max(pmax, std::sqrt(norm));
+        }
+        for (const double v : rNet.mValues)
+            big = std::max(big, std::abs(v));
+        return std::max(Tol * wmin / (1.0 + pmax), 1e-12 * (1.0 + big));
+    };
 
     NurbsInfo out;
     out.mFieldNames = rInfo.mFieldNames;
     out.mTopology = rInfo.mTopology;
     out.mPatches = rInfo.mPatches;
-    out.mPatches[Patch] = iga_patch_from_net(net, sh, rational);
+
+    IgaRemoveKnotsReport report;
+    if (rInfo.mTopology.mDimension != 0 && rInfo.mPatches.size() > 1) {
+        // Joined patches (roadmap 9.8.7): collect every (patch, direction) sharing
+        // this knot vector and remove a knot only to the multiplicity every
+        // sharing patch accepts within its tolerance.
+        struct SharedDir {
+            std::size_t mPatch = 0;
+            std::size_t mDir = 0;
+            IgaShape mShape;
+            bool mRational = false;
+            detail::IgaNet mNet;
+            double mTol = 0.0;
+        };
+        std::vector<SharedDir> shared;
+        for (std::size_t pi = 0; pi < rInfo.mPatches.size(); ++pi) {
+            const NurbsPatch& rp = rInfo.mPatches[pi];
+            const std::string pwhat = "patch " + std::to_string(pi);
+            const IgaShape rsh = iga_check_patch(rp, pwhat);
+            const bool rrat = iga_is_rational(rp);
+            if (rrat)
+                iga_check_weights(rp, pwhat);
+            for (std::size_t d = 0; d < rsh.mDim; ++d) {
+                if (rp.mDegrees[d] == p && rp.mKnots[d] == k) {
+                    SharedDir sd;
+                    sd.mPatch = pi;
+                    sd.mDir = d;
+                    sd.mShape = rsh;
+                    sd.mRational = rrat;
+                    sd.mNet = iga_make_net(rp, rsh, rrat);
+                    sd.mTol = compute_tol(rp, rsh, rrat, sd.mNet, Tolerance);
+                    shared.push_back(std::move(sd));
+                }
+            }
+        }
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            int agreed = asked[i];
+            for (const SharedDir& sd : shared) {
+                detail::IgaNet probe = sd.mNet;
+                const int done = detail::iga_net_remove_knot(probe, sd.mDir, values[i], agreed,
+                                                             sd.mTol);
+                agreed = std::min(agreed, done);
+                if (agreed == 0)
+                    break;
+            }
+            if (agreed > 0) {
+                for (SharedDir& sd : shared)
+                    (void)detail::iga_net_remove_knot(sd.mNet, sd.mDir, values[i], agreed, sd.mTol);
+            }
+            report.mKnots.push_back(values[i]);
+            report.mRequested.push_back(asked[i]);
+            report.mRemoved.push_back(agreed);
+            report.mNumRemoved += agreed;
+        }
+        for (const SharedDir& sd : shared)
+            out.mPatches[sd.mPatch] = iga_patch_from_net(sd.mNet, sd.mShape, sd.mRational);
+    } else {
+        const double tol = compute_tol(patch, sh, rational, net, Tolerance);
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            const int done = detail::iga_net_remove_knot(net, dir, values[i], asked[i], tol);
+            report.mKnots.push_back(values[i]);
+            report.mRequested.push_back(asked[i]);
+            report.mRemoved.push_back(done);
+            report.mNumRemoved += done;
+        }
+        out.mPatches[Patch] = iga_patch_from_net(net, sh, rational);
+    }
+
     out.mCellPatch = NDArray(DType::Int64, {0});
     out.mCellSpan = NDArray(DType::Int64, {0, 3});
     out.mBoundaryCellPatch = NDArray(DType::Int64, {0});
     if (pReport)
         *pReport = std::move(report);
+    return out;
+}
+
+BrepInfo iga_remove_knots(const BrepInfo& rInfo, std::size_t Face, std::int32_t Direction,
+                          const std::vector<double>& rKnots, double Tolerance,
+                          IgaRemoveKnotsReport* pReport) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is out of range (the model has " +
+                 std::to_string(rInfo.mFaces.size()) + ")");
+    const std::int64_t pid = rInfo.mFaces[Face].mPatch;
+    if (pid < 0 || static_cast<std::size_t>(pid) >= rInfo.mPatches.size())
+        iga_fail("face " + std::to_string(Face) + " names no patch");
+    NurbsInfo single;
+    single.mPatches.push_back(rInfo.mPatches[static_cast<std::size_t>(pid)]);
+    NurbsInfo reduced = iga_remove_knots(single, 0, Direction, rKnots, Tolerance, pReport);
+    BrepInfo out = rInfo;
+    out.mPatches[static_cast<std::size_t>(pid)] = std::move(reduced.mPatches[0]);
     return out;
 }
 
@@ -272495,9 +273037,8 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
     const IgaTable t = iga_make_table(patch, what, rational);
     const IgaShape& sh = t.mShape;
     const std::size_t dim = sh.mDim, sdim = sh.mSdim;
-    if (dim > 2)
-        iga_fail("the closest point on a volume is not computed; " + what + " has " +
-                 std::to_string(dim) + " parametric directions (curves and surfaces only)");
+    if (dim < 1 || dim > 3)
+        iga_fail("closest_point expects 1, 2 or 3 parametric directions");
     if (rPoints.Dtype() != DType::Float64 || rPoints.Shape().size() != 2 ||
         rPoints.Shape()[1] != sdim)
         iga_fail("points are not Float64 (N, " + std::to_string(sdim) + ")");
@@ -272507,7 +273048,7 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         if (!std::isfinite(q[i]))
             iga_fail("a query point has a non-finite coordinate");
 
-    std::array<double, 2> lo{0, 0}, hi{0, 0};
+    std::array<double, 3> lo{0, 0, 0}, hi{0, 0, 0};
     for (std::size_t d = 0; d < dim; ++d) {
         lo[d] = patch.mKnots[d][static_cast<std::size_t>(patch.mDegrees[d])];
         hi[d] = patch.mKnots[d][sh.mCounts[d]];
@@ -272527,7 +273068,7 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
     };
 
     // The seed lattice: degree + 1 samples per nonzero knot span.
-    std::array<std::vector<double>, 2> axis;
+    std::array<std::vector<double>, 3> axis;
     for (std::size_t d = 0; d < dim; ++d) {
         const std::vector<double>& k = patch.mKnots[d];
         std::size_t spans = 0;
@@ -272536,7 +273077,7 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         if (spans == 0)
             iga_fail("closest_point knot vector in direction " + std::to_string(d) +
                      " has zero active span length");
-        const std::size_t cap = dim == 1 ? 4096 : 64;
+        const std::size_t cap = dim == 1 ? 4096 : (dim == 2 ? 64 : 16);
         std::size_t per = static_cast<std::size_t>(patch.mDegrees[d]) + 1;
         per = std::max<std::size_t>(1, std::min(per, cap > spans ? (cap - 1) / spans : 1));
         axis[d].push_back(lo[d]);
@@ -272547,13 +273088,19 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
                                                : k[s] + (k[s + 1] - k[s]) * static_cast<double>(j) /
                                                             static_cast<double>(per));
     }
-    const std::size_t n0 = axis[0].size(), n1 = dim == 2 ? axis[1].size() : 1;
-    std::vector<double> seed_x(n0 * n1 * sdim);
-    for (std::size_t b = 0; b < n1; ++b)
-        for (std::size_t a = 0; a < n0; ++a) {
-            const double u[2] = {axis[0][a], dim == 2 ? axis[1][b] : 0.0};
-            eval(u, seed_x.data() + (a + n0 * b) * sdim, nullptr, nullptr);
-        }
+    const std::size_t n0 = axis[0].size();
+    const std::size_t n1 = dim >= 2 ? axis[1].size() : 1;
+    const std::size_t n2 = dim == 3 ? axis[2].size() : 1;
+    const std::size_t nseeds = n0 * n1 * n2;
+    std::vector<double> seed_x(nseeds * sdim);
+    for (std::size_t c = 0; c < n2; ++c)
+        for (std::size_t b = 0; b < n1; ++b)
+            for (std::size_t a = 0; a < n0; ++a) {
+                const double u[3] = {axis[0][a], dim >= 2 ? axis[1][b] : 0.0,
+                                     dim == 3 ? axis[2][c] : 0.0};
+                const std::size_t idx = a + n0 * (b + n1 * c);
+                eval(u, seed_x.data() + idx * sdim, nullptr, nullptr);
+            }
 
     IgaClosestPoint out;
     out.mParams = NDArray(DType::Float64, {n, dim});
@@ -272567,7 +273114,7 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         // The three nearest samples, ascending distance then index.
         std::array<std::size_t, 3> best{0, 0, 0};
         std::array<double, 3> bestd{1e300, 1e300, 1e300};
-        for (std::size_t s = 0; s < n0 * n1; ++s) {
+        for (std::size_t s = 0; s < nseeds; ++s) {
             double d2 = 0.0;
             for (std::size_t d = 0; d < sdim; ++d)
                 d2 += (seed_x[s * sdim + d] - p[d]) * (seed_x[s * sdim + d] - p[d]);
@@ -272583,14 +273130,20 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
                 }
         }
         double win_f = 1e300;
-        std::array<double, 2> win_u{lo[0], dim == 2 ? lo[1] : 0.0};
+        std::array<double, 3> win_u{lo[0], dim >= 2 ? lo[1] : 0.0, dim == 3 ? lo[2] : 0.0};
         std::array<double, 3> x{0, 0, 0};
-        std::array<double, 12> dd1{}, dd2{};
+        std::array<double, 9> dd1{};
+        std::array<double, 27> dd2{};
         for (std::size_t r = 0; r < 3; ++r) {
             if (bestd[r] >= 1e300)
                 break;
-            std::array<double, 2> u{axis[0][best[r] % n0], dim == 2 ? axis[1][best[r] / n0] : 0.0};
-            const auto residual = [&](const std::array<double, 2>& rU, double* pX, double* pRes) {
+            const std::size_t s = best[r];
+            const std::size_t a = s % n0;
+            const std::size_t b = (s / n0) % n1;
+            const std::size_t c = s / (n0 * n1);
+            std::array<double, 3> u{axis[0][a], dim >= 2 ? axis[1][b] : 0.0,
+                                    dim == 3 ? axis[2][c] : 0.0};
+            const auto residual = [&](const std::array<double, 3>& rU, double* pX, double* pRes) {
                 eval(rU.data(), pX, nullptr, nullptr);
                 double f = 0.0;
                 for (std::size_t d = 0; d < sdim; ++d) {
@@ -272603,7 +273156,9 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
             double f = residual(u, x.data(), res.data());
             for (int iter = 0; iter < 80; ++iter) {
                 eval(u.data(), x.data(), dd1.data(), dd2.data());
-                double g[2] = {0, 0}, H[2][2] = {{0, 0}, {0, 0}}, G[2][2] = {{0, 0}, {0, 0}};
+                double g[3] = {0, 0, 0};
+                double H[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+                double G[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
                 for (std::size_t d = 0; d < sdim; ++d)
                     res[d] = x[d] - p[d];
                 for (std::size_t k = 0; k < dim; ++k) {
@@ -272616,49 +273171,65 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
                                        res[d] * dd2[(k * dim + l) * sdim + d];
                         }
                 }
-                bool free_[2] = {true, true};
+                std::size_t free_idx[3];
                 std::size_t nfree = 0;
                 for (std::size_t k = 0; k < dim; ++k) {
-                    if ((u[k] <= lo[k] && g[k] > 0.0) || (u[k] >= hi[k] && g[k] < 0.0))
-                        free_[k] = false;
-                    nfree += free_[k] ? 1 : 0;
+                    if (!((u[k] <= lo[k] && g[k] > 0.0) || (u[k] >= hi[k] && g[k] < 0.0)))
+                        free_idx[nfree++] = k;
                 }
                 if (nfree == 0)
                     break;
-                double step[2] = {0, 0};
-                if (dim == 2 && nfree == 2) {
-                    auto solve = [&](double A[2][2]) {
-                        const double det = A[0][0] * A[1][1] - A[0][1] * A[1][0];
-                        if (!(A[0][0] > 0.0 && det > 0.0))
-                            return false;
-                        step[0] = -(A[1][1] * g[0] - A[0][1] * g[1]) / det;
-                        step[1] = -(-A[1][0] * g[0] + A[0][0] * g[1]) / det;
-                        return true;
-                    };
-                    if (!solve(H) && !solve(G)) {
-                        const double scale = G[0][0] + G[1][1] + 1e-300;
-                        step[0] = -g[0] / scale;
-                        step[1] = -g[1] / scale;
+                double step[3] = {0, 0, 0};
+                auto solve_spd = [&](double A[3][3]) -> bool {
+                    double L[3][3] = {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}};
+                    for (std::size_t ri = 0; ri < nfree; ++ri) {
+                        for (std::size_t ci = 0; ci <= ri; ++ci) {
+                            double sum = A[free_idx[ri]][free_idx[ci]];
+                            for (std::size_t mi = 0; mi < ci; ++mi)
+                                sum -= L[ri][mi] * L[ci][mi];
+                            if (ri == ci) {
+                                if (!(sum > 0.0))
+                                    return false;
+                                L[ri][ri] = std::sqrt(sum);
+                            } else {
+                                L[ri][ci] = sum / L[ci][ci];
+                            }
+                        }
                     }
-                } else {
-                    for (std::size_t k = 0; k < dim; ++k) {
-                        if (!free_[k])
-                            continue;
-                        const double h = H[k][k] > 0.0 ? H[k][k] : G[k][k] > 0.0 ? G[k][k] : 1e300;
-                        step[k] = -g[k] / h;
+                    double y[3] = {0, 0, 0};
+                    for (std::size_t ri = 0; ri < nfree; ++ri) {
+                        double sum = -g[free_idx[ri]];
+                        for (std::size_t mi = 0; mi < ri; ++mi)
+                            sum -= L[ri][mi] * y[mi];
+                        y[ri] = sum / L[ri][ri];
                     }
+                    double z[3] = {0, 0, 0};
+                    for (std::size_t ri = nfree; ri-- > 0;) {
+                        double sum = y[ri];
+                        for (std::size_t mi = ri + 1; mi < nfree; ++mi)
+                            sum -= L[mi][ri] * z[mi];
+                        z[ri] = sum / L[ri][ri];
+                    }
+                    for (std::size_t ri = 0; ri < nfree; ++ri)
+                        step[free_idx[ri]] = z[ri];
+                    return true;
+                };
+                if (!solve_spd(H) && !solve_spd(G)) {
+                    double scale = 1e-300;
+                    for (std::size_t ri = 0; ri < nfree; ++ri)
+                        scale += G[free_idx[ri]][free_idx[ri]];
+                    for (std::size_t ri = 0; ri < nfree; ++ri)
+                        step[free_idx[ri]] = -g[free_idx[ri]] / scale;
                 }
                 double alpha = 1.0;
                 bool moved = false;
-                std::array<double, 2> trial = u;
+                std::array<double, 3> trial = u;
                 std::array<double, 3> xt{0, 0, 0}, rt{0, 0, 0};
                 double ft = f;
                 for (int half = 0; half < 40 && !moved; ++half, alpha *= 0.5) {
                     for (std::size_t k = 0; k < dim; ++k)
                         trial[k] = std::min(std::max(u[k] + alpha * step[k], lo[k]), hi[k]);
                     ft = residual(trial, xt.data(), rt.data());
-                    // A step that does not raise f beyond rounding: near the minimum f is flat,
-                    // and a strict test would stop a few ulps short of it.
                     moved = ft <= f + 1e-14 * f;
                 }
                 if (!moved)
@@ -272688,6 +273259,18 @@ IgaClosestPoint iga_closest_point(const NurbsInfo& rInfo, std::size_t Patch,
         od[i] = std::sqrt(dist2);
     });
     return out;
+}
+
+IgaClosestPoint iga_closest_point(const BrepInfo& rInfo, std::size_t Face, const NDArray& rPoints) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is out of range (the model has " +
+                 std::to_string(rInfo.mFaces.size()) + ")");
+    const std::int64_t pid = rInfo.mFaces[Face].mPatch;
+    if (pid < 0 || static_cast<std::size_t>(pid) >= rInfo.mPatches.size())
+        iga_fail("face " + std::to_string(Face) + " names no patch");
+    NurbsInfo single;
+    single.mPatches.push_back(rInfo.mPatches[static_cast<std::size_t>(pid)]);
+    return iga_closest_point(single, 0, rPoints);
 }
 
 Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch) {
@@ -272825,6 +273408,158 @@ Mesh iga_bezier_extract(const NurbsInfo& rInfo, std::size_t Patch) {
     for (std::size_t f = 0; f < fields.size(); ++f)
         mesh.AddPointData(rInfo.mFieldNames[f], std::move(fields[f]));
     return mesh;
+}
+
+Mesh iga_bezier_extract(const BrepInfo& rInfo, std::size_t Face) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is out of range (the model has " +
+                 std::to_string(rInfo.mFaces.size()) + ")");
+    const std::int64_t pid = rInfo.mFaces[Face].mPatch;
+    if (pid < 0 || static_cast<std::size_t>(pid) >= rInfo.mPatches.size())
+        iga_fail("face " + std::to_string(Face) + " names no patch");
+    NurbsInfo single;
+    single.mPatches.push_back(rInfo.mPatches[static_cast<std::size_t>(pid)]);
+    return iga_bezier_extract(single, 0);
+}
+
+namespace {
+
+struct IgaExtraction1D {
+    std::vector<std::vector<double>> mC;  // each (p+1)x(p+1) row-major: N^e = C^e * B
+    std::vector<std::size_t> mSpanStart;  // first B-spline basis index for each element
+};
+
+IgaExtraction1D iga_bezier_extraction_1d(const std::vector<double>& rU, int P) {
+    const auto p = static_cast<std::size_t>(P);
+    const std::size_t m = rU.size();
+    const std::size_t np = p + 1;
+    auto eye = [&]() {
+        std::vector<double> mat(np * np, 0.0);
+        for (std::size_t i = 0; i < np; ++i)
+            mat[i * np + i] = 1.0;
+        return mat;
+    };
+
+    IgaExtraction1D res;
+    std::size_t a = p;
+    std::size_t b = a + 1;
+    std::vector<double> cur = eye();
+    std::vector<double> alphas(np, 0.0);
+    while (b < m) {
+        std::vector<double> next = eye();
+        const std::size_t i = b;
+        while (b + 1 < m && rU[b + 1] == rU[b])
+            ++b;
+        const std::size_t mult = b - i + 1;
+        res.mSpanStart.push_back(a - p);
+        if (mult < p) {
+            const double numer = rU[b] - rU[a];
+            for (std::size_t j = p; j > mult; --j)
+                alphas[j - mult - 1] = numer / (rU[a + j] - rU[a]);
+            const std::size_t r = p - mult;
+            for (std::size_t j = 1; j <= r; ++j) {
+                const std::size_t save = r - j;
+                const std::size_t s = mult + j;
+                for (std::size_t k = p; k >= s; --k) {
+                    const double alpha = alphas[k - s];
+                    for (std::size_t row = 0; row < np; ++row)
+                        cur[row * np + k] =
+                            alpha * cur[row * np + k] + (1.0 - alpha) * cur[row * np + (k - 1)];
+                }
+                if (b + 1 < m) {
+                    for (std::size_t l = 0; l <= j; ++l)
+                        next[(save + l) * np + save] = cur[(p - j + l) * np + p];
+                }
+            }
+        }
+        res.mC.push_back(std::move(cur));
+        if (b + 1 < m) {
+            a = b;
+            ++b;
+            cur = std::move(next);
+        } else {
+            break;
+        }
+    }
+    return res;
+}
+
+}  // namespace
+
+IgaBezierExtraction iga_bezier_extract_operators(const NurbsInfo& rInfo, std::size_t Patch) {
+    IgaBezierExtraction out;
+    out.mMesh = iga_bezier_extract(rInfo, Patch);
+    const NurbsPatch& patch = rInfo.mPatches[Patch];
+    const IgaShape sh = iga_check_patch(patch, "patch " + std::to_string(Patch));
+    const std::size_t dim = sh.mDim;
+    const int p = patch.mDegrees[0];
+    const auto np = static_cast<std::size_t>(p + 1);
+
+    std::array<IgaExtraction1D, 3> ex;
+    for (std::size_t d = 0; d < 3; ++d) {
+        if (d < dim) {
+            ex[d] = iga_bezier_extraction_1d(patch.mKnots[d], p);
+        } else {
+            ex[d].mC.push_back({1.0});
+            ex[d].mSpanStart.push_back(0);
+        }
+    }
+    const std::size_t nu = dim >= 1 ? np : 1;
+    const std::size_t nv = dim >= 2 ? np : 1;
+    const std::size_t nw = dim >= 3 ? np : 1;
+    const std::size_t nn = nu * nv * nw;
+
+    for (std::size_t ew = 0; ew < ex[2].mC.size(); ++ew) {
+        for (std::size_t ev = 0; ev < ex[1].mC.size(); ++ev) {
+            for (std::size_t eu = 0; eu < ex[0].mC.size(); ++eu) {
+                const auto& cu = ex[0].mC[eu];
+                const auto& cv = ex[1].mC[ev];
+                const auto& cw = ex[2].mC[ew];
+                NDArray op = NDArray::Uninit(DType::Float64, {nn, nn});
+                double* po = op.As<double>();
+                for (std::size_t rw = 0; rw < nw; ++rw)
+                    for (std::size_t rv = 0; rv < nv; ++rv)
+                        for (std::size_t ru = 0; ru < nu; ++ru) {
+                            const std::size_t row = ru + nu * (rv + nv * rw);
+                            for (std::size_t kw = 0; kw < nw; ++kw)
+                                for (std::size_t kv = 0; kv < nv; ++kv)
+                                    for (std::size_t ku = 0; ku < nu; ++ku) {
+                                        const std::size_t col = ku + nu * (kv + nv * kw);
+                                        po[row * nn + col] = cu[ru * nu + ku] * cv[rv * nv + kv] *
+                                                             cw[rw * nw + kw];
+                                    }
+                        }
+                NDArray cp = NDArray::Uninit(DType::Int64, {nn});
+                std::int64_t* pcp = cp.As<std::int64_t>();
+                const std::size_t su = ex[0].mSpanStart[eu];
+                const std::size_t sv = ex[1].mSpanStart[ev];
+                const std::size_t sw = ex[2].mSpanStart[ew];
+                for (std::size_t rw = 0; rw < nw; ++rw)
+                    for (std::size_t rv = 0; rv < nv; ++rv)
+                        for (std::size_t ru = 0; ru < nu; ++ru) {
+                            const std::size_t row = ru + nu * (rv + nv * rw);
+                            const std::size_t g =
+                                (su + ru) + sh.mCounts[0] * ((sv + rv) + sh.mCounts[1] * (sw + rw));
+                            pcp[row] = static_cast<std::int64_t>(g);
+                        }
+                out.mOperators.push_back(std::move(op));
+                out.mElementControlPoints.push_back(std::move(cp));
+            }
+        }
+    }
+    return out;
+}
+
+IgaBezierExtraction iga_bezier_extract_operators(const BrepInfo& rInfo, std::size_t Face) {
+    if (Face >= rInfo.mFaces.size())
+        iga_fail("face " + std::to_string(Face) + " is out of range (the model has " +
+                 std::to_string(rInfo.mFaces.size()) + ")");
+    const std::int64_t pid = rInfo.mFaces[Face].mPatch;
+    if (pid < 0 || static_cast<std::size_t>(pid) >= rInfo.mPatches.size())
+        iga_fail("face " + std::to_string(Face) + " names no patch");
+    NurbsInfo single;
+    single.mPatches.push_back(rInfo.mPatches[static_cast<std::size_t>(pid)]);
+    return iga_bezier_extract_operators(single, 0);
 }
 
 }  // namespace meshioplusplus
@@ -289203,7 +289938,9 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
     result.mOutput = rOptions.mOutput;
     detail::OctreeMeshClock clock;
     auto setup = std::make_unique<detail::OctreeMeshSetup>();
+    progress_checkpoint(0.0, "octree_mesh:prepare");
     octm_prepare(rSkin, rOptions, *setup, result, clock);
+    progress_checkpoint(0.15, "octree_mesh:build");
     switch (rOptions.mOutput) {
         case OctreeMeshOutput::Castellated:
             detail::octree_mesh_castellated(*setup, rOptions, result);
@@ -289212,12 +289949,15 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
             detail::OctreeMeshTets tets;
             detail::octree_mesh_stuffed_lattice(*setup, rOptions, result, tets);
             clock.Lap(result, "stuffing");
+            progress_checkpoint(0.35, "octree_mesh:features");
             detail::octree_mesh_snap_features(*setup, rOptions, result, tets);
             clock.Lap(result, "features");
+            progress_checkpoint(0.50, "octree_mesh:optimize");
             detail::octree_mesh_optimize(*setup, rOptions, result, tets);
             if (rOptions.mPreserveFeatures && rOptions.mFitIterations > 0)
                 detail::octree_mesh_release_features(*setup, rOptions, result, tets);
             clock.Lap(result, "optimize");
+            progress_checkpoint(0.70, "octree_mesh:emit");
             detail::octree_mesh_fill_chain_gaps(*setup, rOptions, result, tets);
             if (rOptions.mVolumeFix)
                 detail::octree_mesh_fix_volumes(*setup, rOptions, result, tets);
@@ -289234,11 +289974,14 @@ OctreeMeshResult octree_mesh(const Mesh& rSkin, const OctreeMeshOptions& rOption
     }
     clock.Lap(result, "output");
     if (rOptions.mPostAdapt && rOptions.mOutput == OctreeMeshOutput::Tetra) {
+        progress_checkpoint(0.80, "octree_mesh:adapt");
         octm_post_adapt(*setup, rOptions, result);
         clock.Lap(result, "adapt");
     }
+    progress_checkpoint(0.95, "octree_mesh:quality");
     octm_report_mesh(rOptions, result);
     clock.Lap(result, "quality");
+    progress_checkpoint(1.0, "octree_mesh:done");
     return result;
 }
 
@@ -292969,6 +293712,9 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     if (rOptions.mObjective == OptimizeVolumeObjective::Energy) {
         const auto quality = [&](const Tet& t) { return tet_flip_quality_tet(xyz, t, eps_len); };
         for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
+            progress_checkpoint(
+                static_cast<double>(sweep) / static_cast<double>(rOptions.mMaxIterations),
+                "optimize_volume:energy");
             std::int64_t moved_before = 0;
             if (rOptions.mRelocate) {
                 const std::vector<double> before = xyz;
@@ -293011,6 +293757,9 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
         }
         constexpr double kWorstThresholdDeg = 40.0;
         for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
+            progress_checkpoint(
+                static_cast<double>(sweep) / static_cast<double>(rOptions.mMaxIterations),
+                "optimize_volume:worst");
             std::int64_t moved = 0;
             if (rOptions.mRelocate)
                 moved = tet_flip_guarded_odt(xyz, tets, pinned, odt, eps_vol6);
@@ -297012,6 +297761,14 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mMinNeighbors = integer("MinNeighbors", 4);
         opts.mVoxelSize = pipe_number(rStep, "VoxelSize", 0.0);
         opts.mMinDistance = pipe_number(rStep, "MinDistance", 0.0);
+        const std::string vmode = pipe_text(rStep, "VoxelMode", "nearest");
+        if (vmode == "nearest")
+            opts.mVoxelMode = VoxelMode::Nearest;
+        else if (vmode == "average")
+            opts.mVoxelMode = VoxelMode::Average;
+        else
+            throw std::invalid_argument(
+                "pipeline: FilterPoints: VoxelMode must be 'nearest' or 'average'");
         PointFilterResult fr = filter_points(mesh, opts);
         for (const std::string& w : fr.mWarnings)
             rReport.mWarnings.push_back("filter_points: " + w);
@@ -318240,6 +318997,8 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
         write_gid_series(rOutput.mPath, [&](std::size_t i, double& rTime, Mesh& rMesh) {
             if (i >= entries.size())
                 return false;
+            progress_checkpoint(static_cast<double>(i) / static_cast<double>(entries.size()),
+                                "sequence:step");
             rMesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
             rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
@@ -318257,6 +319016,8 @@ void sequence_to_timeseries(const SequenceInput& rInput, const SequenceOutput& r
         seq_make_series_sink(ofmt, rOutput.mPath, rOutput.mOptions);
     bool grid_written = false;
     for (std::size_t i = 0; i < entries.size(); ++i) {
+        progress_checkpoint(static_cast<double>(i) / static_cast<double>(entries.size()),
+                            "sequence:step");
         Mesh mesh = sequence_read_step(entries, i, rInput.mFormat, rInput.mOptions);
         double time = entries[i].mTime;
         if (entries[i].mTimeSource == SequenceTimeSource::Index &&
@@ -318291,6 +319052,8 @@ void timeseries_to_sequence(const std::string& rInPath, const std::string& rInFo
     const std::vector<SequenceEntry> entries = sequence_expand(in);
 
     for (std::size_t i = 0; i < entries.size(); ++i) {
+        progress_checkpoint(static_cast<double>(i) / static_cast<double>(entries.size()),
+                            "sequence:step");
         Mesh mesh = sequence_read_step(entries, i, rInFormat, rOptions);
         seq_attach_time(mesh, entries[i].mTime);
         registry_write_ex(sequence_expand_pattern(rOutput.mPath, i, entries.size()), mesh,
@@ -318579,9 +319342,13 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
 
     const std::size_t n = rs.mTimes.size();
     if (sequence_pattern_has_token(rPipeline.mOutput.mPath)) {
-        for (std::size_t k = 0; k < n; ++k)
+        for (std::size_t k = 0; k < n; ++k) {
+            progress_checkpoint(
+                static_cast<double>(k) / static_cast<double>(std::max<std::size_t>(1, n)),
+                "sequence:resample");
             registry_write_ex(sequence_expand_pattern(rPipeline.mOutput.mPath, k, n), target(k),
                               rPipeline.mOutput.mFormat, rPipeline.mOutput.mOptions);
+        }
         return report;
     }
     const std::string ofmt = seq_resolve_write_format(rPipeline.mOutput, n);
@@ -318593,6 +319360,9 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
         write_gid_series(rPipeline.mOutput.mPath, [&](std::size_t k, double& rTime, Mesh& rMesh) {
             if (k >= n)
                 return false;
+            progress_checkpoint(
+                static_cast<double>(k) / static_cast<double>(std::max<std::size_t>(1, n)),
+                "sequence:resample");
             rMesh = target(k);
             rTime = rs.mTimes[k];
             return true;
@@ -318602,6 +319372,9 @@ PipelineReport seq_run_resampled(const SequencePipeline& rPipeline,
     const std::unique_ptr<SeqSeriesSink> writer =
         seq_make_series_sink(ofmt, rPipeline.mOutput.mPath, rPipeline.mOutput.mOptions);
     for (std::size_t k = 0; k < n; ++k) {
+        progress_checkpoint(
+            static_cast<double>(k) / static_cast<double>(std::max<std::size_t>(1, n)),
+            "sequence:resample");
         Mesh mesh = target(k);
         if (k == 0)
             writer->WritePointsCells(mesh);
@@ -318710,6 +319483,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
         SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
                            rPipeline.mPrefetch);
         auto step = [&](std::size_t i, double& rTime) {
+            progress_checkpoint(
+                static_cast<double>(i) /
+                    static_cast<double>(std::max<std::size_t>(1, entries.size())),
+                "sequence:pipeline");
             Mesh mesh = ahead.Read(i);
             rTime = entries[i].mTime;
             if (entries[i].mTimeSource == SequenceTimeSource::Index &&
@@ -318755,6 +319532,10 @@ PipelineReport run_sequence_pipeline(const SequencePipeline& rPipeline) {
     SeqReadAhead ahead(entries, rPipeline.mInput.mFormat, rPipeline.mInput.mOptions,
                        rPipeline.mPrefetch);
     for (std::size_t i = 0; i < entries.size(); ++i) {
+        progress_checkpoint(
+            static_cast<double>(i) /
+                static_cast<double>(std::max<std::size_t>(1, entries.size())),
+            "sequence:pipeline");
         Mesh mesh = ahead.Read(i);
         double time = entries[i].mTime;
         if (entries[i].mTimeSource == SequenceTimeSource::Index &&
@@ -324831,6 +325612,339 @@ SubdivideResult subdivide(const Mesh& rMesh, const SubdivideOptions& rOptions) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/subdivide.cpp =====
+// ===== begin src/cpp/src/operations/subsample_points.cpp =====
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <numeric>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+// Project includes
+
+// Project includes (private, not installed)
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr std::int64_t kSpGridOversample = 2;
+constexpr int kSpGridMaxRefinements = 12;
+
+struct SpGridEntry {
+    std::int64_t mCell = 0;
+    double mDist2 = 0.0;
+    std::int64_t mLocal = 0;
+
+    bool operator<(const SpGridEntry& r) const {
+        if (mCell != r.mCell)
+            return mCell < r.mCell;
+        if (mDist2 != r.mDist2)
+            return mDist2 < r.mDist2;
+        return mLocal < r.mLocal;
+    }
+};
+
+std::vector<std::int64_t> sp_run_fps(const std::vector<double>& rXyz, std::size_t N,
+                                     std::size_t Count, std::size_t First,
+                                     const std::string& rPrefix) {
+    const detail::FarthestPoints fp = detail::farthest_point_order(rXyz.data(), N, Count, First);
+    if (fp.mSelected < Count)
+        throw std::invalid_argument(rPrefix + "the cloud has only " + std::to_string(fp.mSelected) +
+                                    " distinct positions among its " + std::to_string(N) +
+                                    " candidates, fewer than the requested " +
+                                    std::to_string(Count) +
+                                    "; lower the count or weld the duplicates first");
+    return fp.mOrder;
+}
+
+std::vector<std::int64_t> sp_grid_select(const std::vector<double>& rLocal, std::size_t M,
+                                         std::size_t Count, std::size_t FirstLocal,
+                                         std::int64_t MaxCells, const std::string& rPrefix) {
+    double lo[3] = {std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity(),
+                    std::numeric_limits<double>::infinity()};
+    double hi[3] = {-std::numeric_limits<double>::infinity(),
+                    -std::numeric_limits<double>::infinity(),
+                    -std::numeric_limits<double>::infinity()};
+    for (std::size_t i = 0; i < M; ++i) {
+        for (int d = 0; d < 3; ++d) {
+            const double v = rLocal[3 * i + static_cast<std::size_t>(d)];
+            if (v < lo[d])
+                lo[d] = v;
+            if (v > hi[d])
+                hi[d] = v;
+        }
+    }
+    double extent[3] = {hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]};
+    bool live[3] = {extent[0] > 0.0, extent[1] > 0.0, extent[2] > 0.0};
+    int nlive = (live[0] ? 1 : 0) + (live[1] ? 1 : 0) + (live[2] ? 1 : 0);
+    if (nlive == 0)
+        throw std::invalid_argument(
+            rPrefix +
+            "every candidate sits at the same position; there is nothing to select among");
+
+    double measure = 1.0;
+    double max_ext = 0.0;
+    for (int d = 0; d < 3; ++d) {
+        if (live[d]) {
+            measure *= extent[d];
+            if (extent[d] > max_ext)
+                max_ext = extent[d];
+        }
+    }
+    const double target = static_cast<double>(kSpGridOversample) * static_cast<double>(Count);
+    double h = std::pow(measure / target, 1.0 / static_cast<double>(nlive));
+    h = std::max(h, max_ext * 1e-12);
+
+    std::vector<std::int64_t> reps;
+    std::vector<std::int64_t> cell_of(M, 0);
+    std::array<std::int64_t, 3> dims{1, 1, 1};
+    for (int ref = 0; ref <= kSpGridMaxRefinements; ++ref) {
+        std::array<std::int64_t, 3> cur_dims{1, 1, 1};
+        double prod = 1.0;
+        for (int d = 0; d < 3; ++d) {
+            cur_dims[static_cast<std::size_t>(d)] =
+                live[d]
+                    ? std::max<std::int64_t>(1, static_cast<std::int64_t>(std::ceil(extent[d] / h)))
+                    : 1;
+            prod *= static_cast<double>(cur_dims[static_cast<std::size_t>(d)]);
+        }
+        if (prod > static_cast<double>(MaxCells))
+            break;
+        dims = cur_dims;
+        double spacing[3] = {live[0] ? h : 1.0, live[1] ? h : 1.0, live[2] ? h : 1.0};
+        std::vector<SpGridEntry> entries(M);
+        for (std::size_t i = 0; i < M; ++i) {
+            std::int64_t ijk[3];
+            double d2 = 0.0;
+            for (int d = 0; d < 3; ++d) {
+                const double v = rLocal[3 * i + static_cast<std::size_t>(d)];
+                std::int64_t k = static_cast<std::int64_t>(std::floor((v - lo[d]) / spacing[d]));
+                k = std::min(std::max<std::int64_t>(k, 0), dims[static_cast<std::size_t>(d)] - 1);
+                ijk[d] = k;
+                const double centre = lo[d] + (static_cast<double>(k) + 0.5) * spacing[d];
+                const double diff = v - centre;
+                d2 += diff * diff;
+            }
+            const std::int64_t cid = ijk[0] + dims[0] * (ijk[1] + dims[1] * ijk[2]);
+            cell_of[i] = cid;
+            entries[i] = SpGridEntry{cid, d2, static_cast<std::int64_t>(i)};
+        }
+        std::sort(entries.begin(), entries.end());
+        reps.clear();
+        for (std::size_t i = 0; i < M; ++i) {
+            if (i == 0 || entries[i].mCell != entries[i - 1].mCell)
+                reps.push_back(entries[i].mLocal);
+        }
+        if (static_cast<std::int64_t>(reps.size()) >=
+                kSpGridOversample * static_cast<std::int64_t>(Count) ||
+            reps.size() == M)
+            break;
+        h *= 0.5;
+    }
+
+    if (reps.size() < Count) {
+        throw std::invalid_argument(
+            rPrefix + "the cloud occupies only " + std::to_string(reps.size()) +
+            " distinct lattice cells at the finest lattice tried (" + std::to_string(dims[0]) +
+            "x" + std::to_string(dims[1]) + "x" + std::to_string(dims[2]) +
+            "), fewer than the requested " + std::to_string(Count) +
+            "; lower the count, raise max_cells, or use method='farthest'");
+    }
+
+    std::unordered_map<std::int64_t, std::size_t> rep_of_cell;
+    rep_of_cell.reserve(reps.size() * 2);
+    for (std::size_t i = 0; i < reps.size(); ++i)
+        rep_of_cell[cell_of[static_cast<std::size_t>(reps[i])]] = i;
+    const std::size_t first_rep = rep_of_cell.at(cell_of[FirstLocal]);
+
+    std::vector<double> rep_xyz(3 * reps.size());
+    for (std::size_t i = 0; i < reps.size(); ++i) {
+        const auto r = static_cast<std::size_t>(reps[i]);
+        rep_xyz[3 * i] = rLocal[3 * r];
+        rep_xyz[3 * i + 1] = rLocal[3 * r + 1];
+        rep_xyz[3 * i + 2] = rLocal[3 * r + 2];
+    }
+    const std::vector<std::int64_t> rep_order =
+        sp_run_fps(rep_xyz, reps.size(), Count, first_rep, rPrefix);
+    std::vector<std::int64_t> order(Count);
+    for (std::size_t i = 0; i < Count; ++i)
+        order[i] = reps[static_cast<std::size_t>(rep_order[i])];
+    return order;
+}
+
+}  // namespace
+
+SubsamplePointsResult subsample_points(const Mesh& rMesh, const SubsamplePointsOptions& rOptions) {
+    const std::string prefix = "meshio++: subsample_points: ";
+    if (rOptions.mCount < 1)
+        throw std::invalid_argument(prefix + "count must be at least 1, got " +
+                                    std::to_string(rOptions.mCount));
+    if (rOptions.mMethod != SubsampleMethod::Farthest &&
+        rOptions.mMethod != SubsampleMethod::Grid && rOptions.mMethod != SubsampleMethod::Random)
+        throw std::invalid_argument(prefix + "method must be 'farthest', 'grid' or 'random'");
+    if (rOptions.mMaxCells < 1)
+        throw std::invalid_argument(prefix + "max_cells must be at least 1");
+
+    const std::size_t n = rMesh.NumPoints();
+    const std::size_t pdim = rMesh.PointDim();
+    std::vector<double> xyz(3 * n, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto pt = detail::read_point(rMesh.Points(), pdim, static_cast<std::int64_t>(i));
+        if (!std::isfinite(pt[0] + pt[1] + pt[2]))
+            throw std::invalid_argument(prefix + "point " + std::to_string(i) + " is not finite");
+        xyz[3 * i] = pt[0];
+        xyz[3 * i + 1] = pt[1];
+        xyz[3 * i + 2] = pt[2];
+    }
+
+    std::vector<std::int64_t> candidates;
+    if (!rOptions.mHasBounds) {
+        candidates.resize(n);
+        std::iota(candidates.begin(), candidates.end(), std::int64_t{0});
+    } else {
+        for (int d = 0; d < 3; ++d) {
+            const double lo = rOptions.mBounds[static_cast<std::size_t>(d)];
+            const double hi = rOptions.mBounds[static_cast<std::size_t>(d + 3)];
+            if (!std::isfinite(lo) || !std::isfinite(hi) || hi < lo)
+                throw std::invalid_argument(prefix + "bounds have hi < lo or non-finite value");
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            if (xyz[3 * i] >= rOptions.mBounds[0] && xyz[3 * i] <= rOptions.mBounds[3] &&
+                xyz[3 * i + 1] >= rOptions.mBounds[1] && xyz[3 * i + 1] <= rOptions.mBounds[4] &&
+                xyz[3 * i + 2] >= rOptions.mBounds[2] && xyz[3 * i + 2] <= rOptions.mBounds[5])
+                candidates.push_back(static_cast<std::int64_t>(i));
+        }
+    }
+
+    const std::size_t m = candidates.size();
+    const auto count = static_cast<std::size_t>(rOptions.mCount);
+    if (count > m)
+        throw std::invalid_argument(prefix + "count is " + std::to_string(count) + " but only " +
+                                    std::to_string(m) + " points are available");
+
+    std::vector<double> local(3 * m);
+    for (std::size_t i = 0; i < m; ++i) {
+        const auto c = static_cast<std::size_t>(candidates[i]);
+        local[3 * i] = xyz[3 * c];
+        local[3 * i + 1] = xyz[3 * c + 1];
+        local[3 * i + 2] = xyz[3 * c + 2];
+    }
+
+    std::mt19937_64 rng(static_cast<std::uint64_t>(rOptions.mSeed));
+    std::size_t first_local = 0;
+    if (rOptions.mMethod != SubsampleMethod::Random) {
+        if (rOptions.mStart < 0) {
+            first_local = static_cast<std::size_t>(rng() % m);
+        } else {
+            const auto it = std::lower_bound(candidates.begin(), candidates.end(), rOptions.mStart);
+            if (it == candidates.end() || *it != rOptions.mStart)
+                throw std::invalid_argument(prefix + "start=" + std::to_string(rOptions.mStart) +
+                                            " is not a candidate point index");
+            first_local = static_cast<std::size_t>(it - candidates.begin());
+        }
+    }
+
+    std::vector<std::int64_t> local_order;
+    if (rOptions.mMethod == SubsampleMethod::Farthest) {
+        local_order = sp_run_fps(local, m, count, first_local, prefix);
+    } else if (rOptions.mMethod == SubsampleMethod::Grid) {
+        local_order = sp_grid_select(local, m, count, first_local, rOptions.mMaxCells, prefix);
+    } else {
+        std::vector<std::int64_t> pool(m);
+        std::iota(pool.begin(), pool.end(), std::int64_t{0});
+        local_order.resize(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            const std::size_t pick = i + static_cast<std::size_t>(rng() % (m - i));
+            std::swap(pool[i], pool[pick]);
+            local_order[i] = pool[i];
+        }
+    }
+
+    std::vector<std::int64_t> selected(count);
+    for (std::size_t i = 0; i < count; ++i)
+        selected[i] = candidates[static_cast<std::size_t>(local_order[i])];
+
+    SubsamplePointsResult result;
+    Mesh out;
+    detail::subset_gather_points(rMesh, selected, out);
+    if (rOptions.mRecordIds) {
+        NDArray orig = NDArray::Uninit(DType::Int64, {count});
+        std::copy(selected.begin(), selected.end(), orig.As<std::int64_t>());
+        out.AddPointData(kBudgetOriginalPointIdName, std::move(orig));
+    }
+    NDArray conn = NDArray::Uninit(DType::Int64, {count, std::size_t{1}});
+    for (std::size_t i = 0; i < count; ++i)
+        conn.As<std::int64_t>()[i] = static_cast<std::int64_t>(i);
+    out.AddCellBlock("vertex", std::move(conn));
+
+    for (const std::string& name : rMesh.FieldDataNames())
+        out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+    // Warnings for dropped non-vertex cells, cell_data, and Cell/Side regions.
+    std::size_t dropped_cells = 0;
+    std::size_t dropped_blocks = 0;
+    for (const auto cb : rMesh.CellRange()) {
+        if (cb.Type() != "vertex") {
+            dropped_cells += cb.NumCells();
+            ++dropped_blocks;
+        }
+    }
+    if (dropped_cells > 0)
+        result.mWarnings.push_back("dropped " + std::to_string(dropped_cells) + " cells in " +
+                                   std::to_string(dropped_blocks) +
+                                   " blocks (a point cloud has no cells)");
+    if (!rMesh.CellDataNames().empty())
+        result.mWarnings.push_back("dropped cell_data with the cells");
+
+    std::vector<std::int64_t> inverse(n, -1);
+    for (std::size_t j = 0; j < count; ++j)
+        inverse[static_cast<std::size_t>(selected[j])] = static_cast<std::int64_t>(j);
+    std::vector<std::string> dropped_regions;
+    for (std::size_t r = 0; r < rMesh.NumRegions(); ++r) {
+        const Region& region = rMesh.Region(r);
+        if (region.mKind != RegionKind::Point) {
+            dropped_regions.push_back(region.mName);
+            continue;
+        }
+        std::vector<std::int64_t> mapped;
+        const std::int64_t* entries = region.Entries();
+        for (std::size_t e = 0; e < region.NumEntries(); ++e) {
+            const std::int64_t p = entries[e];
+            if (p >= 0 && static_cast<std::size_t>(p) < n &&
+                inverse[static_cast<std::size_t>(p)] >= 0)
+                mapped.push_back(inverse[static_cast<std::size_t>(p)]);
+        }
+        NDArray arr = NDArray::Uninit(DType::Int64, {mapped.size()});
+        std::copy(mapped.begin(), mapped.end(), arr.As<std::int64_t>());
+        out.AddRegion(
+            Region(region.mName, RegionKind::Point, region.mDim, region.mTag, std::move(arr)));
+    }
+    if (!dropped_regions.empty()) {
+        std::string names;
+        for (std::size_t i = 0; i < dropped_regions.size(); ++i) {
+            if (i > 0)
+                names += ", ";
+            names += dropped_regions[i];
+        }
+        result.mWarnings.push_back("dropped " + std::to_string(dropped_regions.size()) +
+                                   " cell/side region(s) (" + names + ") with the cells");
+    }
+
+    result.mMesh = std::move(out);
+    result.mPointMap = std::move(selected);
+    return result;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/subsample_points.cpp =====
 // ===== begin src/cpp/src/operations/surface.cpp =====
 #include <algorithm>
 #include <array>
@@ -328301,6 +329415,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         if (!fitted_mesher)
             points.assign(x.begin(), x.end());
         for (std::size_t s = 0; s < ns; ++s) {
+            progress_checkpoint(static_cast<double>(s) / static_cast<double>(std::max<std::size_t>(1, ns)),
+                                "tetrahedralize:region");
             // The region's triangles; the points they use, ascending.
             const std::vector<std::array<std::int64_t, 3>> faces = region_faces(s);
             std::vector<std::int64_t> used;
@@ -328322,6 +329438,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
             TetMeshRegionResult region;
             try {
                 region = p_mesher->mMeshRegion(request);
+            } catch (const CancelledError&) {
+                throw;
             } catch (const std::runtime_error& rErr) {
                 throw std::runtime_error(std::string(kTetPrefix) + "region " + std::to_string(s) +
                                          ": " + rErr.what());
@@ -328394,6 +329512,8 @@ TetrahedralizeResult tetrahedralize(const Mesh& rSurface, const TetrahedralizeOp
         const double mean_edge = edge_sum / (3.0 * static_cast<double>(nt));
         const double skin_size = maxh > 0.0 ? std::min(maxh, mean_edge) : mean_edge;
         for (std::size_t s = 0; s < ns; ++s) {
+            progress_checkpoint(static_cast<double>(s) / static_cast<double>(std::max<std::size_t>(1, ns)),
+                                "tetrahedralize:region");
             const std::vector<std::array<std::int64_t, 3>> faces = region_faces(s);
             std::map<std::int64_t, std::int64_t> local;
             std::vector<std::int64_t> used;
@@ -331503,6 +332623,54 @@ void threads_run(std::size_t N, std::size_t Chunk, unsigned MaxThreads, ThreadsC
 
 #endif  // MESHIOPLUSPLUS_PARALLEL_THREADS
 // ===== end src/cpp/src/parallel_threads.cpp =====
+// ===== begin src/cpp/src/progress.cpp =====
+
+namespace meshioplusplus {
+
+namespace {
+
+thread_local const ProgressContext* gProgCurrentContext = nullptr;
+
+}  // namespace
+
+const ProgressContext* current_progress_context() noexcept {
+    return gProgCurrentContext;
+}
+
+const ProgressContext* set_progress_context(const ProgressContext* pContext) noexcept {
+    const ProgressContext* prev = gProgCurrentContext;
+    gProgCurrentContext = pContext;
+    return prev;
+}
+
+ScopedProgressContext::ScopedProgressContext(const ProgressContext* pContext) noexcept
+    : mPrevious(set_progress_context(pContext)) {}
+
+ScopedProgressContext::~ScopedProgressContext() noexcept {
+    set_progress_context(mPrevious);
+}
+
+bool progress_is_cancelled() noexcept {
+    const ProgressContext* ctx = gProgCurrentContext;
+    return ctx != nullptr && ctx->mCancel != nullptr &&
+           ctx->mCancel->load(std::memory_order_relaxed);
+}
+
+void progress_checkpoint(double Fraction, const char* pStage) {
+    const ProgressContext* ctx = gProgCurrentContext;
+    if (ctx == nullptr)
+        return;
+    if (ctx->mCancel != nullptr && ctx->mCancel->load(std::memory_order_relaxed))
+        throw CancelledError("operation cancelled");
+    if (ctx->mCallback != nullptr) {
+        const char* stage = pStage != nullptr ? pStage : "";
+        if (!ctx->mCallback(Fraction, stage, ctx->mUserData))
+            throw CancelledError("operation cancelled");
+    }
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/progress.cpp =====
 // ===== begin src/cpp/src/providers.cpp =====
 #include <algorithm>
 #include <atomic>

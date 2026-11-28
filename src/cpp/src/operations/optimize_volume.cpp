@@ -44,6 +44,7 @@
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/log.hpp"
 #include "meshioplusplus/operations/smooth.hpp"
+#include "meshioplusplus/progress.hpp"
 #include "meshioplusplus/parallel.hpp"
 
 // Project includes (private, not installed)
@@ -206,6 +207,9 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
     if (rOptions.mObjective == OptimizeVolumeObjective::Energy) {
         const auto quality = [&](const Tet& t) { return tet_flip_quality_tet(xyz, t, eps_len); };
         for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
+            progress_checkpoint(
+                static_cast<double>(sweep) / static_cast<double>(rOptions.mMaxIterations),
+                "optimize_volume:energy");
             std::int64_t moved_before = 0;
             if (rOptions.mRelocate) {
                 const std::vector<double> before = xyz;
@@ -248,6 +252,9 @@ OptimizeVolumeResult optimize_volume(const Mesh& rMesh, const OptimizeVolumeOpti
         }
         constexpr double kWorstThresholdDeg = 40.0;
         for (int sweep = 0; sweep < rOptions.mMaxIterations; ++sweep) {
+            progress_checkpoint(
+                static_cast<double>(sweep) / static_cast<double>(rOptions.mMaxIterations),
+                "optimize_volume:worst");
             std::int64_t moved = 0;
             if (rOptions.mRelocate)
                 moved = tet_flip_guarded_odt(xyz, tets, pinned, odt, eps_vol6);

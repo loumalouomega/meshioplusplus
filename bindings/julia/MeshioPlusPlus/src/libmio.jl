@@ -1888,14 +1888,29 @@ struct _CFilterPointsOpts
     min_neighbors::Int64
     voxel_size::Cdouble
     min_distance::Cdouble
-    reserved::NTuple{4,Int64}
+    voxel_mode::Int64
+    reserved::NTuple{3,Int64}
+end
+
+"""Mirror of C `mio_subsample_points_opts` (roadmap 9.9.2), 120 bytes."""
+struct _CSubsamplePointsOpts
+    count::Int64
+    method::Int32
+    has_bounds::Int32
+    seed::Int64
+    start::Int64
+    bounds::NTuple{6,Cdouble}
+    max_cells::Int64
+    record_ids::Int64
+    reserved::NTuple{3,Int64}
 end
 
 """Mirror of C `mio_cast_rays_opts` (roadmap 9.3), 64 bytes."""
 struct _CCastRaysOpts
     max_distance::Cdouble
     region::Cstring
-    reserved::NTuple{6,Int64}
+    all_hits::Int64
+    reserved::NTuple{5,Int64}
 end
 
 """Mirror of C `mio_locate_points_opts`, 64 bytes."""
@@ -3070,6 +3085,9 @@ function _check_abi_layout()
     sizeof(_CFilterPointsOpts) == 80 ||
         error("meshio++: mio_filter_points_opts layout mismatch " *
               "($(sizeof(_CFilterPointsOpts)) bytes)")
+    sizeof(_CSubsamplePointsOpts) == 120 ||
+        error("meshio++: mio_subsample_points_opts layout mismatch " *
+              "($(sizeof(_CSubsamplePointsOpts)) bytes)")
     sizeof(_CCastRaysOpts) == 64 ||
         error("meshio++: mio_cast_rays_opts layout mismatch ($(sizeof(_CCastRaysOpts)) bytes)")
     sizeof(_CLocatePointsOpts) == 64 ||

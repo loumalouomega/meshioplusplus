@@ -156,6 +156,8 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/untangle.hpp"
 #include "meshioplusplus/operations/cast_rays.hpp"
 #include "meshioplusplus/operations/filter_points.hpp"
+#include "meshioplusplus/operations/subsample_points.hpp"
+#include "meshioplusplus/progress.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
@@ -867,8 +869,11 @@ MIO_ABI_LAYOUT(meshioplusplus::CoordinateOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ConvexHullOptions, 4, 4);
 MIO_ABI_LAYOUT(meshioplusplus::PointNormalsOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MassPropertiesOptions, 88, 8);
-MIO_ABI_LAYOUT(meshioplusplus::CastRaysOptions, 40, 8);
-MIO_ABI_LAYOUT(meshioplusplus::PointFilterOptions, 48, 8);
+// ABI 47 (roadmap 9.3.1, 9.9.1, 9.9.2, 9.16): mAllHits, mVoxelMode, SubsamplePointsOptions, ProgressContext.
+MIO_ABI_LAYOUT(meshioplusplus::CastRaysOptions, 48, 8);
+MIO_ABI_LAYOUT(meshioplusplus::PointFilterOptions, 56, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SubsamplePointsOptions, 104, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ProgressContext, 24, 8);
 MIO_ABI_LAYOUT(meshioplusplus::LocatePointsOptions, 8, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ReconstructSurfaceOptions, 88, 8);
 // ABI 38 (roadmap 7.7.3): remesh_quads's options (a string, the target, four

@@ -26,8 +26,9 @@ def cast_rays(
     *,
     max_distance: float = 0.0,
     region: Optional[str] = None,
+    all_hits: bool = False,
 ) -> Dict[str, Any]:
-    """The nearest surface hit of every ray.
+    """Surface hits of every ray (nearest by default, or all crossings with ``all_hits=True``).
 
     :param mesh: a mesh with triangle, quad or polygon cells (a volume mesh is
         refused: take its ``extract_surface`` first).
@@ -36,11 +37,12 @@ def cast_rays(
         (not necessarily unit vectors).
     :param max_distance: ignore hits farther than this; ``0`` for no limit.
     :param region: restrict the surface to this named cell region.
-    :returns: a dict of ``hit`` (``(n,)`` bool), ``distance`` (``(n,)``, NaN on
-        a miss), ``point`` and ``normal`` (``(n, 3)``, NaN on a miss; the
-        normal is the unit triangle normal on its winding side), ``cell``
-        (``(n,)`` int64, the global index of the input cell hit, -1 on a miss)
-        and ``num_hits``.
+    :param all_hits: when ``True``, return every crossing along each ray in CSR
+        layout (adding ``ray_offset`` of length ``n + 1``).
+    :returns: a dict of ``hit`` (``(n,)`` bool), ``distance`` (``(n,)`` or
+        ``(m,)``), ``point`` and ``normal`` (``(n, 3)`` or ``(m, 3)``),
+        ``cell`` (``(n,)`` or ``(m,)`` int64), ``num_hits``, and (when
+        ``all_hits=True``) ``ray_offset`` (``(n + 1,)`` int64).
     :raises ValueError: on a zero or non-finite direction, a volume or
         higher-order block, an unknown region, or a mesh with no surface cell.
     :raises NotImplementedError: when the compiled C++ core is unavailable.
@@ -53,6 +55,7 @@ def cast_rays(
         np.ascontiguousarray(directions, dtype=np.float64),
         float(max_distance),
         "" if region is None else str(region),
+        bool(all_hits),
     )
 
 
@@ -107,6 +110,19 @@ def _vertex_mesh(points, point_data):
 
 def _hits_mesh(res):
     """The vertex mesh of the rays that hit (the CLI and MCP output)."""
+    if "ray_offset" in res:
+        offsets = res["ray_offset"]
+        counts = np.diff(offsets)
+        ray_index = np.repeat(np.arange(len(counts), dtype=np.int64), counts)
+        return _vertex_mesh(
+            res["point"],
+            {
+                "ray:index": ray_index,
+                "ray:distance": res["distance"],
+                "ray:cell": res["cell"],
+                "ray:normal": res["normal"],
+            },
+        )
     hit = res["hit"]
     return _vertex_mesh(
         res["point"][hit],

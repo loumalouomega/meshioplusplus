@@ -4897,10 +4897,13 @@ step is off at 0 and at least one must be on. Returns the point cloud `mesh`
 """
 function filter_points(m::Mesh; statistical_k::Integer=0, std_ratio::Real=1.0,
                        radius::Real=0.0, min_neighbors::Integer=4, voxel_size::Real=0.0,
-                       min_distance::Real=0.0)
+                       min_distance::Real=0.0, voxel_mode::AbstractString="nearest")
+    vm = voxel_mode == "nearest" ? Int64(0) :
+         voxel_mode == "average" ? Int64(1) :
+         throw(ArgumentError("voxel_mode must be \"nearest\" or \"average\""))
     opts = _CFilterPointsOpts(Int64(statistical_k), Float64(std_ratio), Float64(radius),
                               Int64(min_neighbors), Float64(voxel_size), Float64(min_distance),
-                              ntuple(_ -> Int64(0), 4))
+                              vm, ntuple(_ -> Int64(0), 3))
     h = _handle(m)
     n_in = Int(num_points(m))
     map = Vector{Int64}(undef, max(n_in, 1))
@@ -4919,6 +4922,47 @@ function filter_points(m::Mesh; statistical_k::Integer=0, std_ratio::Real=1.0,
 end
 
 """
+    subsample_points(m, count; method="farthest", seed=0, start=nothing,
+                     bounds=nothing, max_cells=16_000_000, record_ids=false)
+
+Subsample the points of `m` to an exact count budget using `"farthest"`,
+`"grid"`, or `"random"`. Returns `(; mesh, point_map, warnings)` with 1-based
+`point_map`. See `doc/filter_points.md`.
+"""
+function subsample_points(m::Mesh, count::Integer; method::AbstractString="farthest",
+                          seed::Integer=0, start::Union{Nothing,Integer}=nothing,
+                          bounds=nothing, max_cells::Integer=16_000_000,
+                          record_ids::Bool=false)
+    meth = method == "farthest" ? Int32(0) :
+           method == "grid" ? Int32(1) :
+           method == "random" ? Int32(2) :
+           throw(ArgumentError("method must be \"farthest\", \"grid\", or \"random\""))
+    has_b = bounds === nothing ? Int32(0) : Int32(1)
+    btup = if bounds === nothing
+        ntuple(_ -> 0.0, 6)
+    else
+        length(bounds) == 6 || throw(ArgumentError("bounds must have 6 elements"))
+        ntuple(i -> Float64(bounds[i]), 6)
+    end
+    st = start === nothing ? Int64(-1) : Int64(start) - Int64(1)
+    opts = _CSubsamplePointsOpts(Int64(count), meth, has_b, Int64(seed), st, btup,
+                                 Int64(max_cells), record_ids ? Int64(1) : Int64(0),
+                                 ntuple(_ -> Int64(0), 3))
+    h = _handle(m)
+    n_in = Int(num_points(m))
+    map = Vector{Int64}(undef, max(n_in, 1))
+    ptr = GC.@preserve map ccall(_sym(:mio_subsample_points), Ptr{Cvoid},
+                                 (Ptr{Cvoid}, Ref{_CSubsamplePointsOpts}, Ptr{Int64}),
+                                 h, Ref(opts), pointer(map))
+    out = Mesh(_check_ptr(ptr))
+    n_out = Int(num_points(out))
+    text = _getstring((buf, k) -> ccall(_sym(:mio_subsample_points_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, point_map=Int[map[i] + 1 for i in 1:n_out],
+     warnings=isempty(text) ? String[] : String.(split(text, '\n')))
+end
+
+"""
     cast_rays(m, origins, directions; max_distance=0.0, region="")
         -> (; hit, distance, point, normal, cell, num_hits)
 
@@ -4932,7 +4976,7 @@ normal on its winding side, `NaN` on a miss), `cell` (the 1-based input cell hit
 `0` on a miss) and `num_hits`. See `doc/ray_queries.md`.
 """
 function cast_rays(m::Mesh, origins::AbstractMatrix{<:Real}, directions::AbstractVecOrMat{<:Real};
-                   max_distance::Real=0.0, region::AbstractString="")
+                   max_distance::Real=0.0, region::AbstractString="", all_hits::Bool=false)
     size(origins, 1) == 3 || throw(ArgumentError("origins must be a 3 x n matrix"))
     dirs = directions isa AbstractVector ? reshape(Vector{Cdouble}(directions), 3, 1) :
            Matrix{Cdouble}(directions)
@@ -4940,17 +4984,45 @@ function cast_rays(m::Mesh, origins::AbstractMatrix{<:Real}, directions::Abstrac
     n = size(origins, 2)
     nd = size(dirs, 2)
     o = Matrix{Cdouble}(origins)
+    rg = Vector{UInt8}(codeunits(String(region) * "\0"))
+    h = _handle(m)
+    if all_hits
+        GC.@preserve o dirs rg begin
+            opts = _CCastRaysOpts(Float64(max_distance), Cstring(pointer(rg)), Int64(1),
+                                  ntuple(_ -> Int64(0), 5))
+            res = ccall(_sym(:mio_cast_rays_all), Ptr{Cvoid},
+                        (Ptr{Cvoid}, Ptr{Cdouble}, Int64, Ptr{Cdouble}, Int64, Ref{_CCastRaysOpts}),
+                        h, pointer(o), Int64(n), pointer(dirs), Int64(nd), Ref(opts))
+            res == C_NULL && _throw_last_error("cast_rays")
+            try
+                nh = Int(ccall(_sym(:mio_cast_rays_result_num_hits), Int64, (Ptr{Cvoid},), res))
+                p_ro = ccall(_sym(:mio_cast_rays_result_ray_offset), Ptr{Int64}, (Ptr{Cvoid},), res)
+                p_dist = ccall(_sym(:mio_cast_rays_result_distance), Ptr{Cdouble}, (Ptr{Cvoid},), res)
+                p_pt = ccall(_sym(:mio_cast_rays_result_point), Ptr{Cdouble}, (Ptr{Cvoid},), res)
+                p_nm = ccall(_sym(:mio_cast_rays_result_normal), Ptr{Cdouble}, (Ptr{Cvoid},), res)
+                p_cell = ccall(_sym(:mio_cast_rays_result_cell), Ptr{Int64}, (Ptr{Cvoid},), res)
+                ro = copy(unsafe_wrap(Array, p_ro, n + 1))
+                dist = nh > 0 ? copy(unsafe_wrap(Array, p_dist, nh)) : Float64[]
+                pt = nh > 0 ? copy(unsafe_wrap(Array, p_pt, (3, nh))) : Matrix{Float64}(undef, 3, 0)
+                nm = nh > 0 ? copy(unsafe_wrap(Array, p_nm, (3, nh))) : Matrix{Float64}(undef, 3, 0)
+                cl = nh > 0 ? Int[unsafe_load(p_cell, i) + 1 for i in 1:nh] : Int[]
+                hit = Bool[ro[i + 1] > ro[i] for i in 1:n]
+                return (hit=hit, distance=dist, point=pt, normal=nm, cell=cl,
+                        num_hits=nh, ray_offset=Int.(ro))
+            finally
+                ccall(_sym(:mio_cast_rays_result_free), Cvoid, (Ptr{Cvoid},), res)
+            end
+        end
+    end
     hit = Vector{Int32}(undef, max(n, 1))
     distance = Vector{Cdouble}(undef, max(n, 1))
     point = Matrix{Cdouble}(undef, 3, max(n, 1))
     normal = Matrix{Cdouble}(undef, 3, max(n, 1))
     cell = Vector{Int64}(undef, max(n, 1))
     nh = Ref{Int64}(0)
-    rg = Vector{UInt8}(codeunits(String(region) * "\0"))
-    h = _handle(m)
     GC.@preserve o dirs hit distance point normal cell rg begin
-        opts = _CCastRaysOpts(Float64(max_distance), Cstring(pointer(rg)),
-                              ntuple(_ -> Int64(0), 6))
+        opts = _CCastRaysOpts(Float64(max_distance), Cstring(pointer(rg)), Int64(0),
+                              ntuple(_ -> Int64(0), 5))
         _check(ccall(_sym(:mio_cast_rays), Cint,
                      (Ptr{Cvoid}, Ptr{Cdouble}, Int64, Ptr{Cdouble}, Int64, Ref{_CCastRaysOpts},
                       Ptr{Int32}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Cdouble}, Ptr{Int64},
