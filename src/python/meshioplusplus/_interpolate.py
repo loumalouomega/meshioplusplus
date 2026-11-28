@@ -222,6 +222,15 @@ def _resolve_names(source, target, arrays):
             cell_names.append(name)
             any_hit = True
         if not any_hit:
+            re_name = f"{name}_real"
+            im_name = f"{name}_imag"
+            if re_name in source.point_data and im_name in source.point_data:
+                point_names.extend([re_name, im_name])
+                any_hit = True
+            if re_name in source.cell_data and im_name in source.cell_data:
+                cell_names.extend([re_name, im_name])
+                any_hit = True
+        if not any_hit:
             raise ValueError(
                 f"meshio++: interpolate: no source point_data or cell_data array named "
                 f"{name!r} (available point_data: "

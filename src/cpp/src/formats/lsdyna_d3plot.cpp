@@ -47,6 +47,7 @@
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/degenerate_solid.hpp"
+#include "../detail/integration_points.hpp"
 #include "../detail/typed_view.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/detail/parse_guard.hpp"
@@ -1306,6 +1307,8 @@ public:
                 layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(e.mPoints);
                 layout.As<std::int64_t>()[1] = static_cast<std::int64_t>(e.mWidth);
                 rMesh.AddFieldData("lsdyna_d3plot:layout:" + name, std::move(layout));
+                detail::set_ip_layout(rMesh, name, static_cast<std::int64_t>(e.mPoints),
+                                      static_cast<std::int64_t>(e.mWidth), -1);
             }
         }
     }
@@ -1994,6 +1997,13 @@ std::vector<D3wBlockArray> d3w_cell_array(const Mesh& rMesh, const std::string& 
         layout0 = detail::read_int(rMesh.FieldData(key), 0);
         layout1 = detail::read_int(rMesh.FieldData(key), 1);
         has_layout = true;
+    } else {
+        const detail::IpLayout ip = detail::get_ip_layout(rMesh, rName);
+        if (ip.mValid) {
+            layout0 = ip.mPoints;
+            layout1 = ip.mWidth;
+            has_layout = true;
+        }
     }
     const auto dflt = static_cast<std::size_t>(d3w_default_comps(rName));
     for (std::size_t b = 0; b < rMesh.NumCellBlocks(); ++b) {

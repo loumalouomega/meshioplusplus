@@ -75,6 +75,18 @@ mesh.cell_data = {
 
 A symmetric tensor stored as six components per point or cell uses the order **`xx yy zz xy yz zx`**, the order of VTK's six-component arrays and of CalculiX's `STRESS`/`TOSTRAIN` blocks. Readers keep the order the file uses rather than reordering it; the [CalculiX reader](formats/frd.md#results-and-steps) is the one that documents it, and the ones that leave a six-component array untouched (GiD's `Sxx Syy Szz Sxy Syz Sxz`, XDMF's `Tensor6`) name their own.
 
+## Complex values
+
+Complex-valued fields are stored as matched pairs of real-valued arrays named **`<base>_real`** and **`<base>_imag`** (the convention shared by UNV, Nastran OP2, Nastran HDF5 and EnSight). Writers for formats with native complex fields pair matching `<base>_real` and `<base>_imag` arrays into one complex field on output; `transform(..., rotate_vector_data=True)` rotates both halves together, `interpolate(..., arrays=["u"])` expands a complex base name to both arrays, `data_calc` evaluates `abs(u)` (`hypot(u_real, u_imag)`) and `phase(u)` (`atan2(u_imag, u_real)`), and `data_info` annotates matched pairs with `complex_pair` and `complex_part`. In Python, `complex_pairs(mesh)` lists complex base names, `to_complex(mesh, name)` combines a pair into a `complex64`/`complex128` NumPy array, and `from_complex(mesh, name, array)` stores a complex array as `<name>_real` and `<name>_imag`.
+
+## Structured grids
+
+Structured readers (`vti`, `vtr`, `vts`, legacy structured VTK, VTKHDF `ImageData`, CGNS structured zones and PLOT3D) annotate each expanded structured block with `field_data["meshio:structured:<block>"] = [ni, nj, nk]` (`int64` point counts, `i` fastest). Structured writers check this annotation before falling back to geometric uniform-lattice detection, allowing graded rectilinear grids (`.vtr`) and curvilinear structured grids (`.vts`, PLOT3D) to round-trip without re-deriving topology. Operations that modify geometry or topology (such as `smooth`, and any non-data/non-rigid pipeline step) strip `meshio:structured:*` so deformed or unstructured meshes are explicitly refused by structured writers rather than silently miswritten. In Python, `to_grid(mesh)` and `from_grid(grid_array)` bridge regular-lattice `Mesh` objects and [`GridArray`](./grids.md).
+
+## Strings and booleans
+
+String `field_data` entries cross the C++ core without a dedicated string `DType`: a scalar UTF-8 string `name` is stored as a 1-D `uint8` byte array under `field_data[name]` paired with a 1-element `int64` array `field_data["<name>:offsets"] = [len]`, and a list of `k` strings is stored as concatenated UTF-8 bytes paired with `int64` CSR offsets of length `k + 1`. Boolean arrays in `point_data`, `cell_data` or `field_data` are stored as `uint8` (`0`/`1`) with a companion marker `field_data["meshio:bool:<loc>:<name>"] = [1]` (`loc` in `point`, `cell`, `field`). The Python conversion encodes and decodes both transparently (hiding the companion keys), and the C API exposes `mio_mesh_set_field_string` and `mio_mesh_get_field_string`.
+
 ## Convenience properties
 
 | Property | Returns |

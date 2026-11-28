@@ -89,12 +89,17 @@ def _read_piece(grid, piece, reader):
         piece, reader, num_points, num_cells, "VTI"
     )
 
+    fd = field_arrays(piece, reader, "VTI")
+    if num_points > 0:
+        fd["meshio:structured:0"] = np.array(
+            [int(dims[0]) + 1, int(dims[1]) + 1, int(dims[2]) + 1], dtype=np.int64
+        )
     return Mesh(
         points,
         cells,
         point_data=point_data,
         cell_data=cell_data,
-        field_data=field_arrays(piece, reader, "VTI"),
+        field_data=fd,
     )
 
 
@@ -225,12 +230,17 @@ def read_lattice_piece(grid, piece, reader, prefix, read_points):
     point_data, cell_data = read_extent_data(
         piece, reader, num_points, num_cells, prefix
     )
+    fd = field_arrays(piece, reader, prefix)
+    if num_points > 0:
+        fd["meshio:structured:0"] = np.array(
+            [int(dims[0]) + 1, int(dims[1]) + 1, int(dims[2]) + 1], dtype=np.int64
+        )
     return Mesh(
         points,
         cells,
         point_data=point_data,
         cell_data=cell_data,
-        field_data=field_arrays(piece, reader, prefix),
+        field_data=fd,
     )
 
 
@@ -246,6 +256,7 @@ def write_lattice(
     header_type,
     grid_attrs=None,
     geometry=None,
+    dims_override=None,
 ):
     """A whole ``.vti``/``.vtr``/``.vts`` file of a dense one-block lattice.
 
@@ -255,10 +266,15 @@ def write_lattice(
     compression)`` writes the piece's geometry section (``.vtr``'s
     Coordinates, ``.vts``'s Points; ``.vti`` has none).
     """
-    spec = lattice_from_mesh(mesh)
-    if spec is None:
-        raise WriteError(not_lattice)
-    dims, origin, spacing = spec
+    if dims_override is not None:
+        dims = np.asarray(dims_override, dtype=np.int64)
+        origin = np.zeros(3, dtype=np.float64)
+        spacing = np.ones(3, dtype=np.float64)
+    else:
+        spec = lattice_from_mesh(mesh)
+        if spec is None:
+            raise WriteError(not_lattice)
+        dims, origin, spacing = spec
     if header_type is None:
         header_type = "UInt32"
     if compression not in (None, "zlib", "lzma", "lz4", "zstd"):

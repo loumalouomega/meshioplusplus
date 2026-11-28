@@ -48,6 +48,7 @@
 #include "meshioplusplus/parallel.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "../detail/lattice_cells.hpp"
+#include "../detail/structured_grid.hpp"
 #include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
@@ -2032,7 +2033,10 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions,
                     v += point_offset;
                 NDArray conn = NDArray::Uninit(DType::Int64, {nc, npc});
                 std::memcpy(conn.Data(), lattice.data(), lattice.size() * sizeof(std::int64_t));
+                const std::size_t block_idx = mesh.NumCellBlocks();
                 mesh.AddCellBlock(type, std::move(conn));
+                detail::set_structured_dims(mesh, block_idx, structured_dims[0], structured_dims[1],
+                                            structured_dims[2]);
                 zone_block_cells.push_back(nc);
             }
         }

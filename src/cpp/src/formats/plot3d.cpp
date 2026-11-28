@@ -41,6 +41,7 @@
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/region.hpp"
 #include "../detail/lattice_cells.hpp"
+#include "../detail/structured_grid.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/fortran_number.hpp"
 
@@ -492,7 +493,10 @@ Mesh read_plot3d(const std::string& rPath, const Plot3dReadOptions& rOptions) {
             NDArray block(DType::Int64, {nc, npc});
             for (std::size_t k = 0; k < conn.size(); ++k)
                 block.As<std::int64_t>()[k] = conn[k] + static_cast<std::int64_t>(base);
+            const std::size_t block_idx = mesh.NumCellBlocks();
             mesh.AddCellBlock(type, std::move(block));
+            detail::set_structured_dims(mesh, block_idx, shape.mDims[b][0], shape.mDims[b][1],
+                                        shape.mDims[b][2]);
             NDArray ids(DType::Int64, {nc});
             for (std::size_t k = 0; k < nc; ++k)
                 ids.As<std::int64_t>()[k] = static_cast<std::int64_t>(cell_base + k);
@@ -516,12 +520,25 @@ Mesh read_plot3d(const std::string& rPath) {
 }
 
 void write_plot3d(const std::string& rPath, const Mesh& rMesh) {
-    if (!rMesh.HasFieldData(kP3dDimsKey))
+    NDArray dims_storage;
+    const NDArray* dims_ptr = nullptr;
+    if (rMesh.HasFieldData(kP3dDimsKey)) {
+        dims_ptr = &rMesh.FieldData(kP3dDimsKey);
+    } else {
+        std::array<std::int64_t, 3> sdims{};
+        if (detail::curvilinear_from_mesh(rMesh, sdims)) {
+            dims_storage = NDArray(DType::Int64, {1, 3});
+            for (std::size_t c = 0; c < 3; ++c)
+                dims_storage.As<std::int64_t>()[c] = sdims[c];
+            dims_ptr = &dims_storage;
+        }
+    }
+    if (!dims_ptr)
         throw WriteError(
             "meshio++: plot3d: the mesh is not a set of PLOT3D blocks (it has no "
-            "field_data['plot3d:dims']); read one from a PLOT3D file, or write a structured "
-            "format such as vts");
-    const NDArray& dims = rMesh.FieldData(kP3dDimsKey);
+            "field_data['plot3d:dims'] or field_data['meshio:structured:0']); read one from "
+            "a structured file, or write an unstructured format such as vtu");
+    const NDArray& dims = *dims_ptr;
     if (dims.Size() == 0 || dims.Size() % 3 != 0)
         throw WriteError("meshio++: plot3d: field_data['plot3d:dims'] must be (nblocks, 3)");
     const std::size_t nb = dims.Size() / 3;

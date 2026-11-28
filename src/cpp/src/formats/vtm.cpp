@@ -28,6 +28,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -43,6 +44,7 @@
 #include "meshioplusplus/detail/ragged_csr.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/formats/vtp.hpp"
+#include "../detail/region_tree.hpp"
 #include "meshioplusplus/formats/vtu.hpp"
 #include "meshioplusplus/operations/clean.hpp"
 #include "meshioplusplus/operations/merge.hpp"
@@ -80,16 +82,31 @@ Mesh vtm_extract_piece(const Mesh& rMesh, std::size_t Idx) {
     return piece;
 }
 
-// Every `<DataSet>` under `pNode`, in document order, regardless of how many
-// `<Block>` levels separate them from it (xpath is not linked in, so this is
-// a plain recursive walk rather than a `"//DataSet"` select).
-void vtm_collect_datasets(const pugi::xml_node& rNode, std::vector<pugi::xml_node>& rOut) {
+// Every `<DataSet>` under `rNode`, in document order, tracking ancestor
+// `<Block name="...">` hierarchy prefixes and empty named `<Block>` groups.
+bool vtm_collect_datasets(const pugi::xml_node& rNode, const std::string& rPrefix,
+                          std::vector<std::pair<std::string, pugi::xml_node>>& rOut,
+                          std::vector<std::string>& rEmptyGroups) {
+    bool found_any = false;
     for (pugi::xml_node child : rNode.children()) {
-        if (std::string(child.name()) == "DataSet")
-            rOut.push_back(child);
-        else
-            vtm_collect_datasets(child, rOut);
+        const std::string tag(child.name());
+        if (tag == "DataSet") {
+            rOut.emplace_back(rPrefix, child);
+            found_any = true;
+        } else if (tag == "Block") {
+            const std::string bname = child.attribute("name").as_string("");
+            const std::string next_prefix =
+                bname.empty() ? rPrefix : (rPrefix.empty() ? bname : rPrefix + "/" + bname);
+            const bool sub = vtm_collect_datasets(child, next_prefix, rOut, rEmptyGroups);
+            if (!sub && !bname.empty())
+                rEmptyGroups.push_back(next_prefix);
+            found_any = found_any || sub;
+        } else {
+            if (vtm_collect_datasets(child, rPrefix, rOut, rEmptyGroups))
+                found_any = true;
+        }
     }
+    return found_any;
 }
 
 // One piece, resolved from its `<DataSet>` element: the path to read (relative
@@ -99,7 +116,8 @@ struct vtm_piece_ref {
     std::string mName;
 };
 
-std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_document& rDoc) {
+std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_document& rDoc,
+                                           std::vector<std::string>* pEmptyGroups = nullptr) {
     const pugi::xml_parse_result parsed = rDoc.load_file(rPath.c_str());
     if (!parsed)
         throw ReadError("Could not parse .vtm XML: " + rPath + ": " + parsed.description());
@@ -113,21 +131,25 @@ std::vector<vtm_piece_ref> vtm_parse_index(const std::string& rPath, pugi::xml_d
     if (!mb)
         throw ReadError("Expected tag 'vtkMultiBlockDataSet': " + rPath);
 
-    std::vector<pugi::xml_node> datasets;
-    vtm_collect_datasets(mb, datasets);
+    std::vector<std::pair<std::string, pugi::xml_node>> datasets;
+    std::vector<std::string> empty_groups;
+    vtm_collect_datasets(mb, "", datasets, empty_groups);
+    if (pEmptyGroups)
+        *pEmptyGroups = std::move(empty_groups);
 
     const fs::path base = fs::path(rPath).parent_path();
     std::vector<vtm_piece_ref> pieces;
     pieces.reserve(datasets.size());
-    for (const pugi::xml_node& ds : datasets) {
+    for (const auto& [prefix, ds] : datasets) {
         const std::string file = ds.attribute("file").as_string("");
         if (file.empty())
             throw ReadError("<DataSet> is missing its 'file' attribute: " + rPath);
         vtm_piece_ref ref;
         ref.mPath = base.empty() ? fs::path(file) : base / file;
-        ref.mName = ds.attribute("name").as_string("");
-        if (ref.mName.empty())
-            ref.mName = "block_" + std::to_string(pieces.size());
+        std::string leaf = ds.attribute("name").as_string("");
+        if (leaf.empty())
+            leaf = "block_" + std::to_string(pieces.size());
+        ref.mName = prefix.empty() ? leaf : (prefix + "/" + leaf);
         pieces.push_back(std::move(ref));
     }
     return pieces;
@@ -221,11 +243,74 @@ void write_vtm_codec(const std::string& rPath, const Mesh& rMesh, bool binary, d
     os << "<VTKFile type=\"vtkMultiBlockDataSet\" version=\"1.0\" byte_order=\"LittleEndian\">\n";
     os << detail::provenance_render_xml_comment(detail::SlotTier::Block) << "\n";
     os << "<vtkMultiBlockDataSet>\n";
-    os << "<Block index=\"0\">\n";
-    for (std::size_t i = 0; i < piece_files.size(); ++i)
-        os << "<DataSet index=\"" << i << "\" name=\"" << vtm_xml_attr(piece_names[i]) << "\" file=\""
-           << piece_files[i] << "\"/>\n";
-    os << "</Block>\n";
+
+    const std::vector<std::string> empty_tree_nodes = detail::get_region_tree_nodes(rMesh);
+    bool has_hierarchy = !empty_tree_nodes.empty();
+    for (const auto& name : piece_names)
+        if (name.find('/') != std::string::npos)
+            has_hierarchy = true;
+
+    if (!has_hierarchy) {
+        os << "<Block index=\"0\">\n";
+        for (std::size_t i = 0; i < piece_files.size(); ++i)
+            os << "<DataSet index=\"" << i << "\" name=\"" << vtm_xml_attr(piece_names[i])
+               << "\" file=\"" << piece_files[i] << "\"/>\n";
+        os << "</Block>\n";
+    } else {
+        struct VtmTreeNode {
+            std::string mName;
+            std::vector<std::pair<std::string, std::size_t>> mDatasets;  // (leaf_name, piece_idx)
+            std::vector<std::string> mChildOrder;
+            std::unordered_map<std::string, std::unique_ptr<VtmTreeNode>> mChildren;
+        };
+        VtmTreeNode root_node;
+        auto ensure_group = [&](const std::vector<std::string>& rSegs,
+                                std::size_t Depth) -> VtmTreeNode* {
+            VtmTreeNode* cur = &root_node;
+            for (std::size_t d = 0; d < Depth; ++d) {
+                const std::string& seg = rSegs[d];
+                auto it = cur->mChildren.find(seg);
+                if (it == cur->mChildren.end()) {
+                    cur->mChildOrder.push_back(seg);
+                    auto child = std::make_unique<VtmTreeNode>();
+                    child->mName = seg;
+                    it = cur->mChildren.emplace(seg, std::move(child)).first;
+                }
+                cur = it->second.get();
+            }
+            return cur;
+        };
+        for (std::size_t i = 0; i < piece_names.size(); ++i) {
+            const auto segs = detail::split_region_path(piece_names[i]);
+            if (segs.empty()) {
+                root_node.mDatasets.emplace_back("block_" + std::to_string(i), i);
+            } else {
+                VtmTreeNode* parent = ensure_group(segs, segs.size() - 1);
+                parent->mDatasets.emplace_back(segs.back(), i);
+            }
+        }
+        for (const std::string& p : empty_tree_nodes) {
+            const auto segs = detail::split_region_path(p);
+            if (!segs.empty())
+                (void)ensure_group(segs, segs.size());
+        }
+        auto emit_node = [&](auto&& self, const VtmTreeNode& rNode) -> void {
+            std::size_t idx = 0;
+            for (const auto& [leaf, pi] : rNode.mDatasets) {
+                os << "<DataSet index=\"" << idx++ << "\" name=\"" << vtm_xml_attr(leaf)
+                   << "\" file=\"" << piece_files[pi] << "\"/>\n";
+            }
+            for (const std::string& cname : rNode.mChildOrder) {
+                const VtmTreeNode& child = *rNode.mChildren.at(cname);
+                os << "<Block index=\"" << idx++ << "\" name=\"" << vtm_xml_attr(child.mName)
+                   << "\">\n";
+                self(self, child);
+                os << "</Block>\n";
+            }
+        };
+        emit_node(emit_node, root_node);
+    }
+
     os << "</vtkMultiBlockDataSet>\n";
     os << "</VTKFile>\n";
     if (!os)
@@ -238,10 +323,13 @@ void write_vtm(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
 Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts) {
     pugi::xml_document doc;
-    const std::vector<vtm_piece_ref> refs = vtm_parse_index(rPath, doc);
+    std::vector<std::string> empty_groups;
+    const std::vector<vtm_piece_ref> refs = vtm_parse_index(rPath, doc, &empty_groups);
     if (refs.empty()) {
         Mesh empty;
         empty.AssignPoints(NDArray::Uninit(DType::Float64, {0, 3}));
+        if (!empty_groups.empty())
+            detail::set_region_tree_nodes(empty, empty_groups);
         return empty;
     }
 
@@ -271,6 +359,8 @@ Mesh read_vtm(const std::string& rPath, const ReadOptions& rOpts) {
 
     for (std::size_t i = 0; i < refs.size(); ++i)
         result.mMesh.AddRegion(Region(refs[i].mName, RegionKind::Cell, std::move(result.mCellMaps[i])));
+    if (!empty_groups.empty())
+        detail::set_region_tree_nodes(result.mMesh, empty_groups);
 
     return std::move(result.mMesh);
 }

@@ -31,6 +31,7 @@
 #include "meshioplusplus/detail/grid_lattice.hpp"
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
+#include "../detail/structured_grid.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/vtk_xml_write.hpp"
 
@@ -48,24 +49,23 @@ void write_vtr(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
 void write_vtr_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
-    detail::vtk_xml_write_lattice(
-        rPath, rMesh, binary, codec, "RectilinearGrid", "vtr",
-        "RectilinearGrid needs a UNIFORM dense lattice today: exactly one hexahedron "
-        "block whose points tile an axis-aligned box with uniform per-axis spacing. A "
-        "genuinely graded (non-uniform) mesh cannot be written as .vtr yet -- a "
-        "documented follow-up, see doc/roadmap.md -- and a partial grid (voxelize's "
-        "'surface'/'inside' fill, or an octree) cannot be written as .vtr either -- "
-        "write it as .vtu, which stores the cells explicitly.",
-        [&](const detail::VtkXmlEmitter& rEmit, const detail::LatticeSpec& rSpec) {
+    std::array<std::int64_t, 3> dims{};
+    std::vector<double> xs, ys, zs;
+    if (!detail::rectilinear_from_mesh(rMesh, dims, xs, ys, zs))
+        throw WriteError(
+            "RectilinearGrid needs a dense rectilinear grid: one hexahedron block whose "
+            "points lie on strictly increasing axis-aligned planes (either annotated with "
+            "field_data['meshio:structured:0'] or geometrically uniform). Write unstructured "
+            "or deformed meshes as .vtu.");
+    const std::vector<double>* axes[3] = {&xs, &ys, &zs};
+    detail::vtk_xml_write_structured_dims(
+        rPath, rMesh, dims, binary, codec, "RectilinearGrid", "vtr",
+        [&](const detail::VtkXmlEmitter& rEmit, const detail::LatticeSpec&) {
             std::ostream& os = rEmit.mOs;
             os << "<Coordinates>\n";
             const char* axis_names[3] = {"x_coordinates", "y_coordinates", "z_coordinates"};
             for (std::size_t k = 0; k < 3; ++k) {
-                const std::int64_t n = rSpec.mDims[k] + 1;
-                std::vector<double> axis(static_cast<std::size_t>(n));
-                for (std::int64_t i = 0; i < n; ++i)
-                    axis[static_cast<std::size_t>(i)] =
-                        rSpec.mOrigin[k] + static_cast<double>(i) * rSpec.mSpacing[k];
+                const std::vector<double>& axis = *axes[k];
                 rEmit.Header(vtu_type_str(DType::Float64), axis_names[k], 0);
                 if (binary)
                     rEmit.Bin(reinterpret_cast<const unsigned char*>(axis.data()),

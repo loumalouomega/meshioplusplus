@@ -51,7 +51,11 @@ def _lattice():
 
 
 def _check(back):
-    assert sorted(back.field_data) == ["g", "v"]
+    assert "meshio:structured:0" in back.field_data
+    user_keys = sorted(
+        k for k in back.field_data if not k.startswith("meshio:structured:")
+    )
+    assert user_keys == ["g", "v"]
     assert back.field_data["g"][0] == 9.81
     np.testing.assert_array_equal(back.field_data["v"], [1, 2, 3])
     regions = {r.name: r for r in back.regions}

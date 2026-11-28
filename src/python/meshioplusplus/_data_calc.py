@@ -60,6 +60,8 @@ _FUNCS = {
     "acos": 1,
     "atan": 1,
     "atan2": 2,
+    "hypot": 2,
+    "phase": 1,
     "sinh": 1,
     "cosh": 1,
     "tanh": 1,
@@ -430,6 +432,8 @@ def _eval(node, arrays, rows):
     with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
         if kind == "atan2":
             return np.arctan2(a, b)
+        if kind == "hypot":
+            return np.hypot(a, b)
         if kind == "pow":
             return np.power(a, b)
         if kind == "+":
@@ -445,6 +449,48 @@ def _eval(node, arrays, rows):
         if kind == "max":
             return np.maximum(a, b)
     _fail(f"unsupported operator '{kind}'", pos)
+
+
+def _rewrite_complex(node, source, loc):
+    """Rewrite ``phase(u)`` -> ``atan2(u_imag, u_real)`` and ``abs(u)`` ->
+    ``hypot(u_real, u_imag)`` when ``u`` is a complex pair rather than a literal
+    array or coordinate."""
+    kind, lhs, rhs, pos = node
+    if kind in ("phase", "abs"):
+        if not isinstance(lhs, tuple) or lhs[0] != "array":
+            if kind == "phase":
+                _fail(
+                    "'phase' requires a complex pair array name, not an expression",
+                    pos,
+                )
+        else:
+            base = lhs[1]
+            re_name = f"{base}_real"
+            im_name = f"{base}_imag"
+            has_pair = re_name in source and im_name in source
+            if kind == "phase":
+                if not has_pair:
+                    _fail(
+                        f"'phase' requires a complex pair '{re_name}' and '{im_name}'",
+                        pos,
+                    )
+                return (
+                    "atan2",
+                    ("array", im_name, None, lhs[3]),
+                    ("array", re_name, None, lhs[3]),
+                    pos,
+                )
+            is_coord = loc != "field_data" and base in _COORDS
+            if base not in source and not is_coord and has_pair:
+                return (
+                    "hypot",
+                    ("array", re_name, None, lhs[3]),
+                    ("array", im_name, None, lhs[3]),
+                    pos,
+                )
+    new_lhs = _rewrite_complex(lhs, source, loc) if isinstance(lhs, tuple) else lhs
+    new_rhs = _rewrite_complex(rhs, source, loc) if isinstance(rhs, tuple) else rhs
+    return (kind, new_lhs, new_rhs, pos)
 
 
 def _collect_names(node, out):
@@ -544,10 +590,11 @@ def _calc_py(mesh, expression, location, output, overwrite):
     if len(tokens) == 1:
         _fail("the expression is empty")
     tree = _Parser(tokens).parse_all()
+    source = location_map(mesh, loc)
+    tree = _rewrite_complex(tree, source, loc)
 
     referenced = set()
     _collect_names(tree, referenced)
-    source = location_map(mesh, loc)
     # A name that no data array has but that is `x`, `y`, `z` or `coords` is a
     # coordinate (a point's, or a cell's centroid); an array of that name wins.
     coord_names = (

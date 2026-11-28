@@ -151,6 +151,40 @@ _EXCLUDED_OPS = {
 # The model steps, and the formats whose read carries a model (the C++
 # engine's pipe_is_model_step and pipe_read_with_model).
 _MODEL_OPS = ("MeshCadSurface", "IgaSample", "IgaRefine")
+_STRUCTURED_PRESERVING_OPS = frozenset(
+    {
+        "DataCalc",
+        "DataCondition",
+        "DataDrop",
+        "DataKeep",
+        "DataRename",
+        "DataAverage",
+        "PointDataToCellData",
+        "CellDataToPointData",
+        "Gradient",
+        "Hessian",
+        "TensorInvariants",
+        "SmoothField",
+        "Colorize",
+        "Transform",
+        "Regions",
+        "Quality",
+        "FvmQuality",
+        "CheckConformity",
+        "CheckTetrahedra",
+        "EstimateError",
+        "ErrorSize",
+        "SurfaceDistance",
+        "Deviation",
+        "Thickness",
+        "ComputeCurvature",
+        "ComputeNormals",
+        "ComputePointNormals",
+        "CriticalPoints",
+        "Eigenmodes",
+        "SpectralDescriptors",
+    }
+)
 _MODEL_FORMATS = ("cad_json", "step", "iges", "mfem")
 
 
@@ -3623,6 +3657,13 @@ def _run_steps(mesh, steps_spec, version, model, steps, warnings):
             _prov_add_operation(_render_op(step))
             continue
         mesh = (_apply_v2 if version == 2 else _apply_step)(mesh, step, steps, warnings)
+        if step["Op"] not in _STRUCTURED_PRESERVING_OPS:
+            for k in [
+                k
+                for k in list(mesh.field_data)
+                if k.startswith("meshio:structured:") or k == "plot3d:dims"
+            ]:
+                del mesh.field_data[k]
         if step["Op"] == "FitCad":
             # The fitted solid is the model the rest of the run carries, when
             # the backend gave one (the native legacy mode gives none).

@@ -2612,6 +2612,11 @@ _NOT_TOOLS = {
     "deregister_format",
     "partition_labels",  # in-memory variant of partition
     "apply_operations",  # in-memory variant of the pipeline tool
+    "complex_pairs",  # in-memory numpy helper; data_info reports complex pairs
+    "to_complex",  # in-memory complex128 numpy view
+    "from_complex",  # in-memory complex128 numpy setter
+    "to_grid",  # in-memory Mesh -> GridArray bridge
+    "from_grid",  # in-memory GridArray -> Mesh bridge
     # A generator of (time, Mesh) pairs: the meshes never touch the filesystem,
     # so there is no path-in/path-out form. The `sequence` tool covers every
     # file-level use (fan-in, fan-out, N->N).

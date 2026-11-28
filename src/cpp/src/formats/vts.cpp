@@ -35,6 +35,7 @@
 #include "meshioplusplus/detail/vtk_xml.hpp"
 #include "meshioplusplus/detail/vtu_binary.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "../detail/structured_grid.hpp"
 #include "../detail/vtk_xml_pieces.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/vtk_xml_write.hpp"
@@ -53,14 +54,16 @@ void write_vts(const std::string& rPath, const Mesh& rMesh, bool binary, bool zl
 
 void write_vts_codec(const std::string& rPath, const Mesh& rMesh, bool binary,
                      detail::VtkCodec codec) {
-    detail::vtk_xml_write_lattice(
-        rPath, rMesh, binary, codec, "StructuredGrid", "vts",
-        "StructuredGrid is a lattice, and this mesh is not one: it needs exactly one "
-        "hexahedron block whose points tile an axis-aligned box with uniform spacing "
-        "(the writer recovers WholeExtent from it, then writes the mesh's own points "
-        "unchanged). A partial grid (voxelize's 'surface'/'inside' fill, or an octree) "
-        "cannot be written as .vts either -- write it as .vtu, which stores the cells "
-        "explicitly.",
+    std::array<std::int64_t, 3> dims{};
+    if (!detail::curvilinear_from_mesh(rMesh, dims))
+        throw WriteError(
+            "StructuredGrid needs a structured lattice: either one hexahedron block "
+            "annotated with field_data['meshio:structured:0'] matching its topology, or "
+            "an unannotated uniform axis-aligned lattice. An unstructured, partial, or "
+            "geometry-modified mesh (for example after smooth) cannot be written as .vts "
+            "-- write it as .vtu.");
+    detail::vtk_xml_write_structured_dims(
+        rPath, rMesh, dims, binary, codec, "StructuredGrid", "vts",
         [&](const detail::VtkXmlEmitter& rEmit, const detail::LatticeSpec&) {
             std::ostream& os = rEmit.mOs;
             const NDArray& pts = rMesh.Points();

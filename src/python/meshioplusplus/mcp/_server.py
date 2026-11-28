@@ -834,6 +834,71 @@ def _register_operations(server: FastMCP) -> None:
         point moved; Side regions move with their cells. Reports num_flipped."""
 
     @server.tool()
+    @_forward(_tools.tool_sides_to_cells)
+    def sides_to_cells(
+        input_path: str,
+        output_path: str,
+        region: Optional[str] = None,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Materialize side regions as lower-dimensional cell blocks with
+        meshio:side_of and transfer Exodus side-set variables onto them."""
+
+    @server.tool()
+    @_forward(_tools.tool_cells_to_sides)
+    def cells_to_sides(
+        input_path: str,
+        output_path: str,
+        region_name: Optional[str] = None,
+        drop_facet_blocks: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Rebuild side regions and side-set variables from meshio:side_of
+        cell blocks."""
+
+    @server.tool()
+    @_forward(_tools.tool_ip_to_points)
+    def ip_to_points(
+        input_path: str,
+        output_path: str,
+        arrays: Optional[List[str]] = None,
+        drop_source: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Extrapolate integration-point cell_data arrays to point_data using
+        element shape functions and nodal averaging."""
+
+    @server.tool()
+    @_forward(_tools.tool_ip_to_cells)
+    def ip_to_cells(
+        input_path: str,
+        output_path: str,
+        arrays: Optional[List[str]] = None,
+        drop_metadata: bool = True,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Average integration-point cell_data arrays to one value per cell
+        using quadrature weights when known."""
+
+    @server.tool()
+    @_forward(_tools.tool_points_to_ip)
+    def points_to_ip(
+        input_path: str,
+        output_path: str,
+        arrays: Optional[List[str]] = None,
+        rule_id: int = 2,
+        drop_source: bool = False,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Evaluate point_data arrays at element integration points and attach
+        them as cell_data with meshio:ip:<name> metadata."""
+
+    @server.tool()
     @_forward(_tools.tool_clip)
     def clip(
         input_path: str,

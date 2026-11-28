@@ -62,13 +62,13 @@ def _read_points(piece, reader, dims, num_points):
     return np.stack([gx.reshape(-1), gy.reshape(-1), gz.reshape(-1)], axis=1)
 
 
-def _write_coordinates(binary, header_type):
+def _write_coordinates(axes, binary, header_type):
     def geometry(lines, emit, dims, origin, spacing, compression):
         lines.append("<Coordinates>")
-        for k, name in enumerate(("x_coordinates", "y_coordinates", "z_coordinates")):
-            axis = (
-                origin[k] + np.arange(int(dims[k]) + 1, dtype=np.float64) * spacing[k]
-            )
+        for axis, name in zip(
+            axes, ("x_coordinates", "y_coordinates", "z_coordinates")
+        ):
+            axis = np.asarray(axis, dtype=np.float64)
             vtu_type = numpy_to_vtu_type[np.dtype(np.float64)]
             head = f'<DataArray type="{vtu_type}" Name="{name}"'
             if binary:
@@ -84,25 +84,28 @@ def _write_coordinates(binary, header_type):
 
 
 def write(filename, mesh, binary=True, compression="zlib", header_type=None):
+    from .._exceptions import WriteError
+    from .._grid import rectilinear_from_mesh
+
+    rec = rectilinear_from_mesh(mesh)
+    if rec is None:
+        raise WriteError(
+            "RectilinearGrid needs a dense rectilinear grid: one hexahedron "
+            "block whose points lie on strictly increasing axis-aligned planes "
+            "(either annotated with field_data['meshio:structured:0'] or "
+            "geometrically uniform). Write unstructured or deformed meshes as .vtu."
+        )
+    dims, xs, ys, zs = rec
+    ht = "UInt32" if header_type is None else header_type
     write_lattice(
         filename,
         mesh,
         grid="RectilinearGrid",
         prefix="VTR",
-        not_lattice=(
-            "RectilinearGrid needs a UNIFORM dense lattice today: exactly one "
-            "hexahedron block whose points tile an axis-aligned box with "
-            "uniform per-axis spacing. A genuinely graded (non-uniform) mesh "
-            "cannot be written as .vtr yet -- a documented follow-up, see "
-            "doc/roadmap.md -- and a partial grid (voxelize's "
-            "'surface'/'inside' fill, or an octree) cannot be written as "
-            ".vtr either -- write it as .vtu, which stores the cells "
-            "explicitly."
-        ),
+        not_lattice="",
         binary=binary,
         compression=compression,
-        header_type="UInt32" if header_type is None else header_type,
-        geometry=_write_coordinates(
-            binary, "UInt32" if header_type is None else header_type
-        ),
+        header_type=ht,
+        geometry=_write_coordinates((xs, ys, zs), binary, ht),
+        dims_override=dims,
     )

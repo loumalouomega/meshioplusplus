@@ -244,5 +244,25 @@ void vtk_xml_write_lattice(const std::string& rPath, const Mesh& rMesh, bool Bin
     os << "</Piece>\n</" << pGrid << ">\n</VTKFile>\n";
 }
 
+template <class TGeometry>
+void vtk_xml_write_structured_dims(const std::string& rPath, const Mesh& rMesh,
+                                   const std::array<std::int64_t, 3>& rDims, bool Binary,
+                                   VtkCodec Codec, const char* pGrid, const char* pFormat,
+                                   TGeometry&& rGeometry) {
+    if (Binary && Codec != VtkCodec::None)
+        vtk_codec_require_write(Codec);
+    auto os = make_classic_ofstream(rPath, std::ios::binary);
+    if (!os)
+        throw WriteError("Could not open file for writing: " + rPath);
+    LatticeSpec spec;
+    spec.mDims = {rDims[0] - 1, rDims[1] - 1, rDims[2] - 1};
+    const std::size_t hsz =
+        vtk_xml_lattice_preamble(os, rMesh, spec, pGrid, pFormat, Binary, Codec);
+    const VtkXmlEmitter emit{os, Binary, Codec, hsz};
+    rGeometry(emit, spec);
+    vtk_xml_lattice_data(emit, rMesh);
+    os << "</Piece>\n</" << pGrid << ">\n</VTKFile>\n";
+}
+
 }  // namespace detail
 }  // namespace meshioplusplus

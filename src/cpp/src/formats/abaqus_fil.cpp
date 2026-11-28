@@ -57,6 +57,7 @@
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
 #include "../detail/fortran_number.hpp"
+#include "../detail/integration_points.hpp"
 
 namespace meshioplusplus {
 
@@ -1150,6 +1151,8 @@ Mesh read_abaqus_fil(const std::string& rPath, const ReadOptions& rOpts) {
             layout.As<std::int64_t>()[0] = static_cast<std::int64_t>(pts);
             layout.As<std::int64_t>()[1] = static_cast<std::int64_t>(width);
             mesh.AddFieldData("abaqus:layout:" + name, std::move(layout));
+            detail::set_ip_layout(mesh, name, static_cast<std::int64_t>(pts),
+                                  static_cast<std::int64_t>(width), f.mLocation == 2 ? 0 : -1);
         }
     }
     return mesh;
@@ -2140,6 +2143,10 @@ private:
                 layout.assign(v.Data(), v.Data() + l.Size());
                 if (layout.size() != 2 || layout[0] < 1 || layout[1] < 1)
                     filw_fail("'abaqus:layout:" + name + "' must be (points, components)");
+            } else {
+                const detail::IpLayout ip = detail::get_ip_layout(rMesh, name);
+                if (ip.mValid)
+                    layout = {ip.mPoints, ip.mWidth};
             }
             int location = 1;
             if (parsed.mRebar)

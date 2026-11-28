@@ -52,6 +52,7 @@
 #include "meshioplusplus/region.hpp"
 #include "meshioplusplus/operations/data_common.hpp"
 #include "meshioplusplus/types.hpp"
+#include "../detail/integration_points.hpp"
 #include "../detail/typed_view.hpp"
 
 namespace meshioplusplus {
@@ -469,15 +470,23 @@ h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const st
 
 // One "support" subgroup (NOE for nodal, MAI.<type> for a cell block):
 // GAU/PFL attrs, the default-profile subgroup with NBR/NGA/GAU/CO.
-void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray& rData) {
+void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray& rData,
+                       std::int64_t Nga = 1) {
     h5::Hid typ = h5::create_group_crt(ts, rSupportName);
     write_attr_bytes(typ, "GAU", "");
     write_attr_bytes(typ, "PFL", kProfile);
     h5::Hid profile = h5::create_group_crt(typ, kProfile);
-    h5::write_attr_int(profile, "NBR", static_cast<std::int64_t>(detail::rows(rData)));
-    h5::write_attr_int(profile, "NGA", 1);
+    const std::size_t n_entities = detail::rows(rData);
+    h5::write_attr_int(profile, "NBR", static_cast<std::int64_t>(n_entities));
+    h5::write_attr_int(profile, "NGA", Nga);
     write_attr_bytes(profile, "GAU", "");
     NDArray widened = med_field_widen(rData);
+    if (Nga > 1) {
+        const std::size_t total_cols = detail::cols(widened);
+        const std::size_t nga_u = static_cast<std::size_t>(Nga);
+        const std::size_t k = total_cols / nga_u;
+        widened.Reshape({n_entities * nga_u, k});
+    }
     NDArray flat = flatten_f(widened, 0);
     h5::write_dataset(profile, "CO", flat);
 }
@@ -506,6 +515,15 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
         }
     }
 
+    std::int64_t nga = 1;
+    std::size_t header_components = ncomponents;
+    const detail::IpLayout ip = detail::get_ip_layout(rMesh, rName);
+    if (ip.mValid && ip.mPoints > 1 &&
+        static_cast<std::size_t>(ip.mPoints) * static_cast<std::size_t>(ip.mWidth) == ncomponents) {
+        nga = ip.mPoints;
+        header_components = static_cast<std::size_t>(ip.mWidth);
+    }
+
     // Group blocks by MED type first: two blocks of the same type share one
     // "MAI.<type>" support subgroup (mirrors the connectivity-writing loop's
     // own consolidation -- two calls to write_cha_support with the same
@@ -532,12 +550,12 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             contributing.push_back(med_type);
     }
 
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rDiskName, dt, ncomponents,
+    h5::Hid ts = write_cha_field_header(cha, rMeshName, rDiskName, dt, header_components,
                                         /*IsNodal=*/false, contributing);
 
     for (const std::string& med_type : contributing)
         write_cha_support(ts, "MAI." + med_type,
-                          med_concat_cell_data_rows(rMesh, rName, by_type[med_type]));
+                          med_concat_cell_data_rows(rMesh, rName, by_type[med_type]), nga);
 }
 
 // ---- families (point/cell tags) ----
@@ -942,8 +960,8 @@ void med_reject_or_skip(const std::string& rWhat, bool Lenient, MedInfo* pInfo) 
 }
 
 /// Named profiles use one-based entity indices and NaN on uncovered rows.
-NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents,
-                              std::size_t rows) {
+NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponents, std::size_t rows,
+                              std::int64_t* pNgaOut = nullptr) {
     std::string profile_name = read_attr_bytes(support, "PFL");
     if (profile_name.empty())
         profile_name = kProfile;
@@ -953,9 +971,14 @@ NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponent
                                          std::numeric_limits<std::size_t>::max() / rows))
         throw ReadError("MED: invalid field component count");
     const auto k = static_cast<std::size_t>(ncomponents);
-    if (h5::has_attr(profile, "NGA") && h5::read_attr_int(profile, "NGA") != 1)
-        throw ReadError("MED: Gauss-point data requires the Python reference reader");
+    const std::int64_t nga = h5::has_attr(profile, "NGA") ? h5::read_attr_int(profile, "NGA") : 1;
+    if (nga < 1)
+        throw ReadError("MED: invalid NGA attribute");
+    if (pNgaOut)
+        *pNgaOut = nga;
     if (profile_name != kProfile) {
+        if (nga != 1)
+            throw ReadError("MED: Gauss-point data with named profiles is not supported");
         h5::Hid profiles = h5::open_group(file, "PROFILS");
         h5::Hid definition = h5::open_group(profiles, profile_name);
         NDArray indices = h5::read_dataset(definition, "PFL");
@@ -983,10 +1006,16 @@ NDArray read_cha_support_data(hid_t file, hid_t support, std::int64_t ncomponent
         }
         return out;
     }
-    if (flat.Size() != rows * k)
+    const auto nga_u = static_cast<std::size_t>(nga);
+    if (nga_u > 1 && rows && nga_u > std::numeric_limits<std::size_t>::max() / rows)
+        throw ReadError("MED: Gauss-point data dimensions overflow");
+    const std::size_t total_rows = rows * nga_u;
+    if (flat.Size() != total_rows * k)
         throw ReadError("MED: field data size does not match its declared shape");
-    NDArray out = unflatten_f(flat, rows, k, 0);
-    if (k == 1)
+    NDArray out = unflatten_f(flat, total_rows, k, 0);
+    if (nga_u > 1)
+        out.Reshape({rows, nga_u * k});
+    else if (k == 1)
         out.Reshape({rows});
     return out;
 }
@@ -1133,15 +1162,17 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             per_block.emplace_back(DType::Float64, std::vector<std::size_t>{0});
         std::vector<bool> filled(rMesh.NumCellBlocks(), false);
         bool skip_field = false;
+        std::int64_t field_nga = 1;
+        bool field_is_elno = false;
+        bool has_first_ct = false;
+        CellType first_ct = CellType::Vertex;
         for (const std::string& supp : supports) {
-            // Anything not "NOE"/"MAI.<type>" is an ELNO/ELGA support: one
-            // value per node-within-cell or per Gauss point, a 3-D shape the
-            // uniform mesh API's (n,)/(n,k) cell_data cannot hold at all --
-            // structurally unrepresentable, not merely unimplemented.
-            if (supp.rfind("MAI.", 0) != 0) {
-                med_reject_or_skip("field '" + field_name + "' support '" + supp +
-                                       "' (ELNO/ELGA data has no (n,)/(n,k) representation)",
-                                   Lenient, pInfo);
+            const bool is_mai = (supp.rfind("MAI.", 0) == 0);
+            const bool is_noe_el = (supp.rfind("NOE.", 0) == 0);
+            if (!is_mai && !is_noe_el) {
+                med_reject_or_skip(
+                    "field '" + field_name + "' support '" + supp + "' (unsupported support kind)",
+                    Lenient, pInfo);
                 skip_field = true;
                 break;
             }
@@ -1156,7 +1187,17 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             }
             const std::size_t b = bit->second;
             h5::Hid grp = h5::open_group(ts, supp);
-            per_block[b] = read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells());
+            std::int64_t block_nga = 1;
+            per_block[b] = read_cha_support_data(file, grp, ncomponents, rMesh.Cells(b).NumCells(),
+                                                 &block_nga);
+            if (block_nga > field_nga)
+                field_nga = block_nga;
+            if (is_noe_el)
+                field_is_elno = true;
+            if (!has_first_ct) {
+                first_ct = cell_type_from_name(rMesh.Cells(b).Type());
+                has_first_ct = true;
+            }
             filled[b] = true;
         }
         if (skip_field)
@@ -1170,13 +1211,20 @@ void read_cha_fields(hid_t file, hid_t cha, const std::string& rMeshName, Mesh& 
             if (filled[b])
                 continue;
             const std::size_t ncells = rMesh.Cells(b).NumCells();
-            std::vector<std::size_t> shape =
-                ncomponents > 1
-                    ? std::vector<std::size_t>{ncells, static_cast<std::size_t>(ncomponents)}
-                    : std::vector<std::size_t>{ncells};
+            const std::size_t total_cols =
+                static_cast<std::size_t>(field_nga) * static_cast<std::size_t>(ncomponents);
+            std::vector<std::size_t> shape = total_cols > 1
+                                                 ? std::vector<std::size_t>{ncells, total_cols}
+                                                 : std::vector<std::size_t>{ncells};
             per_block[b] = NDArray(DType::Float64, shape);
         }
         rMesh.AddCellData(field_name, std::move(per_block));
+        if (field_nga > 1 || field_is_elno) {
+            const std::int64_t rule_id =
+                field_is_elno ? 0
+                              : (has_first_ct ? detail::infer_ip_rule_id(first_ct, field_nga) : -1);
+            detail::set_ip_layout(rMesh, field_name, field_nga, ncomponents, rule_id);
+        }
     }
 }
 

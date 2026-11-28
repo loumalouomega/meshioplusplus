@@ -133,6 +133,7 @@ if TYPE_CHECKING:
     from ._clean import clean
     from ._clip import clip
     from ._colorize import colorize
+    from ._complex import complex_pairs, from_complex, to_complex
     from ._conduit import from_conduit, has_conduit, to_conduit
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
@@ -186,12 +187,14 @@ if TYPE_CHECKING:
         GridSpec,
         PowerSpectrum,
         expand_grid,
+        from_grid,
         interpolate_grid,
         power_spectrum,
         resample_grid,
         sample_grid,
         scatter_grid,
         squeeze_grid,
+        to_grid,
     )
     from ._guard import GeometryGuard, geometry_descriptors
     from ._hausdorff import hausdorff_distance
@@ -232,6 +235,7 @@ if TYPE_CHECKING:
         write_parquet,
     )
     from ._interpolate import interpolate
+    from ._ip_ops import ip_to_cells, ip_to_points, points_to_ip
     from ._isosurface import isosurface
     from ._mass_properties import mass_properties
     from ._measure import align_datums, measure, measure_table
@@ -349,6 +353,7 @@ if TYPE_CHECKING:
     from ._sequence_stats import sequence_derivative, sequence_statistics
     from ._shortest_path import geodesic_voronoi, shortest_path
     from ._shrinkwrap import shrinkwrap
+    from ._side_data import cells_to_sides, sides_to_cells
     from ._silhouette import silhouette
     from ._skeleton import extract_skeleton
     from ._skin import extract_skin
@@ -457,6 +462,14 @@ _LAZY_ATTRS = {
     "write_graph": "_adjacency",
     "clean": "_clean",
     "conservative_interpolate": "_conservative_interpolate",
+    "complex_pairs": "_complex",
+    "to_complex": "_complex",
+    "from_complex": "_complex",
+    "sides_to_cells": "_side_data",
+    "cells_to_sides": "_side_data",
+    "ip_to_points": "_ip_ops",
+    "ip_to_cells": "_ip_ops",
+    "points_to_ip": "_ip_ops",
     "convert_cells": "_convert_cells",
     "crop": "_crop",
     "compute_curvature": "_curvature",
@@ -544,6 +557,8 @@ _LAZY_ATTRS = {
     "fichera": "_primitives",
     "solid_torus": "_primitives",
     "GridArray": "_grid_transfer",
+    "to_grid": "_grid_transfer",
+    "from_grid": "_grid_transfer",
     "GridSpec": "_grid_transfer",
     "PowerSpectrum": "_grid_transfer",
     "expand_grid": "_grid_transfer",
@@ -1025,6 +1040,14 @@ __all__ = [
     "data_calc",
     "data_condition",
     "data_info",
+    "complex_pairs",
+    "to_complex",
+    "from_complex",
+    "sides_to_cells",
+    "cells_to_sides",
+    "ip_to_points",
+    "ip_to_cells",
+    "points_to_ip",
     "tensor_invariants",
     "view",
     "screenshot",
@@ -1063,6 +1086,8 @@ __all__ = [
     "has_zarr",
     "GridSpec",
     "GridArray",
+    "to_grid",
+    "from_grid",
     "PowerSpectrum",
     "sample_grid",
     "scatter_grid",

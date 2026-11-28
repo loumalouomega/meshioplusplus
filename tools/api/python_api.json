@@ -3095,6 +3095,32 @@
     ]
    }
   },
+  "cells_to_sides": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "region_name"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "drop_facet_blocks"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "cgns": {
    "kind": "module"
   },
@@ -3358,6 +3384,22 @@
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "return_report"
+     }
+    ]
+   }
+  },
+  "complex_pairs": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'both'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
      }
     ]
    }
@@ -6341,6 +6383,30 @@
     ]
    }
   },
+  "from_complex": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "name"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "array"
+     },
+     {
+      "default": "'point'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
+     }
+    ]
+   }
+  },
   "from_conduit": {
    "kind": "function",
    "signature": {
@@ -6369,6 +6435,17 @@
      {
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "payload"
+     }
+    ]
+   }
+  },
+  "from_grid": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "grid_array"
      }
     ]
    }
@@ -7206,6 +7283,58 @@
   },
   "ip": {
    "kind": "module"
+  },
+  "ip_to_cells": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "arrays"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "drop_metadata"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "ip_to_points": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "arrays"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "drop_source"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
   },
   "isosurface": {
    "kind": "function",
@@ -8953,6 +9082,37 @@
       "default": "0.0",
       "kind": "POSITIONAL_OR_KEYWORD",
       "name": "nan_replacement"
+     }
+    ]
+   }
+  },
+  "points_to_ip": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "arrays"
+     },
+     {
+      "default": "2",
+      "kind": "KEYWORD_ONLY",
+      "name": "rule_id"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "drop_source"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
      }
     ]
    }
@@ -10932,6 +11092,27 @@
     ]
    }
   },
+  "sides_to_cells": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "region"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "silhouette": {
    "kind": "function",
    "signature": {
@@ -12000,6 +12181,27 @@
     ]
    }
   },
+  "to_complex": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "name"
+     },
+     {
+      "default": "'both'",
+      "kind": "KEYWORD_ONLY",
+      "name": "location"
+     }
+    ]
+   }
+  },
   "to_conduit": {
    "kind": "function",
    "signature": {
@@ -12069,6 +12271,22 @@
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "zero_copy_only"
+     }
+    ]
+   }
+  },
+  "to_grid": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "fields"
      }
     ]
    }

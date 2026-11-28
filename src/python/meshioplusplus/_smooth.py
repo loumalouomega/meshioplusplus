@@ -324,7 +324,11 @@ def _smooth_py(
     )
     out.point_data = {k: v for k, v in mesh.point_data.items()}
     out.cell_data = {k: list(v) for k, v in mesh.cell_data.items()}
-    out.field_data = {k: v for k, v in mesh.field_data.items()}
+    out.field_data = {
+        k: v
+        for k, v in mesh.field_data.items()
+        if not k.startswith("meshio:structured:") and k != "plot3d:dims"
+    }
     report = {
         "num_nodes_moved": int((disp > 1e-12 * diag).sum()),
         "max_displacement": float(disp.max()) if n else 0.0,
