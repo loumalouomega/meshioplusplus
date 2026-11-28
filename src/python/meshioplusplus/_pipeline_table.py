@@ -33,6 +33,7 @@ OP_TABLE = {
         "Closure",
         "RecordLevels",
         "RecordHierarchy",
+        "UndoGreenFirst",
     ),
     "Decimate": (
         "Ratio",
@@ -62,6 +63,7 @@ OP_TABLE = {
         "Mode",
         "Seed",
         "WeightsKey",
+        "ConnectedParts",
     ),
     "Slice": (
         "Point",
@@ -603,6 +605,7 @@ OP_TABLE = {
         "Arrays",
         "Inverse",
         "RecordCoordinates",
+        "TargetCrs",
     ),
     "GeodesicDistance": (
         "Sources",
@@ -932,6 +935,20 @@ OP_TABLE = {
     "ConvertCells": (
         "Mode",
         "RecordParentIds",
+        "Order",
+        "Full",
+    ),
+    "SubdivideSurface": (
+        "Scheme",
+        "Levels",
+        "CreaseAngle",
+        "PreserveBoundary",
+        "InterpolatePointData",
+        "RecordParentIds",
+    ),
+    "ConvertUnits": (
+        "System",
+        "Strict",
     ),
     "Subdivide": ("RecordParentIds",),
     "Tessellate": (
@@ -1185,6 +1202,11 @@ V2_STEPS = {
         "OnConflict",
     ),
     "UndoGreen": ("Inputs",),
+    "MeshBoolean": (
+        "Inputs",
+        "Operation",
+        "Backend",
+    ),
     "Split": (
         "By",
         "Tag",
@@ -1228,6 +1250,7 @@ KEY_DEFAULTS = {
         ("Closure", "text", "redgreen"),
         ("RecordLevels", "flag", False),
         ("RecordHierarchy", "flag", False),
+        ("UndoGreenFirst", "flag", False),
     ),
     "Decimate": (
         ("Ratio", "number", -1.0),
@@ -1257,6 +1280,7 @@ KEY_DEFAULTS = {
         ("Mode", "text", "eco"),
         ("Seed", "number", 0),
         ("WeightsKey", "text", ""),
+        ("ConnectedParts", "flag", False),
     ),
     "Slice": (
         ("RecordParentIds", "flag", False),
@@ -1675,6 +1699,7 @@ KEY_DEFAULTS = {
         ("System", "text", "cylindrical"),
         ("Inverse", "flag", False),
         ("RecordCoordinates", "flag", True),
+        ("TargetCrs", "text", ""),
     ),
     "GeodesicDistance": (
         ("SourceRegion", "text", ""),
@@ -1899,6 +1924,20 @@ KEY_DEFAULTS = {
     "ConvertCells": (
         ("Mode", "text", "linearize"),
         ("RecordParentIds", "flag", False),
+        ("Order", "number", 0),
+        ("Full", "flag", False),
+    ),
+    "SubdivideSurface": (
+        ("Scheme", "text", "loop"),
+        ("Levels", "number", 1),
+        ("CreaseAngle", "number", 60.0),
+        ("PreserveBoundary", "flag", True),
+        ("InterpolatePointData", "flag", True),
+        ("RecordParentIds", "flag", False),
+    ),
+    "ConvertUnits": (
+        ("System", "text", "SI"),
+        ("Strict", "flag", True),
     ),
     "Subdivide": (("RecordParentIds", "flag", False),),
     "Tessellate": (
@@ -2040,5 +2079,9 @@ KEY_DEFAULTS = {
         ("Extrapolate", "flag", False),
         ("DefaultValue", "number", 0.0),
         ("OnConflict", "text", "error"),
+    ),
+    "MeshBoolean": (
+        ("Operation", "text", "union"),
+        ("Backend", "text", ""),
     ),
 }

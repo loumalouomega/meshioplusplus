@@ -52,6 +52,16 @@ struct FieldUnit {
 /// `"m/s"`, `"kg/m^3"`, `"t/mm^3"`, `"1"`, ...) into its SI scale and exponents.
 MESHIOPLUSPLUS_API FieldUnit field_unit_from_name(const std::string& rName);
 
+/// A unit as a file states it: `field_unit_from_name` after trimming blanks and
+/// NULs, reading a digit after a letter as an exponent (`"kg/m3"`) and ignoring
+/// case (`"M/S"`). Returns false, leaving @p rOut untouched, when the text names
+/// no known unit -- for the format readers that carry a unit string per field.
+MESHIOPLUSPLUS_API bool field_unit_from_text(const std::string& rText, FieldUnit& rOut);
+
+/// The name `field_unit_from_name` maps to @p rUnit, or empty when it knows none
+/// -- for the format writers that state a unit string per field.
+MESHIOPLUSPLUS_API std::string field_unit_name(const FieldUnit& rUnit);
+
 /// Attach `field_data["meshio:unit:" + rArrayName]` as Float64(8).
 MESHIOPLUSPLUS_API void set_field_unit(Mesh& rMesh, const std::string& rArrayName,
                                        const FieldUnit& rUnit);

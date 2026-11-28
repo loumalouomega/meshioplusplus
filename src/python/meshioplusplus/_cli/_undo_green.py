@@ -4,10 +4,14 @@ from .._undo_green import undo_green
 
 def add_args(parser):
     parser.add_argument(
-        "coarse", type=str, help="mesh a prior refine() call was run on"
+        "meshes",
+        nargs="+",
+        metavar="MESH",
+        help=(
+            "COARSE FINE OUTFILE (parents read from COARSE), or FINE OUTFILE "
+            "(parents from FINE's refine:cell_id/refine:parent_id hierarchy)"
+        ),
     )
-    parser.add_argument("fine", type=str, help="that call's output")
-    parser.add_argument("outfile", type=str, help="undone mesh to be written to")
     parser.add_argument(
         "--input-format",
         "-i",
@@ -33,12 +37,17 @@ def add_args(parser):
 
 
 def undo_green_cmd(args):
-    coarse = read(args.coarse, file_format=args.input_format)
-    fine = read(args.fine, file_format=args.input_format)
-    out, report = undo_green(coarse, fine, return_report=True)
+    if len(args.meshes) not in (2, 3):
+        raise SystemExit("undo-green: expects COARSE FINE OUTFILE or FINE OUTFILE")
+    *inputs, outfile = args.meshes
+    meshes = [read(p, file_format=args.input_format) for p in inputs]
+    if len(meshes) == 2:
+        out, report = undo_green(meshes[0], meshes[1], return_report=True)
+    else:
+        out, report = undo_green(meshes[0], return_report=True)
     if not args.quiet:
         print(
             f"undid {report['num_groups_undone']} green group(s), removing "
             f"{report['num_cells_removed']} cell(s)"
         )
-    write(args.outfile, out, file_format=args.output_format)
+    write(outfile, out, file_format=args.output_format)

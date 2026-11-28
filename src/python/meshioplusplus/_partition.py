@@ -609,3 +609,15 @@ def partition(
             )
         result.append(out)
     return result
+
+
+def graph_partitioner_names():
+    """The registered graph partitioners :func:`partition` accepts as ``method``
+    beyond ``"sfc"``, ``"kahip"`` and ``"auto"`` (``"metis"``, ``"scotch"`` when
+    the core was built with them; roadmap 9.7.2), sorted. Empty without the core.
+    """
+    try:
+        from . import _core
+    except ImportError:
+        return []
+    return sorted(getattr(_core, "graph_partitioner_names", lambda: [])())

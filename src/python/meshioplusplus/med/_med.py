@@ -13,7 +13,15 @@ from .._common import num_nodes_per_cell, warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
 from .._node_order import from_meshio, node_order, node_order_keys, to_meshio
-from .._units import med_length_unit, med_unit_coords, set_length_unit
+from .._units import (
+    FIELD_UNIT_PREFIX,
+    field_unit,
+    field_unit_from_text,
+    field_unit_name,
+    med_length_unit,
+    med_unit_coords,
+    set_length_unit,
+)
 from ._med41 import FieldBitmaskWriter
 
 # https://docs.salome-platform.org/5/med/dev/med__outils_8hxx.html
@@ -635,6 +643,9 @@ def _read_data(fields, profiles, cell_types, point_data, cell_data, field_data):
             data.attrs.get("UNI", numpy_void_str),
             data.attrs.get("UNT", numpy_void_str),
         )
+        declared = _med_declared_unit(data.attrs.get("UNI", numpy_void_str))
+        if declared is not None:
+            field_data[FIELD_UNIT_PREFIX + name] = declared
         field_data["med:step_meta"][name] = []
 
         if "NOM" in data.attrs:
@@ -959,7 +970,9 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
 
         first_data = entries[0][2]
         n_components = 1 if first_data.ndim == 1 else first_data.shape[-1]
-        units = field_units.get(base_name, (numpy_void_str, numpy_void_str))
+        units = field_units.get(
+            base_name, (_med_unit_attr(mesh, base_name, n_components), numpy_void_str)
+        )
 
         try:
             field = fields.create_group(base_name)
@@ -1037,7 +1050,7 @@ def write(filename, mesh, med_version="4.1.0", **kwargs):
                 "TYP", numpy_to_med_type.get(first_data.dtype, MED_FLOAT64)
             )
             field.attrs.create("NCO", n_components)
-            field.attrs.create("UNI", numpy_void_str)
+            field.attrs.create("UNI", _med_unit_attr(mesh, base_name, n_components))
             field.attrs.create("UNT", numpy_void_str)
             field.attrs.create("NOM", _nom_attr(comp_name, n_components))
         except ValueError:
@@ -1161,6 +1174,28 @@ def _write_data(
 
 def _create_component_names(n_components):
     return [f"V{(i + 1)}" for i in range(n_components)]
+
+
+def _med_declared_unit(uni):
+    """The 8-float unit of a MED ``UNI`` attribute (16 characters per
+    component) when every component names the same known unit, else ``None``."""
+    text = uni.decode("latin-1") if isinstance(uni, bytes) else str(uni)
+    if not text.strip(" \x00"):
+        return None
+    parts = {text[i : i + 16].strip(" \x00") for i in range(0, len(text), 16)}
+    parts.discard("")
+    if len(parts) != 1:
+        return None
+    return field_unit_from_text(parts.pop())
+
+
+def _med_unit_attr(mesh, name, n_components):
+    """``UNI`` for a field without ``med:field_units``: its declared
+    ``meshio:unit:<array>`` by name, 16 characters per component."""
+    unit = field_unit_name(field_unit(mesh, name))
+    if not unit or len(unit) > 16:
+        return numpy_void_str
+    return np.bytes_(f"{unit:<16}" * max(int(n_components), 1))
 
 
 def _nom_attr(comp_name, n_components):

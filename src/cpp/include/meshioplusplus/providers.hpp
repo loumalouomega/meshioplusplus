@@ -263,6 +263,31 @@ MESHIOPLUSPLUS_API void unregister_boolean_provider() noexcept;
 /// The registered surface boolean backend, or null.
 MESHIOPLUSPLUS_API std::shared_ptr<const BooleanProvider> boolean_provider() noexcept;
 
+/// Input to a coordinate reference system provider (roadmap 9.10.2): the
+/// points, in the source CRS's axis order normalised for visualisation
+/// (easting/longitude first), moved in place.
+struct CrsRequest {
+    std::string mSourceCrs;  ///< `EPSG:<code>`, WKT2 or a PROJ string.
+    std::string mTargetCrs;  ///< Same forms as `mSourceCrs`.
+    std::vector<std::array<double, 3>> mPoints;
+};
+
+/// A coordinate reference system provider (e.g. PROJ, MIT; roadmap 9.10.2).
+/// `mTransform` returns the transformed points, in the order given; it throws
+/// on a CRS it cannot resolve or a point it cannot transform.
+struct CrsProvider {
+    std::string mName;
+    std::string mVersion;
+    std::function<std::vector<std::array<double, 3>>(const CrsRequest&)> mTransform;
+};
+
+/// Registers `Provider` as the CRS backend, replacing any earlier one.
+MESHIOPLUSPLUS_API void register_crs_provider(CrsProvider Provider);
+/// Removes the registered CRS backend (the builtin is not re-registered).
+MESHIOPLUSPLUS_API void unregister_crs_provider() noexcept;
+/// The registered CRS backend, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const CrsProvider> crs_provider() noexcept;
+
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
 /// Removes the registered remesher (the builtin is not re-registered).
@@ -309,7 +334,8 @@ MESHIOPLUSPLUS_API bool load_plugin(const std::string& rPath,
 MESHIOPLUSPLUS_API int load_plugins(const std::string& rPaths) noexcept;
 
 /// Registers the providers this build compiled in (`-DMESHIOPLUSPLUS_WITH_OCCT`,
-/// `_WITH_NETGEN`, `_WITH_MMG`).
+/// `_WITH_NETGEN`, `_WITH_MMG`, `_WITH_METIS`, `_WITH_SCOTCH`, `_WITH_MANIFOLD`,
+/// `_WITH_PROJ`).
 /// Idempotent, cheap after the first call, and called by every capability
 /// query; it never overrides a provider that is already registered.
 MESHIOPLUSPLUS_API void register_builtin_providers() noexcept;

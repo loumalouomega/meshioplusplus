@@ -38,6 +38,7 @@
 
 // Project includes
 #include "meshioplusplus/formats/ugrid_nc.hpp"
+#include "meshioplusplus/detail/crs.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -113,6 +114,29 @@ int ug_varid(int Ncid, const std::string& rName) {
         throw ReadError("meshio++: ugrid_nc: the mesh names a variable '" + rName +
                         "' the file does not have");
     return id;
+}
+
+// The CRS a CF `grid_mapping` variable states (roadmap 9.10.2): its `crs_wkt`
+// or `spatial_ref` WKT, else `EPSG:<code>` from `epsg_code`/`EPSG_code` text or
+// an `epsg` integer, else "".
+std::string ug_grid_mapping_crs(int Ncid, int CoordVar) {
+    const std::string name = ug_att(Ncid, CoordVar, "grid_mapping");
+    int gm = -1;
+    if (name.empty() || nc_inq_varid(Ncid, name.c_str(), &gm) != NC_NOERR)
+        return {};
+    for (const char* key : {"crs_wkt", "spatial_ref"}) {
+        const std::string wkt = ug_att(Ncid, gm, key);
+        if (!wkt.empty())
+            return wkt;
+    }
+    for (const char* key : {"epsg_code", "EPSG_code"}) {
+        const std::string code = ug_att(Ncid, gm, key);
+        if (!code.empty())
+            return code;
+    }
+    if (const auto code = ug_att_int(Ncid, gm, "epsg"); code && *code > 0)
+        return "EPSG:" + std::to_string(*code);
+    return {};
 }
 
 std::vector<int> ug_dimids(int Ncid, int Varid) {
@@ -322,6 +346,11 @@ Mesh read_ugrid_nc(const std::string& rPath, const ReadOptions& rOptions) {
     }
     Mesh mesh;
     mesh.AssignPoints(std::move(pts));
+    if (!coords.empty()) {
+        const std::string crs = ug_grid_mapping_crs(ncid, ug_varid(ncid, coords[0]));
+        if (!crs.empty())
+            detail::set_mesh_crs(mesh, crs);
+    }
 
     // Faces grouped by node count: triangle, quad, then each larger count.
     std::vector<std::vector<std::int64_t>> faces;
@@ -575,6 +604,25 @@ void write_ugrid_nc(const std::string& rPath, const Mesh& rMesh) {
                  "def_var", true);
         text(v, "standard_name", std::string("projection_") + axis + "_coordinate");
         coord_vars.push_back(v);
+    }
+    // The mesh's CRS as a CF grid_mapping variable the coordinates name.
+    if (const std::string crs = detail::mesh_crs(rMesh); !crs.empty()) {
+        int gm = -1;
+        ug_check(nc_def_var(ncid, "mesh_crs", NC_INT, 0, nullptr, &gm), "def_var", true);
+        if (crs.find('[') != std::string::npos) {
+            text(gm, "crs_wkt", crs);
+        } else {
+            text(gm, "epsg_code", crs);
+            if (crs.rfind("EPSG:", 0) == 0) {
+                try {
+                    const int code = std::stoi(crs.substr(5));
+                    ug_check(nc_put_att_int(ncid, gm, "epsg", NC_INT, 1, &code), "epsg", true);
+                } catch (const std::exception&) {
+                }
+            }
+        }
+        for (const int v : coord_vars)
+            text(v, "grid_mapping", "mesh_crs");
     }
     int face_var = -1, edge_var = -1;
     const int fill = -1, zero = 0;

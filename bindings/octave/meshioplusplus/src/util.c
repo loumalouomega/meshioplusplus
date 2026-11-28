@@ -32,6 +32,9 @@ static void free_mesh(void *p) { mio_mesh_free((mio_mesh *)p); }
 static void free_info(void *p) { mio_format_info_free((mio_format_info *)p); }
 static void free_series(void *p) { mio_xdmf_series_free((mio_xdmf_series *)p); }
 static void free_sequence(void *p) { mio_sequence_free((mio_sequence *)p); }
+static void free_surface_query(void* p) {
+    mio_surface_query_free((mio_surface_query*)p);
+}
 
 typedef void (*mio_o_free_fn)(void *);
 
@@ -39,11 +42,9 @@ static const struct {
     const char *class_name;
     mio_o_free_fn free_fn;
 } g_kinds[MIO_O_NUM_KINDS] = {
-    {"mio.MeshHandle", free_mesh},
-    {"mio.FormatInfo", free_info},
-    {"mio.XdmfSeries", free_series},
-    {"mio.SequenceHandle", free_sequence},
-    {"mio.ExodusSeries", free_exodus},
+    {"mio.MeshHandle", free_mesh},     {"mio.FormatInfo", free_info},
+    {"mio.XdmfSeries", free_series},   {"mio.SequenceHandle", free_sequence},
+    {"mio.ExodusSeries", free_exodus}, {"mio.SurfaceQueryHandle", free_surface_query},
 };
 
 static uint32_t registry_add(int kind, void *ptr) {

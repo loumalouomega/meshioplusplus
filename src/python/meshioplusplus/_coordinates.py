@@ -274,3 +274,14 @@ def convert_coordinates(
                 record_coordinates,
             )
     return (out, report) if return_report else out
+
+
+def has_crs_provider() -> bool:
+    """Whether the C++ core has a CRS provider (PROJ, ``-DMESHIOPLUSPLUS_WITH_PROJ=ON``)
+    for ``convert_coordinates(system="crs")``; without one the reprojection
+    falls back to the optional ``pyproj`` package (roadmap 9.10.2)."""
+    try:
+        from . import _core
+    except ImportError:
+        return False
+    return bool(getattr(_core, "has_crs_provider", lambda: False)())

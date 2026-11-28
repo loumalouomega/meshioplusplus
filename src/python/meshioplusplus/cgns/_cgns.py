@@ -27,7 +27,9 @@ from .._mesh import Mesh, topological_dimension
 from .._regions import Region, canonical_regions
 from .._units import (
     CGNS_LENGTH_UNITS,
+    FIELD_UNIT_PREFIX,
     LENGTH_UNIT_KEY,
+    field_unit,
     length_unit,
     set_length_unit,
     unit_name,
@@ -125,7 +127,100 @@ def _create_solution(zone, name, location):
     return sol
 
 
-def _write_solution_array(sol, name, col, gzip_kwargs):
+_SI_UNIT_NAMES = ("Kilogram", "Meter", "Second", "Kelvin", "Radian")
+_SIDS_UNIT_FACTORS = (
+    {
+        "Kilogram": 1.0,
+        "Gram": 1e-3,
+        "Slug": 14.593902937206364,
+        "PoundMass": 0.45359237,
+    },
+    {
+        "Meter": 1.0,
+        "Centimeter": 0.01,
+        "Millimeter": 0.001,
+        "Foot": 0.3048,
+        "Inch": 0.0254,
+    },
+    {"Second": 1.0},
+    {"Kelvin": 1.0, "Rankine": 5.0 / 9.0},
+    {"Radian": 1.0, "Degree": np.pi / 180.0},
+)
+
+
+def _write_array_units(g, unit):
+    """The SIDS unit children of a solution array for a declared
+    ``meshio:unit:<array>`` (twin of ``cgns_write_array_units``,
+    ``detail/cgns_units.hpp``)."""
+    scale, (m, kg, s, k, a, mol, cd) = unit
+
+    def r8(name, label, values):
+        node = _create_group(g, name)
+        _write_node_attrs(node, name, label, "R8")
+        node.create_dataset(" data", data=np.asarray(values, dtype="<f8"))
+
+    dc = _create_group(g, "DataClass")
+    _write_node_attrs(dc, "DataClass", "DataClass_t", "C1")
+    dc.create_dataset(
+        " data", data=np.frombuffer(_padded_bytes("Dimensional", 11), dtype="i1")
+    )
+    du = _create_group(g, "DimensionalUnits")
+    _write_node_attrs(du, "DimensionalUnits", "DimensionalUnits_t", "C1")
+    raw = np.full((5, _UNIT_WIDTH), ord(" "), dtype="i1")
+    for r, n in enumerate(_SI_UNIT_NAMES):
+        raw[r, : len(n)] = np.frombuffer(n.encode("ascii"), dtype="i1")
+    du.create_dataset(" data", data=raw)
+    r8("DimensionalExponents", "DimensionalExponents_t", [kg, m, s, k, 0.0])
+    if a != 0.0 or mol != 0.0 or cd != 0.0:
+        r8("AdditionalExponents", "AdditionalExponents_t", [a, mol, cd])
+    if scale != 1.0:
+        r8("DataConversion", "DataConversion_t", [scale, 0.0])
+
+
+def _read_array_units(g):
+    """The 8-float unit a solution array's SIDS children state, or ``None``
+    (twin of ``cgns_read_array_units``)."""
+
+    def r8(name, n):
+        if name not in g or " data" not in g[name]:
+            return None
+        v = np.asarray(g[name][" data"][()], dtype=np.float64).reshape(-1)
+        return v[:n] if v.size >= n else None
+
+    exps = r8("DimensionalExponents", 5)
+    if exps is None:
+        return None
+    extra = r8("AdditionalExponents", 3)
+    extra = np.zeros(3) if extra is None else extra
+    conv = r8("DataConversion", 2)
+    conv = np.array([1.0, 0.0]) if conv is None else conv
+    if conv[1] != 0.0 or not (conv[0] > 0.0) or not np.isfinite(conv[0]):
+        return None
+    names = [""] * 5
+    if "DimensionalUnits" in g and " data" in g["DimensionalUnits"]:
+        raw = np.asarray(g["DimensionalUnits"][" data"][()]).astype("i1").reshape(-1)
+        for r in range(5):
+            if (r + 1) * _UNIT_WIDTH <= raw.size:
+                text = bytes(raw[r * _UNIT_WIDTH : (r + 1) * _UNIT_WIDTH]).decode(
+                    "ascii", "ignore"
+                )
+                text = text.strip("\0 ")
+                names[r] = "" if text == "Null" else text
+    factor = float(conv[0])
+    for slot in range(5):
+        if exps[slot] == 0.0:
+            continue
+        f = 1.0 if not names[slot] else _SIDS_UNIT_FACTORS[slot].get(names[slot], 0.0)
+        if not f > 0.0:
+            return None
+        factor *= f ** float(exps[slot])
+    return np.array(
+        [factor, exps[1], exps[0], exps[2], exps[3], extra[0], extra[1], extra[2]],
+        dtype=np.float64,
+    )
+
+
+def _write_solution_array(sol, name, col, gzip_kwargs, unit=None):
     """One ``DataArray_t`` holding a single scalar component."""
     g = _create_group(sol, name)
     _write_node_attrs(g, name, "DataArray_t", "R8")
@@ -134,6 +229,8 @@ def _write_solution_array(sol, name, col, gzip_kwargs):
     if kwargs and col.size:
         kwargs["chunks"] = col.shape
     g.create_dataset(" data", data=col, **kwargs)
+    if unit is not None:
+        _write_array_units(g, unit)
 
 
 def _strip_rind(arr, rind):
@@ -156,7 +253,7 @@ def _strip_rind(arr, rind):
     return arr[tuple(slices)].reshape(-1)
 
 
-def _read_solution(sol, sol_name, expected_rows):
+def _read_solution(sol, sol_name, expected_rows, units=None):
     """Re-join a ``FlowSolution_t``'s ``DataArray_t`` children, undoing the
     ``_0.._k-1`` split. Returns a list of ``(name, (rows, k) array)`` pairs.
 
@@ -204,8 +301,16 @@ def _read_solution(sol, sol_name, expected_rows):
         contiguous = idxs == list(range(len(idxs)))
         if not contiguous:
             for i in idxs:
+                if units is not None:
+                    unit = _read_array_units(sol[parts[i]])
+                    if unit is not None:
+                        units[parts[i]] = unit
                 out.append((parts[i], _one(parts[i])))
             continue
+        if units is not None:
+            unit = _read_array_units(sol[parts[idxs[0]]])
+            if unit is not None:
+                units[base] = unit
         cols = [_one(parts[i]) for i in idxs]
         k = len(cols)
         out.append((base, cols[0] if k == 1 else np.stack(cols, axis=1)))
@@ -372,6 +477,12 @@ def _write_field_data(zone, mesh, skip=()):
     names = []
     for name in sorted(mesh.field_data):
         if name in skip:
+            continue
+        # A solution array's unit travels as its SIDS DimensionalExponents.
+        if name.startswith(FIELD_UNIT_PREFIX) and (
+            name[len(FIELD_UNIT_PREFIX) :] in mesh.point_data
+            or name[len(FIELD_UNIT_PREFIX) :] in mesh.cell_data
+        ):
             continue
         a = np.asarray(mesh.field_data[name])
         if not _valid_node_name(name) or a.dtype.kind not in "iuf" or a.size == 0:
@@ -899,9 +1010,10 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
                 )
                 continue
             flat2 = arr.reshape(rows, k)
+            unit = field_unit(mesh, name)
             for i in range(k):
                 _write_solution_array(
-                    sol, _component_name(name, k, i), flat2[:, i], gzip_kwargs
+                    sol, _component_name(name, k, i), flat2[:, i], gzip_kwargs, unit
                 )
 
     if mesh.cell_data:
@@ -951,9 +1063,14 @@ def write(filename, mesh, compression="gzip", compression_opts=4):
                         stacklevel=2,
                     )
                     continue
+                unit = field_unit(mesh, name)
                 for i in range(k):
                     _write_solution_array(
-                        sol, _component_name(name, k, i), merged[:, i], gzip_kwargs
+                        sol,
+                        _component_name(name, k, i),
+                        merged[:, i],
+                        gzip_kwargs,
+                        unit,
                     )
 
     _write_field_data(zone, mesh, skip=(LENGTH_UNIT_KEY,) if units_written else ())
@@ -1055,6 +1172,7 @@ def _read_spec(f, base=None):
     point_chunks = []
     cells = []
     zone_fields = []  # per zone: points, block sizes, point data, cell data
+    solution_units = {}  # array name -> 8-float SIDS unit
     field_data = {}
     regions = []
     point_offset = 0
@@ -1226,10 +1344,14 @@ def _read_spec(f, base=None):
                     raw = np.asarray(sol["GridLocation"][" data"][()]).astype("i1")
                     location = bytes(raw).decode("ascii", "ignore").strip("\0 ")
                 if location == "Vertex":
-                    for name, arr in _read_solution(sol, child, n_zone_points):
+                    for name, arr in _read_solution(
+                        sol, child, n_zone_points, solution_units
+                    ):
                         zone_pd[name] = arr
                 elif location == "CellCenter":
-                    for name, arr in _read_solution(sol, child, zone_total_cells):
+                    for name, arr in _read_solution(
+                        sol, child, zone_total_cells, solution_units
+                    ):
                         # Split the zone-wide array back across the blocks.
                         blocks, row = [], 0
                         for nb in zone_block_cells:
@@ -1264,6 +1386,11 @@ def _read_spec(f, base=None):
         point_offset += n_zone_points
 
     point_data, cell_data = _join_zone_fields(zone_fields)
+    # The SIDS units of the solution arrays, unless FieldData already has them.
+    for name, array_unit in solution_units.items():
+        key = FIELD_UNIT_PREFIX + name
+        if (name in point_data or name in cell_data) and key not in field_data:
+            field_data[key] = array_unit
     if not point_chunks:
         raise ReadError(f"CGNS: base '{base_name}' has no Unstructured zones")
     if len(point_chunks) == 1:

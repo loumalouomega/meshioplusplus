@@ -61,6 +61,7 @@ include("render.jl")
 include("sequence.jl")
 include("xdmf_series.jl")
 include("exodus_series.jl")
+include("surface_query.jl")
 include("format_info.jl")
 include("provenance.jl")
 
@@ -141,6 +142,10 @@ export tetrahedralize, has_netgen, tetrahedralize_backends
 export remesh_quads, remesh_quads_backends
 export cut_level_set, cut_quadrature, has_cutcells
 export mass_properties, cast_rays, locate_points, filter_points, subsample_points
+export subdivide_surface, set_field_unit!, field_unit, convert_units, mesh_crs, set_mesh_crs!
+export convert_coordinates_crs, has_crs_provider, mesh_boolean, has_boolean_provider
+export graph_partitioner_names
+export SurfaceQuery, num_triangles, closest_points
 export has_mmg, has_mmg_elas, adapt, metric_from_hessian, discretize_levelset, mesh_domain, move
 export tessellate
 export data_drop, data_keep, data_rename, data_point_to_cell, data_cell_to_point

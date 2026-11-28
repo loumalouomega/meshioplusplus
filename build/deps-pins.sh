@@ -43,3 +43,9 @@ FTETWILD_COMMIT="b6362a34f9eff68c25c47eccbde2ed3420b02e26"
 # tags), built static by build/build-cutcells.sh for the wheels and CI.
 CUTCELLS_VERSION="0.5.0"
 CUTCELLS_COMMIT="3ccd9b03a1b2a607f137fc554057ccd002e4bc9b"
+# Manifold (Apache-2.0), the surface boolean provider of mesh_boolean
+# (roadmap 9.1, doc/mesh_boolean.md): a clone of its tag, refused unless it is
+# MANIFOLD_COMMIT. build/build-manifold.sh builds it natively, static by
+# default and shared for the meshioplusplus-manifold add-on wheel.
+MANIFOLD_VERSION="3.5.5"
+MANIFOLD_COMMIT="32271a1a999ce721ffaf5ab10e9746ceeb696547"

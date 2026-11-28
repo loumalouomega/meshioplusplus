@@ -34,6 +34,7 @@ extern SEXP mio_r_mesh_tag;
  * A separate tag so a mesh and a series cannot be passed for one another. */
 extern SEXP mio_r_series_tag;
 extern SEXP mio_r_sequence_tag;
+extern SEXP mio_r_surface_query_tag;
 /* A format side channel (format_info.c). */
 extern SEXP mio_r_info_tag;
 

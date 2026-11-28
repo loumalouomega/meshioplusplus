@@ -4224,6 +4224,7 @@ def _register_operations(server: FastMCP) -> None:
         closure: str = "redgreen",
         record_levels: bool = False,
         record_hierarchy: bool = False,
+        undo_green_first: bool = False,
     ) -> dict:
         """Refine: subdivide cells into congruent same-type children, `levels`
         times. With no selector every cell is refined; give at most one of
@@ -4232,13 +4233,17 @@ def _register_operations(server: FastMCP) -> None:
         a scalar cell_data array, e.g. "quality:scaled_jacobian < 0.3") and only
         those are, with the resulting hanging nodes resolved by `closure` —
         "redgreen" keeps that local, "propagate" reaches the whole connected
-        component, and "balanced" keeps the hanging nodes and only enforces 2:1
+        component, "balanced" keeps the hanging nodes and only enforces 2:1
         balance (the output is then NOT conforming; the constrained nodes are
-        reported in refine:hanging). `record_levels` attaches refine:level.
+        reported in refine:hanging), and "mixed_green" closes quads locally into
+        triangles and hexahedra into pyramids and tetrahedra (one block of a
+        single type, one level). `record_levels` attaches refine:level.
         `record_hierarchy` attaches refine:cell_id/refine:parent_id -- the
         persistent parent/child hierarchy a multigrid caller resolves across
         the sequence of meshes it keeps; also forces refine:entity to be
-        attached even when the closure leaves no hanging node."""
+        attached even when the closure leaves no hanging node.
+        `undo_green_first` undoes the input's green closures first, from its own
+        hierarchy, so an adaptive loop re-refines from their parents."""
 
     @server.tool()
     @_forward(_tools.tool_boundary_layer)
@@ -4545,16 +4550,17 @@ def _register_operations(server: FastMCP) -> None:
     @server.tool()
     @_forward(_tools.tool_undo_green)
     def undo_green(
-        coarse_path: str,
         fine_path: str,
         output_path: str,
+        coarse_path: Optional[str] = None,
         coarse_format: Optional[str] = None,
         fine_format: Optional[str] = None,
         output_format: Optional[str] = None,
     ) -> dict:
         """Restore fine's transitional (green) cells to their original
         parent, read verbatim from coarse (the mesh a prior refine() call
-        with record_hierarchy=True, record_levels=True was run on) --
+        with record_hierarchy=True, record_levels=True was run on), or with no
+        coarse_path from fine's own refine:cell_id/parent_id hierarchy --
         undoes refine's known quality-degradation issue with repeated
         selective passes over the same region. Reports
         num_groups_undone/num_cells_removed."""
@@ -5019,9 +5025,12 @@ def _register_operations(server: FastMCP) -> None:
         weights: Optional[str] = None,
         output_dir: Optional[str] = None,
         name_template: str = "{stem}_part{part}.vtu",
+        connected_parts: bool = False,
     ) -> dict:
         """Partition into exactly nparts balanced pieces (method: auto | sfc |
-        kahip). Writes one file per part and returns their paths; a
+        kahip, or a registered graph partitioner such as metis | scotch;
+        connected_parts makes every non-empty part one facet-connected piece).
+        Writes one file per part and returns their paths; a
         name_template ending in .pvtu/.pvtp with no {part} writes one
         parallel index over every part instead (halo layers kept as
         vtkGhostType) and also returns its path as `index`."""

@@ -284,6 +284,24 @@ _VERBS = (
         "add_symmetry_args",
     ),
     _Verb(
+        "subdivide-surface",
+        "_subdivide_surface",
+        "subdivide_surface_cmd",
+        "Loop or Catmull-Clark subdivision with crease and boundary rules",
+    ),
+    _Verb(
+        "convert-units",
+        "_convert_units",
+        "convert_units_cmd",
+        "Convert declared field units to a consistent unit system",
+    ),
+    _Verb(
+        "mesh-boolean",
+        "_mesh_boolean",
+        "mesh_boolean_cmd",
+        "Union, difference or intersection of two closed triangle surfaces",
+    ),
+    _Verb(
         "filter-points",
         "_filter_points",
         "filter_points_cmd",
@@ -827,7 +845,7 @@ _VERBS = (
         "undo_green_cmd",
         (
             "Restore a transitional (green) cell to its coarse parent, read "
-            "verbatim from the coarse mesh"
+            "verbatim from the coarse mesh or from the fine mesh's hierarchy"
         ),
     ),
     _Verb(

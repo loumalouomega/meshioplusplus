@@ -84,6 +84,7 @@ typedef enum {
     MIO_O_XDMF_SERIES,
     MIO_O_SEQUENCE,
     MIO_O_EXODUS_SERIES,
+    MIO_O_SURFACE_QUERY,
     MIO_O_NUM_KINDS
 } mio_o_kind;
 

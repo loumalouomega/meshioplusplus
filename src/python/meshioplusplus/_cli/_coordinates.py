@@ -11,7 +11,12 @@ def add_args(parser):
     add_io_args(parser, "output mesh", in_help="mesh file", output_format=False)
     parser.add_argument("--output-format", "-o", type=str, default=None)
     parser.add_argument(
-        "--system", choices=("cylindrical", "spherical"), default="cylindrical"
+        "--system", choices=("cylindrical", "spherical", "crs"), default="cylindrical"
+    )
+    parser.add_argument(
+        "--target-crs",
+        default=None,
+        help="with --system crs: the CRS to reproject to (EPSG:<code> or WKT2)",
     )
     parser.add_argument("--axis", type=str, default="0,0,1", metavar="X,Y,Z")
     parser.add_argument("--origin", type=str, default="0,0,0", metavar="X,Y,Z")
@@ -55,6 +60,7 @@ def coordinates_cmd(args):
         arrays=[a for a in args.arrays.split(",") if a],
         inverse=args.inverse,
         record_coordinates=not args.no_record,
+        target_crs=args.target_crs,
         return_report=True,
     )
     write(args.outfile, out, file_format=args.output_format)

@@ -197,6 +197,8 @@
 #include "meshioplusplus/operations/subsample_points.hpp"
 #include "meshioplusplus/operations/units.hpp"
 #include "meshioplusplus/operations/mesh_boolean.hpp"
+#include "meshioplusplus/operations/surface_query.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/detail/crs.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
@@ -2175,6 +2177,46 @@ py::dict core_deviation_dict(meshioplusplus::DeviationResult&& rR) {
     out["matrix"] = std::vector<double>(rR.mMatrix.begin(), rR.mMatrix.end());
     out["registration_rms"] = rR.mRegistrationRms;
     return out;
+}
+
+}  // namespace
+
+namespace {
+
+// A CastRaysResult as the dict `cast_rays` and `SurfaceQuery.cast_rays` return.
+py::dict core_cast_rays_dict(const meshioplusplus::CastRaysResult& r, bool all_hits) {
+    const auto n = static_cast<py::ssize_t>(r.mHit.size());
+    const auto m = static_cast<py::ssize_t>(r.mDistance.size());
+    py::array_t<bool> hit(n);
+    for (py::ssize_t i = 0; i < n; ++i)
+        hit.mutable_data()[i] = r.mHit[static_cast<std::size_t>(i)] != 0;
+    py::array_t<double> point({m, py::ssize_t{3}}, r.mPoint.data());
+    py::array_t<double> normal({m, py::ssize_t{3}}, r.mNormal.data());
+    py::dict out;
+    out["hit"] = hit;
+    out["distance"] = py::array_t<double>(m, r.mDistance.data());
+    out["point"] = point;
+    out["normal"] = normal;
+    out["cell"] = py::array_t<std::int64_t>(m, r.mCell.data());
+    out["num_hits"] = r.mNumHits;
+    if (all_hits) {
+        const auto ro_n = static_cast<py::ssize_t>(r.mRayOffset.size());
+        out["ray_offset"] = py::array_t<std::int64_t>(ro_n, r.mRayOffset.data());
+    }
+    return out;
+}
+
+// The (N, 3) ray origins and the (3,) or (N, 3) directions, flattened.
+std::pair<std::vector<double>, std::vector<double>> core_ray_arrays(
+    const py::array_t<double, py::array::c_style | py::array::forcecast>& origins,
+    const py::array_t<double, py::array::c_style | py::array::forcecast>& directions) {
+    if (origins.ndim() != 2 || origins.shape(1) != 3)
+        throw std::invalid_argument("meshio++: cast_rays: origins must be (N, 3)");
+    if (!(directions.ndim() == 1 && directions.shape(0) == 3) &&
+        (directions.ndim() != 2 || directions.shape(1) != 3))
+        throw std::invalid_argument("meshio++: cast_rays: directions must be (3,) or (N, 3)");
+    return {std::vector<double>(origins.data(), origins.data() + origins.size()),
+            std::vector<double>(directions.data(), directions.data() + directions.size())};
 }
 
 }  // namespace
@@ -7284,6 +7326,38 @@ PYBIND11_MODULE(_core, m) {
         },
         py::arg("name"));
 
+    // A file's unit string (lenient) and the reverse lookup; see units.hpp.
+    m.def(
+        "field_unit_from_text",
+        [](const std::string& text) -> py::object {
+            meshioplusplus::FieldUnit u;
+            if (!meshioplusplus::field_unit_from_text(text, u))
+                return py::none();
+            return py::cast(std::array<double, 8>{
+                u.mScale,
+                u.mExponents[0],
+                u.mExponents[1],
+                u.mExponents[2],
+                u.mExponents[3],
+                u.mExponents[4],
+                u.mExponents[5],
+                u.mExponents[6],
+            });
+        },
+        py::arg("text"));
+    m.def(
+        "field_unit_name",
+        [](const std::array<double, 8>& unit) {
+            meshioplusplus::FieldUnit u;
+            u.mScale = unit[0];
+            for (std::size_t k = 0; k < 7; ++k)
+                u.mExponents[k] = unit[k + 1];
+            return meshioplusplus::field_unit_name(u);
+        },
+        py::arg("unit"));
+    m.def("has_crs_provider", [] { return static_cast<bool>(meshioplusplus::crs_provider()); });
+    m.def("graph_partitioner_names", [] { return meshioplusplus::graph_partitioner_names(); });
+
     // Surface mesh booleans via BooleanProvider. See operations/mesh_boolean.hpp.
     m.def(
         "mesh_boolean",
@@ -7663,44 +7737,62 @@ PYBIND11_MODULE(_core, m) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
-            if (origins.ndim() != 2 || origins.shape(1) != 3)
-                throw std::invalid_argument("meshio++: cast_rays: origins must be (N, 3)");
-            if (directions.ndim() == 1 && directions.shape(0) == 3) {
-                // one direction for every ray
-            } else if (directions.ndim() != 2 || directions.shape(1) != 3) {
-                throw std::invalid_argument(
-                    "meshio++: cast_rays: directions must be (3,) or (N, 3)");
-            }
-            const std::vector<double> o(origins.data(), origins.data() + origins.size());
-            const std::vector<double> d(directions.data(), directions.data() + directions.size());
+            const auto [o, d] = core_ray_arrays(origins, directions);
             meshioplusplus::CastRaysOptions options;
             options.mMaxDistance = max_distance;
             options.mRegion = region;
             options.mAllHits = all_hits;
             const meshioplusplus::CastRaysResult r =
                 core_nogil([&] { return meshioplusplus::cast_rays(cpp, o, d, options); });
-            const auto n = static_cast<py::ssize_t>(r.mHit.size());
-            const auto m = static_cast<py::ssize_t>(r.mDistance.size());
-            py::array_t<bool> hit(n);
-            for (py::ssize_t i = 0; i < n; ++i)
-                hit.mutable_data()[i] = r.mHit[static_cast<std::size_t>(i)] != 0;
-            py::array_t<double> point({m, py::ssize_t{3}}, r.mPoint.data());
-            py::array_t<double> normal({m, py::ssize_t{3}}, r.mNormal.data());
-            py::dict out;
-            out["hit"] = hit;
-            out["distance"] = py::array_t<double>(m, r.mDistance.data());
-            out["point"] = point;
-            out["normal"] = normal;
-            out["cell"] = py::array_t<std::int64_t>(m, r.mCell.data());
-            out["num_hits"] = r.mNumHits;
-            if (all_hits) {
-                const auto ro_n = static_cast<py::ssize_t>(r.mRayOffset.size());
-                out["ray_offset"] = py::array_t<std::int64_t>(ro_n, r.mRayOffset.data());
-            }
-            return out;
+            return core_cast_rays_dict(r, all_hits);
         },
         py::arg("mesh"), py::arg("origins"), py::arg("directions"), py::arg("max_distance") = 0.0,
         py::arg("region") = std::string(), py::arg("all_hits") = false);
+    // A reusable surface query handle (roadmap 9.3.2): the soup and its
+    // hierarchies built once, queried many times. See operations/surface_query.hpp.
+    py::class_<meshioplusplus::SurfaceQuery>(m, "SurfaceQuery")
+        .def(py::init([](py::object pymesh, const std::string& region) {
+                 auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+                 [[maybe_unused]] auto& refs = cpp_in.mRefs;
+                 auto& cpp = cpp_in.mMesh;
+                 return core_nogil([&] { return meshioplusplus::SurfaceQuery(cpp, region); });
+             }),
+             py::arg("mesh"), py::arg("region") = std::string())
+        .def_property_readonly("num_triangles", &meshioplusplus::SurfaceQuery::NumTriangles)
+        .def(
+            "cast_rays",
+            [](const meshioplusplus::SurfaceQuery& self,
+               py::array_t<double, py::array::c_style | py::array::forcecast> origins,
+               py::array_t<double, py::array::c_style | py::array::forcecast> directions,
+               double max_distance, bool all_hits) {
+                const auto [o, d] = core_ray_arrays(origins, directions);
+                meshioplusplus::CastRaysOptions options;
+                options.mMaxDistance = max_distance;
+                options.mAllHits = all_hits;
+                const meshioplusplus::CastRaysResult r =
+                    core_nogil([&] { return self.CastRays(o, d, options); });
+                return core_cast_rays_dict(r, all_hits);
+            },
+            py::arg("origins"), py::arg("directions"), py::arg("max_distance") = 0.0,
+            py::arg("all_hits") = false)
+        .def(
+            "closest_points",
+            [](const meshioplusplus::SurfaceQuery& self,
+               py::array_t<double, py::array::c_style | py::array::forcecast> points) {
+                if (points.ndim() != 2 || points.shape(1) != 3)
+                    throw std::invalid_argument(
+                        "meshio++: SurfaceQuery.closest_points: points must be (N, 3)");
+                const std::vector<double> p(points.data(), points.data() + points.size());
+                const meshioplusplus::SurfaceClosestResult r =
+                    core_nogil([&] { return self.ClosestPoints(p); });
+                const auto n = static_cast<py::ssize_t>(r.mDistance.size());
+                py::dict out;
+                out["point"] = py::array_t<double>({n, py::ssize_t{3}}, r.mPoint.data());
+                out["distance"] = py::array_t<double>(n, r.mDistance.data());
+                out["cell"] = py::array_t<std::int64_t>(n, r.mCell.data());
+                return out;
+            },
+            py::arg("points"));
     m.def(
         "locate_points",
         [](py::object pymesh, py::array_t<double, py::array::c_style | py::array::forcecast> points,

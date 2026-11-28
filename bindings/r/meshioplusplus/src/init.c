@@ -180,6 +180,23 @@ extern SEXP R_mio_merge(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_conservative_interpolate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_undo_green(SEXP, SEXP);
+extern SEXP R_mio_undo_green_fine(SEXP);
+extern SEXP R_mio_surface_query(SEXP, SEXP);
+extern SEXP R_mio_surface_query_num_triangles(SEXP);
+extern SEXP R_mio_surface_query_cast_rays(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_surface_query_closest_points(SEXP, SEXP);
+extern SEXP R_mio_surface_query_free(SEXP);
+extern SEXP R_mio_subdivide_surface(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_set_field_unit(SEXP, SEXP, SEXP);
+extern SEXP R_mio_field_unit(SEXP, SEXP);
+extern SEXP R_mio_convert_units(SEXP, SEXP, SEXP);
+extern SEXP R_mio_mesh_crs(SEXP);
+extern SEXP R_mio_set_mesh_crs(SEXP, SEXP);
+extern SEXP R_mio_convert_coordinates_crs(SEXP, SEXP);
+extern SEXP R_mio_has_crs_provider(void);
+extern SEXP R_mio_mesh_boolean(SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_has_boolean_provider(void);
+extern SEXP R_mio_graph_partitioner_names(void);
 extern SEXP R_mio_boundary_layer(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP,
                                  SEXP);
 extern SEXP R_mio_tetrahedralize(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
@@ -219,17 +236,17 @@ extern SEXP R_mio_stats(SEXP);
 extern SEXP R_mio_compute_bandwidth(SEXP);
 extern SEXP R_mio_reorder(SEXP, SEXP);
 extern SEXP R_mio_split(SEXP, SEXP, SEXP);
-extern SEXP R_mio_convert_cells(SEXP, SEXP, SEXP);
+extern SEXP R_mio_convert_cells(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_subdivide(SEXP, SEXP);
 extern SEXP R_mio_agglomerate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_tet_to_poly(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_poly_to_tet(SEXP, SEXP);
 extern SEXP R_mio_blend_steps(SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_refine(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_tessellate(SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_decimate(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_decimate_volume(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
-extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
+extern SEXP R_mio_partition(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_partition_labels(SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_drop(SEXP, SEXP, SEXP, SEXP);
 extern SEXP R_mio_data_keep(SEXP, SEXP, SEXP, SEXP);
@@ -464,6 +481,23 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_interpolate, 7),
                                               CALLDEF(R_mio_conservative_interpolate, 5),
                                               CALLDEF(R_mio_undo_green, 2),
+                                              CALLDEF(R_mio_undo_green_fine, 1),
+                                              CALLDEF(R_mio_surface_query, 2),
+                                              CALLDEF(R_mio_surface_query_num_triangles, 1),
+                                              CALLDEF(R_mio_surface_query_cast_rays, 4),
+                                              CALLDEF(R_mio_surface_query_closest_points, 2),
+                                              CALLDEF(R_mio_surface_query_free, 1),
+                                              CALLDEF(R_mio_subdivide_surface, 7),
+                                              CALLDEF(R_mio_set_field_unit, 3),
+                                              CALLDEF(R_mio_field_unit, 2),
+                                              CALLDEF(R_mio_convert_units, 3),
+                                              CALLDEF(R_mio_mesh_crs, 1),
+                                              CALLDEF(R_mio_set_mesh_crs, 2),
+                                              CALLDEF(R_mio_convert_coordinates_crs, 2),
+                                              CALLDEF(R_mio_has_crs_provider, 0),
+                                              CALLDEF(R_mio_mesh_boolean, 4),
+                                              CALLDEF(R_mio_has_boolean_provider, 0),
+                                              CALLDEF(R_mio_graph_partitioner_names, 0),
                                               CALLDEF(R_mio_boundary_layer, 11),
                                               CALLDEF(R_mio_tetrahedralize, 9),
                                               CALLDEF(R_mio_has_netgen, 0),
@@ -499,17 +533,17 @@ static const R_CallMethodDef CallEntries[] = {CALLDEF(R_mio_version, 0),
                                               CALLDEF(R_mio_compute_bandwidth, 1),
                                               CALLDEF(R_mio_reorder, 2),
                                               CALLDEF(R_mio_split, 3),
-                                              CALLDEF(R_mio_convert_cells, 3),
+                                              CALLDEF(R_mio_convert_cells, 5),
                                               CALLDEF(R_mio_subdivide, 2),
                                               CALLDEF(R_mio_agglomerate, 5),
                                               CALLDEF(R_mio_tet_to_poly, 4),
                                               CALLDEF(R_mio_poly_to_tet, 2),
                                               CALLDEF(R_mio_blend_steps, 4),
-                                              CALLDEF(R_mio_refine, 11),
+                                              CALLDEF(R_mio_refine, 12),
                                               CALLDEF(R_mio_tessellate, 5),
                                               CALLDEF(R_mio_decimate, 12),
                                               CALLDEF(R_mio_decimate_volume, 9),
-                                              CALLDEF(R_mio_partition, 9),
+                                              CALLDEF(R_mio_partition, 10),
                                               CALLDEF(R_mio_partition_labels, 8),
                                               CALLDEF(R_mio_data_drop, 4),
                                               CALLDEF(R_mio_data_keep, 4),
@@ -592,6 +626,7 @@ void attribute_visible R_init_meshioplusplus(DllInfo *dll) {
     mio_r_mesh_tag = Rf_install("mio_mesh_handle");
     mio_r_series_tag = Rf_install("mio_xdmf_series_handle");
     mio_r_sequence_tag = Rf_install("mio_sequence_handle");
+    mio_r_surface_query_tag = Rf_install("mio_surface_query_handle");
     mio_r_info_tag = Rf_install("mio_format_info_handle");
     R_registerRoutines(dll, NULL, CallEntries, NULL, NULL);
     R_useDynamicSymbols(dll, FALSE);

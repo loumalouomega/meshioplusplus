@@ -13,22 +13,26 @@ function r = refine(mesh, varargin)
 %     'closure'           'redgreen' (local), 'propagate' (converges to
 %                         uniform refinement of the component) or 'balanced'
 %                         (keeps hanging nodes, 2:1 balance; the output is
-%                         then not conforming) ('redgreen')
+%                         then not conforming) or 'mixed_green' (quads to
+%                         triangles, hexahedra to a pyramid/tetrahedron
+%                         transition, locally) ('redgreen')
 %     'record_levels'     attach the 'refine:level' cell data (false)
 %     'record_hierarchy'  attach 'refine:cell_id'/'refine:parent_id', the
 %                         persistent parent/child hierarchy across meshes;
 %                         also forces 'refine:entity' (false)
+%     'undo_green_first'  undo the input's green closures first (false)
 %   At most one of 'cells', 'region' and 'where_array' may be given; with
 %   none, every cell is refined. R is a struct: mesh, point_map (n x 1,
 %   1-based) and cell_maps (one 1-based first-child map per input block).
 
     o = mio.internal.opts(varargin, {'levels', 1, 'record_parent_ids', false, 'cells', [], ...
         'region', [], 'where_array', [], 'where_op', '<', 'where_value', 0, ...
-        'closure', 'redgreen', 'record_levels', false, 'record_hierarchy', false}, ...
+        'closure', 'redgreen', 'record_levels', false, 'record_hierarchy', false, ...
+        'undo_green_first', false}, ...
         'mio.refine');
     r = meshioplusplus_mex('mio_refine', mesh, double(o.levels), logical(o.record_parent_ids), ...
         double(o.cells), mio.internal.str(o.region, 'region'), ...
         mio.internal.str(o.where_array, 'where_array'), mio.internal.str(o.where_op, 'where_op'), ...
         double(o.where_value), mio.internal.str(o.closure, 'closure'), ...
-        logical(o.record_levels), logical(o.record_hierarchy));
+        logical(o.record_levels), logical(o.record_hierarchy), logical(o.undo_green_first));
 end

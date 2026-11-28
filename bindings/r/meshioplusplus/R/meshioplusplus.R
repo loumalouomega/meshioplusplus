@@ -3369,10 +3369,11 @@ mio_split <- function(mesh, by = "type", tag_name = NULL) {
 
 #' @rdname mio_extract_surface
 #' @export
-mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE) {
+mio_convert_cells <- function(mesh, convert_mode, record_parent_ids = FALSE,
+                              order = 0L, full = FALSE) {
   .Call(
     R_mio_convert_cells, mesh, as.character(convert_mode),
-    isTRUE(record_parent_ids)
+    isTRUE(record_parent_ids), as.integer(order), isTRUE(full)
   )
 }
 
@@ -3448,7 +3449,8 @@ mio_poly_to_tet <- function(mesh, record_parent_ids = FALSE) {
 #'   defined for every cell type but converges to uniform refinement of the whole
 #'   edge-connected component, and `"balanced"` keeps the hanging nodes and only
 #'   enforces 2:1 balance (the output is then **not** conforming; the constrained
-#'   nodes come back in `refine:hanging`).
+#'   nodes come back in `refine:hanging`); `"mixed_green"` closes quadrilaterals
+#'   locally into triangles and hexahedra into a pyramid/tetrahedron transition.
 #' @param record_levels attach the `refine:level` `cell_data` array.
 #' @param record_hierarchy attach the `refine:cell_id`/`refine:parent_id`
 #'   `cell_data` arrays -- the persistent parent/child hierarchy a multigrid
@@ -3460,16 +3462,20 @@ mio_poly_to_tet <- function(mesh, record_parent_ids = FALSE) {
 #'   the closure leaves no hanging node, since it already records the coarse
 #'   corners each new fine node is the mean of -- the multigrid prolongation
 #'   weights, which `"redgreen"`/`"propagate"` would otherwise never expose.
+#' @param undo_green_first undo the input's green closures first (the
+#'   single-mesh `mio_undo_green_fine`), so an adaptive loop re-refines from
+#'   their parents.
 #' @export
 mio_refine <- function(mesh, levels = 1L, record_parent_ids = FALSE,
                        cells = NULL, region = NULL, where_array = NULL,
                        where_op = "<", where_value = 0,
                        closure = "redgreen", record_levels = FALSE,
-                       record_hierarchy = FALSE) {
+                       record_hierarchy = FALSE, undo_green_first = FALSE) {
   .Call(
     R_mio_refine, mesh, as.integer(levels), isTRUE(record_parent_ids),
     cells, region, where_array, where_op, as.numeric(where_value),
-    closure, isTRUE(record_levels), isTRUE(record_hierarchy)
+    closure, isTRUE(record_levels), isTRUE(record_hierarchy),
+    isTRUE(undo_green_first)
   )
 }
 
@@ -3537,11 +3543,11 @@ mio_decimate_volume <- function(mesh, ratio = -1, target_cells = -1, max_error =
 #' @export
 mio_partition <- function(mesh, nparts, method = "auto", imbalance = 0.03,
                           partition_mode = "eco", seed = 0L, record_ids = FALSE,
-                          ghost_layers = 0L, weights = NULL) {
+                          ghost_layers = 0L, weights = NULL, connected_parts = FALSE) {
   .Call(
     R_mio_partition, mesh, as.integer(nparts), as.character(method),
     as.numeric(imbalance), as.character(partition_mode), as.integer(seed),
-    isTRUE(record_ids), as.integer(ghost_layers), weights
+    isTRUE(record_ids), as.integer(ghost_layers), weights, isTRUE(connected_parts)
   )
 }
 
@@ -5872,4 +5878,192 @@ mio_provenance_target <- function(format, encoding = "", codec = "", float_forma
   .Call("R_mio_provenance_set_target", as.character(format), as.character(encoding),
         as.character(codec), as.character(float_format), PACKAGE = "meshioplusplus")
   invisible(NULL)
+}
+
+#' Undo the green closures of a refined mesh from its own hierarchy
+#'
+#' The single-mesh form of [mio_undo_green()] (roadmap 9.6.1): the green
+#' groups come from the `refine:cell_id`/`refine:parent_id` arrays `fine`
+#' carries (a `record_hierarchy = TRUE` refine).
+#'
+#' @param fine A `mio_mesh` from `mio_refine(..., record_hierarchy = TRUE)`.
+#' @return A list of `mesh`, `num_groups_undone` and `num_cells_removed`.
+#' @export
+mio_undo_green_fine <- function(fine) {
+  .Call(R_mio_undo_green_fine, fine)
+}
+
+.mio_split_warnings <- function(res) {
+  res$warnings <- if (nzchar(res$warnings)) strsplit(res$warnings, "\n", fixed = TRUE)[[1]] else character()
+  res
+}
+
+#' Smooth subdivision of a surface
+#'
+#' Loop (`"loop"`, triangles) or Catmull-Clark (`"catmull_clark"`, polygons
+#' to quads) subdivision with Hoppe crease and boundary rules (roadmap 9.2).
+#' See `doc/subdivide_surface.md`.
+#'
+#' @param mesh A `mio_mesh` surface.
+#' @param scheme `"loop"` or `"catmull_clark"`.
+#' @param levels Subdivision levels (0 returns a copy).
+#' @param crease_angle Dihedral angle in degrees above which an edge is a
+#'   sharp crease (0 or less disables).
+#' @param preserve_boundary Apply the boundary crease rules.
+#' @param interpolate_point_data Interpolate floating-point `point_data`.
+#' @param record_parent_ids Attach `subdivide:parent_cell`.
+#' @return A list of `mesh`, `num_crease_edges`, `num_boundary_edges` and
+#'   `warnings`.
+#' @export
+mio_subdivide_surface <- function(mesh, scheme = "loop", levels = 1L, crease_angle = 60,
+                                  preserve_boundary = TRUE, interpolate_point_data = TRUE,
+                                  record_parent_ids = FALSE) {
+  .mio_split_warnings(.Call(
+    R_mio_subdivide_surface, mesh, as.character(scheme), as.integer(levels),
+    as.numeric(crease_angle), isTRUE(preserve_boundary), isTRUE(interpolate_point_data),
+    isTRUE(record_parent_ids)
+  ))
+}
+
+#' Physical units of point and cell data
+#'
+#' `mio_set_field_unit` declares the unit of a data array from a unit name
+#' (`"m"`, `"mm"`, `"MPa"`, `"kg/m^3"`, ...), stored as
+#' `field_data["meshio:unit:<array>"]`; `mio_field_unit` returns it as
+#' `c(scale_to_SI, m, kg, s, K, A, mol, cd)`, or `NULL` when undeclared;
+#' `mio_convert_units` converts every declared field and the points to a
+#' consistent system (`"SI"`, `"mm-t-s"`, `"mm-kg-ms"`, `"cm-g-s"`,
+#' `"mm-g-ms"`). See `doc/units.md` (roadmap 9.10.1).
+#'
+#' @param mesh A `mio_mesh` (modified in place by `mio_set_field_unit`).
+#' @param array Data array name.
+#' @param unit Unit name.
+#' @param system Target unit system.
+#' @param strict Fail on an undeclared array (otherwise warn and leave it).
+#' @export
+mio_set_field_unit <- function(mesh, array, unit) {
+  invisible(.Call(R_mio_set_field_unit, mesh, as.character(array), as.character(unit)))
+}
+
+#' @rdname mio_set_field_unit
+#' @export
+mio_field_unit <- function(mesh, array) {
+  .Call(R_mio_field_unit, mesh, as.character(array))
+}
+
+#' @rdname mio_set_field_unit
+#' @export
+mio_convert_units <- function(mesh, system = "SI", strict = TRUE) {
+  .mio_split_warnings(.Call(R_mio_convert_units, mesh, as.character(system), isTRUE(strict)))
+}
+
+#' Coordinate reference system metadata and reprojection
+#'
+#' `mio_mesh_crs` returns the CRS a mesh records (`field_data["meshio:crs"]`,
+#' `""` when none); `mio_set_mesh_crs` records one (`"EPSG:<code>"` or WKT2);
+#' `mio_convert_coordinates_crs` reprojects the points to `target_crs`, which
+#' needs a build with PROJ (`mio_has_crs_provider()`). Roadmap 9.10.2.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param crs,target_crs A CRS string.
+#' @export
+mio_mesh_crs <- function(mesh) {
+  .Call(R_mio_mesh_crs, mesh)
+}
+
+#' @rdname mio_mesh_crs
+#' @export
+mio_set_mesh_crs <- function(mesh, crs) {
+  invisible(.Call(R_mio_set_mesh_crs, mesh, as.character(crs)))
+}
+
+#' @rdname mio_mesh_crs
+#' @export
+mio_convert_coordinates_crs <- function(mesh, target_crs) {
+  .Call(R_mio_convert_coordinates_crs, mesh, as.character(target_crs))
+}
+
+#' @rdname mio_mesh_crs
+#' @export
+mio_has_crs_provider <- function() {
+  .Call(R_mio_has_crs_provider)
+}
+
+#' Surface booleans
+#'
+#' A watertight union, difference or intersection of two closed, oriented
+#' triangle meshes through the registered provider (Manifold; roadmap 9.1).
+#' Fails when none is registered (`mio_has_boolean_provider()`). See
+#' `doc/mesh_boolean.md`.
+#'
+#' @param a,b `mio_mesh` surfaces.
+#' @param op `"union"`, `"difference"` or `"intersection"`.
+#' @param backend Provider name, or `NULL` for the registered one.
+#' @return A list of `mesh` and `num_triangles`.
+#' @export
+mio_mesh_boolean <- function(a, b, op = "union", backend = NULL) {
+  .Call(R_mio_mesh_boolean, a, b, as.character(op), backend)
+}
+
+#' @rdname mio_mesh_boolean
+#' @export
+mio_has_boolean_provider <- function() {
+  .Call(R_mio_has_boolean_provider)
+}
+
+#' The registered graph partitioners
+#'
+#' The names `mio_partition(method = ...)` accepts beyond `"sfc"`, `"kahip"`
+#' and `"auto"` (`"metis"`, `"scotch"` when built in).
+#'
+#' @return A character vector.
+#' @export
+mio_graph_partitioner_names <- function() {
+  text <- .Call(R_mio_graph_partitioner_names)
+  if (nzchar(text)) strsplit(text, "\n", fixed = TRUE)[[1]] else character()
+}
+
+#' A reusable surface query handle
+#'
+#' `mio_surface_query` builds a surface's triangle soup and hierarchies once
+#' (the triangle, quad and polygon cells of `mesh`, or of cell `region`);
+#' `mio_surface_query_cast_rays` answers a batch of rays exactly as
+#' [mio_cast_rays()] does and `mio_surface_query_closest_points` the nearest
+#' surface point of each query point, without rebuilding. The handle copies
+#' the surface and is released by the garbage collector or by
+#' `mio_surface_query_free`. Roadmap 9.3.2; see `doc/ray_queries.md`.
+#'
+#' @param mesh A `mio_mesh`.
+#' @param region Cell region name, or `NULL` for every surface cell.
+#' @param query A handle from `mio_surface_query`.
+#' @param origins,points A `3 x n` matrix, one point per column.
+#' @param directions One direction (length 3) or a `3 x n` matrix.
+#' @param max_distance Ignore hits farther than this; 0 for no limit.
+#' @export
+mio_surface_query <- function(mesh, region = NULL) {
+  .Call(R_mio_surface_query, mesh, region)
+}
+
+#' @rdname mio_surface_query
+#' @export
+mio_surface_query_num_triangles <- function(query) {
+  .Call(R_mio_surface_query_num_triangles, query)
+}
+
+#' @rdname mio_surface_query
+#' @export
+mio_surface_query_cast_rays <- function(query, origins, directions, max_distance = 0) {
+  .Call(R_mio_surface_query_cast_rays, query, origins, directions, as.numeric(max_distance))
+}
+
+#' @rdname mio_surface_query
+#' @export
+mio_surface_query_closest_points <- function(query, points) {
+  .Call(R_mio_surface_query_closest_points, query, points)
+}
+
+#' @rdname mio_surface_query
+#' @export
+mio_surface_query_free <- function(query) {
+  invisible(.Call(R_mio_surface_query_free, query))
 }

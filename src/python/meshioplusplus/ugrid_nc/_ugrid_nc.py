@@ -15,6 +15,7 @@ import numpy as np
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import CellBlock, Mesh
+from .._units import CRS_KEY, mesh_crs
 
 NAME_ATT = "meshioplusplus_name"
 _FILL_INT = -2147483647
@@ -155,6 +156,22 @@ def _scan(nc):
     return topo, coords, node_dim, face_dim, edge_dim, time_dim, times
 
 
+def _grid_mapping_crs(nc, coord):
+    """The CRS a CF ``grid_mapping`` variable states (roadmap 9.10.2): its
+    ``crs_wkt``/``spatial_ref`` WKT, else ``epsg_code``/``EPSG_code`` text or an
+    ``epsg`` integer as ``EPSG:<code>``, else ``""``."""
+    name = _att(nc.variables[coord], "grid_mapping")
+    if not name or name not in nc.variables:
+        return ""
+    gm = nc.variables[name]
+    for key in ("crs_wkt", "spatial_ref", "epsg_code", "EPSG_code"):
+        text = _att(gm, key)
+        if isinstance(text, str) and text:
+            return text
+    code = _int_att(gm, "epsg")
+    return f"EPSG:{code}" if code is not None and code > 0 else ""
+
+
 def _resolve_step(times, time_step):
     n = len(times)
     if n == 0:
@@ -235,6 +252,11 @@ def read(filename, time_step=0):
                 cells.append(CellBlock("line", np.asarray(erows, dtype=np.int64)))
         step = _resolve_step(times, time_step)
         field_data = {}
+        crs = _grid_mapping_crs(nc, coords[0]) if coords else ""
+        if crs:
+            field_data[CRS_KEY] = np.frombuffer(
+                crs.encode("utf-8"), dtype=np.uint8
+            ).copy()
         if times:
             field_data["meshio:time"] = np.array([times[step]])
         point_data, face_data, edge_data = {}, {}, {}
@@ -315,6 +337,16 @@ def write(filename, mesh):
         nc.Conventions = "CF-1.8 UGRID-1.0"
         nc.createDimension("nmesh_node", len(points))
         topo = nc.createVariable("mesh", "i4")
+        crs = mesh_crs(mesh)
+        if crs:
+            # The mesh's CRS as a CF grid_mapping variable (roadmap 9.10.2).
+            gm = nc.createVariable("mesh_crs", "i4")
+            if "[" in crs:
+                gm.crs_wkt = crs
+            else:
+                gm.epsg_code = crs
+                if crs.startswith("EPSG:") and crs[5:].isdigit():
+                    gm.epsg = np.int32(int(crs[5:]))
         topo.cf_role = "mesh_topology"
         topo.long_name = "Topology data of the mesh"
         topo.topology_dimension = np.int32(2 if face_blocks else 1)
@@ -328,6 +360,8 @@ def write(filename, mesh):
                 break
             v = nc.createVariable(f"mesh_node_{axis}", "f8", ("nmesh_node",))
             v.standard_name = f"projection_{axis}_coordinate"
+            if crs:
+                v.grid_mapping = "mesh_crs"
             v[:] = points[:, c] if c < points.shape[1] else 0.0
         if face_blocks:
             max_nodes = max(len(r) for r in face_rows)

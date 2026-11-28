@@ -148,6 +148,7 @@ module meshioplusplus
     ! `mio_sequence`'s fan-in is the type-bound `%to_timeseries`; only the
     ! fan-out (which starts from a path, not a handle) is module-level.
     public :: mio_sequence, mio_timeseries_to_sequence
+    public :: mio_surface_query
     public :: mio_sequence_pipeline_run_file, mio_sequence_pipeline_run_json
     public :: mio_format_readable, mio_format_writable, mio_load_plugins
     public :: mio_sniff_format
@@ -159,7 +160,10 @@ module meshioplusplus
     public :: MIO_PROVENANCE_OFF, MIO_PROVENANCE_BEST_EFFORT, MIO_PROVENANCE_REQUIRED
     public :: mio_interpolate
     public :: mio_conservative_interpolate
-    public :: mio_undo_green
+    public :: mio_undo_green, mio_undo_green_fine
+    public :: mio_mesh_boolean, mio_has_boolean_provider, mio_has_crs_provider
+    public :: MIO_BOOLEAN_UNION, MIO_BOOLEAN_DIFFERENCE, MIO_BOOLEAN_INTERSECTION
+    public :: MIO_SUBDIVIDE_LOOP, MIO_SUBDIVIDE_CATMULL_CLARK
     public :: mio_shrinkwrap
     ! Length of the fixed-width string buffers the `keys` out-arguments of
     ! `split` and `data_info` use; consumers need it to declare those arrays.
@@ -750,6 +754,10 @@ module meshioplusplus
     !> How `info%mesh_cad_surface` smooths (C `mio_mesh_cad_smoothing`), and the
     !> angle histogram's bins (10 degrees each, 0 to 180).
     integer, parameter :: MIO_MESH_CAD_SMOOTH_LAPLACIAN = 0, MIO_MESH_CAD_SMOOTH_ODT = 1
+    !> mio_mesh_boolean ops and subdivide_surface schemes (roadmap 9.1, 9.2).
+    integer, parameter :: MIO_BOOLEAN_UNION = 0, MIO_BOOLEAN_DIFFERENCE = 1, &
+                          MIO_BOOLEAN_INTERSECTION = 2
+    integer, parameter :: MIO_SUBDIVIDE_LOOP = 0, MIO_SUBDIVIDE_CATMULL_CLARK = 1
     integer, parameter :: MIO_MESH_CAD_ANGLE_BINS = 18
     integer, parameter :: MIO_MESH_CAD_METRIC_MEAN = 0, MIO_MESH_CAD_METRIC_VARYING = 1
     !> Where a declared tolerance accepted a gap (v17.20.0, mio_mesh_cad_tolerance_where).
@@ -1445,6 +1453,18 @@ module meshioplusplus
         integer(c_int64_t) :: max_cells = 16000000
         integer(c_int64_t) :: record_ids = 0
         integer(c_int64_t) :: reserved(3) = 0
+    end type
+
+    !> Interop mirror of C `mio_subdivide_surface_opts` (64 bytes; roadmap 9.2).
+    type, bind(c) :: mio_subdivide_surface_opts_t
+        integer(c_int32_t) :: scheme = 0
+        integer(c_int32_t) :: levels = 1
+        real(c_double) :: crease_angle = 60.0_c_double
+        integer(c_int32_t) :: preserve_boundary = 1
+        integer(c_int32_t) :: interpolate_point_data = 1
+        integer(c_int32_t) :: record_parent_ids = 0
+        integer(c_int32_t) :: reserved_pad = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_cast_rays_opts` (64 bytes).
@@ -2674,7 +2694,10 @@ module meshioplusplus
         !> attached even when the closure leaves no hanging node. Takes one of
         !> the former `reserved` slots; size unchanged.
         integer(c_int64_t) :: record_hierarchy = 0
-        integer(c_int64_t) :: reserved(5) = 0
+        !> Nonzero to undo the input's green closures first (roadmap 9.6.1);
+        !> another former `reserved` slot, size unchanged.
+        integer(c_int64_t) :: undo_green_first = 0
+        integer(c_int64_t) :: reserved(4) = 0
     end type
 
     !> Interop mirror of C `mio_tessellate_opts`. Field order/types are ABI; the
@@ -3026,6 +3049,13 @@ module meshioplusplus
         procedure :: cast_rays => mesh_cast_rays
         procedure :: filter_points => mesh_filter_points
         procedure :: subsample_points => mesh_subsample_points
+        procedure :: subdivide_surface => mesh_subdivide_surface
+        procedure :: set_field_unit => mesh_set_field_unit
+        procedure :: field_unit => mesh_field_unit
+        procedure :: convert_units => mesh_convert_units
+        procedure :: crs => mesh_crs
+        procedure :: set_crs => mesh_set_crs
+        procedure :: convert_coordinates_crs => mesh_convert_coordinates_crs
         procedure :: locate_points => mesh_locate_points
         procedure :: edit_regions => mesh_edit_regions
         procedure :: remove_region => mesh_remove_region
@@ -3305,6 +3335,21 @@ module meshioplusplus
         procedure :: to_timeseries => sequence_to_timeseries
         procedure :: resample => sequence_resample
     end type mio_sequence
+
+    !> A reusable surface query (roadmap 9.3.2): the triangle soup and
+    !> hierarchies of a mesh's surface cells, built once by `create` and queried
+    !> many times by `cast_rays` (bit-identical to `mesh%cast_rays`) and
+    !> `closest_points`. The handle copies the surface; `free` releases it.
+    type :: mio_surface_query
+        private
+        type(c_ptr) :: handle = c_null_ptr
+    contains
+        procedure :: create => surface_query_create
+        procedure :: free => surface_query_free
+        procedure :: num_triangles => surface_query_num_triangles
+        procedure :: cast_rays => surface_query_cast_rays
+        procedure :: closest_points => surface_query_closest_points
+    end type mio_surface_query
 
     !> A transient (time-series) XDMF writer: the write half of what the
     !> `time_step` read option and `mio_metadata%time_values` expose on the read
@@ -3960,6 +4005,136 @@ module meshioplusplus
             type(c_ptr), value :: coarse, fine
             integer(c_int64_t), intent(out) :: ngroups, nremoved
             type(c_ptr) :: r
+        end function
+
+        function c_mio_undo_green_fine(fine, ngroups, nremoved) &
+                bind(c, name="mio_undo_green_fine") result(r)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: fine
+            integer(c_int64_t), intent(out) :: ngroups, nremoved
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_subdivide_surface(h, opts, ncrease, nbound) &
+                bind(c, name="mio_subdivide_surface") result(r)
+            import :: c_ptr, c_int64_t, mio_subdivide_surface_opts_t
+            type(c_ptr), value :: h
+            type(mio_subdivide_surface_opts_t), intent(in) :: opts
+            integer(c_int64_t), intent(out) :: ncrease, nbound
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_set_field_unit(h, array, unit) bind(c, name="mio_set_field_unit") &
+                result(status)
+            import :: c_ptr, c_char, c_int
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: array, unit
+            integer(c_int) :: status
+        end function
+
+        function c_mio_field_unit(h, array, out8) bind(c, name="mio_field_unit") result(rc)
+            import :: c_ptr, c_char, c_int, c_double
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: array
+            real(c_double), intent(out) :: out8(8)
+            integer(c_int) :: rc
+        end function
+
+        function c_mio_convert_units(h, system, strict, n) bind(c, name="mio_convert_units") &
+                result(r)
+            import :: c_ptr, c_char, c_int, c_int64_t
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: system
+            integer(c_int), value :: strict
+            integer(c_int64_t), intent(out) :: n
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_mesh_crs(h, buf, buflen) bind(c, name="mio_mesh_crs") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: h, buf
+            integer(c_int64_t), value :: buflen
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_set_mesh_crs(h, crs) bind(c, name="mio_set_mesh_crs") result(status)
+            import :: c_ptr, c_char, c_int
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: crs
+            integer(c_int) :: status
+        end function
+
+        function c_mio_convert_coordinates_crs(h, target) &
+                bind(c, name="mio_convert_coordinates_crs") result(r)
+            import :: c_ptr, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: target
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_has_crs_provider() bind(c, name="mio_has_crs_provider") result(r)
+            import :: c_int
+            integer(c_int) :: r
+        end function
+
+        function c_mio_mesh_boolean(a, b, op, backend, ntri) bind(c, name="mio_mesh_boolean") &
+                result(r)
+            import :: c_ptr, c_char, c_int, c_int64_t
+            type(c_ptr), value :: a, b
+            integer(c_int), value :: op
+            character(kind=c_char), dimension(*), intent(in) :: backend
+            integer(c_int64_t), intent(out) :: ntri
+            type(c_ptr) :: r
+        end function
+
+        function c_mio_has_boolean_provider() bind(c, name="mio_has_boolean_provider") result(r)
+            import :: c_int
+            integer(c_int) :: r
+        end function
+
+        function c_mio_surface_query_create(h, region) bind(c, name="mio_surface_query_create") &
+                result(r)
+            import :: c_ptr, c_char
+            type(c_ptr), value :: h
+            character(kind=c_char), dimension(*), intent(in) :: region
+            type(c_ptr) :: r
+        end function
+
+        subroutine c_mio_surface_query_free(q) bind(c, name="mio_surface_query_free")
+            import :: c_ptr
+            type(c_ptr), value :: q
+        end subroutine
+
+        function c_mio_surface_query_num_triangles(q) &
+                bind(c, name="mio_surface_query_num_triangles") result(n)
+            import :: c_ptr, c_int64_t
+            type(c_ptr), value :: q
+            integer(c_int64_t) :: n
+        end function
+
+        function c_mio_surface_query_cast_rays(q, origins, n, dirs, nd, max_distance, hit, &
+                                               distance, point, normal, cell, num_hits) &
+                bind(c, name="mio_surface_query_cast_rays") result(status)
+            import :: c_ptr, c_int, c_int32_t, c_int64_t, c_double
+            type(c_ptr), value :: q
+            real(c_double), intent(in) :: origins(*), dirs(*)
+            integer(c_int64_t), value :: n, nd
+            real(c_double), value :: max_distance
+            integer(c_int32_t), intent(out) :: hit(*)
+            real(c_double), intent(out) :: distance(*), point(*), normal(*)
+            integer(c_int64_t), intent(out) :: cell(*), num_hits
+            integer(c_int) :: status
+        end function
+
+        function c_mio_surface_query_closest_points(q, points, n, point, distance, cell) &
+                bind(c, name="mio_surface_query_closest_points") result(status)
+            import :: c_ptr, c_int, c_int64_t, c_double
+            type(c_ptr), value :: q
+            real(c_double), intent(in) :: points(*)
+            integer(c_int64_t), value :: n
+            real(c_double), intent(out) :: point(*), distance(*)
+            integer(c_int64_t), intent(out) :: cell(*)
+            integer(c_int) :: status
         end function
 
         function c_mio_reorder(h, method) bind(c, name="mio_reorder") result(r)
@@ -5267,12 +5442,12 @@ module meshioplusplus
             type(c_ptr), value :: r
         end subroutine
 
-        function c_mio_convert_cells(h, mode, record_parent_ids) &
-                bind(c, name="mio_convert_cells") result(r)
+        function c_mio_convert_cells(h, mode, record_parent_ids, order, full) &
+                bind(c, name="mio_convert_cells_ex") result(r)
             import :: c_ptr, c_char, c_int
             type(c_ptr), value :: h
             character(kind=c_char), dimension(*), intent(in) :: mode
-            integer(c_int), value :: record_parent_ids
+            integer(c_int), value :: record_parent_ids, order, full
             type(c_ptr) :: r
         end function
 
@@ -5967,8 +6142,8 @@ module meshioplusplus
         end subroutine
 
         function c_mio_partition(h, nparts, method, imbalance, mode, seed, record_ids, &
-                                 ghost_layers, weights_key) &
-                bind(c, name="mio_partition") result(r)
+                                 ghost_layers, weights_key, connected_parts) &
+                bind(c, name="mio_partition_ex") result(r)
             import :: c_ptr, c_char, c_int, c_double
             type(c_ptr), value :: h
             integer(c_int), value :: nparts
@@ -5977,6 +6152,7 @@ module meshioplusplus
             character(kind=c_char), dimension(*), intent(in) :: mode
             integer(c_int), value :: seed, record_ids, ghost_layers
             character(kind=c_char), dimension(*), intent(in) :: weights_key
+            integer(c_int), value :: connected_parts
             type(c_ptr) :: r
         end function
 
@@ -9143,6 +9319,154 @@ contains
         if (present(num_groups_undone)) num_groups_undone = int(ngroups, int64)
         if (present(num_cells_removed)) num_cells_removed = int(nremoved, int64)
         call clear_status(stat, errmsg)
+    end function
+
+    !> The single-mesh form of mio_undo_green (roadmap 9.6.1): the green groups
+    !> come from the refine:cell_id/refine:parent_id hierarchy `fine` carries.
+    function mio_undo_green_fine(fine, num_groups_undone, num_cells_removed, &
+                                 stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: fine
+        integer(int64), intent(out), optional :: num_groups_undone, num_cells_removed
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int64_t) :: ngroups, nremoved
+        out%handle = c_mio_undo_green_fine(fine%handle, ngroups, nremoved)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('undo_green_fine', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_groups_undone)) num_groups_undone = int(ngroups, int64)
+        if (present(num_cells_removed)) num_cells_removed = int(nremoved, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> A watertight surface boolean of two closed, oriented triangle meshes
+    !> through the registered provider (Manifold; roadmap 9.1). `op` is
+    !> MIO_BOOLEAN_UNION (default), MIO_BOOLEAN_DIFFERENCE or
+    !> MIO_BOOLEAN_INTERSECTION. Fails when none is registered.
+    function mio_mesh_boolean(a, b, op, backend, num_triangles, stat, errmsg) result(out)
+        type(mio_mesh), intent(in) :: a, b
+        integer, intent(in), optional :: op
+        character(*), intent(in), optional :: backend
+        integer(int64), intent(out), optional :: num_triangles
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        integer(c_int) :: cop
+        integer(c_int64_t) :: ntri
+        character(len=:), allocatable :: cback
+        cop = 0_c_int
+        if (present(op)) cop = int(op, c_int)
+        cback = ''
+        if (present(backend)) cback = backend
+        out%handle = c_mio_mesh_boolean(a%handle, b%handle, cop, c_str(cback), ntri)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('mesh_boolean', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_triangles)) num_triangles = int(ntri, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Whether a surface boolean provider (Manifold) is registered.
+    function mio_has_boolean_provider() result(has)
+        logical :: has
+        has = c_mio_has_boolean_provider() /= 0
+    end function
+
+    !> Build a surface query over `mesh`'s surface cells, or those of cell
+    !> `region` when given (roadmap 9.3.2).
+    subroutine surface_query_create(self, mesh, region, stat, errmsg)
+        class(mio_surface_query), intent(inout) :: self
+        type(mio_mesh), intent(in) :: mesh
+        character(*), intent(in), optional :: region
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        character(len=:), allocatable :: creg
+        call self%free()
+        creg = ''
+        if (present(region)) creg = region
+        self%handle = c_mio_surface_query_create(mesh%handle, c_str(creg))
+        if (.not. c_associated(self%handle)) then
+            call handle_failure('surface_query', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end subroutine
+
+    !> Release the query (idempotent).
+    subroutine surface_query_free(self)
+        class(mio_surface_query), intent(inout) :: self
+        if (c_associated(self%handle)) call c_mio_surface_query_free(self%handle)
+        self%handle = c_null_ptr
+    end subroutine
+
+    !> The surface's triangles (quads and polygons fanned); -1 on error.
+    function surface_query_num_triangles(self) result(n)
+        class(mio_surface_query), intent(in) :: self
+        integer(int64) :: n
+        n = int(c_mio_surface_query_num_triangles(self%handle), int64)
+    end function
+
+    !> `mesh%cast_rays` against the query's surface: `origins` is (3, n), one
+    !> ray per column; `directions` (3, 1) for every ray or (3, n). `hit` is
+    !> 1/0, `cell` 1-based (0 on a miss), every output allocated to n.
+    subroutine surface_query_cast_rays(self, origins, directions, hit, distance, point, &
+                                       normal, cell, num_hits, max_distance, stat, errmsg)
+        class(mio_surface_query), intent(in) :: self
+        real(real64), intent(in) :: origins(:, :), directions(:, :)
+        integer, allocatable, intent(out) :: hit(:)
+        real(real64), allocatable, intent(out) :: distance(:), point(:, :), normal(:, :)
+        integer(int64), allocatable, intent(out) :: cell(:)
+        integer(int64), intent(out), optional :: num_hits
+        real(real64), intent(in), optional :: max_distance
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int32_t), allocatable :: chit(:)
+        integer(c_int64_t), allocatable :: ccell(:)
+        integer(c_int64_t) :: n, nd, nh
+        real(c_double) :: dmax
+        n = int(size(origins, 2), c_int64_t)
+        nd = int(size(directions, 2), c_int64_t)
+        dmax = 0.0_c_double
+        if (present(max_distance)) dmax = real(max_distance, c_double)
+        allocate (chit(max(n, 1_c_int64_t)), ccell(max(n, 1_c_int64_t)))
+        allocate (distance(n), point(3, n), normal(3, n))
+        call handle_status(c_mio_surface_query_cast_rays(self%handle, &
+                           real(origins, c_double), n, real(directions, c_double), nd, dmax, &
+                           chit, distance, point, normal, ccell, nh), &
+                           'surface_query_cast_rays', stat, errmsg)
+        allocate (hit(n), cell(n))
+        hit = int(chit(1:n))
+        cell = merge(int(ccell(1:n), int64) + 1_int64, 0_int64, ccell(1:n) >= 0)
+        if (present(num_hits)) num_hits = int(nh, int64)
+    end subroutine
+
+    !> The nearest surface point of each column of `points` (3, n): `point`
+    !> (3, n), `distance` (unsigned) and `cell` (1-based global input cell).
+    subroutine surface_query_closest_points(self, points, point, distance, cell, stat, errmsg)
+        class(mio_surface_query), intent(in) :: self
+        real(real64), intent(in) :: points(:, :)
+        real(real64), allocatable, intent(out) :: point(:, :), distance(:)
+        integer(int64), allocatable, intent(out) :: cell(:)
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        integer(c_int64_t), allocatable :: ccell(:)
+        integer(c_int64_t) :: n
+        n = int(size(points, 2), c_int64_t)
+        allocate (point(3, n), distance(n), ccell(max(n, 1_c_int64_t)))
+        call handle_status(c_mio_surface_query_closest_points(self%handle, &
+                           real(points, c_double), n, point, distance, ccell), &
+                           'surface_query_closest_points', stat, errmsg)
+        allocate (cell(n))
+        cell = int(ccell(1:n), int64) + 1_int64
+    end subroutine
+
+    !> Whether a CRS provider (PROJ) is registered.
+    function mio_has_crs_provider() result(has)
+        logical :: has
+        has = c_mio_has_crs_provider() /= 0
     end function
 
     !> Renumber the mesh (method: "rcm", "morton", or "hilbert") as a pure
@@ -13254,6 +13578,149 @@ contains
         call clear_status(stat, errmsg)
     end function
 
+    !> Loop (MIO_SUBDIVIDE_LOOP, triangles) or Catmull-Clark
+    !> (MIO_SUBDIVIDE_CATMULL_CLARK, polygons to quads) subdivision with Hoppe
+    !> crease and boundary rules (roadmap 9.2; doc/subdivide_surface.md).
+    function mesh_subdivide_surface(self, scheme, levels, crease_angle, preserve_boundary, &
+                                    interpolate_point_data, record_parent_ids, &
+                                    num_crease_edges, num_boundary_edges, stat, errmsg) &
+            result(out)
+        class(mio_mesh), intent(in) :: self
+        integer, intent(in), optional :: scheme, levels
+        real(real64), intent(in), optional :: crease_angle
+        logical, intent(in), optional :: preserve_boundary, interpolate_point_data, &
+                                         record_parent_ids
+        integer(int64), intent(out), optional :: num_crease_edges, num_boundary_edges
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        type(mio_subdivide_surface_opts_t) :: opts
+        integer(c_int64_t) :: ncrease, nbound
+        if (c_sizeof(opts) /= 64_c_size_t) then
+            write (error_unit, '(a)') 'meshio++: subdivide_surface layout mismatch'
+            error stop 1
+        end if
+        if (present(scheme)) opts%scheme = int(scheme, c_int32_t)
+        if (present(levels)) opts%levels = int(levels, c_int32_t)
+        if (present(crease_angle)) opts%crease_angle = real(crease_angle, c_double)
+        if (present(preserve_boundary)) then
+            opts%preserve_boundary = merge(1_c_int32_t, 0_c_int32_t, preserve_boundary)
+        end if
+        if (present(interpolate_point_data)) then
+            opts%interpolate_point_data = merge(1_c_int32_t, 0_c_int32_t, interpolate_point_data)
+        end if
+        if (present(record_parent_ids)) then
+            opts%record_parent_ids = merge(1_c_int32_t, 0_c_int32_t, record_parent_ids)
+        end if
+        out%handle = c_mio_subdivide_surface(self%handle, opts, ncrease, nbound)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('subdivide_surface', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_crease_edges)) num_crease_edges = int(ncrease, int64)
+        if (present(num_boundary_edges)) num_boundary_edges = int(nbound, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> Declare the physical unit of point or cell data `array` from a unit name
+    !> ("m", "mm", "MPa", "kg/m^3", ...), as field_data "meshio:unit:<array>"
+    !> (roadmap 9.10.1; doc/units.md).
+    subroutine mesh_set_field_unit(self, array, unit, stat, errmsg)
+        class(mio_mesh), intent(inout) :: self
+        character(*), intent(in) :: array, unit
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_set_field_unit(self%handle, c_str(array), c_str(unit)), &
+                           'set_field_unit', stat, errmsg)
+    end subroutine
+
+    !> The declared unit of `array` as [scale_to_SI, m, kg, s, K, A, mol, cd];
+    !> returns .false. (and leaves `unit` untouched) when undeclared.
+    function mesh_field_unit(self, array, unit) result(found)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: array
+        real(real64), intent(out) :: unit(8)
+        logical :: found
+        real(c_double) :: u(8)
+        integer(c_int) :: rc
+        rc = c_mio_field_unit(self%handle, c_str(array), u)
+        found = rc == 1_c_int
+        if (found) unit = real(u, real64)
+    end function
+
+    !> Convert every declared field and the points to the consistent unit
+    !> system `system` ("SI", "mm-t-s", "mm-kg-ms", "cm-g-s", "mm-g-ms").
+    !> `strict` (default .true.) fails on an undeclared array.
+    function mesh_convert_units(self, system, strict, num_arrays_converted, stat, errmsg) &
+            result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in), optional :: system
+        logical, intent(in), optional :: strict
+        integer(int64), intent(out), optional :: num_arrays_converted
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        character(len=:), allocatable :: csys
+        integer(c_int) :: cstrict
+        integer(c_int64_t) :: n
+        csys = 'SI'
+        if (present(system)) csys = system
+        cstrict = 1_c_int
+        if (present(strict)) cstrict = merge(1_c_int, 0_c_int, strict)
+        out%handle = c_mio_convert_units(self%handle, c_str(csys), cstrict, n)
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('convert_units', mio_error_message(), stat, errmsg)
+            return
+        end if
+        if (present(num_arrays_converted)) num_arrays_converted = int(n, int64)
+        call clear_status(stat, errmsg)
+    end function
+
+    !> The CRS the mesh records (field_data "meshio:crs"), '' when none.
+    function mesh_crs(self) result(crs)
+        class(mio_mesh), intent(in) :: self
+        character(:), allocatable :: crs
+        character(kind=c_char), allocatable, target :: buf(:)
+        integer(c_int64_t) :: n, i
+        n = c_mio_mesh_crs(self%handle, c_null_ptr, 0_c_int64_t)
+        if (n <= 0) then
+            crs = ''
+            return
+        end if
+        allocate (buf(n + 1))
+        n = c_mio_mesh_crs(self%handle, c_loc(buf), n + 1)
+        allocate (character(len=n) :: crs)
+        do i = 1, n
+            crs(i:i) = buf(i)
+        end do
+    end function
+
+    !> Record `crs` ("EPSG:<code>" or WKT2) as the mesh's CRS; '' clears it.
+    subroutine mesh_set_crs(self, crs, stat, errmsg)
+        class(mio_mesh), intent(inout) :: self
+        character(*), intent(in) :: crs
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        call handle_status(c_mio_set_mesh_crs(self%handle, c_str(crs)), 'set_mesh_crs', &
+                           stat, errmsg)
+    end subroutine
+
+    !> Reproject the points from the recorded CRS to `target_crs` (roadmap
+    !> 9.10.2). Needs a build with PROJ (mio_has_crs_provider()).
+    function mesh_convert_coordinates_crs(self, target_crs, stat, errmsg) result(out)
+        class(mio_mesh), intent(in) :: self
+        character(*), intent(in) :: target_crs
+        integer, intent(out), optional :: stat
+        character(:), allocatable, intent(out), optional :: errmsg
+        type(mio_mesh) :: out
+        out%handle = c_mio_convert_coordinates_crs(self%handle, c_str(target_crs))
+        if (.not. c_associated(out%handle)) then
+            call handle_failure('convert_coordinates_crs', mio_error_message(), stat, errmsg)
+            return
+        end if
+        call clear_status(stat, errmsg)
+    end function
+
     !> A triangle surface through the mesh's points, an oriented point cloud:
     !> the zero level set of the signed distance to the samples' tangent planes
     !> (Hoppe et al. 1992), cut by marching tetrahedra on a band of lattice
@@ -13789,23 +14256,32 @@ contains
     !> `record_parent_ids` (default .false.) attaches a convert:parent_cell
     !> cell_data array. The optional `point_map` receives the input-point ->
     !> output-point mapping, 1-based, or 0 where the point was pruned.
-    function mesh_convert_cells(self, mode, record_parent_ids, point_map, stat, errmsg) result(out)
+    function mesh_convert_cells(self, mode, record_parent_ids, point_map, stat, errmsg, &
+                                order, full) result(out)
         class(mio_mesh), intent(in) :: self
         character(*), intent(in) :: mode
         logical, intent(in), optional :: record_parent_ids
+        !> Target order of "elevate"/"reduce" (0: the mode's default) and the
+        !> full-Lagrange family when elevating (roadmap 9.5).
+        integer, intent(in), optional :: order
+        logical, intent(in), optional :: full
         integer(int64), allocatable, intent(out), optional :: point_map(:)
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
         type(mio_mesh) :: out
         type(c_ptr) :: res, cdata
-        integer(c_int) :: crec, s, dt
+        integer(c_int) :: crec, s, dt, corder, cfull
         integer(c_int64_t) :: nlen
         integer(c_int64_t), pointer :: fp(:)
         crec = 0
         if (present(record_parent_ids)) then
             if (record_parent_ids) crec = 1
         end if
-        res = c_mio_convert_cells(self%handle, c_str(mode), crec)
+        corder = 0_c_int
+        if (present(order)) corder = int(order, c_int)
+        cfull = 0_c_int
+        if (present(full)) cfull = merge(1_c_int, 0_c_int, full)
+        res = c_mio_convert_cells(self%handle, c_str(mode), crec, corder, cfull)
         if (.not. c_associated(res)) then
             call handle_failure('convert_cells', mio_error_message(), stat, errmsg)
             return
@@ -15787,6 +16263,7 @@ contains
         case ('', 'redgreen', 'red-green', 'green'); code = 0
         case ('propagate', 'red'); code = 1
         case ('balanced', '2:1'); code = 2
+        case ('mixed_green', 'mixedgreen', 'mixed-green'); code = 3
         case default; code = -1
         end select
     end function
@@ -15812,7 +16289,7 @@ contains
 
     function mesh_refine(self, levels, record_parent_ids, point_map, stat, errmsg, &
                          cells, region, where_array, where_op, where_value, closure, &
-                         record_levels, record_hierarchy) result(out)
+                         record_levels, record_hierarchy, undo_green_first) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in), optional :: levels
         logical, intent(in), optional :: record_parent_ids
@@ -15843,6 +16320,8 @@ contains
         !> updated whatever this says. Also forces refine:entity to be
         !> attached even when the closure leaves no hanging node.
         logical, intent(in), optional :: record_hierarchy
+        !> Undo the input's green closures first (roadmap 9.6.1).
+        logical, intent(in), optional :: undo_green_first
         type(mio_mesh) :: out
         type(c_ptr) :: res, cdata
         integer(c_int) :: s, dt
@@ -15865,6 +16344,9 @@ contains
         end if
         if (present(record_hierarchy)) then
             if (record_hierarchy) opts%record_hierarchy = 1_c_int64_t
+        end if
+        if (present(undo_green_first)) then
+            if (undo_green_first) opts%undo_green_first = 1_c_int64_t
         end if
         if (present(cells)) then
             allocate (cell_ids(max(size(cells), 1)))
@@ -16280,7 +16762,7 @@ contains
     !> weights. `ghost_layers` > 0 grows each piece by that many shared-node
     !> BFS layers of other parts' cells (a halo), tagged `partition:ghost`.
     function mesh_partition(self, nparts, method, imbalance, mode, seed, record_ids, &
-                            ghost_layers, weights_key, stat, errmsg) result(out)
+                            ghost_layers, weights_key, stat, errmsg, connected_parts) result(out)
         class(mio_mesh), intent(in) :: self
         integer, intent(in) :: nparts
         character(*), intent(in), optional :: method
@@ -16290,6 +16772,8 @@ contains
         logical, intent(in), optional :: record_ids
         integer, intent(in), optional :: ghost_layers
         character(*), intent(in), optional :: weights_key
+        !> Make every non-empty part one facet-connected piece (roadmap 9.7.3).
+        logical, intent(in), optional :: connected_parts
         integer, intent(out), optional :: stat
         character(:), allocatable, intent(out), optional :: errmsg
         type(mio_mesh), allocatable :: out(:)
@@ -16297,7 +16781,7 @@ contains
         integer(c_int64_t) :: count, i
         character(len=:), allocatable :: cmethod, cmode, cweights
         real(c_double) :: cimb
-        integer(c_int) :: cseed, crec, cghost
+        integer(c_int) :: cseed, crec, cghost, cconn
         cmethod = 'auto'
         if (present(method)) cmethod = method
         cimb = 0.03_c_double
@@ -16314,8 +16798,10 @@ contains
         if (present(ghost_layers)) cghost = int(ghost_layers, c_int)
         cweights = ''
         if (present(weights_key)) cweights = weights_key
+        cconn = 0_c_int
+        if (present(connected_parts)) cconn = merge(1_c_int, 0_c_int, connected_parts)
         res = c_mio_partition(self%handle, int(nparts, c_int), c_str(cmethod), cimb, &
-                              c_str(cmode), cseed, crec, cghost, c_str(cweights))
+                              c_str(cmode), cseed, crec, cghost, c_str(cweights), cconn)
         if (.not. c_associated(res)) then
             call handle_failure('partition', mio_error_message(), stat, errmsg)
             allocate (out(0))

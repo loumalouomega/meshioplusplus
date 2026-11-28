@@ -10,6 +10,7 @@ import numpy as np
 from .._common import warn
 from .._exceptions import ReadError, WriteError
 from .._mesh import Mesh
+from .._units import CRS_KEY, mesh_crs
 
 RECORD = (20, 28, 26, 34, 57, 63, 30, 36, 38, 59, 67)
 
@@ -85,6 +86,77 @@ def _fields(fmt):
     return f
 
 
+_PROJECTION_USER = b"LASF_Projection"
+
+
+def _is_projection(vlrs, at):
+    return vlrs[at + 2 : at + 18].split(b"\x00", 1)[0] == _PROJECTION_USER
+
+
+def _crs_from_vlrs(vlrs):
+    """The CRS the VLRs state (roadmap 9.10.2): the WKT of a ``LASF_Projection``
+    2112 record, else ``EPSG:<code>`` from a GeoTIFF ProjectedCSType (3072) or
+    GeographicType (2048) key of a 34735 record, else ``""``."""
+    epsg = ""
+    at = 0
+    while at + 54 <= len(vlrs):
+        (length,) = struct.unpack_from("<H", vlrs, at + 20)
+        if at + 54 + length > len(vlrs):
+            break
+        if _is_projection(vlrs, at):
+            (rid,) = struct.unpack_from("<H", vlrs, at + 18)
+            body = vlrs[at + 54 : at + 54 + length]
+            if rid == 2112:
+                wkt = body.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
+                if wkt:
+                    return wkt
+            elif rid == 34735 and length >= 8:
+                (nkeys,) = struct.unpack_from("<H", body, 6)
+                for k in range(nkeys):
+                    o = 8 + 8 * k
+                    if o + 8 > length:
+                        break
+                    key, where, _, value = struct.unpack_from("<4H", body, o)
+                    if where != 0 or value in (0, 32767):
+                        continue
+                    if key == 3072 or (key == 2048 and not epsg):
+                        epsg = f"EPSG:{value}"
+        at += 54 + length
+    return epsg
+
+
+def _vlrs_for_crs(vlrs, crs):
+    """The VLRs to write for CRS ``crs``: verbatim when they already state it,
+    else without their projection records and, for a WKT CRS, with a 2112
+    record of it (an ``EPSG:<code>`` CRS is warned about)."""
+    if not crs or _crs_from_vlrs(vlrs) == crs:
+        return vlrs
+    out = b""
+    at = 0
+    while at + 54 <= len(vlrs):
+        (length,) = struct.unpack_from("<H", vlrs, at + 20)
+        if not _is_projection(vlrs, at):
+            out += vlrs[at : at + 54 + length]
+        at += 54 + length
+    if "[" not in crs:
+        warn(
+            f"las: meshio:crs '{crs}' is not WKT, which LAS 1.4 point formats 6 to 10 "
+            "require; it is not written (convert it to WKT first)"
+        )
+        return out
+    body = crs.encode("utf-8") + b"\x00"
+    if len(body) > 65535:
+        raise WriteError("meshio++: las: meshio:crs is longer than a VLR can hold")
+    return (
+        out
+        + struct.pack("<H", 0)
+        + _PROJECTION_USER.ljust(16, b"\x00")
+        + struct.pack("<HH", 2112, len(body))
+        + b"OGC WKT".ljust(32, b"\x00")
+        + body
+    )
+
+
 def read(filename, every=1, arrays=None, points_only=False):
     try:
         with open(filename, "rb") as fh:
@@ -156,6 +228,9 @@ def read(filename, every=1, arrays=None, points_only=False):
     }
     if vlrs:
         field_data["las:vlrs"] = np.frombuffer(vlrs, dtype=np.uint8).copy()
+    crs = _crs_from_vlrs(vlrs)
+    if crs:
+        field_data[CRS_KEY] = np.frombuffer(crs.encode("utf-8"), dtype=np.uint8).copy()
     if minor >= 4 and header >= 375 and struct.unpack_from("<I", d, 243)[0] > 0:
         warn(f"las: '{filename}' has extended VLRs, which are not kept")
     cells = [("vertex", np.arange(n, dtype=np.int64).reshape(-1, 1))] if n else []
@@ -190,6 +265,7 @@ def write(filename, mesh):
     v = mesh.field_data.get("las:vlrs")
     if v is not None:
         vlrs = np.asarray(v, dtype=np.uint8).tobytes()
+    vlrs = _vlrs_for_crs(vlrs, mesh_crs(mesh) or "")
     nvlr, at = 0, 0
     while at + 54 <= len(vlrs):
         at += 54 + struct.unpack_from("<H", vlrs, at + 20)[0]

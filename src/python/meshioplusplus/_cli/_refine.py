@@ -51,7 +51,7 @@ def add_args(parser):
     parser.add_argument(
         "--closure",
         type=str,
-        choices=("redgreen", "propagate", "balanced"),
+        choices=("redgreen", "propagate", "balanced", "mixed_green"),
         default="redgreen",
         help=(
             "how to resolve hanging nodes: redgreen keeps the extra refinement "
@@ -75,6 +75,11 @@ def add_args(parser):
             "attached even when the closure leaves no hanging node"
         ),
     )
+    parser.add_argument(
+        "--undo-green-first",
+        action="store_true",
+        help="undo the input's green closures first, from its own hierarchy",
+    )
 
 
 def refine_cmd(args):
@@ -92,6 +97,7 @@ def refine_cmd(args):
         closure=args.closure,
         record_levels=args.record_levels,
         record_hierarchy=args.record_hierarchy,
+        undo_green_first=args.undo_green_first,
     )
     write(args.outfile, out, file_format=args.output_format)
     return 0

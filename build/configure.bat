@@ -36,6 +36,11 @@ set "WITH_MMG=OFF"
 set "MMG_ROOT_DIR="
 set "WITH_CUTCELLS=OFF"
 set "CUTCELLS_ROOT_DIR="
+set "WITH_METIS=OFF"
+set "WITH_SCOTCH=OFF"
+set "WITH_PROJ=OFF"
+set "WITH_MANIFOLD=OFF"
+set "MANIFOLD_ROOT_DIR="
 set "TESTS=OFF"
 set "WARNINGS=OFF"
 set "WARNINGS_AS_ERRORS=OFF"
@@ -72,6 +77,11 @@ if /I "%~1"=="--with-mmg"       set "WITH_MMG=ON" & shift & goto parse
 if /I "%~1"=="--mmg-root"       set "WITH_MMG=ON" & set "MMG_ROOT_DIR=%~2" & shift & shift & goto parse
 if /I "%~1"=="--with-cutcells"  set "WITH_CUTCELLS=ON" & shift & goto parse
 if /I "%~1"=="--cutcells-root"  set "WITH_CUTCELLS=ON" & set "CUTCELLS_ROOT_DIR=%~2" & shift & shift & goto parse
+if /I "%~1"=="--with-metis"     set "WITH_METIS=ON" & shift & goto parse
+if /I "%~1"=="--with-scotch"    set "WITH_SCOTCH=ON" & shift & goto parse
+if /I "%~1"=="--with-proj"      set "WITH_PROJ=ON" & shift & goto parse
+if /I "%~1"=="--with-manifold"  set "WITH_MANIFOLD=ON" & shift & goto parse
+if /I "%~1"=="--manifold-root"  set "WITH_MANIFOLD=ON" & set "MANIFOLD_ROOT_DIR=%~2" & shift & shift & goto parse
 if /I "%~1"=="--tests"          set "TESTS=ON" & shift & goto parse
 if /I "%~1"=="--warnings"       set "WARNINGS=ON" & shift & goto parse
 if /I "%~1"=="--warnings-as-errors" set "WARNINGS=ON" & set "WARNINGS_AS_ERRORS=ON" & shift & goto parse
@@ -132,6 +142,7 @@ if not "%TECIO_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -DTECIO_ROOT=%TECIO_ROOT_DIR%"
 if not "%NETGEN_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -DNETGEN_ROOT=%NETGEN_ROOT_DIR%"
 if not "%MMG_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -Dmmg_DIR=%MMG_ROOT_DIR%\lib\cmake\mmg"
 if not "%CUTCELLS_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -DCUTCELLS_ROOT=%CUTCELLS_ROOT_DIR%"
+if not "%MANIFOLD_ROOT_DIR%"=="" set "EXTRA=%EXTRA% -DMANIFOLD_ROOT=%MANIFOLD_ROOT_DIR%"
 rem Commas become the semicolons CMake lists want. cmd splits UNQUOTED batch
 rem parameters on both , and ; so a multi-backend list must be quoted either
 rem way: --cpp-backends "MESHIO,KRATOS". Only passed when given, so the CMake
@@ -150,6 +161,7 @@ echo   bzip2:     %WITH_BZIP2%   ADIOS2: %WITH_ADIOS2%   TecIO: %WITH_TECIO%   O
 echo   Netgen:    %WITH_NETGEN%  (tetrahedralize)
 echo   MMG:       %WITH_MMG%  (adapt, discretize_levelset, mesh_domain, move)
 echo   CutCells:  %WITH_CUTCELLS%  (cut_level_set, cut_quadrature)
+echo   METIS:     %WITH_METIS%  Scotch: %WITH_SCOTCH%  PROJ: %WITH_PROJ%  Manifold: %WITH_MANIFOLD%
 echo   tests:     %TESTS%
 echo   C API:     %C_API%   Fortran: %FORTRAN%
 echo   C++ API:   %INSTALL_CPP%
@@ -172,6 +184,10 @@ cmake -S "%SOURCE_DIR%" -B "%BUILD_DIR%" ^
     -DMESHIOPLUSPLUS_WITH_NETGEN=%WITH_NETGEN% ^
     -DMESHIOPLUSPLUS_WITH_MMG=%WITH_MMG% ^
     -DMESHIOPLUSPLUS_WITH_CUTCELLS=%WITH_CUTCELLS% ^
+    -DMESHIOPLUSPLUS_WITH_METIS=%WITH_METIS% ^
+    -DMESHIOPLUSPLUS_WITH_SCOTCH=%WITH_SCOTCH% ^
+    -DMESHIOPLUSPLUS_WITH_PROJ=%WITH_PROJ% ^
+    -DMESHIOPLUSPLUS_WITH_MANIFOLD=%WITH_MANIFOLD% ^
     -DMESHIOPLUSPLUS_BUILD_TESTS=%TESTS% ^
     -DMESHIOPLUSPLUS_WARNINGS=%WARNINGS% ^
     -DMESHIOPLUSPLUS_WARNINGS_AS_ERRORS=%WARNINGS_AS_ERRORS% ^
@@ -224,6 +240,11 @@ echo   --with-mmg                       MMG-backed adapt, discretize_levelset, m
 echo                                    move (default: off; LGPL-3.0, linked dynamically)
 echo   --mmg-root ^<dir^>                 MMG's install prefix (holds lib\cmake\mmg)
 echo   --with-cutcells                  CutCells-backed cut_level_set and cut_quadrature (MIT)
+echo   --with-metis                     METIS graph partitioner provider (Apache-2.0)
+echo   --with-scotch                    Scotch graph partitioner provider (CeCILL-C)
+echo   --with-proj                      PROJ coordinate reference system provider (MIT)
+echo   --with-manifold                  Manifold surface boolean provider (Apache-2.0)
+echo   --manifold-root ^<dir^>            Manifold install prefix
 echo   --cutcells-root ^<dir^>            CutCells' install prefix
 echo   --tests                          also build the GoogleTest suite (CTest)
 echo   --warnings[-as-errors]           compile meshio++ sources with /W4 [/WX]

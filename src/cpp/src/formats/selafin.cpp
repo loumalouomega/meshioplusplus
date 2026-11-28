@@ -34,6 +34,7 @@
 #include "meshioplusplus/detail/parse_guard.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
+#include "meshioplusplus/operations/units.hpp"
 #include "../detail/open_source.hpp"
 #include "../detail/typed_view.hpp"
 
@@ -262,6 +263,11 @@ Mesh read_selafin(const std::string& rPath, const ReadOptions& rOptions) {
             continue;
         mesh.AddPointData(h.mNames[v], std::move(values[v]));
         mesh.AddFieldData(kSlfUnitPrefix + h.mNames[v], slf_bytes(h.mUnits[v]));
+        // The unit, when it names one, as the shared meshio:unit:<array> too
+        // (roadmap 9.10.1), so convert_units sees it.
+        FieldUnit unit;
+        if (field_unit_from_text(h.mUnits[v], unit))
+            set_field_unit(mesh, h.mNames[v], unit);
     }
     if (rOptions.WantsArray("selafin:ipobo")) {
         NDArray ipobo(DType::Int32, {h.mNpoin});
@@ -324,9 +330,13 @@ void write_selafin(const std::string& rPath, const Mesh& rMesh) {
     for (const std::string& name : names) {
         std::string unit;
         const std::string key = kSlfUnitPrefix + name;
+        FieldUnit declared;
         if (rMesh.HasFieldData(key)) {
             const NDArray& u = rMesh.FieldData(key);
             unit.assign(reinterpret_cast<const char*>(u.Data()), u.Size());
+        } else if (get_field_unit(rMesh, name, declared)) {
+            // No Selafin unit of its own: the shared meshio:unit:<array>, by name.
+            unit = field_unit_name(declared);
         }
         rec = slf_padded(name, 16) + slf_padded(unit, 16);
         flush();

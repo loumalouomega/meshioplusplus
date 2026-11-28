@@ -29,6 +29,7 @@
 
 // Project includes
 #include "meshioplusplus/operations/cast_rays.hpp"
+#include "meshioplusplus/operations/surface_query.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 #include "meshioplusplus/detail/surface_distance.hpp"
 #include "meshioplusplus/parallel.hpp"
@@ -38,9 +39,14 @@
 
 namespace meshioplusplus {
 
-CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
-                         const std::vector<double>& rDirections, const CastRaysOptions& rOptions) {
-    static const char* const kPrefix = "meshio++: cast_rays: ";
+namespace {
+
+const char* const kCastRaysPrefix = "meshio++: cast_rays: ";
+
+// The unit directions of a batch, validated (with the origins) before any work.
+std::vector<detail::Vec3> cast_rays_unit_directions(const std::vector<double>& rOrigins,
+                                                    const std::vector<double>& rDirections) {
+    const char* const kPrefix = kCastRaysPrefix;
     if (rOrigins.size() % 3 != 0)
         throw std::invalid_argument(std::string(kPrefix) +
                                     "origins must hold three numbers per ray");
@@ -54,8 +60,6 @@ CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
                                     "directions must be one direction or one per ray (" +
                                     std::to_string(n) + " rays, " +
                                     std::to_string(rDirections.size() / 3) + " directions)");
-
-    // Unit directions, validated before any work.
     std::vector<detail::Vec3> dirs(common ? 1 : n);
     for (std::size_t i = 0; i < dirs.size(); ++i) {
         const detail::Vec3 d{rDirections[3 * i], rDirections[3 * i + 1], rDirections[3 * i + 2]};
@@ -69,11 +73,74 @@ CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
         if (!std::isfinite(rOrigins[k]))
             throw std::invalid_argument(std::string(kPrefix) + "origin " + std::to_string(k / 3) +
                                         " is not finite");
+    return dirs;
+}
 
-    const detail::TriangleSoup soup = detail::build_triangle_soup(rMesh, rOptions.mRegion);
-    if (soup.NumTriangles() == 0)
-        throw std::invalid_argument(std::string(kPrefix) + "the mesh has no surface cell to hit");
-    const detail::TriBvh tree = detail::build_tri_bvh(soup);
+}  // namespace
+
+struct SurfaceQuery::Impl {
+    detail::TriangleSoup mSoup;
+    detail::TriBvh mTree;  // points into mSoup, which never moves (Impl is heap-held)
+    detail::DistanceQuery mDistance;
+};
+
+SurfaceQuery::SurfaceQuery(const Mesh& rMesh, const std::string& rRegion)
+    : mpImpl(std::make_unique<Impl>()) {
+    mpImpl->mSoup = detail::build_triangle_soup(rMesh, rRegion);
+    if (mpImpl->mSoup.NumTriangles() == 0)
+        throw std::invalid_argument(std::string(kCastRaysPrefix) +
+                                    "the mesh has no surface cell to hit");
+    mpImpl->mTree = detail::build_tri_bvh(mpImpl->mSoup);
+    mpImpl->mDistance = detail::build_distance_query(mpImpl->mSoup, SurfaceDistanceOptions{});
+}
+
+SurfaceQuery::~SurfaceQuery() = default;
+SurfaceQuery::SurfaceQuery(SurfaceQuery&& rOther) noexcept = default;
+SurfaceQuery& SurfaceQuery::operator=(SurfaceQuery&& rOther) noexcept = default;
+
+std::size_t SurfaceQuery::NumTriangles() const noexcept {
+    return mpImpl ? mpImpl->mSoup.NumTriangles() : 0;
+}
+
+SurfaceClosestResult SurfaceQuery::ClosestPoints(const std::vector<double>& rPoints) const {
+    if (rPoints.size() % 3 != 0)
+        throw std::invalid_argument(
+            "meshio++: SurfaceQuery: points must hold three numbers per point");
+    const std::size_t n = rPoints.size() / 3;
+    std::vector<detail::Vec3> pts(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        pts[i] = {rPoints[3 * i], rPoints[3 * i + 1], rPoints[3 * i + 2]};
+        for (const double v : pts[i])
+            if (!std::isfinite(v))
+                throw std::invalid_argument("meshio++: SurfaceQuery: point " + std::to_string(i) +
+                                            " is not finite");
+    }
+    const std::vector<detail::ClosestPointHit> hits =
+        detail::query_closest_points(mpImpl->mDistance, pts);
+    SurfaceClosestResult out;
+    out.mPoint.resize(3 * n);
+    out.mDistance.resize(n);
+    out.mCell.resize(n);
+    for (std::size_t i = 0; i < n; ++i) {
+        for (std::size_t k = 0; k < 3; ++k)
+            out.mPoint[3 * i + k] = hits[i].mPoint[k];
+        out.mDistance[i] = hits[i].mDistance;
+        out.mCell[i] = hits[i].mSourceCell;
+    }
+    return out;
+}
+
+CastRaysResult SurfaceQuery::CastRays(const std::vector<double>& rOrigins,
+                                      const std::vector<double>& rDirections,
+                                      const CastRaysOptions& rOptions) const {
+    if (!rOptions.mRegion.empty())
+        throw std::invalid_argument(std::string(kCastRaysPrefix) +
+                                    "a SurfaceQuery's region is chosen at construction");
+    const std::vector<detail::Vec3> dirs = cast_rays_unit_directions(rOrigins, rDirections);
+    const std::size_t n = rOrigins.size() / 3;
+    const bool common = rDirections.size() == 3;
+    const detail::TriangleSoup& soup = mpImpl->mSoup;
+    const detail::TriBvh& tree = mpImpl->mTree;
     const double t_max = rOptions.mMaxDistance > 0.0 ? rOptions.mMaxDistance
                                                      : std::numeric_limits<double>::infinity();
     const double nan = std::nan("");
@@ -143,6 +210,16 @@ CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
     for (std::size_t i = 0; i < n; ++i)
         out.mNumHits += out.mHit[i];
     return out;
+}
+
+CastRaysResult cast_rays(const Mesh& rMesh, const std::vector<double>& rOrigins,
+                         const std::vector<double>& rDirections, const CastRaysOptions& rOptions) {
+    // The rays are validated before the surface is built, as they always were.
+    cast_rays_unit_directions(rOrigins, rDirections);
+    const SurfaceQuery query(rMesh, rOptions.mRegion);
+    CastRaysOptions options = rOptions;
+    options.mRegion.clear();
+    return query.CastRays(rOrigins, rDirections, options);
 }
 
 }  // namespace meshioplusplus

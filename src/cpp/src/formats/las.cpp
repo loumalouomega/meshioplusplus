@@ -33,6 +33,7 @@
 // Project includes
 #include "meshioplusplus/formats/las.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
+#include "meshioplusplus/detail/crs.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/log.hpp"
@@ -62,6 +63,87 @@ void las_put(std::string& rOut, T Value) {
     if constexpr (std::endian::native == std::endian::big)
         std::reverse(b.begin(), b.end());
     rOut.append(reinterpret_cast<const char*>(b.data()), sizeof(T));
+}
+
+// The georeferencing VLRs (roadmap 9.10.2): `LASF_Projection` record 2112 holds
+// OGC WKT, 34735 the GeoTIFF key directory of LAS <= 1.3.
+constexpr std::string_view kLasProjectionUser = "LASF_Projection";
+
+bool las_is_projection(std::string_view Vlrs, std::size_t At) {
+    const std::string_view user = Vlrs.substr(At + 2, 16);
+    return user.substr(0, std::min(user.find('\0'), user.size())) == kLasProjectionUser;
+}
+
+// The CRS the VLRs state: the WKT text of a 2112 record, else "EPSG:<code>"
+// from a GeoTIFF ProjectedCSType (3072) or GeographicType (2048) key, else "".
+std::string las_crs_from_vlrs(std::string_view Vlrs) {
+    std::string epsg;
+    for (std::size_t at = 0; at + 54 <= Vlrs.size();) {
+        const std::size_t len = las_get<std::uint16_t>(Vlrs, at + 20);
+        if (at + 54 + len > Vlrs.size())
+            break;
+        if (las_is_projection(Vlrs, at)) {
+            const std::uint16_t id = las_get<std::uint16_t>(Vlrs, at + 18);
+            const std::string_view body = Vlrs.substr(at + 54, len);
+            if (id == 2112) {
+                std::string wkt(body.substr(0, std::min(body.find('\0'), body.size())));
+                if (!wkt.empty())
+                    return wkt;
+            } else if (id == 34735 && len >= 8) {
+                const std::size_t nkeys = las_get<std::uint16_t>(body, 6);
+                for (std::size_t k = 0; k < nkeys && 8 + 8 * k + 8 <= len; ++k) {
+                    const std::size_t o = 8 + 8 * k;
+                    const std::uint16_t key = las_get<std::uint16_t>(body, o);
+                    const std::uint16_t where = las_get<std::uint16_t>(body, o + 2);
+                    const std::uint16_t value = las_get<std::uint16_t>(body, o + 6);
+                    if (where != 0 || value == 0 || value == 32767)
+                        continue;
+                    if (key == 3072 || (key == 2048 && epsg.empty()))
+                        epsg = "EPSG:" + std::to_string(value);
+                }
+            }
+        }
+        at += 54 + len;
+    }
+    return epsg;
+}
+
+// The VLRs to write for a mesh whose CRS is @p rCrs: verbatim when they
+// already state it, else without their projection records and, for a WKT
+// CRS, with a 2112 record of it (an `EPSG:<code>` CRS is warned about: LAS 1.4
+// point formats 6 to 10 take WKT only).
+std::string las_vlrs_for_crs(const std::string& rVlrs, const std::string& rCrs) {
+    if (rCrs.empty() || las_crs_from_vlrs(rVlrs) == rCrs)
+        return rVlrs;
+    std::string out;
+    for (std::size_t at = 0; at + 54 <= rVlrs.size();) {
+        const std::size_t len = las_get<std::uint16_t>(rVlrs, at + 20);
+        if (!las_is_projection(rVlrs, at))
+            out.append(rVlrs, at, 54 + len);
+        at += 54 + len;
+    }
+    if (rCrs.find('[') == std::string::npos) {
+        log::warn(
+            "las: meshio:crs '{}' is not WKT, which LAS 1.4 point formats 6 to 10 "
+            "require; it is not written (convert it to WKT first)",
+            rCrs);
+        return out;
+    }
+    std::string body = rCrs;
+    body += '\0';
+    if (body.size() > 65535)
+        throw WriteError("meshio++: las: meshio:crs is longer than a VLR can hold");
+    las_put<std::uint16_t>(out, 0);  // reserved
+    std::string user(kLasProjectionUser);
+    user.resize(16, '\0');
+    out += user;
+    las_put<std::uint16_t>(out, 2112);
+    las_put<std::uint16_t>(out, static_cast<std::uint16_t>(body.size()));
+    std::string desc = "OGC WKT";
+    desc.resize(32, '\0');
+    out += desc;
+    out += body;
+    return out;
 }
 
 /// The standard record length of each point format.
@@ -272,6 +354,9 @@ Mesh read_las(const std::string& rPath, const ReadOptions& rOptions, const LasRe
     mesh.AddFieldData("las:point_format", std::move(f));
     if (!vlrs.empty())
         mesh.AddFieldData("las:vlrs", las_bytes(vlrs));
+    const std::string crs = las_crs_from_vlrs(vlrs);
+    if (!crs.empty())
+        detail::set_mesh_crs(mesh, crs);
     if (minor >= 4 && header >= 375 && las_get<std::uint32_t>(d, 243) > 0)
         log::warn("las: '{}' has extended VLRs, which are not kept", rPath);
     return mesh;
@@ -317,6 +402,7 @@ void write_las(const std::string& rPath, const Mesh& rMesh) {
         const NDArray& v = rMesh.FieldData("las:vlrs");
         vlrs.assign(reinterpret_cast<const char*>(v.Data()), v.Size());
     }
+    vlrs = las_vlrs_for_crs(vlrs, detail::mesh_crs(rMesh));
     std::size_t nvlr = 0;
     for (std::size_t at = 0; at + 54 <= vlrs.size(); ++nvlr)
         at += 54 + las_get<std::uint16_t>(vlrs, at + 20);

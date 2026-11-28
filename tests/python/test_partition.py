@@ -217,7 +217,7 @@ def test_labels_take_no_ghost_layers():
 def test_unknown_method_and_mode_raise():
     mesh = _quad_grid(2, 2)
     with pytest.raises(ValueError, match="method"):
-        meshioplusplus.partition_labels(mesh, 2, method="metis")
+        meshioplusplus.partition_labels(mesh, 2, method="no-such-partitioner")
     with pytest.raises(ValueError, match="mode"):
         meshioplusplus.partition_labels(mesh, 2, mode="turbo")
 

@@ -963,6 +963,17 @@ static mxArray *O_mio_undo_green(const mxArray **a) {
     return mio_o_struct(3, names, v);
 }
 
+static mxArray* O_mio_undo_green_fine(const mxArray** a) {
+    int64_t ngroups = 0, nremoved = 0;
+    mio_mesh* out = mio_undo_green_fine(mio_o_mesh(a[0]), &ngroups, &nremoved);
+    if (out == NULL)
+        mio_o_fail("undo_green_fine");
+    const char* names[] = {"mesh", "num_groups_undone", "num_cells_removed"};
+    mxArray* v[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)ngroups),
+                    mio_o_scalar((double)nremoved)};
+    return mio_o_struct(3, names, v);
+}
+
 static mxArray *O_mio_meshes_equal(const mxArray **a) {
     int equal = 0;
     mio_o_check(mio_meshes_equal(mio_o_mesh(a[0]), mio_o_mesh(a[1]), mio_o_double(a[2], "atol"),
@@ -1276,8 +1287,9 @@ static mxArray *O_mio_blend_steps(const mxArray **a) {
 }
 
 static mxArray *O_mio_convert_cells(const mxArray **a) {
-    mio_convert_cells_result *r = mio_convert_cells(
-        mio_o_mesh(a[0]), mio_o_string(a[1], "mode"), mio_o_bool(a[2], "record_parent_ids"));
+    mio_convert_cells_result* r = mio_convert_cells_ex(
+        mio_o_mesh(a[0]), mio_o_string(a[1], "mode"), mio_o_bool(a[2], "record_parent_ids"),
+        mio_o_int(a[3], "order"), mio_o_bool(a[4], "full"));
     if (r == NULL) mio_o_fail("convert_cells");
     mxArray *pm = NULL, *cm = NULL;
     if (!oc_result_maps(r, 0, &pm, &cm)) {
@@ -1352,6 +1364,9 @@ static int oc_refine_closure_code(const char *name) {
         return MIO_REFINE_CLOSURE_PROPAGATE;
     if (strcmp(name, "balanced") == 0 || strcmp(name, "2:1") == 0)
         return MIO_REFINE_CLOSURE_BALANCED;
+    if (strcmp(name, "mixed_green") == 0 || strcmp(name, "mixedgreen") == 0 ||
+        strcmp(name, "mixed-green") == 0)
+        return MIO_REFINE_CLOSURE_MIXED_GREEN;
     return -1;
 }
 
@@ -1368,7 +1383,8 @@ static int oc_refine_compare_code(const char *name) {
 }
 
 /* refine(mesh, levels, record_parent_ids, cells, region, where_array,
- *        where_op, where_value, closure, record_levels, record_hierarchy) */
+ *        where_op, where_value, closure, record_levels, record_hierarchy,
+ *        undo_green_first) */
 static mxArray *O_mio_refine(const mxArray **a) {
     mio_refine_opts opts;
     mio_refine_opts_init(&opts);
@@ -1376,6 +1392,7 @@ static mxArray *O_mio_refine(const mxArray **a) {
     opts.record_parent_ids = mio_o_bool(a[2], "record_parent_ids");
     opts.record_levels = mio_o_bool(a[9], "record_levels");
     opts.record_hierarchy = mio_o_bool(a[10], "record_hierarchy");
+    opts.undo_green_first = mio_o_bool(a[11], "undo_green_first");
     opts.region = mio_o_opt_string(a[4]);
     opts.predicate_array = mio_o_opt_string(a[5]);
     if (!mio_o_is_null(a[7]) && mxGetNumberOfElements(a[7]) > 0)
@@ -1537,10 +1554,11 @@ static const char *kPartitionFields[] = {"part_id", "mesh", "point_map", "cell_m
  * mesh is read out of the result first; the meshes are wrapped after it is
  * freed. */
 static mxArray *O_mio_partition(const mxArray **a) {
-    mio_partition_result *r = mio_partition(
+    mio_partition_result* r = mio_partition_ex(
         mio_o_mesh(a[0]), mio_o_int(a[1], "nparts"), mio_o_opt_string(a[2]),
         mio_o_double(a[3], "imbalance"), mio_o_opt_string(a[4]), mio_o_int(a[5], "seed"),
-        mio_o_bool(a[6], "record_ids"), mio_o_int(a[7], "ghost_layers"), mio_o_opt_string(a[8]));
+        mio_o_bool(a[6], "record_ids"), mio_o_int(a[7], "ghost_layers"), mio_o_opt_string(a[8]),
+        mio_o_bool(a[9], "connected_parts"));
     if (r == NULL) mio_o_fail("partition");
 
     int64_t n = mio_partition_result_num_pieces(r);
@@ -1641,6 +1659,7 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_metric_from_hessian, 6),
     MIO_O_ENTRY(mio_tetrahedralize, 9),
     MIO_O_ENTRY(mio_undo_green, 2),
+    MIO_O_ENTRY(mio_undo_green_fine, 1),
     MIO_O_ENTRY(mio_meshes_equal, 5),
     MIO_O_ENTRY(mio_diff, 5),
     MIO_O_ENTRY(mio_stats, 1),
@@ -1650,14 +1669,14 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_subdivide, 2),
     MIO_O_ENTRY(mio_agglomerate, 5),
     MIO_O_ENTRY(mio_blend_steps, 4),
-    MIO_O_ENTRY(mio_convert_cells, 3),
+    MIO_O_ENTRY(mio_convert_cells, 5),
     MIO_O_ENTRY(mio_tet_to_poly, 4),
     MIO_O_ENTRY(mio_poly_to_tet, 2),
-    MIO_O_ENTRY(mio_refine, 11),
+    MIO_O_ENTRY(mio_refine, 12),
     MIO_O_ENTRY(mio_tessellate, 5),
     MIO_O_ENTRY(mio_decimate, 12),
     MIO_O_ENTRY(mio_decimate_volume, 9),
-    MIO_O_ENTRY(mio_partition, 9),
+    MIO_O_ENTRY(mio_partition, 10),
     MIO_O_ENTRY(mio_partition_labels, 8),
 };
 

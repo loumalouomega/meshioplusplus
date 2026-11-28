@@ -1248,6 +1248,15 @@ MIO_API mio_mesh* mio_undo_green(const mio_mesh* coarse, const mio_mesh* fine,
                                  int64_t* num_groups_undone, int64_t* num_cells_removed);
 
 /**
+ * The single-mesh form of mio_undo_green (roadmap 9.6.1): the green closure
+ * groups are found from the `refine:cell_id` / `refine:parent_id` hierarchy the
+ * fine mesh carries (a `record_hierarchy` refine), so the coarse mesh is not
+ * needed. Same outputs as mio_undo_green.
+ */
+MIO_API mio_mesh* mio_undo_green_fine(const mio_mesh* fine, int64_t* num_groups_undone,
+                                      int64_t* num_cells_removed);
+
+/**
  * Sample data arrays from a source mesh onto a target mesh (cross-mesh field
  * transfer). Returns a copy of the target — geometry, connectivity and its own
  * data preserved exactly — with the requested source arrays sampled onto it:
@@ -2243,6 +2252,16 @@ MIO_API mio_convert_cells_result* mio_convert_cells(const mio_mesh* mesh, const 
                                                     int record_parent_ids);
 
 /**
+ * mio_convert_cells with the element order and family (roadmap 9.5):
+ * `order` is the target order of "elevate" (>= 2) or "reduce" (>= 1), 0 or
+ * less for the mode's default (2 and 1); nonzero `full` elevates to the
+ * full-Lagrange family (quad9, hexahedron27, the VTK Lagrange orders) rather
+ * than serendipity. mio_convert_cells is this call with order 2, full 0.
+ */
+MIO_API mio_convert_cells_result* mio_convert_cells_ex(const mio_mesh* mesh, const char* mode,
+                                                       int record_parent_ids, int order, int full);
+
+/**
  * Borrow the converted mesh. Owned by the result: valid until
  * mio_convert_cells_result_free(result); do NOT pass it to mio_mesh_free().
  * @return the converted mesh, or NULL on error.
@@ -2519,7 +2538,14 @@ typedef enum mio_refine_closure {
      * The output is 1-irregular and NOT conforming; the constrained nodes are
      * reported in the refine:hanging point_data array.
      */
-    MIO_REFINE_CLOSURE_BALANCED = 2
+    MIO_REFINE_CLOSURE_BALANCED = 2,
+    /**
+     * Mixed-type green closure (roadmap 9.6.2): close a quadrilateral with
+     * marked edges locally into conforming triangles, and a hexahedron with
+     * marked edges on one face into a conforming pyramid/tetrahedron transition
+     * (roadmap 9.6), without propagating refinement.
+     */
+    MIO_REFINE_CLOSURE_MIXED_GREEN = 3
 } mio_refine_closure;
 
 /** The comparison a mio_refine_opts predicate selector applies. */
@@ -2587,7 +2613,13 @@ typedef struct mio_refine_opts {
      * `lenient` precedent.
      */
     int64_t record_hierarchy;
-    int64_t reserved[5]; /**< must be zero; room for additive growth */
+    /**
+     * Nonzero to run the single-mesh mio_undo_green_fine() on the input first,
+     * so an adaptive loop re-refines from the parents of its green closures
+     * (roadmap 9.6.1). Takes one of the former `reserved` slots.
+     */
+    int64_t undo_green_first;
+    int64_t reserved[4]; /**< must be zero; room for additive growth */
 } mio_refine_opts;
 
 /** Zero-initialize refine options (every field its default). */
@@ -3094,6 +3126,25 @@ MIO_API mio_partition_result* mio_partition(const mio_mesh* mesh, int nparts, co
                                             double imbalance, const char* mode, int seed,
                                             int record_ids, int ghost_layers,
                                             const char* weights_key);
+
+/**
+ * mio_partition with the method-independent connectivity post-pass (roadmap
+ * 9.7.3): nonzero `connected_parts` reassigns every facet-disconnected
+ * fragment but the largest of each part to its best-connected neighbour, so
+ * each non-empty part is one facet-connected piece. `method` also names any
+ * registered graph partitioner ("metis", "scotch" when built in;
+ * mio_graph_partitioner_names()).
+ */
+MIO_API mio_partition_result* mio_partition_ex(const mio_mesh* mesh, int nparts, const char* method,
+                                               double imbalance, const char* mode, int seed,
+                                               int record_ids, int ghost_layers,
+                                               const char* weights_key, int connected_parts);
+
+/**
+ * The names of every registered graph partitioner, sorted and separated by
+ * '\n', under the string-getter protocol (header rule 5); -1 on error.
+ */
+MIO_API int64_t mio_graph_partitioner_names(char* buf, int64_t buflen);
 
 /** Number of pieces in a partition result (== nparts), or -1 on error. */
 MIO_API int64_t mio_partition_result_num_pieces(const mio_partition_result* result);
@@ -4647,6 +4698,19 @@ MIO_API void mio_coordinate_opts_init(mio_coordinate_opts* opts);
  */
 MIO_API mio_mesh* mio_convert_coordinates(const mio_mesh* mesh, const mio_coordinate_opts* opts,
                                           int64_t* num_arrays, int64_t* num_singular);
+
+/**
+ * Reproject the points from the CRS the mesh records (`field_data["meshio:crs"]`,
+ * mio_mesh_crs) to `target_crs` (`"EPSG:<code>"`, WKT2 or a PROJ string),
+ * easting/longitude first, and record `target_crs` on the result (roadmap
+ * 9.10.2). Needs a CRS provider (PROJ, -DMESHIOPLUSPLUS_WITH_PROJ=ON;
+ * mio_has_crs_provider()); fails with MIO_ERR_UNSUPPORTED without one.
+ * @return the new mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_convert_coordinates_crs(const mio_mesh* mesh, const char* target_crs);
+
+/** 1 when a CRS provider (PROJ) is registered, else 0. */
+MIO_API int mio_has_crs_provider(void);
 
 /**
  * Options for mio_prepare_metric. Initialize through mio_metric_opts_init():
@@ -9620,6 +9684,36 @@ MIO_API const int64_t* mio_cast_rays_result_cell(const mio_cast_rays_result* res
 MIO_API void mio_cast_rays_result_free(mio_cast_rays_result* res);
 
 /**
+ * A reusable surface query handle (roadmap 9.3.2; operations/surface_query.hpp):
+ * the triangle soup of `mesh`'s triangle, quad and polygon cells (or of cell
+ * region `region`, NULL or "" for all) and its hierarchies, built once and
+ * queried many times. The handle copies the surface; `mesh` may change or be
+ * freed afterwards. Queries are read-only and may run on several threads.
+ * @return a handle (free with mio_surface_query_free), or NULL on failure (an
+ *         unknown region, a mesh with no surface cell).
+ */
+typedef struct mio_surface_query mio_surface_query;
+MIO_API mio_surface_query* mio_surface_query_create(const mio_mesh* mesh, const char* region);
+MIO_API void mio_surface_query_free(mio_surface_query* query);
+/** The surface's triangles (quads and polygons fanned), or -1 on error. */
+MIO_API int64_t mio_surface_query_num_triangles(const mio_surface_query* query);
+/** mio_cast_rays against the handle's surface; the same outputs, bit-identical. */
+MIO_API mio_status mio_surface_query_cast_rays(const mio_surface_query* query,
+                                               const double* origins, int64_t num_rays,
+                                               const double* directions, int64_t num_directions,
+                                               double max_distance, int32_t* hit, double* distance,
+                                               double* point, double* normal, int64_t* cell,
+                                               int64_t* num_hits);
+/**
+ * The nearest surface point of each of `num_points` points (three doubles
+ * each). Every output is optional: `point` 3 * num_points, `distance`
+ * num_points (unsigned), `cell` num_points (the global input cell).
+ */
+MIO_API mio_status mio_surface_query_closest_points(const mio_surface_query* query,
+                                                    const double* points, int64_t num_points,
+                                                    double* point, double* distance, int64_t* cell);
+
+/**
  * Options for mio_locate_points (roadmap 9.3). Size: 64 bytes.
  */
 typedef struct mio_locate_points_opts {
@@ -9711,6 +9805,85 @@ MIO_API void mio_subsample_points_opts_init(mio_subsample_points_opts* opts);
 MIO_API mio_mesh* mio_subsample_points(const mio_mesh* mesh, const mio_subsample_points_opts* opts,
                                        int64_t* point_map);
 MIO_API int64_t mio_subsample_points_warnings(char* buf, int64_t buflen);
+
+/* ------------------------------------------------------------------------
+ * Smooth subdivision surfaces, physical units, CRS metadata and surface
+ * booleans (roadmap 9.1, 9.2, 9.10). See doc/subdivide_surface.md,
+ * doc/units.md and doc/mesh_boolean.md.
+ * ------------------------------------------------------------------------ */
+
+#define MIO_SUBDIVIDE_LOOP 0
+#define MIO_SUBDIVIDE_CATMULL_CLARK 1
+
+/** Options for mio_subdivide_surface (roadmap 9.2). Size: 64 bytes. */
+typedef struct mio_subdivide_surface_opts {
+    int32_t scheme;                 /**< MIO_SUBDIVIDE_LOOP or MIO_SUBDIVIDE_CATMULL_CLARK */
+    int32_t levels;                 /**< subdivision levels (>= 0; 0 returns a copy) */
+    double crease_angle;            /**< dihedral crease threshold in degrees (<= 0 disables) */
+    int32_t preserve_boundary;      /**< nonzero applies the boundary crease rules */
+    int32_t interpolate_point_data; /**< nonzero interpolates float point_data */
+    int32_t record_parent_ids;      /**< nonzero attaches subdivide:parent_cell */
+    int32_t reserved_pad;           /**< must be zero */
+    int64_t reserved[4];            /**< must be zero; room for additive growth */
+} mio_subdivide_surface_opts;
+
+/** Defaults: Loop, one level, 60 degree creases, boundary preserved, data interpolated. */
+MIO_API void mio_subdivide_surface_opts_init(mio_subdivide_surface_opts* opts);
+/**
+ * Loop or Catmull-Clark subdivision of a surface with Hoppe crease and boundary
+ * rules. Either count may be NULL.
+ * @return the subdivided mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_subdivide_surface(const mio_mesh* mesh,
+                                        const mio_subdivide_surface_opts* opts,
+                                        int64_t* num_crease_edges, int64_t* num_boundary_edges);
+/** The last mio_subdivide_surface call's warnings on this thread, '\n'-separated
+ *  (string-getter rule 5); -1 on error. */
+MIO_API int64_t mio_subdivide_surface_warnings(char* buf, int64_t buflen);
+
+/**
+ * Declare the physical unit of the point or cell data array `array`
+ * (`field_data["meshio:unit:<array>"]`, roadmap 9.10.1) from a unit name
+ * ("m", "mm", "Pa", "MPa", "N", "kg/m^3", "m/s", "K", ...).
+ */
+MIO_API mio_status mio_set_field_unit(mio_mesh* mesh, const char* array, const char* unit);
+/**
+ * The declared unit of `array` as `[scale_to_SI, m, kg, s, K, A, mol, cd]` in
+ * `out8`: 1 when declared, 0 when not (out8 untouched), -1 on error.
+ */
+MIO_API int mio_field_unit(const mio_mesh* mesh, const char* array, double* out8);
+/**
+ * Convert every declared field and the points to the consistent unit system
+ * `system` ("SI", "mm-t-s", "mm-kg-ms", "cm-g-s", "mm-g-ms"). Nonzero `strict`
+ * fails on an undeclared point/cell data array; zero leaves it with a warning.
+ * @return the converted mesh (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_convert_units(const mio_mesh* mesh, const char* system, int strict,
+                                    int64_t* num_arrays_converted);
+/** The last mio_convert_units call's warnings on this thread (string-getter rule 5). */
+MIO_API int64_t mio_convert_units_warnings(char* buf, int64_t buflen);
+
+/** The CRS the mesh records (`field_data["meshio:crs"]`), "" when none
+ *  (string-getter rule 5); -1 on error. */
+MIO_API int64_t mio_mesh_crs(const mio_mesh* mesh, char* buf, int64_t buflen);
+/** Record `crs` (`"EPSG:<code>"` or WKT2) as the mesh's CRS; "" clears it. */
+MIO_API mio_status mio_set_mesh_crs(mio_mesh* mesh, const char* crs);
+
+#define MIO_BOOLEAN_UNION 0
+#define MIO_BOOLEAN_DIFFERENCE 1
+#define MIO_BOOLEAN_INTERSECTION 2
+
+/**
+ * A watertight surface boolean of two closed, oriented triangle meshes through
+ * the registered boolean provider (Manifold, -DMESHIOPLUSPLUS_WITH_MANIFOLD=ON;
+ * roadmap 9.1). `backend` NULL or "" takes the registered provider; another
+ * name must match it. Fails with MIO_ERR_UNSUPPORTED when none is registered.
+ * @return the result surface (free with mio_mesh_free), or NULL on failure.
+ */
+MIO_API mio_mesh* mio_mesh_boolean(const mio_mesh* a, const mio_mesh* b, int op,
+                                   const char* backend, int64_t* num_triangles);
+/** 1 when a surface boolean provider is registered, else 0. */
+MIO_API int mio_has_boolean_provider(void);
 
 /* ------------------------------------------------------------------------
  * Discrete operators, streamlines, transfer operators, spectral descriptors,

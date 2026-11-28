@@ -133,6 +133,11 @@
 #include "meshioplusplus/operations/cast_rays.hpp"
 #include "meshioplusplus/operations/filter_points.hpp"
 #include "meshioplusplus/operations/subsample_points.hpp"
+#include "meshioplusplus/operations/subdivide_surface.hpp"
+#include "meshioplusplus/operations/units.hpp"
+#include "meshioplusplus/operations/mesh_boolean.hpp"
+#include "meshioplusplus/operations/surface_query.hpp"
+#include "meshioplusplus/detail/crs.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/normals.hpp"
@@ -233,6 +238,7 @@
 #include "meshioplusplus/operations/tetrahedralize.hpp"
 #include "meshioplusplus/operations/project_to_cad.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
 #include "meshioplusplus/operations/remesh.hpp"
 #include "meshioplusplus/operations/remesh_volume.hpp"
@@ -7714,6 +7720,24 @@ std::vector<double> js_flat_doubles(const val& rArr) {
  * numHits}`: `hit` and `cell` are `Int32Array`s (`cell` the 0-based input cell,
  * -1 on a miss), the rest `Float64Array`s.
  */
+// A CastRaysResult as the object `castRays` and `surfaceQueryCastRays` return.
+val cast_rays_result_to_val(const meshioplusplus::CastRaysResult& r, bool allHits) {
+    std::vector<std::int32_t> hit(r.mHit.begin(), r.mHit.end());
+    std::vector<std::int32_t> cell(r.mCell.begin(), r.mCell.end());
+    val out = val::object();
+    out.set("hit", int32_array_from(hit.data(), hit.size()));
+    out.set("distance", float64_array_from(r.mDistance.data(), r.mDistance.size()));
+    out.set("point", float64_array_from(r.mPoint.data(), r.mPoint.size()));
+    out.set("normal", float64_array_from(r.mNormal.data(), r.mNormal.size()));
+    out.set("cell", int32_array_from(cell.data(), cell.size()));
+    out.set("numHits", static_cast<double>(r.mNumHits));
+    if (allHits) {
+        std::vector<std::int32_t> ro(r.mRayOffset.begin(), r.mRayOffset.end());
+        out.set("rayOffset", int32_array_from(ro.data(), ro.size()));
+    }
+    return out;
+}
+
 val cast_rays_js(const val& rMesh, const val& rOrigins, const val& rDirections, double maxDistance,
                  const std::string& rRegion, bool allHits) {
     return with_js_errors([&]() -> val {
@@ -7723,21 +7747,69 @@ val cast_rays_js(const val& rMesh, const val& rOrigins, const val& rDirections, 
         options.mAllHits = allHits;
         const meshioplusplus::CastRaysResult r = meshioplusplus::cast_rays(
             val_to_mesh(rMesh), js_flat_doubles(rOrigins), js_flat_doubles(rDirections), options);
-        std::vector<std::int32_t> hit(r.mHit.begin(), r.mHit.end());
+        return cast_rays_result_to_val(r, allHits);
+    });
+}
+
+// The surface query handles (roadmap 9.3.2): an integer handle into a
+// module-local table, as the sequence and series handles are.
+std::unordered_map<int, meshioplusplus::SurfaceQuery>& surface_query_table() {
+    static std::unordered_map<int, meshioplusplus::SurfaceQuery> table;
+    return table;
+}
+
+const meshioplusplus::SurfaceQuery& surface_query_lookup(int handle) {
+    auto it = surface_query_table().find(handle);
+    if (it == surface_query_table().end())
+        throw std::invalid_argument("meshio++ (wasm): invalid or already-freed surface query " +
+                                    std::to_string(handle));
+    return it->second;
+}
+
+int surface_query_create_js(const val& rMesh, const std::string& rRegion) {
+    return with_js_errors([&]() -> int {
+        static int next_handle = 1;
+        meshioplusplus::SurfaceQuery query(val_to_mesh(rMesh), rRegion);
+        const int handle = next_handle++;
+        surface_query_table().emplace(handle, std::move(query));
+        return handle;
+    });
+}
+
+double surface_query_num_triangles_js(int handle) {
+    return with_js_errors([&]() -> double {
+        return static_cast<double>(surface_query_lookup(handle).NumTriangles());
+    });
+}
+
+val surface_query_cast_rays_js(int handle, const val& rOrigins, const val& rDirections,
+                               double maxDistance, bool allHits) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::CastRaysOptions options;
+        options.mMaxDistance = maxDistance;
+        options.mAllHits = allHits;
+        return cast_rays_result_to_val(
+            surface_query_lookup(handle).CastRays(js_flat_doubles(rOrigins),
+                                                  js_flat_doubles(rDirections), options),
+            allHits);
+    });
+}
+
+val surface_query_closest_points_js(int handle, const val& rPoints) {
+    return with_js_errors([&]() -> val {
+        const meshioplusplus::SurfaceClosestResult r =
+            surface_query_lookup(handle).ClosestPoints(js_flat_doubles(rPoints));
         std::vector<std::int32_t> cell(r.mCell.begin(), r.mCell.end());
         val out = val::object();
-        out.set("hit", int32_array_from(hit.data(), hit.size()));
-        out.set("distance", float64_array_from(r.mDistance.data(), r.mDistance.size()));
         out.set("point", float64_array_from(r.mPoint.data(), r.mPoint.size()));
-        out.set("normal", float64_array_from(r.mNormal.data(), r.mNormal.size()));
+        out.set("distance", float64_array_from(r.mDistance.data(), r.mDistance.size()));
         out.set("cell", int32_array_from(cell.data(), cell.size()));
-        out.set("numHits", static_cast<double>(r.mNumHits));
-        if (allHits) {
-            std::vector<std::int32_t> ro(r.mRayOffset.begin(), r.mRayOffset.end());
-            out.set("rayOffset", int32_array_from(ro.data(), ro.size()));
-        }
         return out;
     });
+}
+
+void surface_query_free_js(int handle) {
+    surface_query_table().erase(handle);
 }
 
 /**
@@ -9346,6 +9418,8 @@ val convert_coordinates_js(const val& rMeshObj, const val& rOptions) {
                 options.mInverse = rOptions["inverse"].as<bool>();
             if (rOptions.hasOwnProperty("recordCoordinates"))
                 options.mRecordCoordinates = rOptions["recordCoordinates"].as<bool>();
+            if (rOptions.hasOwnProperty("targetCrs"))
+                options.mTargetCrs = rOptions["targetCrs"].as<std::string>();
         }
         meshioplusplus::CoordinateResult r =
             meshioplusplus::convert_coordinates(val_to_mesh(rMeshObj), options);
@@ -9570,30 +9644,6 @@ val split_js(const val& rMeshObj, const std::string& rBy, const std::string& rTa
 }
 
 /**
- * @brief Convert the element representation of a mesh: `"linearize"`,
- * `"simplexify"`, or `"elevate"`. Returns the converted mesh; the index maps
- * are not carried across the JS boundary (use `recordParentIds` for the
- * `convert:parent_cell` cell_data instead).
- */
-val convert_cells_js(const val& rMeshObj, const std::string& rMode, bool recordParentIds,
-                     bool returnMaps) {
-    return with_js_errors([&]() -> val {
-        meshioplusplus::ConvertCellsOptions options;
-        options.mMode = meshioplusplus::convert_cells_mode_from_name(rMode);
-        options.mRecordParentIds = recordParentIds;
-        meshioplusplus::ConvertCellsResult r =
-            meshioplusplus::convert_cells(val_to_mesh(rMeshObj), options);
-        if (!returnMaps)
-            return mesh_to_val(r.mMesh);
-        val out = val::object();
-        out.set("mesh", mesh_to_val(r.mMesh));
-        out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
-        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
-        return out;
-    });
-}
-
-/**
  * @brief Polyhedrally refine a mesh: one polyhedral child per face of every
  * eligible 3D cell, connected to a new interior point. Needs no per-type
  * template table -- tabulated types (reduced to corners for a quadratic
@@ -9772,6 +9822,9 @@ val refine_js(const val& rMeshObj, int levels, bool recordParentIds, const val& 
             val hierarchy_flag = rOptions["recordHierarchy"];
             options.mRecordHierarchy = !hierarchy_flag.isUndefined() && !hierarchy_flag.isNull() &&
                                        hierarchy_flag.as<bool>();
+            val undo_flag = rOptions["undoGreenFirst"];
+            options.mUndoGreenFirst =
+                !undo_flag.isUndefined() && !undo_flag.isNull() && undo_flag.as<bool>();
         }
         meshioplusplus::RefineResult r = meshioplusplus::refine(val_to_mesh(rMeshObj), options);
         if (!returnMaps)
@@ -9887,7 +9940,8 @@ meshioplusplus::PartitionOptions partition_options_js(int nparts, const std::str
                                                       const std::string& rWeightsKey) {
     meshioplusplus::PartitionOptions options;
     options.mNParts = nparts;
-    options.mMethod = meshioplusplus::partition_method_from_name(rMethod);
+    // By name, as Python does: a registered graph partitioner resolves too.
+    options.mMethodName = rMethod.empty() ? std::string("auto") : rMethod;
     options.mImbalance = imbalance;
     options.mMode = meshioplusplus::partition_mode_from_name(rMode);
     options.mSeed = seed;
@@ -9898,37 +9952,6 @@ meshioplusplus::PartitionOptions partition_options_js(int nparts, const std::str
 }
 
 }  // namespace
-
-/**
- * @brief Decompose a mesh into `nparts` balanced pieces (`"sfc"` / `"kahip"` /
- * `"auto"`). Returns a JS array of `{partId, mesh}` objects, exactly `nparts`
- * entries (pieces may be empty; blocks kept 1:1 with the input, unlike
- * `split`), plus `pointMap`/`cellMaps` per piece when `returnMaps` is set (use
- * `recordIds` for the `partition:original_*_id` arrays, or `partitionLabels`
- * for the assignment). KaHIP is never compiled into the WASM build, so
- * `method: "kahip"` throws the error naming `MESHIOPLUSPLUS_WITH_KAHIP`.
- */
-val partition_js(const val& rMeshObj, int nparts, const std::string& rMethod, double imbalance,
-                 const std::string& rMode, int seed, bool recordIds, int ghostLayers,
-                 const std::string& rWeightsKey, bool returnMaps) {
-    return with_js_errors([&]() -> val {
-        meshioplusplus::PartitionResult r = meshioplusplus::partition(
-            val_to_mesh(rMeshObj), partition_options_js(nparts, rMethod, imbalance, rMode, seed,
-                                                        recordIds, ghostLayers, rWeightsKey));
-        val out = val::array();
-        for (meshioplusplus::PartitionPiece& p : r.mPieces) {
-            val piece = val::object();
-            piece.set("partId", p.mPartId);
-            piece.set("mesh", mesh_to_val(p.mMesh));
-            if (returnMaps) {
-                piece.set("pointMap", ndarray_to_int32_array(p.mPointMap));
-                piece.set("cellMaps", cell_maps_to_val(p.mCellMaps));
-            }
-            out.call<void>("push", piece);
-        }
-        return out;
-    });
-}
 
 /**
  * @brief The per-cell part assignment only: a JS array with one Int32Array-like
@@ -11428,6 +11451,228 @@ val project_to_cad_js(const val& rMeshObj, const val& rInfo, const val& rOptions
     });
 }
 
+/**
+ * @brief Decompose a mesh into `nparts` balanced pieces (`"sfc"` / `"kahip"` /
+ * `"auto"`). Returns a JS array of `{partId, mesh}` objects, exactly `nparts`
+ * entries (pieces may be empty; blocks kept 1:1 with the input, unlike
+ * `split`), plus `pointMap`/`cellMaps` per piece when `returnMaps` is set (use
+ * `recordIds` for the `partition:original_*_id` arrays, or `partitionLabels`
+ * for the assignment). KaHIP is never compiled into the WASM build, so
+ * `method: "kahip"` throws the error naming `MESHIOPLUSPLUS_WITH_KAHIP`.
+ *
+ * `connectedParts` (roadmap 9.7.3) makes every non-empty part one
+ * facet-connected piece; `method` also names a registered graph partitioner.
+ */
+val partition_ex_js(const val& rMeshObj, int nparts, const std::string& rMethod, double imbalance,
+                    const std::string& rMode, int seed, bool recordIds, int ghostLayers,
+                    const std::string& rWeightsKey, bool returnMaps, bool connectedParts) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::PartitionOptions options = partition_options_js(
+            nparts, rMethod, imbalance, rMode, seed, recordIds, ghostLayers, rWeightsKey);
+        options.mConnectedParts = connectedParts;
+        meshioplusplus::PartitionResult r =
+            meshioplusplus::partition(val_to_mesh(rMeshObj), options);
+        val out = val::array();
+        for (meshioplusplus::PartitionPiece& p : r.mPieces) {
+            val piece = val::object();
+            piece.set("partId", p.mPartId);
+            piece.set("mesh", mesh_to_val(p.mMesh));
+            if (returnMaps) {
+                piece.set("pointMap", ndarray_to_int32_array(p.mPointMap));
+                piece.set("cellMaps", cell_maps_to_val(p.mCellMaps));
+            }
+            out.call<void>("push", piece);
+        }
+        return out;
+    });
+}
+
+/** @brief The names of every registered graph partitioner, sorted. */
+val graph_partitioner_names_js() {
+    return with_js_errors([&]() -> val {
+        val out = val::array();
+        for (const std::string& r_name : meshioplusplus::graph_partitioner_names())
+            out.call<void>("push", r_name);
+        return out;
+    });
+}
+
+/**
+ * @brief Convert the element representation of a mesh: `"linearize"`,
+ * `"simplexify"`, `"elevate"` or `"reduce"`, with the element order and
+ * family (roadmap 9.5): `order` <= 0 is the mode's default (2 for elevate, 1
+ * for reduce). Returns the converted mesh, or `{mesh, pointMap, cellMaps}`
+ * when `returnMaps` is set.
+ */
+val convert_cells_ex_js(const val& rMeshObj, const std::string& rMode, bool recordParentIds,
+                        bool returnMaps, int order, bool full) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConvertCellsOptions options;
+        options.mMode = meshioplusplus::convert_cells_mode_from_name(rMode);
+        options.mRecordParentIds = recordParentIds;
+        if (order > 0)
+            options.mOrder = order;
+        else if (options.mMode == meshioplusplus::ConvertCellsMode::Reduce)
+            options.mOrder = 1;
+        options.mFull = full;
+        meshioplusplus::ConvertCellsResult r =
+            meshioplusplus::convert_cells(val_to_mesh(rMeshObj), options);
+        if (!returnMaps)
+            return mesh_to_val(r.mMesh);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("pointMap", ndarray_to_int32_array(r.mPointMap));
+        out.set("cellMaps", cell_maps_to_val(r.mCellMaps));
+        return out;
+    });
+}
+
+/** @brief The single-mesh `undoGreen` (roadmap 9.6.1): from the fine mesh's hierarchy. */
+val undo_green_fine_js(const val& rFineObj) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::UndoGreenResult r = meshioplusplus::undo_green(val_to_mesh(rFineObj));
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numGroupsUndone", static_cast<double>(r.mNumGroupsUndone));
+        out.set("numCellsRemoved", static_cast<double>(r.mNumCellsRemoved));
+        return out;
+    });
+}
+
+val js_string_array(const std::vector<std::string>& rItems) {
+    val out = val::array();
+    for (std::size_t i = 0; i < rItems.size(); ++i)
+        out.set(static_cast<unsigned>(i), rItems[i]);
+    return out;
+}
+
+/**
+ * @brief Loop or Catmull-Clark subdivision (roadmap 9.2). @p rOptions is
+ * `{scheme, levels, creaseAngle, preserveBoundary, interpolatePointData,
+ * recordParentIds}`, every key optional. See operations/subdivide_surface.hpp.
+ */
+val subdivide_surface_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::SubdivideSurfaceOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "subdivideSurface options",
+                                {"scheme", "levels", "creaseAngle", "preserveBoundary",
+                                 "interpolatePointData", "recordParentIds"});
+            if (rOptions.hasOwnProperty("scheme"))
+                options.mScheme = meshioplusplus::subdivision_scheme_from_name(
+                    rOptions["scheme"].as<std::string>());
+            if (rOptions.hasOwnProperty("levels"))
+                options.mLevels = rOptions["levels"].as<int>();
+            if (rOptions.hasOwnProperty("creaseAngle"))
+                options.mCreaseAngle = rOptions["creaseAngle"].as<double>();
+            if (rOptions.hasOwnProperty("preserveBoundary"))
+                options.mPreserveBoundary = rOptions["preserveBoundary"].as<bool>();
+            if (rOptions.hasOwnProperty("interpolatePointData"))
+                options.mInterpolatePointData = rOptions["interpolatePointData"].as<bool>();
+            if (rOptions.hasOwnProperty("recordParentIds"))
+                options.mRecordParentIds = rOptions["recordParentIds"].as<bool>();
+        }
+        meshioplusplus::SubdivideSurfaceResult r =
+            meshioplusplus::subdivide_surface(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numCreaseEdges", static_cast<double>(r.mNumCreaseEdges));
+        out.set("numBoundaryEdges", static_cast<double>(r.mNumBoundaryEdges));
+        out.set("warnings", js_string_array(r.mWarnings));
+        return out;
+    });
+}
+
+/**
+ * @brief Convert declared fields to a consistent unit system (roadmap 9.10.1).
+ * @p rOptions is `{system, strict}`.
+ */
+val convert_units_js(const val& rMeshObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::ConvertUnitsOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "convertUnits options", {"system", "strict"});
+            if (rOptions.hasOwnProperty("system"))
+                options.mSystem = rOptions["system"].as<std::string>();
+            if (rOptions.hasOwnProperty("strict"))
+                options.mStrict = rOptions["strict"].as<bool>();
+        }
+        meshioplusplus::ConvertUnitsResult r =
+            meshioplusplus::convert_units(val_to_mesh(rMeshObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("numArraysConverted", static_cast<double>(r.mNumArraysConverted));
+        out.set("warnings", js_string_array(r.mWarnings));
+        return out;
+    });
+}
+
+/** @brief The mesh with `array`'s unit declared from a unit name ("MPa", "mm", ...). */
+val set_field_unit_js(const val& rMeshObj, const std::string& rArray, const std::string& rUnit) {
+    return with_js_errors([&]() -> val {
+        Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::set_field_unit(mesh, rArray, meshioplusplus::field_unit_from_name(rUnit));
+        return mesh_to_val(mesh);
+    });
+}
+
+/** @brief `[scale_to_SI, m, kg, s, K, A, mol, cd]` of `array`, or null when undeclared. */
+val field_unit_js(const val& rMeshObj, const std::string& rArray) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::FieldUnit unit;
+        if (!meshioplusplus::get_field_unit(val_to_mesh(rMeshObj), rArray, unit))
+            return val::null();
+        val out = val::array();
+        out.set(0u, unit.mScale);
+        for (unsigned k = 0; k < 7; ++k)
+            out.set(k + 1, unit.mExponents[k]);
+        return out;
+    });
+}
+
+/** @brief The CRS the mesh records (`field_data["meshio:crs"]`), "" when none. */
+std::string mesh_crs_js(const val& rMeshObj) {
+    return meshioplusplus::detail::mesh_crs(val_to_mesh(rMeshObj));
+}
+
+/** @brief The mesh with `crs` recorded as its CRS. */
+val set_mesh_crs_js(const val& rMeshObj, const std::string& rCrs) {
+    return with_js_errors([&]() -> val {
+        Mesh mesh = val_to_mesh(rMeshObj);
+        meshioplusplus::detail::set_mesh_crs(mesh, rCrs);
+        return mesh_to_val(mesh);
+    });
+}
+
+/**
+ * @brief A surface boolean through the registered provider (roadmap 9.1).
+ * @p rOptions is `{op, backend}`; `op` is "union", "difference" or "intersection".
+ */
+val mesh_boolean_js(const val& rAObj, const val& rBObj, const val& rOptions) {
+    return with_js_errors([&]() -> val {
+        meshioplusplus::MeshBooleanOptions options;
+        if (!rOptions.isUndefined() && !rOptions.isNull()) {
+            check_settings_keys(rOptions, "meshBoolean options", {"op", "backend"});
+            if (rOptions.hasOwnProperty("op"))
+                options.mOp =
+                    meshioplusplus::boolean_op_from_name(rOptions["op"].as<std::string>());
+            if (rOptions.hasOwnProperty("backend"))
+                options.mBackend = rOptions["backend"].as<std::string>();
+        }
+        meshioplusplus::MeshBooleanResult r =
+            meshioplusplus::mesh_boolean(val_to_mesh(rAObj), val_to_mesh(rBObj), options);
+        val out = val::object();
+        out.set("mesh", mesh_to_val(r.mMesh));
+        out.set("backend", r.mBackend);
+        out.set("numTriangles", static_cast<double>(r.mNumTriangles));
+        return out;
+    });
+}
+
+bool has_boolean_provider_js() {
+    return meshioplusplus::has_boolean_provider();
+}
+
 val undo_green_js(const val& rCoarseObj, const val& rFineObj) {
     return with_js_errors([&]() -> val {
         meshioplusplus::UndoGreenResult r =
@@ -11898,6 +12143,16 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("interpolate", &interpolate_js);
     emscripten::function("conservativeInterpolate", &conservative_interpolate_js);
     emscripten::function("undoGreen", &undo_green_js);
+    emscripten::function("undoGreenFine", &undo_green_fine_js);
+    emscripten::function("graphPartitionerNames", &graph_partitioner_names_js);
+    emscripten::function("subdivideSurface", &subdivide_surface_js);
+    emscripten::function("convertUnits", &convert_units_js);
+    emscripten::function("setFieldUnit", &set_field_unit_js);
+    emscripten::function("fieldUnit", &field_unit_js);
+    emscripten::function("meshCrs", &mesh_crs_js);
+    emscripten::function("setMeshCrs", &set_mesh_crs_js);
+    emscripten::function("meshBoolean", &mesh_boolean_js);
+    emscripten::function("hasBooleanProvider", &has_boolean_provider_js);
     emscripten::function("slice", &slice_js);
     emscripten::function("sections", &sections_js);
     emscripten::function("fitCurves", &fit_curves_js);
@@ -12010,6 +12265,11 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("hausdorffDistance", &hausdorff_distance_js);
     emscripten::function("massProperties", &mass_properties_js);
     emscripten::function("castRays", &cast_rays_js);
+    emscripten::function("surfaceQueryCreate", &surface_query_create_js);
+    emscripten::function("surfaceQueryNumTriangles", &surface_query_num_triangles_js);
+    emscripten::function("surfaceQueryCastRays", &surface_query_cast_rays_js);
+    emscripten::function("surfaceQueryClosestPoints", &surface_query_closest_points_js);
+    emscripten::function("surfaceQueryFree", &surface_query_free_js);
     emscripten::function("filterPoints", &filter_points_js);
     emscripten::function("subsamplePoints", &subsample_points_js);
     emscripten::function("locatePoints", &locate_points_js);
@@ -12061,7 +12321,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("cropPlane", &crop_plane_js);
     emscripten::function("cropPredicate", &crop_predicate_js);
     emscripten::function("split", &split_js);
-    emscripten::function("convertCells", &convert_cells_js);
+    emscripten::function("convertCells", &convert_cells_ex_js);
     emscripten::function("subdivide", &subdivide_js);
     emscripten::function("agglomerate", &agglomerate_js);
     emscripten::function("tetToPoly", &tet_to_poly_js);
@@ -12069,7 +12329,7 @@ EMSCRIPTEN_BINDINGS(meshioplusplus_wasm) {
     emscripten::function("refine", &refine_js);
     emscripten::function("decimate", &decimate_js);
     emscripten::function("decimateVolume", &decimate_volume_js);
-    emscripten::function("partition", &partition_js);
+    emscripten::function("partition", &partition_ex_js);
     emscripten::function("partitionLabels", &partition_labels_js);
     emscripten::function("stats", &stats_js);
     emscripten::function("provenanceBegin", &provenance_begin_js);

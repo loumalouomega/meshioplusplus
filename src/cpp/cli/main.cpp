@@ -189,6 +189,9 @@
 #include "meshioplusplus/operations/tessellate.hpp"
 #include "meshioplusplus/operations/tet_poly.hpp"
 #include "meshioplusplus/operations/undo_green.hpp"
+#include "meshioplusplus/operations/subdivide_surface.hpp"
+#include "meshioplusplus/operations/units.hpp"
+#include "meshioplusplus/operations/mesh_boolean.hpp"
 // Per-format writers for the ASCII/binary/compress variants (the registry bakes
 // one default each, so these are called directly).
 #include "meshioplusplus/formats/ansys.hpp"
@@ -5195,6 +5198,107 @@ int cmd_delaunay(const std::vector<std::string>& rArgs) {
 
 // coordinates: positions, vector and tensor fields in cylindrical or spherical
 // components about an axis. See operations/coordinates.hpp.
+// subdivide-surface: Loop or Catmull-Clark subdivision with Hoppe crease and
+// boundary rules. See operations/subdivide_surface.hpp and doc/subdivide_surface.md.
+int cmd_subdivide_surface(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
+                                         {{"scheme", {}, true},
+                                          {"levels", {}, true},
+                                          {"crease-angle", {}, true},
+                                          {"no-preserve-boundary", {}, false},
+                                          {"no-interpolate", {}, false},
+                                          {"record-parent-ids", {}, false},
+                                          {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("subdivide-surface requires INFILE OUTFILE");
+    meshioplusplus::SubdivideSurfaceOptions o;
+    if (has_opt(p, "scheme"))
+        o.mScheme = meshioplusplus::subdivision_scheme_from_name(opt_value(p, "scheme"));
+    cli_opt_int(p, "levels", o.mLevels);
+    cli_opt_double(p, "crease-angle", o.mCreaseAngle);
+    o.mPreserveBoundary = !has_flag(p, "no-preserve-boundary");
+    o.mInterpolatePointData = !has_flag(p, "no-interpolate");
+    o.mRecordParentIds = has_flag(p, "record-parent-ids");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::SubdivideSurfaceResult r = meshioplusplus::subdivide_surface(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        std::int64_t num_cells = 0;
+        for (std::size_t b = 0; b < r.mMesh.NumCellBlocks(); ++b)
+            num_cells += static_cast<std::int64_t>(r.mMesh.Cells(b).NumCells());
+        json.Field("num_cells", num_cells);
+        json.Field("num_crease_edges", r.mNumCreaseEdges);
+        json.Field("num_boundary_edges", r.mNumBoundaryEdges);
+        json.EndObject();
+        return 0;
+    }
+    for (const std::string& r_w : r.mWarnings)
+        std::cerr << "warning: " << r_w << "\n";
+    std::cout << "subdivided: " << r.mNumCreaseEdges << " crease edge(s), " << r.mNumBoundaryEdges
+              << " boundary edge(s)\n";
+    return 0;
+}
+
+// convert-units: every declared field (field_data "meshio:unit:<array>") and
+// the points to a consistent unit system. See operations/units.hpp and doc/units.md.
+int cmd_convert_units(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(
+        rArgs, cli_specs({io_flag_specs(),
+                          {{"system", {}, true}, {"lenient", {}, false}, {"json", {}, false}}}));
+    if (p.positionals.size() != 2)
+        throw std::runtime_error("convert-units requires INFILE OUTFILE");
+    meshioplusplus::ConvertUnitsOptions o;
+    o.mSystem = opt_value(p, "system", "SI");
+    o.mStrict = !has_flag(p, "lenient");
+    Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    meshioplusplus::ConvertUnitsResult r = meshioplusplus::convert_units(mesh, o);
+    write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[1]);
+        json.Field("system", o.mSystem);
+        json.Field("num_arrays_converted", r.mNumArraysConverted);
+        json.EndObject();
+        return 0;
+    }
+    for (const std::string& r_w : r.mWarnings)
+        std::cerr << "warning: " << r_w << "\n";
+    std::cout << o.mSystem << ": " << r.mNumArraysConverted << " array(s) converted\n";
+    return 0;
+}
+
+// mesh-boolean: A op B of two closed, oriented triangle surfaces through the
+// registered boolean provider. See operations/mesh_boolean.hpp and doc/mesh_boolean.md.
+int cmd_mesh_boolean(const std::vector<std::string>& rArgs) {
+    auto p = cli_parse(rArgs,
+                       cli_specs({io_flag_specs(),
+                                  {{"op", {}, true}, {"backend", {}, true}, {"json", {}, false}}}));
+    if (p.positionals.size() != 3)
+        throw std::runtime_error("mesh-boolean requires A B OUTFILE");
+    meshioplusplus::MeshBooleanOptions o;
+    o.mOp = meshioplusplus::boolean_op_from_name(opt_value(p, "op", "union"));
+    o.mBackend = opt_value(p, "backend");
+    Mesh a = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+    Mesh b = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+    meshioplusplus::MeshBooleanResult r = meshioplusplus::mesh_boolean(a, b, o);
+    write_mesh_cli(p.positionals[2], r.mMesh, opt_value(p, "output-format"));
+    if (has_flag(p, "json")) {
+        meshioplusplus::cli::JsonOut json(std::cout);
+        json.BeginObject();
+        json.Field("output", p.positionals[2]);
+        json.Field("backend", r.mBackend);
+        json.Field("num_triangles", r.mNumTriangles);
+        json.EndObject();
+        return 0;
+    }
+    std::cout << r.mBackend << ": " << r.mNumTriangles << " triangle(s)\n";
+    return 0;
+}
+
 int cmd_coordinates(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
                                          {{"system", {}, true},
@@ -5204,6 +5308,7 @@ int cmd_coordinates(const std::vector<std::string>& rArgs) {
                                           {"arrays", {}, true},
                                           {"inverse", {}, false},
                                           {"no-record", {}, false},
+                                          {"target-crs", {}, true},
                                           {"json", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("coordinates requires INFILE OUTFILE");
@@ -5235,6 +5340,7 @@ int cmd_coordinates(const std::vector<std::string>& rArgs) {
     }
     o.mInverse = has_flag(p, "inverse");
     o.mRecordCoordinates = !has_flag(p, "no-record");
+    o.mTargetCrs = opt_value(p, "target-crs");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
     meshioplusplus::CoordinateResult r = meshioplusplus::convert_coordinates(mesh, o);
     write_mesh_cli(p.positionals[1], r.mMesh, opt_value(p, "output-format"));
@@ -7760,7 +7866,10 @@ int cmd_split(const std::vector<std::string>& rArgs) {
 
 int cmd_convert_cells(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(),
-                                         {{"mode", {}, true}, {"record-parent-ids", {}, false}}}));
+                                         {{"mode", {}, true},
+                                          {"record-parent-ids", {}, false},
+                                          {"order", {}, true},
+                                          {"full", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("convert-cells requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -7768,6 +7877,10 @@ int cmd_convert_cells(const std::vector<std::string>& rArgs) {
     meshioplusplus::ConvertCellsOptions options;
     options.mMode = meshioplusplus::convert_cells_mode_from_name(opt_value(p, "mode", "linearize"));
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
+    if (options.mMode == meshioplusplus::ConvertCellsMode::Reduce)
+        options.mOrder = 1;
+    cli_opt_int(p, "order", options.mOrder);
+    options.mFull = has_flag(p, "full");
 
     auto result = meshioplusplus::convert_cells(mesh, options);
     write_mesh_cli(p.positionals[1], result.mMesh, opt_value(p, "output-format"));
@@ -8049,7 +8162,8 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
                                           {"where", {}, true},
                                           {"closure", {}, true},
                                           {"record-levels", {}, false},
-                                          {"record-hierarchy", {}, false}}}));
+                                          {"record-hierarchy", {}, false},
+                                          {"undo-green-first", {}, false}}}));
     if (p.positionals.size() != 2)
         throw std::runtime_error("refine requires exactly INFILE and OUTFILE");
     Mesh mesh = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
@@ -8059,6 +8173,7 @@ int cmd_refine(const std::vector<std::string>& rArgs) {
     options.mRecordParentIds = has_flag(p, "record-parent-ids");
     options.mRecordLevels = has_flag(p, "record-levels");
     options.mRecordHierarchy = has_flag(p, "record-hierarchy");
+    options.mUndoGreenFirst = has_flag(p, "undo-green-first");
     options.mClosure = meshioplusplus::refine_closure_from_name(opt_value(p, "closure"));
     if (has_opt(p, "cells"))
         options.mCells = refine_parse_int64s(opt_value(p, "cells"));
@@ -8583,16 +8698,24 @@ int cmd_project_to_cad(const std::vector<std::string>& rArgs) {
 
 int cmd_undo_green(const std::vector<std::string>& rArgs) {
     auto p = cli_parse(rArgs, cli_specs({io_flag_specs(), {{"quiet", {"-q"}, false}}}));
-    if (p.positionals.size() != 3)
-        throw std::runtime_error("undo-green requires exactly COARSE FINE and OUTFILE");
-    Mesh coarse = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
-    Mesh fine = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
-
-    auto result = meshioplusplus::undo_green(coarse, fine);
+    // COARSE FINE OUTFILE, or FINE OUTFILE for the single-mesh form (roadmap
+    // 9.6.1), which reads the groups from FINE's refine:cell_id/parent_id.
+    if (p.positionals.size() != 2 && p.positionals.size() != 3)
+        throw std::runtime_error("undo-green requires COARSE FINE OUTFILE or FINE OUTFILE");
+    const bool single = p.positionals.size() == 2;
+    meshioplusplus::UndoGreenResult result;
+    if (single) {
+        Mesh fine = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+        result = meshioplusplus::undo_green(fine);
+    } else {
+        Mesh coarse = read_mesh_cli(p.positionals[0], opt_value(p, "input-format"));
+        Mesh fine = read_mesh_cli(p.positionals[1], opt_value(p, "input-format"));
+        result = meshioplusplus::undo_green(coarse, fine);
+    }
     if (!has_flag(p, "quiet"))
         std::cout << "undid " << result.mNumGroupsUndone << " green group(s), removing "
                   << result.mNumCellsRemoved << " cell(s)\n";
-    write_mesh_cli(p.positionals[2], result.mMesh, opt_value(p, "output-format"));
+    write_mesh_cli(p.positionals.back(), result.mMesh, opt_value(p, "output-format"));
     return 0;
 }
 
@@ -9241,6 +9364,7 @@ int cmd_partition(const std::vector<std::string>& rArgs) {
                                           {"weights", {}, true},
                                           {"ghost-layers", {}, true},
                                           {"record-ids", {}, false},
+                                          {"connected-parts", {}, false},
                                           {"labels-only", {}, false},
                                           {"quiet", {"-q"}, false}}}));
     if (p.positionals.size() != 2)
@@ -9253,11 +9377,13 @@ int cmd_partition(const std::vector<std::string>& rArgs) {
 
     meshioplusplus::PartitionOptions options;
     options.mNParts = std::stoi(opt_value(p, "nparts"));
-    options.mMethod = meshioplusplus::partition_method_from_name(opt_value(p, "method", "auto"));
+    // By name: a registered graph partitioner ("metis", "scotch") resolves too.
+    options.mMethodName = opt_value(p, "method", "auto");
     options.mImbalance = meshioplusplus::detail::stod_c(opt_value(p, "imbalance", "0.03"));
     options.mMode = meshioplusplus::partition_mode_from_name(opt_value(p, "mode", "eco"));
     options.mSeed = std::stoi(opt_value(p, "seed", "0"));
     options.mRecordIds = has_flag(p, "record-ids");
+    options.mConnectedParts = has_flag(p, "connected-parts");
     options.mGhostLayers = std::stoi(opt_value(p, "ghost-layers", "0"));
     options.mWeightsKey = opt_value(p, "weights");
 
@@ -11034,8 +11160,18 @@ const CliVerb kCliVerbs[] = {
      &cmd_hausdorff},
     {"completion", nullptr,
      "  completion              Print a bash, zsh or fish completion script\n", &cmd_completion},
+    {"subdivide-surface", nullptr,
+     "  subdivide-surface       Loop or Catmull-Clark subdivision with crease rules\n",
+     &cmd_subdivide_surface},
+    {"convert-units", nullptr,
+     "  convert-units           Convert declared field units to a consistent system\n",
+     &cmd_convert_units},
+    {"mesh-boolean", nullptr,
+     "  mesh-boolean            Union/difference/intersection of two closed surfaces\n",
+     &cmd_mesh_boolean},
     {"coordinates", nullptr,
-     "  coordinates             Fields in cylindrical/spherical components about an axis\n",
+     "  coordinates             Fields in cylindrical/spherical components about an axis,\n"
+     "                            or a CRS reprojection (--system crs --target-crs)\n",
      &cmd_coordinates},
     {"hull", nullptr,
      "  hull                    Convex hull of the points (3-D surface or 2-D loop)\n", &cmd_hull},
@@ -11307,7 +11443,8 @@ const CliVerb kCliVerbs[] = {
      "                            --retag NAME=TAG[:DIM] --delete NAME\n",
      &cmd_regions},
     {"convert-cells", nullptr,
-     "  convert-cells           Convert elements (linearize/simplexify/elevate)\n",
+     "  convert-cells           Convert elements (linearize/simplexify/elevate/\n"
+     "                            reduce; --order N, --full)\n",
      &cmd_convert_cells},
     {"tessellate", nullptr,
      "  tessellate              Subdivide curved (quadratic) cells onto a reference\n"
@@ -11337,7 +11474,7 @@ const CliVerb kCliVerbs[] = {
      &cmd_refine},
     {"undo-green", nullptr,
      "  undo-green              Restore a transitional (green) cell to its coarse\n"
-     "                            parent, read verbatim from COARSE FINE OUTFILE\n",
+     "                            parent: COARSE FINE OUTFILE, or FINE OUTFILE\n",
      &cmd_undo_green},
     {"decimate", nullptr,
      "  decimate                Reduce a surface mesh's face count (QEM edge collapse)\n"

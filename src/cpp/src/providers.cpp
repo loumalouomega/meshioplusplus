@@ -59,6 +59,22 @@ TetMesherProvider make_netgen_provider();
 /// The MMG provider this build compiled in (providers/mmg/).
 RemesherProvider make_mmg_provider();
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_METIS
+/// The METIS graph partitioner this build compiled in (providers/metis/).
+GraphPartitionerProvider make_metis_provider();
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_SCOTCH
+/// The Scotch graph partitioner this build compiled in (providers/scotch/).
+GraphPartitionerProvider make_scotch_provider();
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_MANIFOLD
+/// The Manifold surface boolean provider this build compiled in (providers/manifold/).
+BooleanProvider make_manifold_provider();
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_PROJ
+/// The PROJ coordinate reference system provider this build compiled in (providers/proj/).
+CrsProvider make_proj_provider();
+#endif
 
 /// The external tetrahedral meshers found installed (`tetgen`, `gmsh`), run as
 /// separate processes (detail/external_mesher.cpp); none in WebAssembly.
@@ -109,6 +125,8 @@ struct ProvidersState {
     std::vector<std::shared_ptr<const GraphPartitionerProvider>> mPartitionersRetained
         MIO_GUARDED_BY(mMutex);
     ProviderSlot<BooleanProvider> mBoolean MIO_GUARDED_BY(mMutex);
+    ProviderSlot<CrsProvider> mCrs MIO_GUARDED_BY(mMutex);
+    bool mPartitionersBuiltinDone MIO_GUARDED_BY(mMutex) = false;
     bool mProfileBuiltinDone MIO_GUARDED_BY(mMutex) = false;
     bool mExternalDone MIO_GUARDED_BY(mMutex) = false;
 };
@@ -316,6 +334,16 @@ std::shared_ptr<const BooleanProvider> boolean_provider() noexcept {
     return slot_get(&ProvidersState::mBoolean);
 }
 
+void register_crs_provider(CrsProvider Provider) {
+    slot_register(&ProvidersState::mCrs, std::move(Provider));
+}
+void unregister_crs_provider() noexcept {
+    slot_unregister(&ProvidersState::mCrs);
+}
+std::shared_ptr<const CrsProvider> crs_provider() noexcept {
+    return slot_get(&ProvidersState::mCrs);
+}
+
 std::vector<std::string> tet_mesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
@@ -494,6 +522,37 @@ static void register_compiled_in_providers() noexcept {
 #else
     r_state.mRemesher.mBuiltinDone = true;
 #endif
+#ifdef MESHIOPLUSPLUS_HAS_MANIFOLD
+    install(r_state.mBoolean, [] { return providers::make_manifold_provider(); });
+#else
+    r_state.mBoolean.mBuiltinDone = true;
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_PROJ
+    install(r_state.mCrs, [] { return providers::make_proj_provider(); });
+#else
+    r_state.mCrs.mBuiltinDone = true;
+#endif
+    // The compiled-in graph partitioners, by name; never over one of that name.
+    if (!r_state.mPartitionersBuiltinDone) {
+        r_state.mPartitionersBuiltinDone = true;
+        const auto add_named = [&r_state](auto&& Make) {
+            try {
+                auto p_new = std::make_shared<const GraphPartitionerProvider>(Make());
+                if (r_state.mPartitioners.count(p_new->mName))
+                    return;
+                r_state.mPartitionersRetained.push_back(p_new);
+                r_state.mPartitioners[p_new->mName] = std::move(p_new);
+            } catch (...) {
+            }
+        };
+        (void)add_named;
+#ifdef MESHIOPLUSPLUS_HAS_METIS
+        add_named([] { return providers::make_metis_provider(); });
+#endif
+#ifdef MESHIOPLUSPLUS_HAS_SCOTCH
+        add_named([] { return providers::make_scotch_provider(); });
+#endif
+    }
     // The installed external meshers, by name only: they never become the
     // default, so `backend=auto` keeps meaning Netgen, else the octree.
     if (!r_state.mExternalDone) {

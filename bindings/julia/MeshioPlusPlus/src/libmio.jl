@@ -177,7 +177,10 @@ struct _CRefineOpts
     # time_step/lenient precedent above), so the struct is still 112 bytes --
     # see _check_abi_layout.
     record_hierarchy::Int64
-    reserved::NTuple{5,Int64}
+    # Nonzero to undo the input's green closures first (roadmap 9.6.1); took
+    # one more former reserved slot.
+    undo_green_first::Int64
+    reserved::NTuple{4,Int64}
 end
 
 """Mirror of C `mio_tessellate_opts`. ABI; build through [`tessellate`](@ref):
@@ -1905,6 +1908,18 @@ struct _CSubsamplePointsOpts
     reserved::NTuple{3,Int64}
 end
 
+"""Mirror of C `mio_subdivide_surface_opts` (roadmap 9.2), 64 bytes."""
+struct _CSubdivideSurfaceOpts
+    scheme::Int32
+    levels::Int32
+    crease_angle::Cdouble
+    preserve_boundary::Int32
+    interpolate_point_data::Int32
+    record_parent_ids::Int32
+    reserved_pad::Int32
+    reserved::NTuple{4,Int64}
+end
+
 """Mirror of C `mio_cast_rays_opts` (roadmap 9.3), 64 bytes."""
 struct _CCastRaysOpts
     max_distance::Cdouble
@@ -3088,6 +3103,9 @@ function _check_abi_layout()
     sizeof(_CSubsamplePointsOpts) == 120 ||
         error("meshio++: mio_subsample_points_opts layout mismatch " *
               "($(sizeof(_CSubsamplePointsOpts)) bytes)")
+    sizeof(_CSubdivideSurfaceOpts) == 64 ||
+        error("meshio++: mio_subdivide_surface_opts layout mismatch " *
+              "($(sizeof(_CSubdivideSurfaceOpts)) bytes)")
     sizeof(_CCastRaysOpts) == 64 ||
         error("meshio++: mio_cast_rays_opts layout mismatch ($(sizeof(_CCastRaysOpts)) bytes)")
     sizeof(_CLocatePointsOpts) == 64 ||

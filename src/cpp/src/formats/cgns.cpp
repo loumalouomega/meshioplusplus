@@ -32,8 +32,10 @@
 #include <vector>
 
 // Project includes
+#include "../detail/cgns_units.hpp"
 #include "../detail/data_plumbing.hpp"
 #include "../detail/library_lock.hpp"
+#include "meshioplusplus/operations/units.hpp"
 #include "meshioplusplus/formats/cgns.hpp"
 #include "meshioplusplus/cell_type.hpp"
 #include "meshioplusplus/detail/face_mesh.hpp"
@@ -503,8 +505,93 @@ std::string cgns_component_name(const std::string& rBase, std::size_t k, std::si
 }
 
 /// Write one `DataArray_t` holding component `i` of `rArr` (stride `k`).
+/// The width of one `DimensionalUnits_t` name (C1 [5][32]).
+constexpr std::size_t kCgnsArrayUnitWidth = 32;
+
+/// The SIDS unit children (detail/cgns_units.hpp) of a solution array, for a
+/// declared `meshio:unit:<array>`.
+void cgns_write_array_units(hid_t g, const FieldUnit& rUnit) {
+    const auto r8 = [&](const char* pName, const char* pLabel, const double* pValues,
+                        std::size_t n) {
+        NDArray a(DType::Float64, {n});
+        std::copy(pValues, pValues + n, a.As<double>());
+        h5::Hid node = cgns_create_group(g, pName);
+        cgns_write_node_attrs(node, pName, pLabel, "R8");
+        h5::write_dataset(node, " data", a);
+    };
+    h5::Hid dc = cgns_create_group(g, "DataClass");
+    cgns_write_node_attrs(dc, "DataClass", "DataClass_t", "C1");
+    const std::string dimensional = "Dimensional";
+    h5::write_dataset(dc, " data", cgns_padded_int8(dimensional, dimensional.size()));
+    NDArray units(DType::Int8, {std::size_t{5}, kCgnsArrayUnitWidth});
+    std::int8_t* p = units.As<std::int8_t>();
+    std::memset(p, ' ', 5 * kCgnsArrayUnitWidth);
+    for (std::size_t r = 0; r < 5; ++r) {
+        const std::string name = detail::cgns_si_unit_names()[r];
+        std::memcpy(p + r * kCgnsArrayUnitWidth, name.data(), name.size());
+    }
+    h5::Hid du = cgns_create_group(g, "DimensionalUnits");
+    cgns_write_node_attrs(du, "DimensionalUnits", "DimensionalUnits_t", "C1");
+    h5::write_dataset(du, " data", units);
+    const std::array<double, 5> exps = detail::cgns_sids_exponents(rUnit);
+    r8("DimensionalExponents", "DimensionalExponents_t", exps.data(), 5);
+    const std::array<double, 3> extra = detail::cgns_sids_additional(rUnit);
+    if (extra[0] != 0.0 || extra[1] != 0.0 || extra[2] != 0.0)
+        r8("AdditionalExponents", "AdditionalExponents_t", extra.data(), 3);
+    if (rUnit.mScale != 1.0) {
+        const double conv[2] = {rUnit.mScale, 0.0};
+        r8("DataConversion", "DataConversion_t", conv, 2);
+    }
+}
+
+/// The unit a solution array's SIDS children state, when they state one.
+bool cgns_read_array_units(hid_t g, FieldUnit& rOut) {
+    if (!h5::exists(g, "DimensionalExponents"))
+        return false;
+    const auto r8 = [&](const char* pName, double* pOut, std::size_t n) {
+        if (!h5::exists(g, pName))
+            return false;
+        h5::Hid node = h5::open_group(g, pName);
+        if (!h5::exists(node, " data"))
+            return false;
+        const NDArray raw = h5::read_dataset(node, " data");
+        if (raw.Size() < n)
+            return false;
+        for (std::size_t i = 0; i < n; ++i)
+            pOut[i] = detail::read_double(raw, i);
+        return true;
+    };
+    std::array<double, 5> exps{};
+    std::array<double, 3> extra{};
+    double conv[2] = {1.0, 0.0};
+    if (!r8("DimensionalExponents", exps.data(), 5))
+        return false;
+    r8("AdditionalExponents", extra.data(), 3);
+    r8("DataConversion", conv, 2);
+    if (conv[1] != 0.0)
+        return false;  // an offset scale (Celsius) is no meshio:unit
+    std::array<std::string, 5> names;
+    if (h5::exists(g, "DimensionalUnits")) {
+        h5::Hid du = h5::open_group(g, "DimensionalUnits");
+        if (h5::exists(du, " data")) {
+            const NDArray raw = h5::read_dataset(du, " data");
+            for (std::size_t r = 0; r < 5 && (r + 1) * kCgnsArrayUnitWidth <= raw.Size(); ++r) {
+                std::string text(kCgnsArrayUnitWidth, '\0');
+                for (std::size_t i = 0; i < kCgnsArrayUnitWidth; ++i)
+                    text[i] = static_cast<char>(detail::read_int(raw, r * kCgnsArrayUnitWidth + i));
+                const std::size_t end = text.find_last_not_of(std::string("\0 ", 2));
+                names[r] = end == std::string::npos ? std::string() : text.substr(0, end + 1);
+                if (names[r] == "Null")
+                    names[r].clear();
+            }
+        }
+    }
+    return detail::cgns_unit_from_sids(exps, extra, conv[0], names, rOut);
+}
+
 void cgns_write_solution_array(hid_t sol, const std::string& rName, const NDArray& rArr,
-                               std::size_t rows, std::size_t k, std::size_t i, int gzip_level) {
+                               std::size_t rows, std::size_t k, std::size_t i, int gzip_level,
+                               const FieldUnit* pUnit = nullptr) {
     NDArray col(DType::Float64, {rows});
     double* dst = col.As<double>();
     const detail::DoubleView values(rArr);
@@ -513,6 +600,8 @@ void cgns_write_solution_array(hid_t sol, const std::string& rName, const NDArra
     h5::Hid g = cgns_create_group(sol, rName);
     cgns_write_node_attrs(g, rName, "DataArray_t", "R8");
     h5::write_dataset(g, " data", col, gzip_level);
+    if (pUnit)
+        cgns_write_array_units(g, *pUnit);
 }
 
 /// The `FlowSolution_t` node plus its `GridLocation_t` child, or an invalid
@@ -677,9 +766,9 @@ NDArray cgns_strip_rind(const NDArray& rA, const std::vector<std::int64_t>& rRin
     return out;
 }
 
-std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
-                                                                const std::string& rSolName,
-                                                                std::size_t expected_rows) {
+std::vector<std::pair<std::string, NDArray>> cgns_read_solution(
+    hid_t sol, const std::string& rSolName, std::size_t expected_rows,
+    std::map<std::string, FieldUnit>* pUnits = nullptr) {
     std::vector<std::int64_t> rind;
     if (h5::exists(sol, "Rind")) {
         h5::Hid rn = h5::open_group(sol, "Rind");
@@ -743,6 +832,9 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
                         "CGNS: '{}/{}' has {} values but the zone has {} entities at this "
                         "GridLocation",
                         rSolName, kv.second, a.Size(), expected_rows));
+                FieldUnit unit;
+                if (pUnits && cgns_read_array_units(g, unit))
+                    (*pUnits)[kv.second] = unit;
                 out.emplace_back(kv.second, std::move(a));
             }
             continue;
@@ -767,6 +859,12 @@ std::vector<std::pair<std::string, NDArray>> cgns_read_solution(hid_t sol,
             const detail::DoubleView column(cols[i]);
             for (std::size_t r = 0; r < expected_rows; ++r)
                 dst[r * k + i] = column[r];
+        }
+        if (pUnits) {
+            h5::Hid g = h5::open_group(sol, parts.begin()->second);
+            FieldUnit unit;
+            if (cgns_read_array_units(g, unit))
+                (*pUnits)[base] = unit;
         }
         out.emplace_back(base, std::move(joined));
     }
@@ -867,9 +965,16 @@ double cgns_read_dimensional_units(hid_t loc) {
 /// shape and are stored as I4/I8/R4/R8. `pSkip`, when set, names an array left out.
 void cgns_write_field_data(hid_t zone, const Mesh& rMesh, const char* pSkip = nullptr) {
     std::vector<std::pair<std::string, NDArray>> arrays;
+    const std::string unit_prefix = kFieldUnitPrefix;
     for (const std::string& name : rMesh.FieldDataNames()) {
         if (pSkip && name == pSkip)
             continue;
+        // A solution array's unit travels as its SIDS DimensionalExponents.
+        if (name.rfind(unit_prefix, 0) == 0) {
+            const std::string array = name.substr(unit_prefix.size());
+            if (rMesh.HasPointData(array) || rMesh.HasCellData(array))
+                continue;
+        }
         const NDArray& a = rMesh.FieldData(name);
         DType target;
         switch (a.Dtype()) {
@@ -1698,9 +1803,11 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
                         name, rows, n_points);
                     continue;
                 }
+                FieldUnit unit;
+                const bool has_unit = get_field_unit(rMesh, name, unit);
                 for (std::size_t i = 0; i < k; ++i)
                     cgns_write_solution_array(sol, cgns_component_name(name, k, i), a, rows, k, i,
-                                              gzip_level);
+                                              gzip_level, has_unit ? &unit : nullptr);
             }
         }
     }
@@ -1768,9 +1875,11 @@ void write_cgns(const std::string& rPath, const Mesh& rMesh, int gzip_level) {
                             dst[(row + r) * k + i] = values[r * k + i];
                     row += nb;
                 }
+                FieldUnit unit;
+                const bool has_unit = get_field_unit(rMesh, name, unit);
                 for (std::size_t i = 0; i < k; ++i)
                     cgns_write_solution_array(sol, cgns_component_name(name, k, i), merged, rows, k,
-                                              i, gzip_level);
+                                              i, gzip_level, has_unit ? &unit : nullptr);
             }
         }
     }
@@ -1910,6 +2019,7 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions,
     // the zones happen to be listed in, and a solution present on only some
     // zones has no defensible filler. Our own writer emits one zone.
     std::vector<CgnsZoneFields> zone_fields;
+    std::map<std::string, FieldUnit> solution_units;
     std::vector<Region> all_regions;
     std::size_t n_zones = 0;
     for (const std::string& zname : h5::group_links(base)) {
@@ -2362,7 +2472,8 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions,
                 }
 
                 if (location == "Vertex") {
-                    for (auto& [name, arr] : cgns_read_solution(sol, child, n_zone_points)) {
+                    for (auto& [name, arr] :
+                         cgns_read_solution(sol, child, n_zone_points, &solution_units)) {
                         auto [it, inserted] = point_array_origin.emplace(name, child);
                         if (!inserted && it->second != child)
                             log::warn(
@@ -2373,7 +2484,8 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions,
                         zone_fields_here.AddPoint(name, std::move(arr));
                     }
                 } else if (location == "CellCenter") {
-                    for (auto& [name, arr] : cgns_read_solution(sol, child, zone_total_cells)) {
+                    for (auto& [name, arr] :
+                         cgns_read_solution(sol, child, zone_total_cells, &solution_units)) {
                         auto [it, inserted] = cell_array_origin.emplace(name, child);
                         if (!inserted && it->second != child)
                             log::warn(
@@ -2422,6 +2534,14 @@ Mesh cgns_read_impl(const std::string& rPath, const ReadOptions& rOptions,
     }
 
     cgns_add_zone_fields(mesh, zone_fields);
+    // The SIDS units of the solution arrays (roadmap 9.10.1), unless the file's
+    // FieldData already carries the meshio:unit:<array> entry.
+    for (const auto& [name, unit] : solution_units) {
+        FieldUnit existing;
+        if ((mesh.HasPointData(name) || mesh.HasCellData(name)) &&
+            !get_field_unit(mesh, name, existing))
+            set_field_unit(mesh, name, unit);
+    }
     cgns_add_regions(mesh, all_regions);
     if (point_chunks.empty())
         throw ReadError(

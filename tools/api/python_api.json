@@ -1937,6 +1937,91 @@
     ]
    }
   },
+  "SurfaceQuery": {
+   "kind": "class",
+   "members": {
+    "__init__": {
+     "kind": "method",
+     "signature": {
+      "parameters": [
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "self"
+       },
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "mesh"
+       },
+       {
+        "default": "None",
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "region"
+       }
+      ]
+     }
+    },
+    "cast_rays": {
+     "kind": "method",
+     "signature": {
+      "parameters": [
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "self"
+       },
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "origins"
+       },
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "directions"
+       },
+       {
+        "default": "0.0",
+        "kind": "KEYWORD_ONLY",
+        "name": "max_distance"
+       },
+       {
+        "default": "False",
+        "kind": "KEYWORD_ONLY",
+        "name": "all_hits"
+       }
+      ]
+     }
+    },
+    "closest_points": {
+     "kind": "method",
+     "signature": {
+      "parameters": [
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "self"
+       },
+       {
+        "kind": "POSITIONAL_OR_KEYWORD",
+        "name": "points"
+       }
+      ]
+     }
+    },
+    "num_triangles": {
+     "kind": "property"
+    }
+   },
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "None",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "region"
+     }
+    ]
+   }
+  },
   "Tessellation": {
    "kind": "class",
    "members": {
@@ -6774,6 +6859,12 @@
     ]
    }
   },
+  "graph_partitioner_names": {
+   "kind": "function",
+   "signature": {
+    "parameters": []
+   }
+  },
   "grid": {
    "kind": "function",
    "signature": {
@@ -6822,6 +6913,12 @@
    }
   },
   "has_conduit": {
+   "kind": "function",
+   "signature": {
+    "parameters": []
+   }
+  },
+  "has_crs_provider": {
    "kind": "function",
    "signature": {
     "parameters": []

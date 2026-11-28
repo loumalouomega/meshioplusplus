@@ -35,6 +35,11 @@ WITH_MMG="OFF"
 MMG_ROOT_DIR=""
 WITH_CUTCELLS="OFF"
 CUTCELLS_ROOT_DIR=""
+WITH_METIS="OFF"
+WITH_SCOTCH="OFF"
+WITH_PROJ="OFF"
+WITH_MANIFOLD="OFF"
+MANIFOLD_ROOT_DIR=""
 TESTS="OFF"
 C_API="OFF"
 FORTRAN="OFF"
@@ -87,6 +92,16 @@ Usage: $0 [options]
                                   (default: off; MIT; build one with
                                   build/build-cutcells.sh)
   --cutcells-root <dir>           CutCells' install prefix
+  --with-metis                    METIS graph partitioner provider, partition
+                                  method 'metis' (default: off; Apache-2.0)
+  --with-scotch                   Scotch graph partitioner provider, partition
+                                  method 'scotch' (default: off; CeCILL-C)
+  --with-proj                     PROJ coordinate reference system provider for
+                                  convert_coordinates(system='crs') (default: off; MIT)
+  --with-manifold                 Manifold surface boolean provider for mesh_boolean
+                                  (default: off; Apache-2.0; build one with
+                                  build/build-manifold.sh)
+  --manifold-root <dir>           Manifold's install prefix
   --with-polyscope                native viewer for the CLI's view/screenshot
                                   (default: off; needs OpenGL/GLFW and
                                   git submodule update --init --recursive)
@@ -135,6 +150,11 @@ while [ $# -gt 0 ]; do
         --with-mmg) WITH_MMG="ON"; shift ;;
         --mmg-root) WITH_MMG="ON"; MMG_ROOT_DIR="$2"; shift 2 ;;
         --with-cutcells) WITH_CUTCELLS="ON"; shift ;;
+        --with-metis) WITH_METIS="ON"; shift ;;
+        --with-scotch) WITH_SCOTCH="ON"; shift ;;
+        --with-proj) WITH_PROJ="ON"; shift ;;
+        --with-manifold) WITH_MANIFOLD="ON"; shift ;;
+        --manifold-root) WITH_MANIFOLD="ON"; MANIFOLD_ROOT_DIR="$2"; shift 2 ;;
         --cutcells-root) WITH_CUTCELLS="ON"; CUTCELLS_ROOT_DIR="$2"; shift 2 ;;
         --with-polyscope) WITH_POLYSCOPE="ON"; shift ;;
         --without-polyscope) WITH_POLYSCOPE="OFF"; shift ;;
@@ -226,6 +246,10 @@ set -- \
     -DMESHIOPLUSPLUS_WITH_NETGEN="$WITH_NETGEN" \
     -DMESHIOPLUSPLUS_WITH_MMG="$WITH_MMG" \
     -DMESHIOPLUSPLUS_WITH_CUTCELLS="$WITH_CUTCELLS" \
+    -DMESHIOPLUSPLUS_WITH_METIS="$WITH_METIS" \
+    -DMESHIOPLUSPLUS_WITH_SCOTCH="$WITH_SCOTCH" \
+    -DMESHIOPLUSPLUS_WITH_PROJ="$WITH_PROJ" \
+    -DMESHIOPLUSPLUS_WITH_MANIFOLD="$WITH_MANIFOLD" \
     -DMESHIOPLUSPLUS_BUILD_TESTS="$TESTS" \
     -DMESHIOPLUSPLUS_BUILD_C_API="$C_API" \
     -DMESHIOPLUSPLUS_INSTALL_CPP="$INSTALL_CPP" \
@@ -260,6 +284,9 @@ fi
 if [ -n "$MMG_ROOT_DIR" ]; then
     set -- "$@" -Dmmg_DIR="$MMG_ROOT_DIR/lib/cmake/mmg"
 fi
+if [ -n "$MANIFOLD_ROOT_DIR" ]; then
+    set -- "$@" -DMANIFOLD_ROOT="$MANIFOLD_ROOT_DIR"
+fi
 if [ -n "$CUTCELLS_ROOT_DIR" ]; then
     set -- "$@" -DCUTCELLS_ROOT="$CUTCELLS_ROOT_DIR"
 fi
@@ -277,6 +304,9 @@ echo "  bzip2:     $WITH_BZIP2   ADIOS2: $WITH_ADIOS2   TecIO: $WITH_TECIO${TECI
 echo "  Netgen:    $WITH_NETGEN${NETGEN_ROOT_DIR:+ ($NETGEN_ROOT_DIR)}  (tetrahedralize)"
 echo "  MMG:       $WITH_MMG${MMG_ROOT_DIR:+ ($MMG_ROOT_DIR)}  (adapt, discretize_levelset, mesh_domain, move)"
 echo "  CutCells:  $WITH_CUTCELLS${CUTCELLS_ROOT_DIR:+ ($CUTCELLS_ROOT_DIR)}  (cut_level_set, cut_quadrature)"
+echo "  METIS:     $WITH_METIS  Scotch: $WITH_SCOTCH  (partition methods)"
+echo "  PROJ:      $WITH_PROJ  (convert_coordinates system='crs')"
+echo "  Manifold:  $WITH_MANIFOLD${MANIFOLD_ROOT_DIR:+ ($MANIFOLD_ROOT_DIR)}  (mesh_boolean)"
 echo "  tests:     $TESTS"
 echo "  C API:     $C_API   Fortran: $FORTRAN"
 echo "  C++ API:   $INSTALL_CPP${CPP_BACKENDS:+  (backends: $CPP_BACKENDS)}"

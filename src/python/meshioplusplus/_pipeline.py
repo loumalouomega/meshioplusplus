@@ -143,6 +143,8 @@ _EXCLUDED_OPS = {
     "`diff` CLI verb",
     "UndoGreen": "'UndoGreen' needs a second (coarse) mesh and is not a "
     "pipeline step; use the `undo-green` CLI verb",
+    "MeshBoolean": "'MeshBoolean' needs a second mesh and is not a pipeline "
+    "step; use the `mesh-boolean` CLI verb",
     "ConservativeInterpolate": "'ConservativeInterpolate' needs a second "
     "(source) mesh and is not a pipeline step; use the "
     "`conservative-interpolate` CLI verb",
@@ -537,7 +539,7 @@ def _validate_step(step, version=1):
             keys = ", ".join(allowed)
             hint = f" (known: {keys})" if keys else " (the op takes no parameters)"
             raise _err(op, f"unknown parameter '{key}'{hint}")
-    if version == 2 and op in ("Merge", "Interpolate", "UndoGreen"):
+    if version == 2 and op in ("Merge", "Interpolate", "UndoGreen", "MeshBoolean"):
         paths = _svec(step, "Inputs") or []
         if not paths or (op != "Merge" and len(paths) != 1):
             raise _err(
@@ -1299,6 +1301,7 @@ def _apply_step(mesh, step, steps, warnings):
             closure=_text(step, "Closure", "redgreen"),
             record_levels=_flag(step, "RecordLevels", False),
             record_hierarchy=_flag(step, "RecordHierarchy", False),
+            undo_green_first=_flag(step, "UndoGreenFirst", False),
         )
     elif op == "Decimate":
         ratio = _number(step, "Ratio", -1.0)
@@ -1368,6 +1371,7 @@ def _apply_step(mesh, step, steps, warnings):
             mode=_text(step, "Mode", "eco"),
             seed=int(_number(step, "Seed", 0)),
             weights=_text(step, "WeightsKey", "") or None,
+            connected_parts=_flag(step, "ConnectedParts", False),
         )
         mesh.cell_data["partition:part"] = labels
         entry["Nparts"] = float(nparts)
@@ -2581,6 +2585,7 @@ def _apply_step(mesh, step, steps, warnings):
             arrays=_svec(step, "Arrays") or [],
             inverse=_flag(step, "Inverse", False),
             record_coordinates=_flag(step, "RecordCoordinates", True),
+            target_crs=_text(step, "TargetCrs", "") or None,
             return_report=True,
         )
         entry["NumArrays"] = float(report["num_arrays"])
@@ -3047,11 +3052,44 @@ def _apply_step(mesh, step, steps, warnings):
     elif op == "Transform":
         mesh = _apply_transform(mesh, step)
     elif op == "ConvertCells":
+        cc_mode = _text(step, "Mode", "linearize")
+        cc_order = int(_number(step, "Order", 0))
+        if cc_order <= 0:
+            cc_order = 1 if cc_mode == "reduce" else 2
         mesh = convert_cells(
             mesh,
-            mode=_text(step, "Mode", "linearize"),
+            mode=cc_mode,
             record_parent_ids=_flag(step, "RecordParentIds", False),
+            order=cc_order,
+            full=_flag(step, "Full", False),
         )
+    elif op == "SubdivideSurface":
+        from ._subdivide_surface import subdivide_surface
+
+        mesh, report = subdivide_surface(
+            mesh,
+            _text(step, "Scheme", "loop"),
+            levels=int(_number(step, "Levels", 1)),
+            crease_angle=_number(step, "CreaseAngle", 60.0),
+            preserve_boundary=_flag(step, "PreserveBoundary", True),
+            interpolate_point_data=_flag(step, "InterpolatePointData", True),
+            record_parent_ids=_flag(step, "RecordParentIds", False),
+            return_report=True,
+        )
+        entry["NumCreaseEdges"] = float(report["num_crease_edges"])
+        entry["NumBoundaryEdges"] = float(report["num_boundary_edges"])
+        warnings.extend(f"subdivide_surface: {w}" for w in report["warnings"])
+    elif op == "ConvertUnits":
+        from ._units import convert_units
+
+        mesh, report = convert_units(
+            mesh,
+            _text(step, "System", "SI"),
+            strict=_flag(step, "Strict", True),
+            return_report=True,
+        )
+        entry["NumArraysConverted"] = float(report["num_arrays_converted"])
+        warnings.extend(f"convert_units: {w}" for w in report["warnings"])
     elif op == "Subdivide":
         mesh = subdivide(
             mesh,
@@ -3568,6 +3606,18 @@ def _apply_v2(mesh, step, steps, warnings):
             NumGroupsUndone=float(report["num_groups_undone"]),
             NumCellsRemoved=float(report["num_cells_removed"]),
         )
+    elif op == "MeshBoolean":
+        from ._mesh_boolean import mesh_boolean
+
+        # `Operation`, not `Op`: `Op` is the step's own discriminant.
+        mesh, report = mesh_boolean(
+            mesh,
+            read(step["Inputs"][0]),
+            _text(step, "Operation", "union"),
+            backend=_text(step, "Backend", ""),
+            return_report=True,
+        )
+        entry["NumTriangles"] = float(report["num_triangles"])
     else:
         return _apply_step(mesh, step, steps, warnings)
     steps.append(entry)
@@ -3619,7 +3669,7 @@ def _fanout(mesh, step, pattern, out, inp, steps_spec):
         )
     inputs = {pathlib.Path(inp).resolve()}
     for spec in steps_spec:
-        if spec["Op"] in ("Merge", "Interpolate", "UndoGreen"):
+        if spec["Op"] in ("Merge", "Interpolate", "UndoGreen", "MeshBoolean"):
             inputs.update(pathlib.Path(p).resolve() for p in spec["Inputs"])
     paths, unique, kwargs = [], set(), []
     for key, _ in pieces:

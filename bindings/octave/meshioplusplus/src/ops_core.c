@@ -1701,6 +1701,219 @@ static mxArray* O_mio_subsample_points(const mxArray** a) {
     return mio_o_struct(3, names, values);
 }
 
+/* --- the surface query handle (roadmap 9.3.2) ------------------------------ */
+
+static const mio_surface_query* oc_surface_query(const mxArray* a) {
+    return (const mio_surface_query*)mio_o_unwrap(a, MIO_O_SURFACE_QUERY, "query");
+}
+
+static mxArray* O_mio_surface_query(const mxArray** a) {
+    mio_surface_query* q = mio_surface_query_create(mio_o_mesh(a[0]), mio_o_opt_string(a[1]));
+    if (q == NULL)
+        mio_o_fail("surface_query");
+    return mio_o_wrap(MIO_O_SURFACE_QUERY, q);
+}
+
+static mxArray* O_mio_surface_query_num_triangles(const mxArray** a) {
+    const int64_t n = mio_surface_query_num_triangles(oc_surface_query(a[0]));
+    if (n < 0)
+        mio_o_fail("surface_query_num_triangles");
+    return mio_o_scalar((double)n);
+}
+
+static mxArray* O_mio_surface_query_cast_rays(const mxArray** a) {
+    const mio_surface_query* q = oc_surface_query(a[0]);
+    int64_t n = 0, nd = 0;
+    double* o = oc_xyz_rows(a[1], &n, "surface_query_cast_rays origins");
+    double* d = oc_xyz_rows(a[2], &nd, "surface_query_cast_rays directions");
+    int32_t* hit = (int32_t*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
+    double* distance = (double*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(double));
+    double* point = (double*)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
+    double* normal = (double*)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
+    int64_t* cell = (int64_t*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    int64_t num_hits = 0;
+    mio_o_check(mio_surface_query_cast_rays(q, o, n, d, nd, mio_o_double(a[3], "max_distance"), hit,
+                                            distance, point, normal, cell, &num_hits),
+                "surface_query_cast_rays");
+    mxArray* rhit = mio_o_logical_column(n);
+    mxLogical* hl = mxGetLogicals(rhit);
+    mxArray* rdist = mio_o_column(n);
+    for (int64_t i = 0; i < n; ++i) {
+        hl[i] = hit[i] != 0;
+        mxGetPr(rdist)[i] = distance[i];
+    }
+    const char* names[] = {"hit", "distance", "point", "normal", "cell", "num_hits"};
+    mxArray* values[] = {rhit,
+                         rdist,
+                         mio_o_rows_from_c(point, MIO_FLOAT64, n, 3, 0.0),
+                         mio_o_rows_from_c(normal, MIO_FLOAT64, n, 3, 0.0),
+                         mio_o_shift_map(cell, n),
+                         mio_o_scalar((double)num_hits)};
+    mxFree(o);
+    mxFree(d);
+    mxFree(hit);
+    mxFree(distance);
+    mxFree(point);
+    mxFree(normal);
+    mxFree(cell);
+    return mio_o_struct(6, names, values);
+}
+
+static mxArray* O_mio_surface_query_closest_points(const mxArray** a) {
+    const mio_surface_query* q = oc_surface_query(a[0]);
+    int64_t n = 0;
+    double* p = oc_xyz_rows(a[1], &n, "surface_query_closest_points points");
+    double* point = (double*)mxCalloc((size_t)(3 * (n > 0 ? n : 1)), sizeof(double));
+    double* distance = (double*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(double));
+    int64_t* cell = (int64_t*)mxCalloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    mio_o_check(mio_surface_query_closest_points(q, p, n, point, distance, cell),
+                "surface_query_closest_points");
+    mxArray* rdist = mio_o_column(n);
+    for (int64_t i = 0; i < n; ++i)
+        mxGetPr(rdist)[i] = distance[i];
+    const char* names[] = {"point", "distance", "cell"};
+    mxArray* values[] = {mio_o_rows_from_c(point, MIO_FLOAT64, n, 3, 0.0), rdist,
+                         mio_o_shift_map(cell, n)};
+    mxFree(p);
+    mxFree(point);
+    mxFree(distance);
+    mxFree(cell);
+    return mio_o_struct(3, names, values);
+}
+
+static mxArray* O_mio_surface_query_free(const mxArray** a) {
+    if (mio_o_kind_of(a[0]) == (int)MIO_O_SURFACE_QUERY)
+        mio_o_release(a[0], MIO_O_SURFACE_QUERY);
+    return NULL;
+}
+
+/* --- subdivision, units, CRS and booleans (roadmap 9.1, 9.2, 9.10) ------- */
+
+static mxArray* O_mio_subdivide_surface(const mxArray** a) {
+    mio_subdivide_surface_opts opts;
+    mio_subdivide_surface_opts_init(&opts);
+    const char* sc = mio_o_string(a[1], "scheme");
+    if (strcmp(sc, "loop") == 0)
+        opts.scheme = MIO_SUBDIVIDE_LOOP;
+    else if (strcmp(sc, "catmull_clark") == 0 || strcmp(sc, "catmull-clark") == 0 ||
+             strcmp(sc, "catmullclark") == 0)
+        opts.scheme = MIO_SUBDIVIDE_CATMULL_CLARK;
+    else
+        mio_o_error("subdivide_surface",
+                    "meshio++: subdivide_surface: scheme must be 'loop' or 'catmull_clark'");
+    opts.levels = (int32_t)mio_o_int(a[2], "levels");
+    opts.crease_angle = mio_o_double(a[3], "crease_angle");
+    opts.preserve_boundary = mio_o_bool(a[4], "preserve_boundary");
+    opts.interpolate_point_data = mio_o_bool(a[5], "interpolate_point_data");
+    opts.record_parent_ids = mio_o_bool(a[6], "record_parent_ids");
+    int64_t ncrease = 0, nbound = 0;
+    mio_mesh* out = mio_subdivide_surface(mio_o_mesh(a[0]), &opts, &ncrease, &nbound);
+    if (out == NULL)
+        mio_o_fail("subdivide_surface");
+    const char* names[] = {"mesh", "num_crease_edges", "num_boundary_edges", "warnings"};
+    mxArray* values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)ncrease),
+                         mio_o_scalar((double)nbound),
+                         mio_o_getbuffer(mio_subdivide_surface_warnings, "subdivide_surface")};
+    return mio_o_struct(4, names, values);
+}
+
+static mxArray* O_mio_set_field_unit(const mxArray** a) {
+    mio_o_check(mio_set_field_unit(mio_o_mesh(a[0]), mio_o_string(a[1], "array"),
+                                   mio_o_string(a[2], "unit")),
+                "set_field_unit");
+    return NULL;
+}
+
+static mxArray* O_mio_field_unit(const mxArray** a) {
+    double u[8];
+    int rc = mio_field_unit(mio_o_mesh(a[0]), mio_o_string(a[1], "array"), u);
+    if (rc < 0)
+        mio_o_fail("field_unit");
+    if (rc == 0)
+        return mxCreateDoubleMatrix(0, 0, mxREAL);
+    mxArray* out = mxCreateDoubleMatrix(1, 8, mxREAL);
+    double* p = mxGetPr(out);
+    for (int k = 0; k < 8; ++k)
+        p[k] = u[k];
+    return out;
+}
+
+static mxArray* O_mio_convert_units(const mxArray** a) {
+    int64_t n = 0;
+    mio_mesh* out = mio_convert_units(mio_o_mesh(a[0]), mio_o_string(a[1], "system"),
+                                      mio_o_bool(a[2], "strict"), &n);
+    if (out == NULL)
+        mio_o_fail("convert_units");
+    const char* names[] = {"mesh", "num_arrays_converted", "warnings"};
+    mxArray* values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)n),
+                         mio_o_getbuffer(mio_convert_units_warnings, "convert_units")};
+    return mio_o_struct(3, names, values);
+}
+
+static mxArray* O_mio_mesh_crs(const mxArray** a) {
+    const mio_mesh* m = mio_o_mesh(a[0]);
+    int64_t n = mio_mesh_crs(m, NULL, 0);
+    if (n < 0)
+        mio_o_fail("mesh_crs");
+    char* buf = (char*)mxCalloc((size_t)n + 1, 1);
+    if (mio_mesh_crs(m, buf, n + 1) < 0) {
+        mxFree(buf);
+        mio_o_fail("mesh_crs");
+    }
+    mxArray* out = mxCreateString(buf);
+    mxFree(buf);
+    return out;
+}
+
+static mxArray* O_mio_set_mesh_crs(const mxArray** a) {
+    mio_o_check(mio_set_mesh_crs(mio_o_mesh(a[0]), mio_o_string(a[1], "crs")), "set_mesh_crs");
+    return NULL;
+}
+
+static mxArray* O_mio_convert_coordinates_crs(const mxArray** a) {
+    mio_mesh* out = mio_convert_coordinates_crs(mio_o_mesh(a[0]), mio_o_string(a[1], "target_crs"));
+    if (out == NULL)
+        mio_o_fail("convert_coordinates_crs");
+    return mio_o_wrap_mesh(out);
+}
+
+static mxArray* O_mio_has_crs_provider(const mxArray** a) {
+    (void)a;
+    return mio_o_logical(mio_has_crs_provider() != 0);
+}
+
+static mxArray* O_mio_mesh_boolean(const mxArray** a) {
+    const char* o = mio_o_string(a[2], "op");
+    int code = MIO_BOOLEAN_UNION;
+    if (strcmp(o, "union") == 0)
+        code = MIO_BOOLEAN_UNION;
+    else if (strcmp(o, "difference") == 0)
+        code = MIO_BOOLEAN_DIFFERENCE;
+    else if (strcmp(o, "intersection") == 0)
+        code = MIO_BOOLEAN_INTERSECTION;
+    else
+        mio_o_error("mesh_boolean",
+                    "meshio++: mesh_boolean: op must be 'union', 'difference' or 'intersection'");
+    int64_t ntri = 0;
+    mio_mesh* out =
+        mio_mesh_boolean(mio_o_mesh(a[0]), mio_o_mesh(a[1]), code, mio_o_opt_string(a[3]), &ntri);
+    if (out == NULL)
+        mio_o_fail("mesh_boolean");
+    const char* names[] = {"mesh", "num_triangles"};
+    mxArray* values[] = {mio_o_wrap_mesh(out), mio_o_scalar((double)ntri)};
+    return mio_o_struct(2, names, values);
+}
+
+static mxArray* O_mio_has_boolean_provider(const mxArray** a) {
+    (void)a;
+    return mio_o_logical(mio_has_boolean_provider() != 0);
+}
+
+static mxArray* O_mio_graph_partitioner_names(const mxArray** a) {
+    (void)a;
+    return mio_o_getbuffer(mio_graph_partitioner_names, "graph_partitioner_names");
+}
+
 /* --- ray casting and point location (roadmap 9.3) ------------------------ */
 
 /* An (n x 3) matrix as a row-major (n, 3) buffer; raises when it is not one. */
@@ -2586,6 +2799,22 @@ static const mio_o_entry kEntries[] = {
     MIO_O_ENTRY(mio_cast_rays, 6),
     MIO_O_ENTRY(mio_filter_points, 8),
     MIO_O_ENTRY(mio_subsample_points, 8),
+    MIO_O_ENTRY(mio_subdivide_surface, 7),
+    MIO_O_ENTRY(mio_surface_query, 2),
+    MIO_O_ENTRY(mio_surface_query_num_triangles, 1),
+    MIO_O_ENTRY(mio_surface_query_cast_rays, 4),
+    MIO_O_ENTRY(mio_surface_query_closest_points, 2),
+    MIO_O_ENTRY(mio_surface_query_free, 1),
+    MIO_O_ENTRY(mio_set_field_unit, 3),
+    MIO_O_ENTRY(mio_field_unit, 2),
+    MIO_O_ENTRY(mio_convert_units, 3),
+    MIO_O_ENTRY(mio_mesh_crs, 1),
+    MIO_O_ENTRY(mio_set_mesh_crs, 2),
+    MIO_O_ENTRY(mio_convert_coordinates_crs, 2),
+    MIO_O_ENTRY(mio_has_crs_provider, 0),
+    MIO_O_ENTRY(mio_mesh_boolean, 4),
+    MIO_O_ENTRY(mio_has_boolean_provider, 0),
+    MIO_O_ENTRY(mio_graph_partitioner_names, 0),
     MIO_O_ENTRY(mio_locate_points, 3),
     MIO_O_ENTRY(mio_repair, 9),
     MIO_O_ENTRY(mio_shrinkwrap, 9),

@@ -145,6 +145,13 @@ static_assert(alignof(meshioplusplus::ExodusTimeSeriesWriter) == alignof(void*))
 #include "meshioplusplus/operations/select.hpp"
 #include "meshioplusplus/operations/adjacency.hpp"
 #include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/operations/convert_cells.hpp"
+#include "meshioplusplus/operations/mesh_boolean.hpp"
+#include "meshioplusplus/operations/partition.hpp"
+#include "meshioplusplus/operations/subdivide_surface.hpp"
+#include "meshioplusplus/operations/surface_query.hpp"
+#include "meshioplusplus/operations/units.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/operations/eigenmodes.hpp"
 #include "meshioplusplus/operations/geodesic.hpp"
 #include "meshioplusplus/operations/mesh_operator.hpp"
@@ -865,7 +872,8 @@ MIO_ABI_LAYOUT(meshioplusplus::Adjacency, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::GeodesicOptions, 80, 8);
 MIO_ABI_LAYOUT(meshioplusplus::StreamlinesOptions, 112, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MeshOperatorOptions, 4, 4);
-MIO_ABI_LAYOUT(meshioplusplus::CoordinateOptions, 112, 8);
+// ABI 47 (roadmap 9.10.2): CoordinateOptions::mTargetCrs.
+MIO_ABI_LAYOUT(meshioplusplus::CoordinateOptions, 144, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ConvexHullOptions, 4, 4);
 MIO_ABI_LAYOUT(meshioplusplus::PointNormalsOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::MassPropertiesOptions, 88, 8);
@@ -874,6 +882,17 @@ MIO_ABI_LAYOUT(meshioplusplus::CastRaysOptions, 48, 8);
 MIO_ABI_LAYOUT(meshioplusplus::PointFilterOptions, 56, 8);
 MIO_ABI_LAYOUT(meshioplusplus::SubsamplePointsOptions, 104, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ProgressContext, 24, 8);
+// ABI 47 (roadmap 9.1, 9.2, 9.3.2, 9.5, 9.7, 9.10.1): the tier-9 option structs
+// and the SurfaceQuery handle (one unique_ptr to its Impl).
+MIO_ABI_LAYOUT(meshioplusplus::SubdivideSurfaceOptions, 24, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ConvertUnitsOptions, 40, 8);
+MIO_ABI_LAYOUT(meshioplusplus::MeshBooleanOptions, 40, 8);
+MIO_ABI_LAYOUT(meshioplusplus::FieldUnit, 64, 8);
+MIO_ABI_LAYOUT(meshioplusplus::ConvertCellsOptions, 16, 4);
+MIO_ABI_LAYOUT(meshioplusplus::PartitionOptions, 104, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SurfaceQuery, 8, 8);
+MIO_ABI_LAYOUT(meshioplusplus::SurfaceClosestResult, 72, 8);
+MIO_ABI_LAYOUT(meshioplusplus::CrsRequest, 88, 8);
 MIO_ABI_LAYOUT(meshioplusplus::LocatePointsOptions, 8, 8);
 MIO_ABI_LAYOUT(meshioplusplus::ReconstructSurfaceOptions, 88, 8);
 // ABI 38 (roadmap 7.7.3): remesh_quads's options (a string, the target, four

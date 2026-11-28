@@ -1882,6 +1882,97 @@ SEXP R_mio_cast_rays(SEXP mesh, SEXP origins, SEXP directions, SEXP max_distance
     return out;
 }
 
+/* --- the surface query handle (roadmap 9.3.2) ------------------------------ */
+
+SEXP mio_r_surface_query_tag = NULL;
+
+static void mio_r_surface_query_finalizer(SEXP x) {
+    mio_surface_query* q = (mio_surface_query*)R_ExternalPtrAddr(x);
+    if (q != NULL) {
+        mio_surface_query_free(q);
+        R_ClearExternalPtr(x);
+    }
+}
+
+static const mio_surface_query* surface_query_of(SEXP x) {
+    return (const mio_surface_query*)mio_r_handle(x, mio_r_surface_query_tag, "mio_surface_query");
+}
+
+SEXP R_mio_surface_query(SEXP mesh, SEXP region) {
+    mio_surface_query* q = mio_surface_query_create(mio_r_mesh(mesh), mio_r_opt_string(region));
+    if (q == NULL)
+        mio_r_fail("surface_query");
+    return mio_r_wrap_handle(q, mio_r_surface_query_tag, mio_r_surface_query_finalizer,
+                             "mio_surface_query");
+}
+
+SEXP R_mio_surface_query_num_triangles(SEXP query) {
+    const int64_t n = mio_surface_query_num_triangles(surface_query_of(query));
+    if (n < 0)
+        mio_r_fail("surface_query_num_triangles");
+    return Rf_ScalarReal((double)n);
+}
+
+SEXP R_mio_surface_query_cast_rays(SEXP query, SEXP origins, SEXP directions, SEXP max_distance) {
+    const mio_surface_query* q = surface_query_of(query);
+    int64_t n = 0, nd = 0;
+    SEXP o = PROTECT(rays_matrix(origins, 3, 0, "origins", &n));
+    SEXP d = PROTECT(rays_matrix(directions, 3, 1, "directions", &nd));
+    int32_t* hit = (int32_t*)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int32_t));
+    int64_t* cell = (int64_t*)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    SEXP distance = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+    SEXP point = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)n));
+    SEXP normal = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)n));
+    int64_t num_hits = 0;
+    mio_status st = mio_surface_query_cast_rays(
+        q, REAL(o), n, REAL(d), nd, mio_r_double(max_distance, "max_distance"), hit, REAL(distance),
+        REAL(point), REAL(normal), cell, &num_hits);
+    if (st != MIO_OK) {
+        UNPROTECT(5);
+        mio_r_fail("surface_query_cast_rays");
+    }
+    SEXP rhit = PROTECT(Rf_allocVector(LGLSXP, (R_xlen_t)n));
+    SEXP rcell = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i) {
+        LOGICAL(rhit)[i] = hit[i] != 0;
+        REAL(rcell)[i] = (double)(cell[i] + 1); /* 1-based, 0 on a miss */
+    }
+    SEXP nh = PROTECT(Rf_ScalarReal((double)num_hits));
+    const char* names[] = {"hit", "distance", "point", "normal", "cell", "num_hits"};
+    SEXP values[] = {rhit, distance, point, normal, rcell, nh};
+    SEXP out = PROTECT(mio_r_named_list(6, names, values));
+    UNPROTECT(9);
+    return out;
+}
+
+SEXP R_mio_surface_query_closest_points(SEXP query, SEXP points) {
+    const mio_surface_query* q = surface_query_of(query);
+    int64_t n = 0;
+    SEXP p = PROTECT(rays_matrix(points, 3, 0, "points", &n));
+    int64_t* cell = (int64_t*)R_alloc((size_t)(n > 0 ? n : 1), sizeof(int64_t));
+    SEXP point = PROTECT(Rf_allocMatrix(REALSXP, 3, (int)n));
+    SEXP distance = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+    if (mio_surface_query_closest_points(q, REAL(p), n, REAL(point), REAL(distance), cell) !=
+        MIO_OK) {
+        UNPROTECT(3);
+        mio_r_fail("surface_query_closest_points");
+    }
+    SEXP rcell = PROTECT(Rf_allocVector(REALSXP, (R_xlen_t)n));
+    for (int64_t i = 0; i < n; ++i)
+        REAL(rcell)[i] = (double)(cell[i] + 1);
+    const char* names[] = {"point", "distance", "cell"};
+    SEXP values[] = {point, distance, rcell};
+    SEXP out = PROTECT(mio_r_named_list(3, names, values));
+    UNPROTECT(5);
+    return out;
+}
+
+SEXP R_mio_surface_query_free(SEXP query) {
+    if (TYPEOF(query) == EXTPTRSXP && R_ExternalPtrTag(query) == mio_r_surface_query_tag)
+        mio_r_surface_query_finalizer(query);
+    return R_NilValue;
+}
+
 SEXP R_mio_locate_points(SEXP mesh, SEXP points, SEXP tolerance) {
     int64_t n = 0;
     SEXP p = PROTECT(rays_matrix(points, 3, 0, "points", &n));
@@ -3474,6 +3565,152 @@ SEXP R_mio_undo_green(SEXP coarse, SEXP fine) {
     return res;
 }
 
+SEXP R_mio_undo_green_fine(SEXP fine) {
+    int64_t ngroups = 0, nremoved = 0;
+    mio_mesh* out = mio_undo_green_fine(mio_r_mesh(fine), &ngroups, &nremoved);
+    if (out == NULL)
+        mio_r_fail("undo_green_fine");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char* names[] = {"mesh", "num_groups_undone", "num_cells_removed"};
+    const SEXP values[] = {mo, NULL, NULL};
+    const double numbers[] = {(double)ngroups, (double)nremoved};
+    SEXP res = mio_r_report_list(3, names, values, numbers);
+    UNPROTECT(1);
+    return res;
+}
+
+/* --- subdivision, units, CRS and booleans (roadmap 9.1, 9.2, 9.10) ------- */
+
+SEXP R_mio_subdivide_surface(SEXP mesh, SEXP scheme, SEXP levels, SEXP crease_angle,
+                             SEXP preserve_boundary, SEXP interpolate_point_data,
+                             SEXP record_parent_ids) {
+    mio_subdivide_surface_opts opts;
+    mio_subdivide_surface_opts_init(&opts);
+    const char* sc = mio_r_string(scheme, "scheme");
+    if (strcmp(sc, "loop") == 0)
+        opts.scheme = MIO_SUBDIVIDE_LOOP;
+    else if (strcmp(sc, "catmull_clark") == 0 || strcmp(sc, "catmull-clark") == 0 ||
+             strcmp(sc, "catmullclark") == 0)
+        opts.scheme = MIO_SUBDIVIDE_CATMULL_CLARK;
+    else
+        Rf_error("meshio++: subdivide_surface: scheme must be 'loop' or 'catmull_clark'");
+    opts.levels = (int32_t)mio_r_int(levels, "levels");
+    opts.crease_angle = mio_r_double(crease_angle, "crease_angle");
+    opts.preserve_boundary = mio_r_bool(preserve_boundary, "preserve_boundary");
+    opts.interpolate_point_data = mio_r_bool(interpolate_point_data, "interpolate_point_data");
+    opts.record_parent_ids = mio_r_bool(record_parent_ids, "record_parent_ids");
+    int64_t ncrease = 0, nbound = 0;
+    mio_mesh* out = mio_subdivide_surface(mio_r_mesh(mesh), &opts, &ncrease, &nbound);
+    if (out == NULL)
+        mio_r_fail("subdivide_surface");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP w = PROTECT(mio_r_getbuffer(mio_subdivide_surface_warnings, "subdivide_surface"));
+    const char* names[] = {"mesh", "num_crease_edges", "num_boundary_edges", "warnings"};
+    const SEXP values[] = {mo, NULL, NULL, w};
+    const double numbers[] = {(double)ncrease, (double)nbound};
+    SEXP res = mio_r_report_list(4, names, values, numbers);
+    UNPROTECT(2);
+    return res;
+}
+
+SEXP R_mio_set_field_unit(SEXP mesh, SEXP array, SEXP unit) {
+    mio_r_check(mio_set_field_unit(mio_r_mesh(mesh), mio_r_string(array, "array"),
+                                   mio_r_string(unit, "unit")),
+                "set_field_unit");
+    return mesh;
+}
+
+SEXP R_mio_field_unit(SEXP mesh, SEXP array) {
+    double u[8];
+    int rc = mio_field_unit(mio_r_mesh(mesh), mio_r_string(array, "array"), u);
+    if (rc < 0)
+        mio_r_fail("field_unit");
+    if (rc == 0)
+        return R_NilValue;
+    SEXP out = PROTECT(Rf_allocVector(REALSXP, 8));
+    for (int k = 0; k < 8; ++k)
+        REAL(out)[k] = u[k];
+    UNPROTECT(1);
+    return out;
+}
+
+SEXP R_mio_convert_units(SEXP mesh, SEXP system, SEXP strict) {
+    int64_t n = 0;
+    mio_mesh* out = mio_convert_units(mio_r_mesh(mesh), mio_r_string(system, "system"),
+                                      mio_r_bool(strict, "strict"), &n);
+    if (out == NULL)
+        mio_r_fail("convert_units");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    SEXP w = PROTECT(mio_r_getbuffer(mio_convert_units_warnings, "convert_units"));
+    const char* names[] = {"mesh", "num_arrays_converted", "warnings"};
+    const SEXP values[] = {mo, NULL, w};
+    const double numbers[] = {(double)n};
+    SEXP res = mio_r_report_list(3, names, values, numbers);
+    UNPROTECT(2);
+    return res;
+}
+
+SEXP R_mio_mesh_crs(SEXP mesh) {
+    const mio_mesh* m = mio_r_mesh(mesh);
+    int64_t n = mio_mesh_crs(m, NULL, 0);
+    if (n < 0)
+        mio_r_fail("mesh_crs");
+    char* buf = (char*)R_alloc((size_t)n + 1, 1);
+    if (mio_mesh_crs(m, buf, n + 1) < 0)
+        mio_r_fail("mesh_crs");
+    return Rf_mkString(buf);
+}
+
+SEXP R_mio_set_mesh_crs(SEXP mesh, SEXP crs) {
+    mio_r_check(mio_set_mesh_crs(mio_r_mesh(mesh), mio_r_string(crs, "crs")), "set_mesh_crs");
+    return mesh;
+}
+
+SEXP R_mio_convert_coordinates_crs(SEXP mesh, SEXP target_crs) {
+    mio_mesh* out =
+        mio_convert_coordinates_crs(mio_r_mesh(mesh), mio_r_string(target_crs, "target_crs"));
+    if (out == NULL)
+        mio_r_fail("convert_coordinates_crs");
+    return mio_r_wrap_mesh(out);
+}
+
+SEXP R_mio_has_crs_provider(void) {
+    return Rf_ScalarLogical(mio_has_crs_provider() != 0);
+}
+
+SEXP R_mio_mesh_boolean(SEXP a, SEXP b, SEXP op, SEXP backend) {
+    const char* o = mio_r_string(op, "op");
+    int code;
+    if (strcmp(o, "union") == 0)
+        code = MIO_BOOLEAN_UNION;
+    else if (strcmp(o, "difference") == 0)
+        code = MIO_BOOLEAN_DIFFERENCE;
+    else if (strcmp(o, "intersection") == 0)
+        code = MIO_BOOLEAN_INTERSECTION;
+    else
+        Rf_error("meshio++: mesh_boolean: op must be 'union', 'difference' or 'intersection'");
+    int64_t ntri = 0;
+    mio_mesh* out =
+        mio_mesh_boolean(mio_r_mesh(a), mio_r_mesh(b), code, mio_r_opt_string(backend), &ntri);
+    if (out == NULL)
+        mio_r_fail("mesh_boolean");
+    SEXP mo = PROTECT(mio_r_wrap_mesh(out));
+    const char* names[] = {"mesh", "num_triangles"};
+    const SEXP values[] = {mo, NULL};
+    const double numbers[] = {(double)ntri};
+    SEXP res = mio_r_report_list(2, names, values, numbers);
+    UNPROTECT(1);
+    return res;
+}
+
+SEXP R_mio_has_boolean_provider(void) {
+    return Rf_ScalarLogical(mio_has_boolean_provider() != 0);
+}
+
+SEXP R_mio_graph_partitioner_names(void) {
+    return mio_r_getbuffer(mio_graph_partitioner_names, "graph_partitioner_names");
+}
+
 SEXP R_mio_meshes_equal(SEXP a, SEXP b, SEXP atol, SEXP rtol, SEXP unordered) {
     int equal = 0;
     mio_r_check(mio_meshes_equal(mio_r_mesh(a), mio_r_mesh(b), mio_r_double(atol, "atol"),
@@ -3818,10 +4055,11 @@ SEXP R_mio_blend_steps(SEXP a, SEXP b, SEXP w, SEXP blend_points) {
     return mio_r_wrap_mesh(out);
 }
 
-SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids) {
-    mio_convert_cells_result *r =
-        mio_convert_cells(mio_r_mesh(mesh), mio_r_string(mode, "mode"),
-                          mio_r_bool(record_parent_ids, "record_parent_ids"));
+SEXP R_mio_convert_cells(SEXP mesh, SEXP mode, SEXP record_parent_ids, SEXP order, SEXP full) {
+    mio_convert_cells_result* r =
+        mio_convert_cells_ex(mio_r_mesh(mesh), mio_r_string(mode, "mode"),
+                             mio_r_bool(record_parent_ids, "record_parent_ids"),
+                             mio_r_int(order, "order"), mio_r_bool(full, "full"));
     if (r == NULL) mio_r_fail("convert_cells");
     SEXP pm = R_NilValue, cm = R_NilValue;
     if (result_maps(r, 0, &pm, &cm) == NULL) {
@@ -3919,6 +4157,9 @@ static int refine_closure_code(const char *name) {
         return MIO_REFINE_CLOSURE_PROPAGATE;
     if (strcmp(name, "balanced") == 0 || strcmp(name, "2:1") == 0)
         return MIO_REFINE_CLOSURE_BALANCED;
+    if (strcmp(name, "mixed_green") == 0 || strcmp(name, "mixedgreen") == 0 ||
+        strcmp(name, "mixed-green") == 0)
+        return MIO_REFINE_CLOSURE_MIXED_GREEN;
     return -1;
 }
 
@@ -3936,7 +4177,7 @@ static int refine_compare_code(const char *name) {
 
 SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SEXP region,
                   SEXP where_array, SEXP where_op, SEXP where_value, SEXP closure,
-                  SEXP record_levels, SEXP record_hierarchy) {
+                  SEXP record_levels, SEXP record_hierarchy, SEXP undo_green_first) {
     mio_refine_opts opts;
     int64_t *ids = NULL;
     R_xlen_t n_ids = 0;
@@ -3947,6 +4188,7 @@ SEXP R_mio_refine(SEXP mesh, SEXP levels, SEXP record_parent_ids, SEXP cells, SE
     opts.record_parent_ids = mio_r_bool(record_parent_ids, "record_parent_ids");
     opts.record_levels = mio_r_bool(record_levels, "record_levels");
     opts.record_hierarchy = mio_r_bool(record_hierarchy, "record_hierarchy");
+    opts.undo_green_first = mio_r_bool(undo_green_first, "undo_green_first");
     opts.region = mio_r_opt_string(region);
     opts.predicate_array = mio_r_opt_string(where_array);
     if (where_value != R_NilValue && Rf_length(where_value) > 0)
@@ -4133,14 +4375,13 @@ SEXP R_mio_decimate_volume(SEXP mesh, SEXP target_ratio, SEXP target_cells, SEXP
     return res;
 }
 
-SEXP R_mio_partition(SEXP mesh, SEXP nparts, SEXP method, SEXP imbalance, SEXP mode,
-                     SEXP seed, SEXP record_ids, SEXP ghost_layers, SEXP weights_key) {
-    mio_partition_result *r =
-        mio_partition(mio_r_mesh(mesh), mio_r_int(nparts, "nparts"),
-                      mio_r_opt_string(method), mio_r_double(imbalance, "imbalance"),
-                      mio_r_opt_string(mode), mio_r_int(seed, "seed"),
-                      mio_r_bool(record_ids, "record_ids"),
-                      mio_r_int(ghost_layers, "ghost_layers"), mio_r_opt_string(weights_key));
+SEXP R_mio_partition(SEXP mesh, SEXP nparts, SEXP method, SEXP imbalance, SEXP mode, SEXP seed,
+                     SEXP record_ids, SEXP ghost_layers, SEXP weights_key, SEXP connected_parts) {
+    mio_partition_result* r = mio_partition_ex(
+        mio_r_mesh(mesh), mio_r_int(nparts, "nparts"), mio_r_opt_string(method),
+        mio_r_double(imbalance, "imbalance"), mio_r_opt_string(mode), mio_r_int(seed, "seed"),
+        mio_r_bool(record_ids, "record_ids"), mio_r_int(ghost_layers, "ghost_layers"),
+        mio_r_opt_string(weights_key), mio_r_bool(connected_parts, "connected_parts"));
     if (r == NULL) mio_r_fail("partition");
 
     int64_t n = mio_partition_result_num_pieces(r);

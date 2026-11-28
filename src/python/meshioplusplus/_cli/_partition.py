@@ -43,13 +43,14 @@ def add_args(parser):
     parser.add_argument(
         "--method",
         type=str,
-        choices=["auto", "sfc", "kahip"],
+        # Also any registered graph partitioner ("metis", "scotch").
         default="auto",
         help=(
             "partitioning backend: 'sfc' (Hilbert curve cut, always available), "
             "'kahip' (KaHIP kaffpa on the dual graph; needs a KaHIP-enabled "
-            "build and fails by name otherwise), or 'auto' (kahip when "
-            "available, else sfc; default)"
+            "build and fails by name otherwise), 'auto' (kahip when "
+            "available, else sfc; default), or a registered graph partitioner "
+            "('metis', 'scotch' when built in)"
         ),
     )
     parser.add_argument(
@@ -91,6 +92,11 @@ def add_args(parser):
             "attach partition:original_point_id / partition:original_cell_id "
             "arrays of the original input indices to every piece"
         ),
+    )
+    parser.add_argument(
+        "--connected-parts",
+        action="store_true",
+        help="make every non-empty part one facet-connected piece",
     )
     parser.add_argument(
         "--labels-only",
@@ -145,6 +151,7 @@ def partition_cmd(args):
         record_ids=args.record_ids,
         ghost_layers=args.ghost_layers,
         weights=args.weights,
+        connected_parts=args.connected_parts,
     )
     if "{part}" not in args.outpattern:
         # One index over every piece, so the halo layers survive as vtkGhostType.

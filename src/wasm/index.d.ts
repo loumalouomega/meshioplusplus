@@ -2195,7 +2195,7 @@ export type ConservativeInterpolateOnConflict = 'error' | 'overwrite' | 'suffix'
 /** Partitioning backend: SFC is always available; KaHIP is linked only in
  *  the full artifact, so `'kahip'` throws there outside it and `'auto'`
  *  resolves to SFC. */
-export type PartitionMethod = 'sfc' | 'kahip' | 'auto';
+export type PartitionMethod = 'sfc' | 'kahip' | 'auto' | 'metis' | 'scotch' | (string & {});
 
 /** KaHIP preconfiguration (ignored by the SFC method). */
 export type PartitionMode = 'fast' | 'eco' | 'strong';
@@ -4684,6 +4684,92 @@ export interface MeshioPlusPlusModule {
   };
 
   /**
+   * A reusable surface query handle (roadmap 9.3.2): the surface's triangle
+   * soup and hierarchies built once, queried many times. Call `free()` when
+   * done. See doc/ray_queries.md.
+   */
+  createSurfaceQuery(mesh: Mesh, region?: string): {
+    numTriangles: number;
+    castRays(
+      origins: Float64Array | number[],
+      directions: Float64Array | number[],
+      maxDistance?: number,
+      allHits?: boolean,
+    ): {
+      hit: Int32Array;
+      distance: Float64Array;
+      point: Float64Array;
+      normal: Float64Array;
+      cell: Int32Array;
+      numHits: number;
+      rayOffset?: Int32Array;
+    };
+    closestPoints(points: Float64Array | number[]): {
+      point: Float64Array;
+      distance: Float64Array;
+      cell: Int32Array;
+    };
+    free(): void;
+  };
+
+  /**
+   * Loop or Catmull-Clark subdivision with Hoppe crease and boundary rules
+   * (roadmap 9.2). See doc/subdivide_surface.md.
+   */
+  subdivideSurface(
+    mesh: Mesh,
+    options?: {
+      scheme?: "loop" | "catmull_clark";
+      levels?: number;
+      creaseAngle?: number;
+      preserveBoundary?: boolean;
+      interpolatePointData?: boolean;
+      recordParentIds?: boolean;
+    },
+  ): { mesh: Mesh; numCreaseEdges: number; numBoundaryEdges: number; warnings: string[] };
+
+  /**
+   * Convert every declared field (`field_data["meshio:unit:<array>"]`) and the
+   * points to a consistent unit system (roadmap 9.10.1). See doc/units.md.
+   */
+  convertUnits(
+    mesh: Mesh,
+    options?: { system?: "SI" | "mm-t-s" | "mm-kg-ms" | "cm-g-s" | "mm-g-ms"; strict?: boolean },
+  ): { mesh: Mesh; numArraysConverted: number; warnings: string[] };
+
+  /** The mesh with `array`'s physical unit declared from a unit name. */
+  setFieldUnit(mesh: Mesh, array: string, unit: string): Mesh;
+
+  /** `[scale_to_SI, m, kg, s, K, A, mol, cd]` of `array`, or null when undeclared. */
+  fieldUnit(mesh: Mesh, array: string): number[] | null;
+
+  /** The CRS the mesh records (`field_data["meshio:crs"]`), "" when none. */
+  meshCrs(mesh: Mesh): string;
+
+  /** The mesh with `crs` (`"EPSG:<code>"` or WKT2) recorded as its CRS. */
+  setMeshCrs(mesh: Mesh, crs: string): Mesh;
+
+  /**
+   * A watertight surface boolean through the registered provider (roadmap
+   * 9.1); throws when none is registered (`hasBooleanProvider()`). The
+   * default artifact has none. See doc/mesh_boolean.md.
+   */
+  meshBoolean(
+    a: Mesh,
+    b: Mesh,
+    options?: { op?: "union" | "difference" | "intersection"; backend?: string },
+  ): { mesh: Mesh; backend: string; numTriangles: number };
+
+  /** Whether a surface boolean provider is registered. */
+  hasBooleanProvider(): boolean;
+
+  /** The single-mesh `undoGreen` (roadmap 9.6.1), from the fine mesh's hierarchy. */
+  undoGreenFine(fine: Mesh): { mesh: Mesh; numGroupsUndone: number; numCellsRemoved: number };
+
+  /** The names of every registered graph partitioner, sorted. */
+  graphPartitionerNames(): string[];
+
+  /**
    * Select a fixed count of points from a point cloud or mesh (roadmap 9.9.2).
    */
   subsamplePoints(
@@ -5663,9 +5749,11 @@ export interface MeshioPlusPlusModule {
    */
   convertCells(
     mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean, returnMaps?: false,
+    order?: number, full?: boolean,
   ): Mesh;
   convertCells(
     mesh: Mesh, mode?: ConvertCellsMode, recordParentIds?: boolean, returnMaps?: true,
+    order?: number, full?: boolean,
   ): { mesh: Mesh } & PointCellMaps;
 
   /**
@@ -5898,6 +5986,7 @@ export interface MeshioPlusPlusModule {
     ghostLayers?: number,
     weightsKey?: string,
     returnMaps?: boolean,
+    connectedParts?: boolean,
   ): ({ partId: number; mesh: Mesh } & Partial<PointCellMaps>)[];
 
   /**

@@ -127,7 +127,7 @@ if TYPE_CHECKING:
     from ._bake_texture import bake_texture
     from ._blender import from_blender, has_blender, to_blender
     from ._boundary_layer import boundary_layer
-    from ._cast_rays import cast_rays, locate_points
+    from ._cast_rays import SurfaceQuery, cast_rays, locate_points
     from ._check_conformity import check_conformity
     from ._check_tetrahedra import check_tetrahedra
     from ._clean import clean
@@ -137,7 +137,7 @@ if TYPE_CHECKING:
     from ._conduit import from_conduit, has_conduit, to_conduit
     from ._conservative_interpolate import conservative_interpolate
     from ._convert_cells import convert_cells
-    from ._coordinates import convert_coordinates
+    from ._coordinates import convert_coordinates, has_crs_provider
     from ._crop import crop
     from ._curvature import compute_curvature
     from ._cut import cut_has_cutcells, cut_level_set, cut_quadrature
@@ -262,7 +262,7 @@ if TYPE_CHECKING:
     from ._offset_surface import hollow, offset_surface, thicken
     from ._optimize_volume import optimize_volume
     from ._parameterize import parameterize
-    from ._partition import partition, partition_labels
+    from ._partition import graph_partitioner_names, partition, partition_labels
     from ._periodic import match_periodic_nodes
     from ._pipeline import apply_operations, run_pipeline
     from ._point_budget import PointBudget, select_points, subsample_points
@@ -459,6 +459,9 @@ _LAZY_ATTRS = {
     "cast_rays": "_cast_rays",
     "filter_points": "_filter_points",
     "locate_points": "_cast_rays",
+    "SurfaceQuery": "_cast_rays",
+    "graph_partitioner_names": "_partition",
+    "has_crs_provider": "_coordinates",
     "reconstruct_surface": "_reconstruct_surface",
     "morph": "_morph",
     "prepare_metric": "_metric",
@@ -952,6 +955,9 @@ __all__ = [
     "cast_rays",
     "filter_points",
     "locate_points",
+    "SurfaceQuery",
+    "graph_partitioner_names",
+    "has_crs_provider",
     "reconstruct_surface",
     "morph",
     "prepare_metric",

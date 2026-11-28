@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-__all__ = ["cast_rays", "locate_points"]
+__all__ = ["cast_rays", "locate_points", "SurfaceQuery"]
 
 
 def cast_rays(
@@ -87,6 +87,53 @@ def locate_points(mesh, points, *, tolerance: float = 1e-12) -> Dict[str, Any]:
         np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 3),
         float(tolerance),
     )
+
+
+class SurfaceQuery:
+    """A surface's triangle soup and hierarchies, built once and queried many
+    times (roadmap 9.3.2).
+
+    ``SurfaceQuery(mesh, region=None).cast_rays(origins, directions)`` returns
+    exactly what ``cast_rays(mesh, origins, directions, region=region)`` does,
+    without rebuilding the hierarchy per batch; ``closest_points(points)``
+    returns the nearest surface point of each query point. The handle copies
+    the surface: later changes to ``mesh`` do not reach it.
+
+    :param mesh: a mesh with triangle, quad or polygon cells.
+    :param region: restrict the surface to this named cell region.
+    :raises ValueError: on an unknown region or a mesh with no surface cell.
+    :raises NotImplementedError: when the compiled C++ core is unavailable.
+    """
+
+    def __init__(self, mesh, region: Optional[str] = None):
+        from ._hull import _as_mesh, _core_op
+
+        cls = _core_op("SurfaceQuery")
+        self._query = cls(_as_mesh(mesh), "" if region is None else str(region))
+
+    @property
+    def num_triangles(self) -> int:
+        """The surface's triangles (quads and polygons fanned)."""
+        return int(self._query.num_triangles)
+
+    def cast_rays(
+        self, origins, directions, *, max_distance: float = 0.0, all_hits: bool = False
+    ) -> Dict[str, Any]:
+        """:func:`cast_rays` against this surface; same arguments and result."""
+        return self._query.cast_rays(
+            np.ascontiguousarray(origins, dtype=np.float64).reshape(-1, 3),
+            np.ascontiguousarray(directions, dtype=np.float64),
+            float(max_distance),
+            bool(all_hits),
+        )
+
+    def closest_points(self, points) -> Dict[str, Any]:
+        """The nearest surface point of each of ``points`` (``(n, 3)``): a dict
+        of ``point`` (``(n, 3)``), ``distance`` (``(n,)``, unsigned) and
+        ``cell`` (``(n,)`` int64, the global input cell)."""
+        return self._query.closest_points(
+            np.ascontiguousarray(points, dtype=np.float64).reshape(-1, 3)
+        )
 
 
 def _xyz(points) -> "np.ndarray":

@@ -387,6 +387,16 @@ export class MeshioPlusPlusLoadError extends Error {
  *   hausdorffDistance: (a: Mesh, b: Mesh, faceSamples?: number, regionA?: string, regionB?: string) => {distance: number, aToB: number, bToA: number, meanAToB: number, rmsAToB: number, meanBToA: number, rmsBToA: number, numSamplesA: number, numSamplesB: number, worstPointA: Float64Array, worstPointB: Float64Array},
  *   filterPoints: (mesh: Mesh, options?: {statisticalK?: number, stdRatio?: number, radius?: number, minNeighbors?: number, voxelSize?: number, minDistance?: number, voxelMode?: string}) => {mesh: Mesh, pointMap: Int32Array, numRemoved: {statistical: number, radius: number, voxel: number, poisson: number}, warnings: string[]},
  *   subsamplePoints: (mesh: Mesh, options: {count: number, method?: string, seed?: number, start?: number, bounds?: number[], maxCells?: number, recordIds?: boolean}) => {mesh: Mesh, pointMap: Int32Array, warnings: string[]},
+ *   subdivideSurface: (mesh: Mesh, options?: {scheme?: string, levels?: number, creaseAngle?: number, preserveBoundary?: boolean, interpolatePointData?: boolean, recordParentIds?: boolean}) => {mesh: Mesh, numCreaseEdges: number, numBoundaryEdges: number, warnings: string[]},
+ *   convertUnits: (mesh: Mesh, options?: {system?: string, strict?: boolean}) => {mesh: Mesh, numArraysConverted: number, warnings: string[]},
+ *   setFieldUnit: (mesh: Mesh, array: string, unit: string) => Mesh,
+ *   fieldUnit: (mesh: Mesh, array: string) => number[] | null,
+ *   meshCrs: (mesh: Mesh) => string,
+ *   setMeshCrs: (mesh: Mesh, crs: string) => Mesh,
+ *   meshBoolean: (a: Mesh, b: Mesh, options?: {op?: string, backend?: string}) => {mesh: Mesh, backend: string, numTriangles: number},
+ *   hasBooleanProvider: () => boolean,
+ *   undoGreenFine: (fine: Mesh) => {mesh: Mesh, numGroupsUndone: number, numCellsRemoved: number},
+ *   graphPartitionerNames: () => string[],
  *   castRays: (mesh: Mesh, origins: Float64Array | number[], directions: Float64Array | number[], maxDistance?: number, region?: string, allHits?: boolean) => {hit: Int32Array, distance: Float64Array, point: Float64Array, normal: Float64Array, cell: Int32Array, numHits: number, rayOffset?: Int32Array},
  *   locatePoints: (mesh: Mesh, points: Float64Array | number[], tolerance?: number) => {cell: Int32Array, nodes: Int32Array, barycentric: Float64Array, numLocated: number},
  *   massProperties: (mesh: Mesh, density?: number, densityArray?: string, region?: string, thickness?: number, about?: string) => {kind: string, total: object, regions: object[], warnings: string[]},
@@ -436,7 +446,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   parameterize: (mesh: Mesh, options?: {padding?: number, maxDepth?: number, maxStretch?: number}) => {mesh: Mesh, numCharts: number, numFlipped: number, stretch: number, packingEfficiency: number, numSeamPoints: number},
  *   sobolevDeform: (mesh: Mesh, array: string, lengthScale: number, fixedPointsArray?: string, fixBoundary?: boolean, recordFiltered?: boolean, maxIterations?: number, tolerance?: number) => {mesh: Mesh, numIterations: number, residual: number, converged: boolean, numFixed: number, numIsolated: number, maxDisplacement: number},
  *   split: (mesh: Mesh, by: string, tagName?: string, returnMaps?: boolean) => {key: string, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
- *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
+ *   convertCells: (mesh: Mesh, mode?: string, recordParentIds?: boolean, returnMaps?: boolean, order?: number, full?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   subdivide: (mesh: Mesh, recordParentIds?: boolean, returnMaps?: boolean) => Mesh | {mesh: Mesh, cellMaps: Int32Array[]},
  *   agglomerate: (mesh: Mesh, targetGroupSize?: number, returnMaps?: boolean, options?: {mergeCoplanarFaces?: boolean, coplanarAngle?: number, minSphericity?: number}) => Mesh | {mesh: Mesh, cellMap: Int32Array, numFacesMerged: number, numRejected: number},
  *   tetToPoly: (mesh: Mesh, options?: {featureAngle?: number, pointDataToCellData?: boolean, recordVertexIds?: boolean}, returnMaps?: boolean) => Mesh | {mesh: Mesh, vertexMap: Int32Array, numNewPoints: number, numBoundaryFaces: number, numSplitVertices: number},
@@ -445,7 +455,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *            options?: object, returnMaps?: boolean) => Mesh | {mesh: Mesh, pointMap: Int32Array, cellMaps: Int32Array[]},
  *   decimate: (mesh: Mesh, ratio?: number, targetFaces?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean, bounds?: {maxDeviation?: number, coverage?: number, maxFaces?: number}) => {mesh: Mesh, facesRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, deviation?: number, deviationMet?: boolean, rounds?: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
  *   decimateVolume: (mesh: Mesh, ratio?: number, targetCells?: number, maxError?: number, placement?: string, preserveBoundary?: boolean, preserveFeatures?: boolean, featureAngle?: number, frozen?: number[]|Int32Array|null, returnMaps?: boolean) => {mesh: Mesh, tetsRemoved: number, pointsRemoved: number, collapsesRejected: number, maxErrorApplied: number, pointMap?: Int32Array, cellMaps?: Int32Array[]},
- *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string, returnMaps?: boolean) => {partId: number, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
+ *   partition: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, recordIds?: boolean, ghostLayers?: number, weightsKey?: string, returnMaps?: boolean, connectedParts?: boolean) => {partId: number, mesh: Mesh, pointMap?: Int32Array, cellMaps?: Int32Array[]}[],
  *   partitionLabels: (mesh: Mesh, nparts: number, method?: string, imbalance?: number, mode?: string, seed?: number, weightsKey?: string) => number[][],
  *   stats: (mesh: Mesh) => object,
  *   withProvenance: <T>(mode: number|null|undefined, fn: () => T) => T,
@@ -474,6 +484,7 @@ export class MeshioPlusPlusLoadError extends Error {
  *   writeMedMulti: (path: string, meshes: Mesh[], names: string[], options?: object) => void,
  *   writeGltf: (path: string, mesh: Mesh, options?: object) => string[],
  *   openSequence: (source: string|string[], options?: object) => SequenceReader,
+ *   createSurfaceQuery: (mesh: Mesh, region?: string) => SurfaceQueryHandle,
  * }>}
  * @throws {MeshioPlusPlusLoadError} if the WASM module fails to instantiate.
  */
@@ -1348,6 +1359,16 @@ export async function loadMeshioPlusPlus(
             Module.hausdorffDistance(a, b, faceSamples, regionA, regionB),
         filterPoints: (mesh, options) => Module.filterPoints(mesh, options),
         subsamplePoints: (mesh, options) => Module.subsamplePoints(mesh, options),
+        subdivideSurface: (mesh, options = {}) => Module.subdivideSurface(mesh, options),
+        convertUnits: (mesh, options = {}) => Module.convertUnits(mesh, options),
+        setFieldUnit: (mesh, array, unit) => Module.setFieldUnit(mesh, array, unit),
+        fieldUnit: (mesh, array) => Module.fieldUnit(mesh, array),
+        meshCrs: (mesh) => Module.meshCrs(mesh),
+        setMeshCrs: (mesh, crs) => Module.setMeshCrs(mesh, crs),
+        meshBoolean: (a, b, options = {}) => Module.meshBoolean(a, b, options),
+        hasBooleanProvider: () => Module.hasBooleanProvider(),
+        undoGreenFine: (fine) => Module.undoGreenFine(fine),
+        graphPartitionerNames: () => Module.graphPartitionerNames(),
         castRays: (mesh, origins, directions, maxDistance = 0, region = '', allHits = false) =>
             Module.castRays(mesh, origins, directions, maxDistance, region, Boolean(allHits)),
         locatePoints: (mesh, points, tolerance = 1e-12) =>
@@ -1484,8 +1505,9 @@ export async function loadMeshioPlusPlus(
             Module.split(mesh, by, tagName, returnMaps),
         // `returnMaps` (default false): when true, returns
         // `{mesh, pointMap, cellMaps}` instead of a bare mesh.
-        convertCells: (mesh, mode = 'linearize', recordParentIds = false, returnMaps = false) =>
-            Module.convertCells(mesh, mode, recordParentIds, returnMaps),
+        // `order` (0: the mode's default) and `full` (full-Lagrange): roadmap 9.5.
+        convertCells: (mesh, mode = 'linearize', recordParentIds = false, returnMaps = false, order = 0, full = false) =>
+            Module.convertCells(mesh, mode, recordParentIds, returnMaps, order, Boolean(full)),
         // `returnMaps` (default false): when true, returns `{mesh, cellMaps}`
         // instead of a bare mesh -- there is no point map (subdivide never
         // prunes or renumbers a point).
@@ -1585,6 +1607,7 @@ export async function loadMeshioPlusPlus(
             ghostLayers = 0,
             weightsKey = '',
             returnMaps = false,
+            connectedParts = false,
         ) =>
             Module.partition(
                 mesh,
@@ -1597,6 +1620,7 @@ export async function loadMeshioPlusPlus(
                 ghostLayers,
                 weightsKey,
                 returnMaps,
+                Boolean(connectedParts),
             ),
         partitionLabels: (
             mesh,
@@ -1746,6 +1770,24 @@ export async function loadMeshioPlusPlus(
         // (`read()`) without holding more than one mesh alive, unlike
         // sequenceEntries + readMesh in a loop, which still requires the
         // caller to resolve the format/step itself.
+        // A reusable surface query (roadmap 9.3.2): the soup and hierarchies
+        // built once; `free()` releases them (safe to call twice).
+        createSurfaceQuery: (mesh, region = '') => {
+            const handle = Module.surfaceQueryCreate(mesh, region);
+            let open = true;
+            return {
+                numTriangles: Module.surfaceQueryNumTriangles(handle),
+                castRays: (origins, directions, maxDistance = 0, allHits = false) =>
+                    Module.surfaceQueryCastRays(
+                        handle, origins, directions, maxDistance, Boolean(allHits)),
+                closestPoints: (points) => Module.surfaceQueryClosestPoints(handle, points),
+                free: () => {
+                    if (!open) return;
+                    open = false;
+                    Module.surfaceQueryFree(handle);
+                },
+            };
+        },
         openSequence: (source, options = undefined) => {
             const handle = Module.sequenceOpen(source, options);
             const count = Module.sequenceCount(handle);

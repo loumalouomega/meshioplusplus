@@ -28,7 +28,8 @@
       {"name": "Value", "kind": "number", "default": 0.0},
       {"name": "Closure", "kind": "text", "default": "redgreen", "cpp_default": ""},
       {"name": "RecordLevels", "kind": "flag", "default": false},
-      {"name": "RecordHierarchy", "kind": "flag", "default": false}
+      {"name": "RecordHierarchy", "kind": "flag", "default": false},
+      {"name": "UndoGreenFirst", "kind": "flag", "default": false}
     ]},
     {"op": "Decimate", "keys": [
       {"name": "Ratio", "kind": "number", "default": -1.0},
@@ -57,7 +58,8 @@
       {"name": "Imbalance", "kind": "number", "default": 0.03},
       {"name": "Mode", "kind": "text", "default": "eco", "cpp_default": ""},
       {"name": "Seed", "kind": "number", "default": 0},
-      {"name": "WeightsKey", "kind": "text", "default": ""}
+      {"name": "WeightsKey", "kind": "text", "default": ""},
+      {"name": "ConnectedParts", "kind": "flag", "default": false}
     ]},
     {"op": "Slice", "keys": [
       {"name": "Point"},
@@ -587,7 +589,8 @@
       {"name": "Reference"},
       {"name": "Arrays"},
       {"name": "Inverse", "kind": "flag", "default": false},
-      {"name": "RecordCoordinates", "kind": "flag", "default": true}
+      {"name": "RecordCoordinates", "kind": "flag", "default": true},
+      {"name": "TargetCrs", "kind": "text", "default": ""}
     ]},
     {"op": "GeodesicDistance", "keys": [
       {"name": "Sources"},
@@ -916,7 +919,21 @@
     ]},
     {"op": "ConvertCells", "keys": [
       {"name": "Mode", "kind": "text", "default": "linearize", "cpp_default": ""},
+      {"name": "RecordParentIds", "kind": "flag", "default": false},
+      {"name": "Order", "kind": "number", "default": 0},
+      {"name": "Full", "kind": "flag", "default": false}
+    ]},
+    {"op": "SubdivideSurface", "keys": [
+      {"name": "Scheme", "kind": "text", "default": "loop"},
+      {"name": "Levels", "kind": "number", "default": 1},
+      {"name": "CreaseAngle", "kind": "number", "default": 60.0},
+      {"name": "PreserveBoundary", "kind": "flag", "default": true},
+      {"name": "InterpolatePointData", "kind": "flag", "default": true},
       {"name": "RecordParentIds", "kind": "flag", "default": false}
+    ]},
+    {"op": "ConvertUnits", "keys": [
+      {"name": "System", "kind": "text", "default": "SI"},
+      {"name": "Strict", "kind": "flag", "default": true}
     ]},
     {"op": "Subdivide", "keys": [
       {"name": "RecordParentIds", "kind": "flag", "default": false}
@@ -1172,6 +1189,11 @@
     ]},
     {"op": "UndoGreen", "keys": [
       {"name": "Inputs"}
+    ]},
+    {"op": "MeshBoolean", "keys": [
+      {"name": "Inputs"},
+      {"name": "Operation", "kind": "text", "default": "union"},
+      {"name": "Backend", "kind": "text", "default": ""}
     ]},
     {"op": "Split", "keys": [
       {"name": "By"},

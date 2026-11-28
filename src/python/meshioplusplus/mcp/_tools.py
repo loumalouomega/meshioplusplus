@@ -6244,6 +6244,7 @@ def tool_refine(
     closure="redgreen",
     record_levels=False,
     record_hierarchy=False,
+    undo_green_first=False,
 ):
     """Subdivide cells into same-type children, all or a selected subset."""
     return _run_op(refine, locals(), report=False)
@@ -6760,6 +6761,7 @@ def tool_partition(
     weights=None,
     output_dir=None,
     name_template="{stem}_part{part}.vtu",
+    connected_parts=False,
 ):
     """Partition into exactly nparts balanced pieces; writes one file per part,
     or one ``.pvtu``/``.pvtp`` index over every part (a ``name_template`` with
@@ -6788,6 +6790,7 @@ def tool_partition(
         record_ids=record_ids,
         ghost_layers=ghost_layers,
         weights=weights,
+        connected_parts=connected_parts,
     )
     stem = os.path.splitext(os.path.basename(resolved_in))[0]
     out_dir = output_dir if output_dir is not None else os.path.dirname(resolved_in)
@@ -7295,19 +7298,24 @@ def tool_project_to_cad(
 
 
 def tool_undo_green(
-    coarse_path,
     fine_path,
     output_path,
+    coarse_path=None,
     coarse_format=None,
     fine_format=None,
     output_format=None,
 ):
     """Restore the fine mesh's transitional (green) cells to their original
-    parent, read verbatim from the coarse mesh (a prior refine() input).
-    Returns num_groups_undone/num_cells_removed alongside the mesh summary."""
-    coarse = _load(coarse_path, coarse_format)
+    parent, read verbatim from the coarse mesh (a prior refine() input), or,
+    with no coarse_path, from the fine mesh's own refine:cell_id/parent_id
+    hierarchy. Returns num_groups_undone/num_cells_removed alongside the mesh
+    summary."""
     fine = _load(fine_path, fine_format)
-    out, report = undo_green(coarse, fine, return_report=True)
+    if coarse_path is None:
+        out, report = undo_green(fine, return_report=True)
+    else:
+        coarse = _load(coarse_path, coarse_format)
+        out, report = undo_green(coarse, fine, return_report=True)
     return _result(_store(out, output_path, output_format), out, **report)
 
 

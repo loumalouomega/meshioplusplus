@@ -1349,6 +1349,21 @@ function undo_green(coarse::Mesh, fine::Mesh)
 end
 
 """
+    undo_green(fine) -> (; mesh, num_groups_undone, num_cells_removed)
+
+The single-mesh form (roadmap 9.6.1): the green groups come from the
+`refine:cell_id`/`refine:parent_id` hierarchy `fine` carries, so the coarse
+mesh is not needed.
+"""
+function undo_green(fine::Mesh)
+    ngroups = Ref{Int64}(0); nremoved = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_undo_green_fine), Ptr{Cvoid}, (Ptr{Cvoid}, Ptr{Int64}, Ptr{Int64}),
+                _handle(fine), ngroups, nremoved)
+    (mesh=Mesh(_check_ptr(ptr)), num_groups_undone=Int(ngroups[]),
+     num_cells_removed=Int(nremoved[]))
+end
+
+"""
     boundary_layer(mesh; first_height, num_layers=3, growth=1.2, reverse=false,
                    collision_fraction=0.45, smooth_iterations=5, max_shrink=6,
                    collapse="points", normal_smooth_iterations=0, front_check=true)
@@ -2457,21 +2472,26 @@ function split(m::Mesh; by::AbstractString="type", tag::AbstractString="")
 end
 
 """
-    convert_cells(mesh, mode; record_parent_ids=false) -> (; mesh, point_map, cell_maps)
+    convert_cells(mesh, mode; record_parent_ids=false, order=0, full=false)
+        -> (; mesh, point_map, cell_maps)
 
 Convert the **element representation** (not the file format). `mode` is
 `"linearize"` (higher-order cells → their linear base, pruning orphaned
 nodes), `"simplexify"` (decompose into same-dimension simplices) or
-`"elevate"` (linear → serendipity quadratic).
+`"elevate"` (linear → serendipity quadratic, or order `order` and the
+full-Lagrange family with `full=true`) or `"reduce"` (to order `order`, 1 by
+default); `order=0` takes the mode's default.
 
 `point_map` is 1-based input-point → output-point, `0` where the point was
 pruned; each `cell_maps[b]` is input cell → its **first child** in the
 corresponding output block. See `doc/convert_cells.md`.
 """
-function convert_cells(m::Mesh, mode::AbstractString; record_parent_ids::Bool=false)
-    result = _check_ptr(ccall(_sym(:mio_convert_cells), Ptr{Cvoid},
-                              (Ptr{Cvoid}, Cstring, Cint), _handle(m), mode,
-                              record_parent_ids ? Cint(1) : Cint(0)))
+function convert_cells(m::Mesh, mode::AbstractString; record_parent_ids::Bool=false,
+                       order::Integer=0, full::Bool=false)
+    result = _check_ptr(ccall(_sym(:mio_convert_cells_ex), Ptr{Cvoid},
+                              (Ptr{Cvoid}, Cstring, Cint, Cint, Cint), _handle(m), mode,
+                              record_parent_ids ? Cint(1) : Cint(0), Cint(order),
+                              full ? Cint(1) : Cint(0)))
     try
         pm = _result_map(result, :mio_convert_cells_result_point_map)
         cm = _result_cell_maps(result, :mio_convert_cells_result_num_cell_maps,
@@ -2629,7 +2649,9 @@ end
 
 const _REFINE_CLOSURES = Dict("" => Int32(0), "redgreen" => Int32(0), "red-green" => Int32(0),
                               "green" => Int32(0), "propagate" => Int32(1), "red" => Int32(1),
-                              "balanced" => Int32(2), "2:1" => Int32(2))
+                              "balanced" => Int32(2), "2:1" => Int32(2),
+                              "mixed_green" => Int32(3), "mixedgreen" => Int32(3),
+                              "mixed-green" => Int32(3))
 
 const _REFINE_COMPARES = Dict("<" => Int32(0), "lt" => Int32(0), "<=" => Int32(1),
                               "le" => Int32(1), ">" => Int32(2), "gt" => Int32(2),
@@ -2677,10 +2699,12 @@ function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
                 cells=nothing, region::AbstractString="",
                 where_array::AbstractString="", where_op::AbstractString="<",
                 where_value::Real=0.0, closure::AbstractString="redgreen",
-                record_levels::Bool=false, record_hierarchy::Bool=false)
+                record_levels::Bool=false, record_hierarchy::Bool=false,
+                undo_green_first::Bool=false)
     closure_code = get(_REFINE_CLOSURES, String(closure)) do
         throw(ArgumentError("refine: unknown closure '$closure' " *
-                            "(expected 'redgreen'/'green', 'propagate' or 'balanced')"))
+                            "(expected 'redgreen'/'green', 'propagate', 'balanced' " *
+                            "or 'mixed_green')"))
     end
     compare_code = get(_REFINE_COMPARES, String(where_op)) do
         throw(ArgumentError("refine: unknown comparison '$where_op' " *
@@ -2702,7 +2726,8 @@ function refine(m::Mesh; levels::Integer=1, record_parent_ids::Bool=false,
                             record_levels ? Int32(1) : Int32(0),
                             closure_code, compare_code, Int32(0),
                             record_hierarchy ? Int64(1) : Int64(0),
-                            (Int64(0), Int64(0), Int64(0), Int64(0), Int64(0)))
+                            undo_green_first ? Int64(1) : Int64(0),
+                            (Int64(0), Int64(0), Int64(0), Int64(0)))
         _check_ptr(ccall(_sym(:mio_refine_ex), Ptr{Cvoid},
                          (Ptr{Cvoid}, Ref{_CRefineOpts}), _handle(m), Ref(opts)))
     end
@@ -2898,13 +2923,13 @@ in which case the pieces overlap. See `doc/partition.md`.
 function partition(m::Mesh, nparts::Integer; method::AbstractString="auto",
                    imbalance::Real=0.03, mode::AbstractString="eco", seed::Integer=0,
                    record_ids::Bool=false, ghost_layers::Integer=0,
-                   weights::AbstractString="")
-    result = _check_ptr(ccall(_sym(:mio_partition), Ptr{Cvoid},
+                   weights::AbstractString="", connected_parts::Bool=false)
+    result = _check_ptr(ccall(_sym(:mio_partition_ex), Ptr{Cvoid},
                               (Ptr{Cvoid}, Cint, Cstring, Cdouble, Cstring, Cint, Cint,
-                               Cint, Cstring),
+                               Cint, Cstring, Cint),
                               _handle(m), Cint(nparts), method, Float64(imbalance), mode,
                               Cint(seed), record_ids ? Cint(1) : Cint(0),
-                              Cint(ghost_layers), weights))
+                              Cint(ghost_layers), weights, connected_parts ? Cint(1) : Cint(0)))
     try
         n = _check_count(ccall(_sym(:mio_partition_result_num_pieces), Int64,
                                (Ptr{Cvoid},), result), "mio_partition_result_num_pieces")
@@ -4960,6 +4985,160 @@ function subsample_points(m::Mesh, count::Integer; method::AbstractString="farth
                                         (Ptr{UInt8}, Int64), buf, k))
     (mesh=out, point_map=Int[map[i] + 1 for i in 1:n_out],
      warnings=isempty(text) ? String[] : String.(split(text, '\n')))
+end
+
+"""
+    subdivide_surface(m; scheme="loop", levels=1, crease_angle=60.0,
+                      preserve_boundary=true, interpolate_point_data=true,
+                      record_parent_ids=false)
+        -> (; mesh, num_crease_edges, num_boundary_edges, warnings)
+
+Loop (`"loop"`, triangles) or Catmull-Clark (`"catmull_clark"`, polygons to
+quads) subdivision with Hoppe crease and boundary rules (roadmap 9.2). See
+`doc/subdivide_surface.md`.
+"""
+function subdivide_surface(m::Mesh; scheme::AbstractString="loop", levels::Integer=1,
+                           crease_angle::Real=60.0, preserve_boundary::Bool=true,
+                           interpolate_point_data::Bool=true, record_parent_ids::Bool=false)
+    code = scheme == "loop" ? Int32(0) :
+           scheme in ("catmull_clark", "catmull-clark", "catmullclark") ? Int32(1) :
+           throw(ArgumentError("scheme must be \"loop\" or \"catmull_clark\""))
+    opts = _CSubdivideSurfaceOpts(code, Int32(levels), Float64(crease_angle),
+                                  preserve_boundary ? Int32(1) : Int32(0),
+                                  interpolate_point_data ? Int32(1) : Int32(0),
+                                  record_parent_ids ? Int32(1) : Int32(0), Int32(0),
+                                  ntuple(_ -> Int64(0), 4))
+    ncrease = Ref{Int64}(0); nbound = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_subdivide_surface), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ref{_CSubdivideSurfaceOpts}, Ptr{Int64}, Ptr{Int64}),
+                _handle(m), Ref(opts), ncrease, nbound)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, k) -> ccall(_sym(:mio_subdivide_surface_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, num_crease_edges=Int(ncrease[]), num_boundary_edges=Int(nbound[]),
+     warnings=isempty(text) ? String[] : String.(split(text, '\n')))
+end
+
+"""
+    set_field_unit!(m, array, unit) -> m
+
+Declare the physical unit of point or cell data `array` from a unit name
+(`"m"`, `"mm"`, `"MPa"`, `"kg/m^3"`, ...) as
+`field_data["meshio:unit:<array>"]` (roadmap 9.10.1). See `doc/units.md`.
+"""
+function set_field_unit!(m::Mesh, array::AbstractString, unit::AbstractString)
+    _check(ccall(_sym(:mio_set_field_unit), Cint, (Ptr{Cvoid}, Cstring, Cstring),
+                 _handle(m), array, unit))
+    m
+end
+
+"""
+    field_unit(m, array) -> Union{Nothing,Vector{Float64}}
+
+The declared unit of `array` as `[scale_to_SI, m, kg, s, K, A, mol, cd]`, or
+`nothing` when undeclared.
+"""
+function field_unit(m::Mesh, array::AbstractString)
+    out = Vector{Float64}(undef, 8)
+    rc = GC.@preserve out ccall(_sym(:mio_field_unit), Cint, (Ptr{Cvoid}, Cstring, Ptr{Float64}),
+                                _handle(m), array, pointer(out))
+    rc < 0 && _throw_status(MIO_ERR_INVALID_ARG)
+    rc == 1 ? out : nothing
+end
+
+"""
+    convert_units(m; system="SI", strict=true) -> (; mesh, num_arrays_converted, warnings)
+
+Convert every declared field and the points to the consistent unit system
+`system` (`"SI"`, `"mm-t-s"`, `"mm-kg-ms"`, `"cm-g-s"`, `"mm-g-ms"`; roadmap
+9.10.1). `strict=false` leaves undeclared arrays with a warning.
+"""
+function convert_units(m::Mesh; system::AbstractString="SI", strict::Bool=true)
+    n = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_convert_units), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring, Cint, Ptr{Int64}),
+                _handle(m), system, strict ? Cint(1) : Cint(0), n)
+    out = Mesh(_check_ptr(ptr))
+    text = _getstring((buf, k) -> ccall(_sym(:mio_convert_units_warnings), Int64,
+                                        (Ptr{UInt8}, Int64), buf, k))
+    (mesh=out, num_arrays_converted=Int(n[]),
+     warnings=isempty(text) ? String[] : String.(split(text, '\n')))
+end
+
+"""
+    mesh_crs(m) -> String
+
+The CRS `m` records (`field_data["meshio:crs"]`), `""` when none.
+"""
+mesh_crs(m::Mesh) = _getstring((buf, k) -> ccall(_sym(:mio_mesh_crs), Int64,
+                                                 (Ptr{Cvoid}, Ptr{UInt8}, Int64),
+                                                 _handle(m), buf, k))
+
+"""
+    set_mesh_crs!(m, crs) -> m
+
+Record `crs` (`"EPSG:<code>"` or WKT2) as the CRS of `m`; `""` clears it.
+"""
+function set_mesh_crs!(m::Mesh, crs::AbstractString)
+    _check(ccall(_sym(:mio_set_mesh_crs), Cint, (Ptr{Cvoid}, Cstring), _handle(m), crs))
+    m
+end
+
+"""
+    convert_coordinates_crs(m, target_crs) -> Mesh
+
+Reproject the points of `m` from the CRS it records to `target_crs` (roadmap
+9.10.2). Needs a build with PROJ ([`has_crs_provider`](@ref)).
+"""
+convert_coordinates_crs(m::Mesh, target_crs::AbstractString) =
+    Mesh(_check_ptr(ccall(_sym(:mio_convert_coordinates_crs), Ptr{Cvoid}, (Ptr{Cvoid}, Cstring),
+                          _handle(m), target_crs)))
+
+"""
+    has_crs_provider() -> Bool
+
+Whether a CRS provider (PROJ) is registered.
+"""
+has_crs_provider() = ccall(_sym(:mio_has_crs_provider), Cint, ()) != 0
+
+const _BOOLEAN_OPS = Dict("union" => Cint(0), "difference" => Cint(1),
+                          "intersection" => Cint(2))
+
+"""
+    mesh_boolean(a, b; op="union", backend="") -> (; mesh, num_triangles)
+
+A watertight surface boolean of two closed, oriented triangle meshes through
+the registered provider (Manifold; roadmap 9.1). Fails when none is
+registered ([`has_boolean_provider`](@ref)). See `doc/mesh_boolean.md`.
+"""
+function mesh_boolean(a::Mesh, b::Mesh; op::AbstractString="union",
+                      backend::AbstractString="")
+    code = get(_BOOLEAN_OPS, String(op)) do
+        throw(ArgumentError("op must be \"union\", \"difference\" or \"intersection\""))
+    end
+    n = Ref{Int64}(0)
+    ptr = ccall(_sym(:mio_mesh_boolean), Ptr{Cvoid},
+                (Ptr{Cvoid}, Ptr{Cvoid}, Cint, Cstring, Ptr{Int64}),
+                _handle(a), _handle(b), code, backend, n)
+    (mesh=Mesh(_check_ptr(ptr)), num_triangles=Int(n[]))
+end
+
+"""
+    has_boolean_provider() -> Bool
+
+Whether a surface boolean provider (Manifold) is registered.
+"""
+has_boolean_provider() = ccall(_sym(:mio_has_boolean_provider), Cint, ()) != 0
+
+"""
+    graph_partitioner_names() -> Vector{String}
+
+The registered graph partitioners `partition(...; method=...)` accepts by name
+("metis", "scotch" when built in).
+"""
+function graph_partitioner_names()
+    text = _getstring((buf, k) -> ccall(_sym(:mio_graph_partitioner_names), Int64,
+                                        (Ptr{UInt8}, Int64), buf, k))
+    isempty(text) ? String[] : String.(split(text, '\n'))
 end
 
 """

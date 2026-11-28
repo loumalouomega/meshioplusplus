@@ -38,6 +38,7 @@
 
 // Project includes
 #include "../detail/library_lock.hpp"
+#include "meshioplusplus/operations/units.hpp"
 #include "meshioplusplus/formats/med.hpp"
 #include "meshioplusplus/detail/classic_stream.hpp"
 #include "meshioplusplus/detail/cell_index.hpp"
@@ -422,12 +423,19 @@ void write_cha_bitmask(hid_t field, hid_t ts, int entity_bit, const std::string&
 // caller BEFORE this call so the bitmask can be written up front.
 h5::Hid write_cha_field_header(hid_t cha, const std::string& rMeshName, const std::string& rName,
                                DType dt, std::size_t ncomponents, bool IsNodal,
-                               const std::vector<std::string>& rMedCellTypes) {
+                               const std::vector<std::string>& rMedCellTypes,
+                               const std::string& rUnit = "") {
     h5::Hid field = h5::create_group_crt(cha, rName);
     write_attr_bytes(field, "MAI", rMeshName);
     h5::write_attr_int(field, "TYP", med_field_type_code(dt));
     h5::write_attr_int(field, "NCO", static_cast<std::int64_t>(ncomponents));
-    write_attr_bytes(field, "UNI", "");
+    // The field's declared meshio:unit:<array>, by name, 16 characters per
+    // component (roadmap 9.10.1); blank when it declares none.
+    std::string uni;
+    if (!rUnit.empty())
+        for (std::size_t i = 0; i < std::max<std::size_t>(ncomponents, 1); ++i)
+            uni += rUnit + std::string(16 - std::min<std::size_t>(rUnit.size(), 16), ' ');
+    write_attr_bytes(field, "UNI", uni);
     write_attr_bytes(field, "UNT", "");
     // MED's NOM is 16 characters PER COMPONENT, not a fixed 16. With no
     // component names to carry (the C++ Mesh has no `med:nom` channel -- see
@@ -491,10 +499,19 @@ void write_cha_support(hid_t ts, const std::string& rSupportName, const NDArray&
     h5::write_dataset(profile, "CO", flat);
 }
 
+// The name of @p rName's declared meshio:unit:<array>, or empty.
+std::string med_declared_unit(const Mesh& rMesh, const std::string& rName) {
+    FieldUnit unit;
+    if (!get_field_unit(rMesh, rName, unit))
+        return {};
+    const std::string name = field_unit_name(unit);
+    return name.size() <= 16 ? name : std::string();
+}
+
 void write_cha_nodal_field(hid_t cha, const std::string& rMeshName, const std::string& rName,
-                           const NDArray& rData) {
+                           const NDArray& rData, const std::string& rUnit) {
     h5::Hid ts = write_cha_field_header(cha, rMeshName, rName, rData.Dtype(), detail::cols(rData),
-                                        /*IsNodal=*/true, {});
+                                        /*IsNodal=*/true, {}, rUnit);
     write_cha_support(ts, "NOE", rData);
 }
 
@@ -550,8 +567,9 @@ void write_cha_cell_field(hid_t cha, const std::string& rMeshName, const std::st
             contributing.push_back(med_type);
     }
 
-    h5::Hid ts = write_cha_field_header(cha, rMeshName, rDiskName, dt, header_components,
-                                        /*IsNodal=*/false, contributing);
+    h5::Hid ts =
+        write_cha_field_header(cha, rMeshName, rDiskName, dt, header_components,
+                               /*IsNodal=*/false, contributing, med_declared_unit(rMesh, rName));
 
     for (const std::string& med_type : contributing)
         write_cha_support(ts, "MAI." + med_type,
@@ -2158,7 +2176,7 @@ void med_write_mesh(hid_t f, const Mesh& rMesh, const MedInfo& rInfo,
             if (name != "point_tags" && name != "med:num")
                 write_cha_nodal_field(cha, mesh_name,
                                       rCollisions.count(name) ? name + "@" + mesh_name : name,
-                                      rMesh.PointData(name));
+                                      rMesh.PointData(name), med_declared_unit(rMesh, name));
         for (const auto& name : rMesh.CellDataNames())
             if (name != "cell_tags" && name != "med:num")
                 write_cha_cell_field(cha, mesh_name, name, rMesh,

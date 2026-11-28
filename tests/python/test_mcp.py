@@ -2614,6 +2614,11 @@ _NOT_TOOLS = {
     "CancelToken",  # in-memory cooperative cancellation handle (roadmap 9.16)
     "progress_context",  # in-memory thread-local progress callback guard (roadmap 9.16)
     "partition_labels",  # in-memory variant of partition
+    # An in-memory query handle (roadmap 9.3.2): it exists to be reused across
+    # batches in one process; the cast_rays tool covers the file-level use.
+    "SurfaceQuery",
+    "graph_partitioner_names",  # capability probe; partition takes the names
+    "has_crs_provider",  # capability probe; convert_coordinates reports the error
     "apply_operations",  # in-memory variant of the pipeline tool
     "complex_pairs",  # in-memory numpy helper; data_info reports complex pairs
     "to_complex",  # in-memory complex128 numpy view

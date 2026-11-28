@@ -51,6 +51,13 @@ _RAW_ONLY = {
     # a runtime argument. Same reason `gidWriteSeries` takes a provider.
     "exodusSeriesCreate",
     "exodusSeriesAction",
+    # The surface query handle (roadmap 9.3.2), folded into
+    # `createSurfaceQuery`'s returned object.
+    "surfaceQueryCreate",
+    "surfaceQueryNumTriangles",
+    "surfaceQueryCastRays",
+    "surfaceQueryClosestPoints",
+    "surfaceQueryFree",
 }
 
 # Wrapper keys with no `mio_*` counterpart, and why.
@@ -85,6 +92,7 @@ _JS_TO_C = {
     "readMesh": "read",
     "readMeshSelective": "read",
     "readMetadata": "read_metadata_create",
+    "createSurfaceQuery": "surface_query_create",
     "dataInfo": "data_info_create",
     "dataIntegrate": "data_integrate_create",
     "writeMesh": "write",
@@ -110,6 +118,9 @@ _JS_TO_C = {
 # `mio_*` operation entry points (first parameter `const mio_mesh*`) with no
 # WASM binding, and why.
 _C_WITHOUT_JS = {
+    # `mio_convert_coordinates_crs` is `convert_coordinates` with
+    # system="crs" (roadmap 9.10.2); JS `convertCoordinates` takes `targetCrs`.
+    "convert_coordinates_crs",
     # Aggregate scalar counts with no dedicated JS need: `attachQuality`
     # already exposes the per-cell metrics as cell_data, and
     # `surfaceWatertightCheck` covers the surface-quality summary case.

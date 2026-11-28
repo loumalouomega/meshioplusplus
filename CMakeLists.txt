@@ -330,9 +330,22 @@ endif()
 
 option(MESHIOPLUSPLUS_WITH_SCOTCH "Build the Scotch graph partitioner provider (CeCILL-C)" OFF)
 if(MESHIOPLUSPLUS_WITH_SCOTCH AND NOT EMSCRIPTEN)
-  find_path(SCOTCH_INCLUDE_DIR scotch.h HINTS ${SCOTCH_ROOT}/include $ENV{SCOTCH_ROOT}/include)
+  find_path(SCOTCH_INCLUDE_DIR scotch.h HINTS ${SCOTCH_ROOT}/include $ENV{SCOTCH_ROOT}/include
+            PATH_SUFFIXES scotch)
   find_library(SCOTCH_LIBRARY scotch HINTS ${SCOTCH_ROOT}/lib $ENV{SCOTCH_ROOT}/lib)
   find_library(SCOTCHERR_LIBRARY scotcherr HINTS ${SCOTCH_ROOT}/lib $ENV{SCOTCH_ROOT}/lib)
+endif()
+
+# PROJ (MIT), the coordinate reference system provider behind
+# convert_coordinates(system="crs") (roadmap 9.10.2). OFF by default and
+# bring-your-own: the system package (libproj-dev) or PROJ_ROOT.
+option(MESHIOPLUSPLUS_WITH_PROJ "Build the PROJ coordinate reference system provider (MIT)" OFF)
+if(MESHIOPLUSPLUS_WITH_PROJ AND NOT EMSCRIPTEN)
+  find_package(PROJ CONFIG QUIET HINTS ${PROJ_ROOT} $ENV{PROJ_ROOT})
+  if(NOT TARGET PROJ::proj)
+    find_path(PROJ_INCLUDE_DIR proj.h HINTS ${PROJ_ROOT}/include $ENV{PROJ_ROOT}/include)
+    find_library(PROJ_LIBRARY proj HINTS ${PROJ_ROOT}/lib $ENV{PROJ_ROOT}/lib)
+  endif()
 endif()
 
 option(MESHIOPLUSPLUS_WITH_MANIFOLD "Build the Manifold surface boolean provider (Apache-2.0)" OFF)
@@ -1199,6 +1212,21 @@ if(MESHIOPLUSPLUS_WITH_SCOTCH AND SCOTCH_INCLUDE_DIR AND SCOTCH_LIBRARY)
 elseif(MESHIOPLUSPLUS_WITH_SCOTCH)
   message(STATUS "meshio++: Scotch requested but not found (set SCOTCH_ROOT) - "
                  "partition method 'scotch' will raise")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_PROJ AND (TARGET PROJ::proj OR (PROJ_INCLUDE_DIR AND PROJ_LIBRARY)))
+  message(STATUS "meshio++: PROJ coordinate reference system provider enabled")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_PROJ)
+  if(TARGET PROJ::proj)
+    list(APPEND _mio_core_libs PROJ::proj)
+  else()
+    list(APPEND _mio_core_priv_incs ${PROJ_INCLUDE_DIR})
+    list(APPEND _mio_core_libs ${PROJ_LIBRARY})
+  endif()
+  meshioplusplus_add_provider_sources(proj)
+elseif(MESHIOPLUSPLUS_WITH_PROJ)
+  message(STATUS "meshio++: PROJ requested but not found (set PROJ_ROOT) - "
+                 "convert_coordinates(system='crs') will decline to the Python twin")
 endif()
 
 if(MESHIOPLUSPLUS_WITH_MANIFOLD AND TARGET manifold::manifold)

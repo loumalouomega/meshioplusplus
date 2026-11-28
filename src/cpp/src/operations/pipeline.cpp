@@ -141,6 +141,9 @@
 #include "meshioplusplus/operations/smooth.hpp"
 #include "meshioplusplus/operations/sniff.hpp"
 #include "meshioplusplus/operations/subdivide.hpp"
+#include "meshioplusplus/operations/subdivide_surface.hpp"
+#include "meshioplusplus/operations/units.hpp"
+#include "meshioplusplus/operations/mesh_boolean.hpp"
 #include "meshioplusplus/operations/surface.hpp"
 #include "meshioplusplus/operations/transform.hpp"
 #include "meshioplusplus/operations/mmg.hpp"
@@ -380,6 +383,9 @@ const char* pipe_excluded_hint(const std::string& rOp) {
     if (rOp == "UndoGreen")
         return "'UndoGreen' needs a second (coarse) mesh and is not a pipeline "
                "step; use the `undo-green` CLI verb";
+    if (rOp == "MeshBoolean")
+        return "'MeshBoolean' needs a second mesh and is not a pipeline "
+               "step; use the `mesh-boolean` CLI verb";
     if (rOp == "ConservativeInterpolate")
         return "'ConservativeInterpolate' needs a second (source) mesh and is not "
                "a pipeline step; use the `conservative-interpolate` CLI verb";
@@ -1383,6 +1389,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mLevels = static_cast<int>(pipe_number(rStep, "Levels", 1));
         opts.mRecordLevels = pipe_flag(rStep, "RecordLevels", false);
         opts.mRecordHierarchy = pipe_flag(rStep, "RecordHierarchy", false);
+        opts.mUndoGreenFirst = pipe_flag(rStep, "UndoGreenFirst", false);
         opts.mClosure = refine_closure_from_name(pipe_text(rStep, "Closure", ""));
         opts.mCells = pipe_ivec(rStep, "Cells");
         opts.mRegion = pipe_text(rStep, "Region", "");
@@ -1456,11 +1463,13 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
     if (op == "Partition") {
         PartitionOptions opts;
         opts.mNParts = static_cast<int>(pipe_number(rStep, "Nparts", 2));
-        opts.mMethod = partition_method_from_name(pipe_text(rStep, "Method", "auto"));
+        // By name: a registered graph partitioner ("metis", "scotch") resolves too.
+        opts.mMethodName = pipe_text(rStep, "Method", "auto");
         opts.mImbalance = pipe_number(rStep, "Imbalance", 0.03);
         opts.mMode = partition_mode_from_name(pipe_text(rStep, "Mode", ""));
         opts.mSeed = static_cast<int>(pipe_number(rStep, "Seed", 0));
         opts.mWeightsKey = pipe_text(rStep, "WeightsKey", "");
+        opts.mConnectedParts = pipe_flag(rStep, "ConnectedParts", false);
         // Attach the assignment as cell data rather than splitting into
         // pieces: a pipeline chains one mesh, and colour-by-part is what the
         // browser viewer's partition chip always meant.
@@ -2867,6 +2876,7 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         opts.mArrays = pipe_svec(rStep, "Arrays");
         opts.mInverse = pipe_flag(rStep, "Inverse", false);
         opts.mRecordCoordinates = pipe_flag(rStep, "RecordCoordinates", true);
+        opts.mTargetCrs = pipe_text(rStep, "TargetCrs", "");
         CoordinateResult cr = convert_coordinates(mesh, opts);
         pipe_push_step(rReport, rStep,
                        {{"NumArrays", static_cast<double>(cr.mNumArrays)},
@@ -3555,9 +3565,39 @@ Mesh pipe_apply_step(Mesh mesh, const PipelineStep& rStep, PipelineReport& rRepo
         ConvertCellsOptions opts;
         opts.mMode = convert_cells_mode_from_name(pipe_text(rStep, "Mode", ""));
         opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        const int order = static_cast<int>(pipe_number(rStep, "Order", 0));
+        opts.mOrder = order > 0 ? order : (opts.mMode == ConvertCellsMode::Reduce ? 1 : 2);
+        opts.mFull = pipe_flag(rStep, "Full", false);
         auto result = convert_cells(mesh, opts);
         pipe_push_step(rReport, rStep);
         return std::move(result.mMesh);
+    }
+    if (op == "SubdivideSurface") {
+        SubdivideSurfaceOptions opts;
+        opts.mScheme = subdivision_scheme_from_name(pipe_text(rStep, "Scheme", "loop"));
+        opts.mLevels = static_cast<int>(pipe_number(rStep, "Levels", 1));
+        opts.mCreaseAngle = pipe_number(rStep, "CreaseAngle", 60.0);
+        opts.mPreserveBoundary = pipe_flag(rStep, "PreserveBoundary", true);
+        opts.mInterpolatePointData = pipe_flag(rStep, "InterpolatePointData", true);
+        opts.mRecordParentIds = pipe_flag(rStep, "RecordParentIds", false);
+        SubdivideSurfaceResult sr = subdivide_surface(mesh, opts);
+        for (const std::string& r_w : sr.mWarnings)
+            rReport.mWarnings.push_back("subdivide_surface: " + r_w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumCreaseEdges", static_cast<double>(sr.mNumCreaseEdges)},
+                        {"NumBoundaryEdges", static_cast<double>(sr.mNumBoundaryEdges)}});
+        return std::move(sr.mMesh);
+    }
+    if (op == "ConvertUnits") {
+        ConvertUnitsOptions opts;
+        opts.mSystem = pipe_text(rStep, "System", "SI");
+        opts.mStrict = pipe_flag(rStep, "Strict", true);
+        ConvertUnitsResult ur = convert_units(mesh, opts);
+        for (const std::string& r_w : ur.mWarnings)
+            rReport.mWarnings.push_back("convert_units: " + r_w);
+        pipe_push_step(rReport, rStep,
+                       {{"NumArraysConverted", static_cast<double>(ur.mNumArraysConverted)}});
+        return std::move(ur.mMesh);
     }
     if (op == "Subdivide") {
         SubdivideOptions opts;
@@ -3802,7 +3842,8 @@ void pipe_validate_v2(const PipelineStep& rStep) {
         if (std::find(found->second.begin(), found->second.end(), key) == found->second.end())
             throw std::invalid_argument(pipe_err(rStep, "unknown key '" + key + "'"));
     }
-    if (rStep.mOp == "Merge" || rStep.mOp == "Interpolate" || rStep.mOp == "UndoGreen") {
+    if (rStep.mOp == "Merge" || rStep.mOp == "Interpolate" || rStep.mOp == "UndoGreen" ||
+        rStep.mOp == "MeshBoolean") {
         const auto inputs = pipe_svec(rStep, "Inputs");
         if (inputs.empty() || (rStep.mOp != "Merge" && inputs.size() != 1))
             throw std::invalid_argument(pipe_err(
@@ -3850,6 +3891,17 @@ Mesh pipe_apply_v2(Mesh mesh, const PipelineStep& rStep, PipelineReport& rReport
             policy == "fill" ? MergeDataPolicy::Fill : MergeDataPolicy::Intersection;
         auto result = merge(inputs, options);
         pipe_push_step(rReport, rStep, {{"NumInputs", static_cast<double>(inputs.size())}});
+        return std::move(result.mMesh);
+    }
+    if (op == "MeshBoolean") {
+        Mesh extra = pipe_read_extra(pipe_svec(rStep, "Inputs")[0]);
+        // `Operation`, not `Op`: `Op` is the step's own discriminant.
+        MeshBooleanOptions options;
+        options.mOp = boolean_op_from_name(pipe_text(rStep, "Operation", "union"));
+        options.mBackend = pipe_text(rStep, "Backend", "");
+        auto result = mesh_boolean(mesh, extra, options);
+        pipe_push_step(rReport, rStep,
+                       {{"NumTriangles", static_cast<double>(result.mNumTriangles)}});
         return std::move(result.mMesh);
     }
     if (op == "Interpolate" || op == "UndoGreen") {
@@ -3905,7 +3957,8 @@ void pipe_write_pieces(const Pipeline& rPipeline,
     std::vector<std::string> paths;
     std::unordered_set<std::string> unique, inputs{pipe_normal_path(rPipeline.mInput.mPath)};
     for (const auto& step : rPipeline.mSteps)
-        if (step.mOp == "Merge" || step.mOp == "Interpolate" || step.mOp == "UndoGreen")
+        if (step.mOp == "Merge" || step.mOp == "Interpolate" || step.mOp == "UndoGreen" ||
+            step.mOp == "MeshBoolean")
             for (const auto& path : pipe_svec(step, "Inputs"))
                 inputs.insert(pipe_normal_path(path));
     for (const auto& [key, mesh] : rPieces) {

@@ -39,6 +39,8 @@
 // therefore byte-identical across backends and thread counts.
 
 // System includes
+#include <set>
+#include <map>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -1530,6 +1532,214 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
                         out_tris.size() * sizeof(std::int64_t));
             out.AddCellBlock("triangle", std::move(tc));
         }
+        for (const std::string& name : rMesh.FieldDataNames())
+            out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+        RefineResult res;
+        res.mMesh = std::move(out);
+        res.mPointMap = refine_identity_map(npts_in);
+        return res;
+    }
+
+    if (rOptions.mClosure == RefineClosure::MixedGreen && selective && rOptions.mLevels > 0 &&
+        rMesh.NumCellBlocks() == 1 && rMesh.Cells(0).Type() == "hexahedron" &&
+        !rMesh.Cells(0).IsRagged()) {
+        // Local mixed-type green closure for hexahedra (roadmap 9.6): selected hexahedra split
+        // 1->8; a neighbour hexahedron with split edges closes locally around its centroid,
+        // without propagating: a face no split edge touches becomes one pyramid, a face of a
+        // split hexahedron its four sub-quads' pyramids, and any other face with a split edge a
+        // fan of triangles about the face centre (shared with the hexahedron across it) whose
+        // tetrahedra reach the centroid. Pyramids and tetrahedra are appended as their own
+        // blocks; the output is conforming.
+        const auto cb = rMesh.Cells(0);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& sconn = cb.Conn();
+        const std::size_t npts_in = rMesh.NumPoints();
+        const std::size_t pdim = rMesh.PointDim();
+
+        std::vector<double> pts(npts_in * pdim, 0.0);
+        for (std::size_t i = 0; i < npts_in * pdim; ++i)
+            pts[i] = detail::read_double(rMesh.Points(), i);
+        const auto add_mean = [&](const std::int64_t* pIds, std::size_t n) {
+            const std::int64_t nid = static_cast<std::int64_t>(pts.size() / pdim);
+            for (std::size_t d = 0; d < pdim; ++d) {
+                double s = 0.0;
+                for (std::size_t k = 0; k < n; ++k)
+                    s += pts[static_cast<std::size_t>(pIds[k]) * pdim + d];
+                pts.push_back(s / static_cast<double>(n));
+            }
+            return nid;
+        };
+        const auto ekey = [](std::int64_t a, std::int64_t b) {
+            return std::make_pair(std::min(a, b), std::max(a, b));
+        };
+        const auto fkey = [](const std::array<std::int64_t, 4>& rF) {
+            std::array<std::int64_t, 4> k = rF;
+            std::sort(k.begin(), k.end());
+            return k;
+        };
+        std::map<std::pair<std::int64_t, std::int64_t>, std::int64_t> edge_mid;
+        std::map<std::array<std::int64_t, 4>, std::int64_t> face_mid;
+        std::set<std::array<std::int64_t, 4>> split_faces;  // faces of a split hexahedron
+        const auto get_edge = [&](std::int64_t a, std::int64_t b) {
+            const auto k = ekey(a, b);
+            auto it = edge_mid.find(k);
+            if (it != edge_mid.end())
+                return it->second;
+            const std::int64_t ids[2] = {a, b};
+            const std::int64_t nid = add_mean(ids, 2);
+            edge_mid.emplace(k, nid);
+            return nid;
+        };
+        const auto get_face = [&](const std::array<std::int64_t, 4>& rF) {
+            const auto k = fkey(rF);
+            auto it = face_mid.find(k);
+            if (it != face_mid.end())
+                return it->second;
+            const std::int64_t nid = add_mean(rF.data(), 4);
+            face_mid.emplace(k, nid);
+            return nid;
+        };
+        static constexpr int kHexEdges[12][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 0}, {4, 5}, {5, 6},
+                                                 {6, 7}, {7, 4}, {0, 4}, {1, 5}, {2, 6}, {3, 7}};
+        // Outward faces, VTK order.
+        static constexpr int kHexFaces[6][4] = {{0, 3, 2, 1}, {4, 5, 6, 7}, {0, 1, 5, 4},
+                                                {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}};
+        const auto hex_of = [&](std::size_t c) {
+            std::array<std::int64_t, 8> h{};
+            for (std::size_t k = 0; k < 8; ++k)
+                h[k] = detail::read_int(sconn, c * 8 + k);
+            return h;
+        };
+
+        // Pass 1: the split hexahedra's edge midpoints and face centres.
+        for (std::size_t c = 0; c < ncells; ++c) {
+            if (!seed[c])
+                continue;
+            const auto h = hex_of(c);
+            for (const auto& e : kHexEdges)
+                get_edge(h[static_cast<std::size_t>(e[0])], h[static_cast<std::size_t>(e[1])]);
+            for (const auto& f : kHexFaces) {
+                const std::array<std::int64_t, 4> face{
+                    h[static_cast<std::size_t>(f[0])], h[static_cast<std::size_t>(f[1])],
+                    h[static_cast<std::size_t>(f[2])], h[static_cast<std::size_t>(f[3])]};
+                get_face(face);
+                split_faces.insert(fkey(face));
+            }
+        }
+
+        // Pass 2: split, transition or keep each hexahedron.
+        std::vector<std::int64_t> out_hex, out_pyr, out_tet;
+        // A base quad (outward from the cell) and the centroid as a pyramid: the
+        // VTK pyramid's base winds so that its normal points at the apex, i.e. inward.
+        const auto pyramid = [&](std::int64_t a, std::int64_t b, std::int64_t c, std::int64_t d,
+                                 std::int64_t apex) {
+            for (const std::int64_t v : {a, d, c, b, apex})
+                out_pyr.push_back(v);
+        };
+        for (std::size_t c = 0; c < ncells; ++c) {
+            const auto h = hex_of(c);
+            if (seed[c]) {
+                // The 3x3x3 lattice: corners, edge midpoints, face centres, centroid.
+                const auto lattice = [&](int i, int j, int k) -> std::int64_t {
+                    const auto corner = [&](int a, int b, int cc) {
+                        static constexpr int kIndex[2][2][2] = {{{0, 4}, {3, 7}}, {{1, 5}, {2, 6}}};
+                        return h[static_cast<std::size_t>(kIndex[a][b][cc])];
+                    };
+                    std::vector<std::int64_t> ids;
+                    for (int a : (i == 1 ? std::vector<int>{0, 1} : std::vector<int>{i / 2}))
+                        for (int b : (j == 1 ? std::vector<int>{0, 1} : std::vector<int>{j / 2}))
+                            for (int cc :
+                                 (k == 1 ? std::vector<int>{0, 1} : std::vector<int>{k / 2}))
+                                ids.push_back(corner(a, b, cc));
+                    if (ids.size() == 1)
+                        return ids[0];
+                    if (ids.size() == 2)
+                        return get_edge(ids[0], ids[1]);
+                    if (ids.size() == 4)
+                        return get_face({ids[0], ids[1], ids[3], ids[2]});
+                    return add_mean(ids.data(), 8);
+                };
+                const std::int64_t centre = lattice(1, 1, 1);
+                const auto node = [&](int i, int j, int k) {
+                    return (i == 1 && j == 1 && k == 1) ? centre : lattice(i, j, k);
+                };
+                static constexpr int kOff[8][3] = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0},
+                                                   {0, 0, 1}, {1, 0, 1}, {1, 1, 1}, {0, 1, 1}};
+                for (int a = 0; a < 2; ++a)
+                    for (int b = 0; b < 2; ++b)
+                        for (int cc = 0; cc < 2; ++cc)
+                            for (const auto& o : kOff)
+                                out_hex.push_back(node(a + o[0], b + o[1], cc + o[2]));
+                continue;
+            }
+            bool any = false;
+            for (const auto& e : kHexEdges)
+                any = any || edge_mid.count(ekey(h[static_cast<std::size_t>(e[0])],
+                                                 h[static_cast<std::size_t>(e[1])]));
+            if (!any) {
+                for (const std::int64_t v : h)
+                    out_hex.push_back(v);
+                continue;
+            }
+            const std::int64_t centre = add_mean(h.data(), 8);
+            for (const auto& f : kHexFaces) {
+                const std::array<std::int64_t, 4> face{
+                    h[static_cast<std::size_t>(f[0])], h[static_cast<std::size_t>(f[1])],
+                    h[static_cast<std::size_t>(f[2])], h[static_cast<std::size_t>(f[3])]};
+                std::array<std::int64_t, 4> mid{-1, -1, -1, -1};
+                bool split = false;
+                for (std::size_t e = 0; e < 4; ++e) {
+                    auto it = edge_mid.find(ekey(face[e], face[(e + 1) % 4]));
+                    if (it != edge_mid.end()) {
+                        mid[e] = it->second;
+                        split = true;
+                    }
+                }
+                if (!split) {
+                    pyramid(face[0], face[1], face[2], face[3], centre);
+                } else if (split_faces.count(fkey(face))) {
+                    // The face of a split hexahedron: its four sub-quads.
+                    const std::int64_t fc = get_face(face);
+                    for (std::size_t e = 0; e < 4; ++e)
+                        pyramid(face[e], mid[e], fc, mid[(e + 3) % 4], centre);
+                } else {
+                    // A fan of triangles about the shared face centre, each a
+                    // tetrahedron with the centroid; outward (a, b) -> (a, fc, b, centre).
+                    const std::int64_t fc = get_face(face);
+                    const auto tet = [&](std::int64_t a, std::int64_t b) {
+                        for (const std::int64_t v : {a, fc, b, centre})
+                            out_tet.push_back(v);
+                    };
+                    for (std::size_t e = 0; e < 4; ++e) {
+                        const std::int64_t a = face[e], b = face[(e + 1) % 4];
+                        if (mid[e] >= 0) {
+                            tet(a, mid[e]);
+                            tet(mid[e], b);
+                        } else {
+                            tet(a, b);
+                        }
+                    }
+                }
+            }
+        }
+
+        const std::size_t npts_out = pts.size() / pdim;
+        Mesh out;
+        NDArray pa = NDArray::Uninit(DType::Float64, {npts_out, pdim});
+        std::memcpy(pa.As<double>(), pts.data(), pts.size() * sizeof(double));
+        out.AssignPoints(std::move(pa));
+        const auto add_block = [&](const char* pType, const std::vector<std::int64_t>& rConn,
+                                   std::size_t Width) {
+            if (rConn.empty())
+                return;
+            NDArray conn = NDArray::Uninit(DType::Int64, {rConn.size() / Width, Width});
+            std::memcpy(conn.As<std::int64_t>(), rConn.data(), rConn.size() * sizeof(std::int64_t));
+            out.AddCellBlock(pType, std::move(conn));
+        };
+        add_block("hexahedron", out_hex, 8);
+        add_block("pyramid", out_pyr, 5);
+        add_block("tetra", out_tet, 4);
         for (const std::string& name : rMesh.FieldDataNames())
             out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
 

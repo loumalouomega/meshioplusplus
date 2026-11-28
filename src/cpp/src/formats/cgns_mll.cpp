@@ -32,6 +32,7 @@
 
 // System includes
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <map>
@@ -49,6 +50,7 @@
 #ifdef MESHIOPLUSPLUS_HAS_CGNSLIB
 #include <cgnslib.h>
 
+#include "../detail/cgns_units.hpp"
 #include "../detail/data_plumbing.hpp"
 #include "../detail/polyhedron_groups.hpp"
 #endif
@@ -343,6 +345,58 @@ double cgns_mll_length_unit() {
     }
 }
 
+/// The SIDS unit (detail/cgns_units.hpp) of the `DataArray_t` `cg_goto` last
+/// selected, when its DimensionalExponents state one (roadmap 9.10.1).
+bool cgns_mll_array_unit(FieldUnit& rOut) {
+    int nexp = 0;
+    CGNS_ENUMT(DataType_t) dt = CGNS_ENUMV(DataTypeNull);
+    if (cg_exponents_info(&dt) != CG_OK || cg_nexponents(&nexp) != CG_OK || nexp < 5)
+        return false;
+    std::array<double, 8> all{};
+    if (dt == CGNS_ENUMV(RealSingle)) {
+        std::array<float, 8> f{};
+        if (cg_exponents_read(f.data()) != CG_OK)
+            return false;
+        for (int i = 0; i < nexp && i < 8; ++i)
+            all[static_cast<std::size_t>(i)] = f[static_cast<std::size_t>(i)];
+    } else if (cg_exponents_read(all.data()) != CG_OK) {
+        return false;
+    }
+    const std::array<double, 5> exps{all[0], all[1], all[2], all[3], all[4]};
+    const std::array<double, 3> extra{nexp >= 8 ? all[5] : 0.0, nexp >= 8 ? all[6] : 0.0,
+                                      nexp >= 8 ? all[7] : 0.0};
+    double conv[2] = {1.0, 0.0};
+    if (cg_conversion_info(&dt) == CG_OK) {
+        if (dt == CGNS_ENUMV(RealSingle)) {
+            float f[2] = {1.0f, 0.0f};
+            if (cg_conversion_read(f) == CG_OK) {
+                conv[0] = f[0];
+                conv[1] = f[1];
+            }
+        } else {
+            cg_conversion_read(conv);
+        }
+    }
+    if (conv[1] != 0.0)
+        return false;
+    std::array<std::string, 5> names;
+    CGNS_ENUMT(MassUnits_t) mass;
+    CGNS_ENUMT(LengthUnits_t) length;
+    CGNS_ENUMT(TimeUnits_t) time;
+    CGNS_ENUMT(TemperatureUnits_t) temperature;
+    CGNS_ENUMT(AngleUnits_t) angle;
+    if (cg_units_read(&mass, &length, &time, &temperature, &angle) == CG_OK) {
+        const auto name = [](const char* pText) {
+            const std::string s = pText ? pText : "";
+            return s == "Null" || s == "UserDefined" ? std::string() : s;
+        };
+        names = {name(cg_MassUnitsName(mass)), name(cg_LengthUnitsName(length)),
+                 name(cg_TimeUnitsName(time)), name(cg_TemperatureUnitsName(temperature)),
+                 name(cg_AngleUnitsName(angle))};
+    }
+    return detail::cgns_unit_from_sids(exps, extra, conv[0], names, rOut);
+}
+
 /// Read one named `DataArray_t` under whatever node `cg_goto` last selected,
 /// as `RealDouble` -- used for `TimeValues`, whose file dtype is always real.
 bool cgns_mll_read_double_array(const std::string& rWantedName, std::vector<double>& rOut) {
@@ -493,6 +547,12 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
                 for (std::size_t r = 0; r < rows; ++r)
                     dst[r * ncomp + k] = buf[r];
             }
+            // The first component's SIDS unit, as the raw reader takes it.
+            FieldUnit unit;
+            const int field_index = static_cast<int>(groups[g][0]) + 1;
+            const bool has_unit = cg_goto(fn, B, "Zone_t", Z, "FlowSolution_t", S, "DataArray_t",
+                                          field_index, "end") == CG_OK &&
+                                  cgns_mll_array_unit(unit);
             if (vertex) {
                 auto [it, inserted] = point_array_origin.emplace(bases[g], sol_name);
                 if (!inserted && it->second != sol_name)
@@ -502,6 +562,9 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
                         bases[g], it->second, sol_name);
                 it->second = sol_name;
                 rMesh.AddPointData(bases[g], std::move(arr));
+                FieldUnit existing;
+                if (has_unit && !get_field_unit(rMesh, bases[g], existing))
+                    set_field_unit(rMesh, bases[g], unit);
             } else {
                 auto [it, inserted] = cell_array_origin.emplace(bases[g], sol_name);
                 if (!inserted && it->second != sol_name)
@@ -521,6 +584,9 @@ void cgns_mll_read_solutions(int fn, int B, int Z, std::size_t NumPoints, Mesh& 
                     at += n;
                 }
                 rMesh.AddCellData(bases[g], std::move(blocks));
+                FieldUnit existing;
+                if (has_unit && !get_field_unit(rMesh, bases[g], existing))
+                    set_field_unit(rMesh, bases[g], unit);
             }
         }
         if (pTarget != nullptr)
@@ -547,6 +613,13 @@ void cgns_mll_add_zone_fields(Mesh& rMesh, const std::vector<Mesh>& rZones,
             if (std::find(cell_names.begin(), cell_names.end(), n) == cell_names.end())
                 cell_names.push_back(n);
     }
+    // A zone's SIDS unit of an array, the first zone that states one.
+    for (const Mesh& z : rZones)
+        for (const auto& n : z.FieldDataNames()) {
+            const std::string prefix = kFieldUnitPrefix;
+            if (n.rfind(prefix, 0) == 0 && !rMesh.HasFieldData(n))
+                rMesh.AddFieldData(n, z.FieldData(n));
+        }
     auto nan_like = [](const NDArray& rTmpl, std::size_t Rows) {
         std::vector<std::size_t> shape = rTmpl.Shape();
         shape[0] = Rows;

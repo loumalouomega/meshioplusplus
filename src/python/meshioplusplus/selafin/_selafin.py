@@ -10,6 +10,12 @@ import numpy as np
 from .._exceptions import ReadError, WriteError
 from .._fortran_records import fortran_record, fortran_records
 from .._mesh import Mesh
+from .._units import (
+    FIELD_UNIT_PREFIX,
+    field_unit,
+    field_unit_from_text,
+    field_unit_name,
+)
 
 UNIT_PREFIX = "selafin:unit:"
 _LAYOUT = (4, ">")
@@ -185,6 +191,9 @@ def read(filename, time_step=0):
     for name, unit, value in zip(h["names"], h["units"], values):
         point_data[name] = value
         field_data[UNIT_PREFIX + name] = _bytes(unit)
+        declared = field_unit_from_text(unit)
+        if declared is not None:
+            field_data[FIELD_UNIT_PREFIX + name] = declared
     point_data["selafin:ipobo"] = h["ipobo"]
     return Mesh(
         points,
@@ -223,7 +232,7 @@ def write(filename, mesh):
     for name in names:
         unit = mesh.field_data.get(UNIT_PREFIX + name)
         unit = (
-            ""
+            field_unit_name(field_unit(mesh, name))
             if unit is None
             else np.asarray(unit, np.uint8).tobytes().decode("latin-1")
         )

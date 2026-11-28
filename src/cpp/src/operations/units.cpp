@@ -17,6 +17,7 @@
 //
 
 // System includes
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -80,9 +81,13 @@ NDArray units_scale_array(const NDArray& rArr, double Factor) {
 
 }  // namespace
 
-FieldUnit field_unit_from_name(const std::string& rName) {
-    // Exponents: {m, kg, s, K, A, mol, cd}
-    static const std::pair<const char*, FieldUnit> kTable[] = {
+namespace {
+
+// The unit names `field_unit_from_name` knows, in the order a reverse lookup
+// prefers them (the Python twin's `_units._UNIT_TABLE` mirrors it).
+// Exponents: {m, kg, s, K, A, mol, cd}
+const std::vector<std::pair<std::string, FieldUnit>>& units_name_table() {
+    static const std::vector<std::pair<std::string, FieldUnit>> kTable = {
         {"1", {1.0, {0, 0, 0, 0, 0, 0, 0}}},
         {"dimensionless", {1.0, {0, 0, 0, 0, 0, 0, 0}}},
         {"m", {1.0, {1, 0, 0, 0, 0, 0, 0}}},
@@ -115,11 +120,75 @@ FieldUnit field_unit_from_name(const std::string& rName) {
         {"J", {1.0, {2, 1, -2, 0, 0, 0, 0}}},
         {"W", {1.0, {2, 1, -3, 0, 0, 0, 0}}},
     };
-    for (const auto& [name, unit] : kTable) {
+    return kTable;
+}
+
+bool units_same(const FieldUnit& rA, const FieldUnit& rB) {
+    if (std::abs(rA.mScale - rB.mScale) > 1e-12 * std::max(rA.mScale, rB.mScale))
+        return false;
+    for (std::size_t k = 0; k < 7; ++k)
+        if (rA.mExponents[k] != rB.mExponents[k])
+            return false;
+    return true;
+}
+
+std::string units_lower(std::string Text) {
+    for (char& r_c : Text)
+        if (r_c >= 'A' && r_c <= 'Z')
+            r_c = static_cast<char>(r_c - 'A' + 'a');
+    return Text;
+}
+
+}  // namespace
+
+FieldUnit field_unit_from_name(const std::string& rName) {
+    for (const auto& [name, unit] : units_name_table()) {
         if (rName == name)
             return unit;
     }
     throw std::invalid_argument(std::string(kUnitsPrefix) + "unknown unit name '" + rName + "'");
+}
+
+bool field_unit_from_text(const std::string& rText, FieldUnit& rOut) {
+    // Trim blanks and NULs (fixed-width format fields pad with either).
+    std::size_t b = 0, e = rText.size();
+    while (b < e && (rText[b] == ' ' || rText[b] == '\0' || rText[b] == '\t'))
+        ++b;
+    while (e > b && (rText[e - 1] == ' ' || rText[e - 1] == '\0' || rText[e - 1] == '\t'))
+        --e;
+    if (b == e)
+        return false;
+    // A digit right after a letter is an exponent: "kg/m3" -> "kg/m^3".
+    std::string text;
+    for (std::size_t i = b; i < e; ++i) {
+        const char c = rText[i];
+        if (c >= '0' && c <= '9' && !text.empty() &&
+            ((text.back() >= 'a' && text.back() <= 'z') ||
+             (text.back() >= 'A' && text.back() <= 'Z')))
+            text += '^';
+        text += c;
+    }
+    for (const auto& [name, unit] : units_name_table())
+        if (text == name) {
+            rOut = unit;
+            return true;
+        }
+    // The table's names are distinct ignoring case, so an upper-case field
+    // ("M/S", "KG/M^3", Telemac's convention) resolves unambiguously.
+    const std::string lower = units_lower(text);
+    for (const auto& [name, unit] : units_name_table())
+        if (lower == units_lower(name)) {
+            rOut = unit;
+            return true;
+        }
+    return false;
+}
+
+std::string field_unit_name(const FieldUnit& rUnit) {
+    for (const auto& [name, unit] : units_name_table())
+        if (units_same(unit, rUnit))
+            return name;
+    return {};
 }
 
 void set_field_unit(Mesh& rMesh, const std::string& rArrayName, const FieldUnit& rUnit) {

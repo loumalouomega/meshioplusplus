@@ -37,6 +37,7 @@
 #include "meshioplusplus/detail/node_adjacency.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
 #include "meshioplusplus/parallel.hpp"
+#include "meshioplusplus/providers.hpp"
 #include "meshioplusplus/detail/geometry.hpp"
 
 namespace meshioplusplus {
@@ -176,14 +177,40 @@ CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions&
         res.mMesh = detail::clone_mesh(rMesh);
         if (src_crs == rOptions.mTargetCrs)
             return res;
-#ifdef MESHIOPLUSPLUS_HAS_PROJ
-        // Optional PROJ build path (roadmap 9.10.2)
-        throw Unsupported("convert_coordinates: PROJ reprojection requires proj_create_crs_to_crs");
-#else
-        throw Unsupported("convert_coordinates: CRS reprojection from '" + src_crs + "' to '" +
-                          rOptions.mTargetCrs +
-                          "' requires PROJ (-DMESHIOPLUSPLUS_WITH_PROJ=ON) or pyproj in Python");
-#endif
+        // Reprojection goes through the registered CRS provider (PROJ when the
+        // build compiled it in); without one the Python twin falls back to pyproj.
+        const auto p_crs = crs_provider();
+        if (!p_crs || !p_crs->mTransform)
+            throw Unsupported("convert_coordinates: CRS reprojection from '" + src_crs + "' to '" +
+                              rOptions.mTargetCrs +
+                              "' requires a CRS provider (-DMESHIOPLUSPLUS_WITH_PROJ=ON) or "
+                              "pyproj in Python");
+        const std::size_t n = rMesh.NumPoints();
+        const std::size_t dim = rMesh.PointDim();
+        if (dim < 2)
+            throw std::invalid_argument(
+                "convert_coordinates: CRS reprojection needs 2-D or 3-D points");
+        CrsRequest req;
+        req.mSourceCrs = src_crs;
+        req.mTargetCrs = rOptions.mTargetCrs;
+        req.mPoints.resize(n);
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < 3; ++k)
+                req.mPoints[i][k] =
+                    k < dim ? detail::read_double(rMesh.Points(), i * dim + k) : 0.0;
+        const std::vector<std::array<double, 3>> moved = p_crs->mTransform(req);
+        if (moved.size() != n)
+            throw std::runtime_error("convert_coordinates: the CRS provider returned " +
+                                     std::to_string(moved.size()) + " points for " +
+                                     std::to_string(n));
+        NDArray pts = NDArray::Uninit(DType::Float64, {n, dim});
+        double* p_out = pts.As<double>();
+        for (std::size_t i = 0; i < n; ++i)
+            for (std::size_t k = 0; k < dim; ++k)
+                p_out[i * dim + k] = moved[i][k];
+        res.mMesh.AssignPoints(std::move(pts));
+        detail::set_mesh_crs(res.mMesh, rOptions.mTargetCrs);
+        return res;
     }
 
     CoordFrame frame;
