@@ -966,6 +966,10 @@ What the pass could not settle here, because only a scan shows it. Configuration
 
 *(9.16 cooperative cancellation and progress reporting: `progress.hpp`, `CancelledError`, `ScopedProgressContext`, C `mio_cancel_token*`/`mio_set_progress_callback`, Python `CancelToken`/`progress_context` with throttled `PyErr_CheckSignals()`, and outer-loop checkpoints in `optimize_volume`, `adapt_volume`, `octree_mesh`, `fit_cad`, `tetrahedralize`, and `sequence` have landed.)*
 
+### 9.x Remaining follow-up polish for Waves 2–3
+
+Core C++, Python, and MCP surfaces for `9.1`, `9.2`, `9.5`, `9.6`, `9.7`, and `9.10` have landed; remaining follow-up items to finish when resuming are: C/Fortran/Julia/R/Octave/WASM flat bindings, CLI verbs, pipeline steps, and dedicated `doc/` pages + notebook examples for `subdivide_surface`, `convert_units`, and `mesh_boolean`; format reader/writer propagation of `meshio:unit:<array>` (MED, CGNS, EnSight, UNV, Selafin) and `meshio:crs` (UGRID, LAS, ADCIRC) plus native PROJ linking; `test_abi_layout.cpp` pins for the new Wave 2–3 option structs; and optional CI legs for METIS (`9.7.2`), Scotch (`9.7.2`), and Manifold (`9.1.1`–`9.1.3`).
+
 ---
 
 ## 10. In-situ and coupling interchange {#in-situ-interchange}
