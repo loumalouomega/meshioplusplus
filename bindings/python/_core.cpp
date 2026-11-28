@@ -195,6 +195,9 @@
 #include "meshioplusplus/operations/filter_points.hpp"
 #include "meshioplusplus/operations/subdivide_surface.hpp"
 #include "meshioplusplus/operations/subsample_points.hpp"
+#include "meshioplusplus/operations/units.hpp"
+#include "meshioplusplus/operations/mesh_boolean.hpp"
+#include "meshioplusplus/detail/crs.hpp"
 #include "meshioplusplus/operations/locate_points.hpp"
 #include "meshioplusplus/operations/mass_properties.hpp"
 #include "meshioplusplus/operations/point_normals.hpp"
@@ -411,9 +414,8 @@ inline bool core_nogil_progress_cb(double Fraction, const char* pStage, void* pU
         if (PyErr_CheckSignals() != 0)
             return false;
         try {
-            py::object res =
-                py::reinterpret_borrow<py::object>(pState->mCallback)(Fraction,
-                                                                      pStage ? pStage : "");
+            py::object res = py::reinterpret_borrow<py::object>(pState->mCallback)(
+                Fraction, pStage ? pStage : "");
             if (py::isinstance<py::bool_>(res) && !res.cast<bool>())
                 return false;
         } catch (py::error_already_set& e) {
@@ -437,8 +439,7 @@ decltype(auto) core_nogil(TFn&& fn) {
     CoreNogilProgress prog;
     prog.mCallback = gCorePyProgress.mCallback;
     prog.mLastSignalCheck = std::chrono::steady_clock::now();
-    prog.mCtx.mCancel =
-        gCorePyProgress.mToken ? &gCorePyProgress.mToken->mCancelled : nullptr;
+    prog.mCtx.mCancel = gCorePyProgress.mToken ? &gCorePyProgress.mToken->mCancelled : nullptr;
     prog.mCtx.mCallback = &core_nogil_progress_cb;
     prog.mCtx.mUserData = &prog;
     const bool already_set = meshioplusplus::current_progress_context() != nullptr;
@@ -2442,26 +2443,26 @@ PYBIND11_MODULE(_core, m) {
 
     py::class_<CoreCancelToken, std::shared_ptr<CoreCancelToken>>(m, "CancelToken")
         .def(py::init<>())
-        .def("cancel", [](CoreCancelToken& rSelf) {
-            rSelf.mCancelled.store(true, std::memory_order_relaxed);
-        })
-        .def("reset", [](CoreCancelToken& rSelf) {
-            rSelf.mCancelled.store(false, std::memory_order_relaxed);
-        })
+        .def(
+            "cancel",
+            [](CoreCancelToken& rSelf) { rSelf.mCancelled.store(true, std::memory_order_relaxed); })
+        .def("reset",
+             [](CoreCancelToken& rSelf) {
+                 rSelf.mCancelled.store(false, std::memory_order_relaxed);
+             })
         .def_property_readonly("is_cancelled", [](const CoreCancelToken& rSelf) {
             return rSelf.mCancelled.load(std::memory_order_relaxed);
         });
 
-    m.def("_push_progress_context",
-          [](py::object cb, std::shared_ptr<CoreCancelToken> token) {
-              py::object prev_cb = gCorePyProgress.mCallback
-                                       ? py::reinterpret_steal<py::object>(gCorePyProgress.mCallback)
-                                       : py::none();
-              std::shared_ptr<CoreCancelToken> prev_tok = std::move(gCorePyProgress.mToken);
-              gCorePyProgress.mCallback = cb.is_none() ? nullptr : cb.inc_ref().ptr();
-              gCorePyProgress.mToken = std::move(token);
-              return py::make_tuple(prev_cb, prev_tok);
-          });
+    m.def("_push_progress_context", [](py::object cb, std::shared_ptr<CoreCancelToken> token) {
+        py::object prev_cb = gCorePyProgress.mCallback
+                                 ? py::reinterpret_steal<py::object>(gCorePyProgress.mCallback)
+                                 : py::none();
+        std::shared_ptr<CoreCancelToken> prev_tok = std::move(gCorePyProgress.mToken);
+        gCorePyProgress.mCallback = cb.is_none() ? nullptr : cb.inc_ref().ptr();
+        gCorePyProgress.mToken = std::move(token);
+        return py::make_tuple(prev_cb, prev_tok);
+    });
 
     m.def("_pop_progress_context", [](py::tuple prev) {
         if (gCorePyProgress.mCallback != nullptr) {
@@ -2470,9 +2471,8 @@ PYBIND11_MODULE(_core, m) {
         }
         py::object prev_cb = prev[0];
         gCorePyProgress.mCallback = prev_cb.is_none() ? nullptr : prev_cb.inc_ref().ptr();
-        gCorePyProgress.mToken = prev[1].is_none()
-                                     ? nullptr
-                                     : prev[1].cast<std::shared_ptr<CoreCancelToken>>();
+        gCorePyProgress.mToken =
+            prev[1].is_none() ? nullptr : prev[1].cast<std::shared_ptr<CoreCancelToken>>();
     });
 
     // Shared cell-type metadata (single source of truth with Python).
@@ -7224,7 +7224,8 @@ PYBIND11_MODULE(_core, m) {
         "convert_coordinates",
         [](py::object pymesh, const std::string& system, std::array<double, 3> axis,
            std::array<double, 3> origin, std::array<double, 3> reference,
-           std::vector<std::string> arrays, bool inverse, bool record_coordinates) {
+           std::vector<std::string> arrays, bool inverse, bool record_coordinates,
+           const std::string& target_crs) {
             auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
             [[maybe_unused]] auto& refs = cpp_in.mRefs;
             auto& cpp = cpp_in.mMesh;
@@ -7236,6 +7237,7 @@ PYBIND11_MODULE(_core, m) {
             options.mArrays = std::move(arrays);
             options.mInverse = inverse;
             options.mRecordCoordinates = record_coordinates;
+            options.mTargetCrs = target_crs;
             meshioplusplus::CoordinateResult r =
                 core_nogil([&] { return meshioplusplus::convert_coordinates(cpp, options); });
             py::dict out;
@@ -7249,7 +7251,62 @@ PYBIND11_MODULE(_core, m) {
         py::arg("origin") = std::array<double, 3>{0.0, 0.0, 0.0},
         py::arg("reference") = std::array<double, 3>{1.0, 0.0, 0.0},
         py::arg("arrays") = std::vector<std::string>{}, py::arg("inverse") = false,
-        py::arg("record_coordinates") = true);
+        py::arg("record_coordinates") = true, py::arg("target_crs") = "");
+
+    // Consistent physical unit-system conversion. See operations/units.hpp.
+    m.def(
+        "convert_units",
+        [](py::object pymesh, const std::string& system, bool strict) {
+            auto cpp_in = core_mesh_in(pymesh, /*allow_ragged=*/true);
+            [[maybe_unused]] auto& refs = cpp_in.mRefs;
+            auto& cpp = cpp_in.mMesh;
+            meshioplusplus::ConvertUnitsOptions options;
+            options.mSystem = system;
+            options.mStrict = strict;
+            meshioplusplus::ConvertUnitsResult r =
+                core_nogil([&] { return meshioplusplus::convert_units(cpp, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["num_arrays_converted"] = r.mNumArraysConverted;
+            out["warnings"] = r.mWarnings;
+            return out;
+        },
+        py::arg("mesh"), py::arg("system") = "SI", py::arg("strict") = true);
+
+    m.def(
+        "field_unit_from_name",
+        [](const std::string& name) {
+            auto u = meshioplusplus::field_unit_from_name(name);
+            return std::array<double, 8>{
+                u.mScale,        u.mExponents[0], u.mExponents[1], u.mExponents[2],
+                u.mExponents[3], u.mExponents[4], u.mExponents[5], u.mExponents[6],
+            };
+        },
+        py::arg("name"));
+
+    // Surface mesh booleans via BooleanProvider. See operations/mesh_boolean.hpp.
+    m.def(
+        "mesh_boolean",
+        [](py::object pymesh_a, py::object pymesh_b, const std::string& op,
+           const std::string& backend) {
+            auto cpp_a = core_mesh_in(pymesh_a, /*allow_ragged=*/false);
+            auto cpp_b = core_mesh_in(pymesh_b, /*allow_ragged=*/false);
+            [[maybe_unused]] auto& refs_a = cpp_a.mRefs;
+            [[maybe_unused]] auto& refs_b = cpp_b.mRefs;
+            meshioplusplus::MeshBooleanOptions options;
+            options.mOp = meshioplusplus::boolean_op_from_name(op);
+            options.mBackend = backend;
+            meshioplusplus::MeshBooleanResult r = core_nogil(
+                [&] { return meshioplusplus::mesh_boolean(cpp_a.mMesh, cpp_b.mMesh, options); });
+            py::dict out;
+            out["mesh"] = meshioplusplus_py::mesh_to_py(std::move(r.mMesh));
+            out["backend"] = r.mBackend;
+            out["num_triangles"] = r.mNumTriangles;
+            return out;
+        },
+        py::arg("a"), py::arg("b"), py::arg("op") = "union", py::arg("backend") = "");
+
+    m.def("has_boolean_provider", &meshioplusplus::has_boolean_provider);
 
     // The metric toolbox: intersect, normalise, clamp, grade. {mesh, counters}.
     // See operations/metric.hpp.
@@ -7567,9 +7624,8 @@ PYBIND11_MODULE(_core, m) {
             else if (method == "random")
                 options.mMethod = meshioplusplus::SubsampleMethod::Random;
             else
-                throw std::invalid_argument(
-                    "meshio++: subsample_points: unknown method '" + method +
-                    "' (expected farthest, grid or random)");
+                throw std::invalid_argument("meshio++: subsample_points: unknown method '" +
+                                            method + "' (expected farthest, grid or random)");
             options.mSeed = seed;
             options.mStart = start.is_none() ? -1 : start.cast<std::int64_t>();
             if (!bounds.is_none()) {

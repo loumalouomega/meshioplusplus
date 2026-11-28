@@ -322,6 +322,24 @@ if(MESHIOPLUSPLUS_WITH_KAHIP AND (NOT EMSCRIPTEN OR KAHIP_ROOT OR DEFINED ENV{KA
   find_package(KaHIP QUIET)
 endif()
 
+option(MESHIOPLUSPLUS_WITH_METIS "Build the METIS graph partitioner provider (Apache-2.0)" OFF)
+if(MESHIOPLUSPLUS_WITH_METIS AND NOT EMSCRIPTEN)
+  find_path(METIS_INCLUDE_DIR metis.h HINTS ${METIS_ROOT}/include $ENV{METIS_ROOT}/include)
+  find_library(METIS_LIBRARY metis HINTS ${METIS_ROOT}/lib $ENV{METIS_ROOT}/lib)
+endif()
+
+option(MESHIOPLUSPLUS_WITH_SCOTCH "Build the Scotch graph partitioner provider (CeCILL-C)" OFF)
+if(MESHIOPLUSPLUS_WITH_SCOTCH AND NOT EMSCRIPTEN)
+  find_path(SCOTCH_INCLUDE_DIR scotch.h HINTS ${SCOTCH_ROOT}/include $ENV{SCOTCH_ROOT}/include)
+  find_library(SCOTCH_LIBRARY scotch HINTS ${SCOTCH_ROOT}/lib $ENV{SCOTCH_ROOT}/lib)
+  find_library(SCOTCHERR_LIBRARY scotcherr HINTS ${SCOTCH_ROOT}/lib $ENV{SCOTCH_ROOT}/lib)
+endif()
+
+option(MESHIOPLUSPLUS_WITH_MANIFOLD "Build the Manifold surface boolean provider (Apache-2.0)" OFF)
+if(MESHIOPLUSPLUS_WITH_MANIFOLD AND NOT EMSCRIPTEN)
+  find_package(manifold CONFIG QUIET HINTS ${MANIFOLD_ROOT} $ENV{MANIFOLD_ROOT})
+endif()
+
 # CutCells (MIT), the backend of the level-set cutting operations cut_level_set
 # and cut_quadrature (doc/cut.md): cut cells of every type by one or several
 # level sets into the pieces either side and the interface, and cut-cell
@@ -1157,6 +1175,41 @@ macro(meshioplusplus_add_provider_sources name)
   target_sources(meshioplusplus_core_obj PRIVATE ${_mio_provider_sources})
   list(APPEND _mio_core_priv_incs ${CMAKE_CURRENT_SOURCE_DIR}/src/cpp/src)
 endmacro()
+
+if(MESHIOPLUSPLUS_WITH_METIS AND METIS_INCLUDE_DIR AND METIS_LIBRARY)
+  message(STATUS "meshio++: METIS graph partitioner provider enabled (${METIS_LIBRARY})")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_METIS)
+  list(APPEND _mio_core_priv_incs ${METIS_INCLUDE_DIR})
+  list(APPEND _mio_core_libs ${METIS_LIBRARY})
+  meshioplusplus_add_provider_sources(metis)
+elseif(MESHIOPLUSPLUS_WITH_METIS)
+  message(STATUS "meshio++: METIS requested but not found (set METIS_ROOT) - "
+                 "partition method 'metis' will raise")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_SCOTCH AND SCOTCH_INCLUDE_DIR AND SCOTCH_LIBRARY)
+  message(STATUS "meshio++: Scotch graph partitioner provider enabled (${SCOTCH_LIBRARY})")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_SCOTCH)
+  list(APPEND _mio_core_priv_incs ${SCOTCH_INCLUDE_DIR})
+  list(APPEND _mio_core_libs ${SCOTCH_LIBRARY})
+  if(SCOTCHERR_LIBRARY)
+    list(APPEND _mio_core_libs ${SCOTCHERR_LIBRARY})
+  endif()
+  meshioplusplus_add_provider_sources(scotch)
+elseif(MESHIOPLUSPLUS_WITH_SCOTCH)
+  message(STATUS "meshio++: Scotch requested but not found (set SCOTCH_ROOT) - "
+                 "partition method 'scotch' will raise")
+endif()
+
+if(MESHIOPLUSPLUS_WITH_MANIFOLD AND TARGET manifold::manifold)
+  message(STATUS "meshio++: Manifold boolean provider enabled")
+  list(APPEND _mio_core_defs MESHIOPLUSPLUS_HAS_MANIFOLD)
+  list(APPEND _mio_core_libs manifold::manifold)
+  meshioplusplus_add_provider_sources(manifold)
+elseif(MESHIOPLUSPLUS_WITH_MANIFOLD)
+  message(STATUS "meshio++: Manifold requested but not found (set MANIFOLD_ROOT) - "
+                 "mesh_boolean will raise unless a provider is registered")
+endif()
 
 if(MESHIOPLUSPLUS_WITH_NETGEN AND NETGEN_FOUND)
   message(STATUS "meshio++: Netgen tetrahedralize backend enabled (${NETGEN_LIBRARIES})")

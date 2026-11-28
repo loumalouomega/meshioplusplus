@@ -240,6 +240,7 @@ if TYPE_CHECKING:
     from ._mass_properties import mass_properties
     from ._measure import align_datums, measure, measure_table
     from ._merge import merge
+    from ._mesh_boolean import has_boolean_provider, mesh_boolean
     from ._mesh_cad import mesh_cad_surface, triangulate_polygon_2d
     from ._mesh_operator import mesh_operator
     from ._metric import prepare_metric
@@ -379,6 +380,13 @@ if TYPE_CHECKING:
     from ._transform import transform
     from ._tui import tui
     from ._undo_green import undo_green
+    from ._units import (
+        convert_units,
+        field_unit,
+        mesh_crs,
+        set_field_unit,
+        set_mesh_crs,
+    )
     from ._untangle import untangle
     from ._viewer import has_viewer, screenshot, view
     from ._voxelize import voxelize
@@ -617,6 +625,13 @@ _LAZY_ATTRS = {
     "select_points": "_point_budget",
     "subsample_points": "_point_budget",
     "subdivide_surface": "_subdivide_surface",
+    "mesh_boolean": "_mesh_boolean",
+    "has_boolean_provider": "_mesh_boolean",
+    "convert_units": "_units",
+    "field_unit": "_units",
+    "set_field_unit": "_units",
+    "mesh_crs": "_units",
+    "set_mesh_crs": "_units",
     "CancelToken": "_progress",
     "progress_context": "_progress",
     "BistrideHierarchy": "_proximity",
@@ -1104,6 +1119,13 @@ __all__ = [
     "select_points",
     "subsample_points",
     "subdivide_surface",
+    "mesh_boolean",
+    "has_boolean_provider",
+    "convert_units",
+    "field_unit",
+    "set_field_unit",
+    "mesh_crs",
+    "set_mesh_crs",
     "GeometryGuard",
     "geometry_descriptors",
     "BistrideHierarchy",

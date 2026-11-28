@@ -1254,8 +1254,11 @@ RefineClosure refine_closure_from_name(const std::string& rName) {
         return RefineClosure::Propagate;
     if (rName == "balanced" || rName == "2:1")
         return RefineClosure::Balanced;
-    throw std::invalid_argument("refine: unknown closure '" + rName +
-                                "' (expected 'redgreen'/'green', 'propagate' or 'balanced')");
+    if (rName == "mixedgreen" || rName == "mixed_green" || rName == "mixed-green")
+        return RefineClosure::MixedGreen;
+    throw std::invalid_argument(
+        "refine: unknown closure '" + rName +
+        "' (expected 'redgreen'/'green', 'propagate', 'balanced', or 'mixed_green')");
 }
 
 bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
@@ -1330,8 +1333,7 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
 
     if (rOptions.mUndoGreenFirst) {
         if (!rOptions.mRecordHierarchy)
-            throw std::invalid_argument(
-                "refine: undo_green_first requires record_hierarchy=True");
+            throw std::invalid_argument("refine: undo_green_first requires record_hierarchy=True");
         if (rOptions.mLevels > 0 && selective) {
             UndoGreenResult ug = undo_green(rMesh);
             if (ug.mNumGroupsUndone > 0) {
@@ -1390,14 +1392,164 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
                       projected, rOptions.mLevels);
     }
 
+    if (rOptions.mClosure == RefineClosure::MixedGreen && selective && rOptions.mLevels > 0 &&
+        rMesh.NumCellBlocks() == 1 && rMesh.Cells(0).Type() == "quad" &&
+        !rMesh.Cells(0).IsRagged()) {
+        // Local mixed-type green closure for quads (roadmap 9.6.2): selected quads split 1->4;
+        // neighbour quads with 1, 2-adjacent, or 3 split edges close locally into conforming
+        // triangles appended as a second "triangle" block (zero hanging nodes, no propagation).
+        const auto cb = rMesh.Cells(0);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& sconn = cb.Conn();
+        const std::size_t npts_in = rMesh.NumPoints();
+        const std::size_t pdim = rMesh.PointDim();
+
+        auto ekey = [](std::int64_t a, std::int64_t b) -> std::uint64_t {
+            const std::uint64_t lo = static_cast<std::uint64_t>(std::min(a, b));
+            const std::uint64_t hi = static_cast<std::uint64_t>(std::max(a, b));
+            return (lo << 32) | hi;
+        };
+
+        std::vector<double> pts(npts_in * pdim, 0.0);
+        for (std::size_t i = 0; i < npts_in * pdim; ++i)
+            pts[i] = detail::read_double(rMesh.Points(), i);
+
+        std::unordered_map<std::uint64_t, std::int64_t> edge_mid;
+        auto get_mid = [&](std::int64_t a, std::int64_t b) -> std::int64_t {
+            const std::uint64_t k = ekey(a, b);
+            auto it = edge_mid.find(k);
+            if (it != edge_mid.end())
+                return it->second;
+            const std::int64_t nid = static_cast<std::int64_t>(pts.size() / pdim);
+            edge_mid.emplace(k, nid);
+            for (std::size_t d = 0; d < pdim; ++d)
+                pts.push_back(0.5 * (pts[static_cast<std::size_t>(a) * pdim + d] +
+                                     pts[static_cast<std::size_t>(b) * pdim + d]));
+            return nid;
+        };
+
+        // Pass 1: create mid-edge nodes for all edges of selected quads.
+        for (std::size_t c = 0; c < ncells; ++c) {
+            if (!seed[c])
+                continue;
+            const std::int64_t q[4] = {
+                detail::read_int(sconn, c * 4 + 0), detail::read_int(sconn, c * 4 + 1),
+                detail::read_int(sconn, c * 4 + 2), detail::read_int(sconn, c * 4 + 3)};
+            for (int e = 0; e < 4; ++e)
+                get_mid(q[e], q[(e + 1) % 4]);
+        }
+
+        // Pass 2: emit quads and local conforming triangles.
+        std::vector<std::int64_t> out_quads;
+        std::vector<std::int64_t> out_tris;
+        for (std::size_t c = 0; c < ncells; ++c) {
+            const std::int64_t q[4] = {
+                detail::read_int(sconn, c * 4 + 0), detail::read_int(sconn, c * 4 + 1),
+                detail::read_int(sconn, c * 4 + 2), detail::read_int(sconn, c * 4 + 3)};
+            std::int64_t mid[4] = {-1, -1, -1, -1};
+            int mask = 0;
+            for (int e = 0; e < 4; ++e) {
+                auto it = edge_mid.find(ekey(q[e], q[(e + 1) % 4]));
+                if (it != edge_mid.end()) {
+                    mid[e] = it->second;
+                    mask |= (1 << e);
+                }
+            }
+            if (mask == 0) {
+                for (int k = 0; k < 4; ++k)
+                    out_quads.push_back(q[k]);
+            } else if (mask == 15) {
+                const std::int64_t ctr = static_cast<std::int64_t>(pts.size() / pdim);
+                for (std::size_t d = 0; d < pdim; ++d)
+                    pts.push_back(0.25 * (pts[static_cast<std::size_t>(q[0]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[1]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[2]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[3]) * pdim + d]));
+                const std::int64_t subs[4][4] = {{q[0], mid[0], ctr, mid[3]},
+                                                 {mid[0], q[1], mid[1], ctr},
+                                                 {ctr, mid[1], q[2], mid[2]},
+                                                 {mid[3], ctr, mid[2], q[3]}};
+                for (int s = 0; s < 4; ++s)
+                    for (int k = 0; k < 4; ++k)
+                        out_quads.push_back(subs[s][k]);
+            } else if (mask == 5) {
+                // Opposite edges 0 and 2 split -> 2 quads
+                const std::int64_t subs[2][4] = {{q[0], mid[0], mid[2], q[3]},
+                                                 {mid[0], q[1], q[2], mid[2]}};
+                for (int s = 0; s < 2; ++s)
+                    for (int k = 0; k < 4; ++k)
+                        out_quads.push_back(subs[s][k]);
+            } else if (mask == 10) {
+                // Opposite edges 1 and 3 split -> 2 quads
+                const std::int64_t subs[2][4] = {{q[0], q[1], mid[1], mid[3]},
+                                                 {mid[3], mid[1], q[2], q[3]}};
+                for (int s = 0; s < 2; ++s)
+                    for (int k = 0; k < 4; ++k)
+                        out_quads.push_back(subs[s][k]);
+            } else {
+                // 1, 2-adjacent, or 3 split edges -> fan from centroid into conforming triangles
+                const std::int64_t ctr = static_cast<std::int64_t>(pts.size() / pdim);
+                for (std::size_t d = 0; d < pdim; ++d)
+                    pts.push_back(0.25 * (pts[static_cast<std::size_t>(q[0]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[1]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[2]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[3]) * pdim + d]));
+                for (int e = 0; e < 4; ++e) {
+                    const std::int64_t a = q[e];
+                    const std::int64_t b = q[(e + 1) % 4];
+                    if (mid[e] >= 0) {
+                        out_tris.push_back(ctr);
+                        out_tris.push_back(a);
+                        out_tris.push_back(mid[e]);
+                        out_tris.push_back(ctr);
+                        out_tris.push_back(mid[e]);
+                        out_tris.push_back(b);
+                    } else {
+                        out_tris.push_back(ctr);
+                        out_tris.push_back(a);
+                        out_tris.push_back(b);
+                    }
+                }
+            }
+        }
+
+        const std::size_t npts_out = pts.size() / pdim;
+        Mesh out;
+        NDArray pa = NDArray::Uninit(DType::Float64, {npts_out, pdim});
+        std::memcpy(pa.As<double>(), pts.data(), pts.size() * sizeof(double));
+        out.AssignPoints(std::move(pa));
+        if (!out_quads.empty()) {
+            NDArray qc = NDArray::Uninit(DType::Int64, {out_quads.size() / 4, std::size_t{4}});
+            std::memcpy(qc.As<std::int64_t>(), out_quads.data(),
+                        out_quads.size() * sizeof(std::int64_t));
+            out.AddCellBlock("quad", std::move(qc));
+        }
+        if (!out_tris.empty()) {
+            NDArray tc = NDArray::Uninit(DType::Int64, {out_tris.size() / 3, std::size_t{3}});
+            std::memcpy(tc.As<std::int64_t>(), out_tris.data(),
+                        out_tris.size() * sizeof(std::int64_t));
+            out.AddCellBlock("triangle", std::move(tc));
+        }
+        for (const std::string& name : rMesh.FieldDataNames())
+            out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+        RefineResult res;
+        res.mMesh = std::move(out);
+        res.mPointMap = refine_identity_map(npts_in);
+        return res;
+    }
+
+    const RefineClosure effective_closure = rOptions.mClosure == RefineClosure::MixedGreen
+                                                ? RefineClosure::RedGreen
+                                                : rOptions.mClosure;
     std::vector<char> next_seed;
     RefineResult acc =
-        refine_once(rMesh, selective ? &seed : nullptr, rOptions.mClosure, rOptions.mRecordLevels,
+        refine_once(rMesh, selective ? &seed : nullptr, effective_closure, rOptions.mRecordLevels,
                     rOptions.mRecordHierarchy, selective ? &next_seed : nullptr);
     for (int level = 1; level < rOptions.mLevels; ++level) {
         const std::vector<char> current = std::move(next_seed);
         RefineResult next = refine_once(
-            acc.mMesh, selective ? &current : nullptr, rOptions.mClosure, rOptions.mRecordLevels,
+            acc.mMesh, selective ? &current : nullptr, effective_closure, rOptions.mRecordLevels,
             rOptions.mRecordHierarchy, selective ? &next_seed : nullptr);
         refine_compose_maps(acc, next);     // reads next's maps first
         acc.mMesh = std::move(next.mMesh);  // sequenced after

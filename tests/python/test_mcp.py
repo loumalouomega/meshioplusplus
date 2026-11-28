@@ -2708,6 +2708,12 @@ _NOT_TOOLS = {
     "WriteError",
     "topological_dimension",
     "__version__",
+    # In-memory metadata helpers and provider capability queries (same as length_unit).
+    "field_unit",
+    "set_field_unit",
+    "mesh_crs",
+    "set_mesh_crs",
+    "has_boolean_provider",
 }
 
 

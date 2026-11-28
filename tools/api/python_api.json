@@ -3957,6 +3957,37 @@
       "name": "record_coordinates"
      },
      {
+      "default": "None",
+      "kind": "KEYWORD_ONLY",
+      "name": "target_crs"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
+  "convert_units": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "default": "'SI'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "system"
+     },
+     {
+      "default": "True",
+      "kind": "KEYWORD_ONLY",
+      "name": "strict"
+     },
+     {
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "return_report"
@@ -5727,6 +5758,21 @@
     ]
    }
   },
+  "field_unit": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "name"
+     }
+    ]
+   }
+  },
   "filter_points": {
    "kind": "function",
    "signature": {
@@ -6769,6 +6815,12 @@
     "parameters": []
    }
   },
+  "has_boolean_provider": {
+   "kind": "function",
+   "signature": {
+    "parameters": []
+   }
+  },
   "has_conduit": {
    "kind": "function",
    "signature": {
@@ -7751,6 +7803,36 @@
     ]
    }
   },
+  "mesh_boolean": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "a"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "b"
+     },
+     {
+      "default": "'union'",
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "op"
+     },
+     {
+      "default": "''",
+      "kind": "KEYWORD_ONLY",
+      "name": "backend"
+     },
+     {
+      "default": "False",
+      "kind": "KEYWORD_ONLY",
+      "name": "return_report"
+     }
+    ]
+   }
+  },
   "mesh_cad_surface": {
    "kind": "function",
    "signature": {
@@ -7927,6 +8009,17 @@
       "default": "False",
       "kind": "KEYWORD_ONLY",
       "name": "return_report"
+     }
+    ]
+   }
+  },
+  "mesh_crs": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
      }
     ]
    }
@@ -11093,6 +11186,40 @@
      {
       "kind": "VAR_KEYWORD",
       "name": "read_kwargs"
+     }
+    ]
+   }
+  },
+  "set_field_unit": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "name"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "unit"
+     }
+    ]
+   }
+  },
+  "set_mesh_crs": {
+   "kind": "function",
+   "signature": {
+    "parameters": [
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "mesh"
+     },
+     {
+      "kind": "POSITIONAL_OR_KEYWORD",
+      "name": "crs"
      }
     ]
    }

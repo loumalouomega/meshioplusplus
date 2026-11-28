@@ -8144,6 +8144,51 @@ private:
 }  // namespace detail
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/detail/compressed_input.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/detail/crs.hpp =====
+/**
+ * @file detail/crs.hpp
+ * @brief Georeferencing coordinate reference system metadata (`field_data["meshio:crs"]`,
+ * roadmap 9.10.2). Stores a WKT2 or `EPSG:<code>` string as UInt8 bytes.
+ */
+
+// System includes
+#include <cstdint>
+#include <cstring>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+namespace detail {
+
+/// The `field_data` key storing a mesh's CRS as UTF-8 UInt8 bytes (e.g. `"EPSG:4326"` or WKT2).
+inline constexpr const char* kCrsName = "meshio:crs";
+
+/// Return the CRS string stored on @p rMesh, or empty string when absent.
+inline std::string mesh_crs(const Mesh& rMesh) {
+    if (!rMesh.HasFieldData(kCrsName))
+        return {};
+    const NDArray& a = rMesh.FieldData(kCrsName);
+    if (a.Dtype() != DType::UInt8 || a.Size() == 0)
+        return {};
+    const auto* p = a.As<std::uint8_t>();
+    std::size_t n = a.Size();
+    while (n > 0 && p[n - 1] == 0)
+        --n;
+    return std::string(reinterpret_cast<const char*>(p), n);
+}
+
+/// Record @p rCrs (WKT2 or `EPSG:<code>`) on @p rMesh under `field_data["meshio:crs"]`.
+inline void set_mesh_crs(Mesh& rMesh, const std::string& rCrs) {
+    NDArray a = NDArray::Uninit(DType::UInt8, {rCrs.size()});
+    if (!rCrs.empty())
+        std::memcpy(a.As<std::uint8_t>(), rCrs.data(), rCrs.size());
+    rMesh.AddFieldData(kCrsName, std::move(a));
+}
+
+}  // namespace detail
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/detail/crs.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/data_common.hpp =====
 /**
  * @file operations/data_common.hpp
@@ -27910,10 +27955,11 @@ inline constexpr const char* kCylindricalCoordsName = "coords:cylindrical";
 /// Point data: Float64 `(n, 3)`, `(r, theta, phi)` about the axis.
 inline constexpr const char* kSphericalCoordsName = "coords:spherical";
 
-/// The curvilinear system.
+/// The curvilinear or georeferencing coordinate system.
 enum class CoordinateSystem : std::int32_t {
     Cylindrical = 0,
     Spherical = 1,
+    Crs = 2,
 };
 
 /// What `convert_coordinates` converts, and about what.
@@ -27931,6 +27977,8 @@ struct CoordinateOptions {
     bool mInverse = false;
     /// Attach `coords:cylindrical` / `coords:spherical`.
     bool mRecordCoordinates = true;
+    /// Target CRS string (`"EPSG:<code>"` or WKT2) when `mSystem == CoordinateSystem::Crs`.
+    std::string mTargetCrs;
 };
 
 /// What `convert_coordinates` did.
@@ -28315,6 +28363,10 @@ enum class RefineClosure {
     /// meaning of "propagate", and the only mode whose cost is bounded by the
     /// selection rather than by the mesh.
     Balanced = 2,
+    /// Mixed-type green closure (roadmap 9.6.2): closes a quadrilateral with
+    /// 1, 2-adjacent, or 3 split edges locally into conforming triangles (appended
+    /// as a `"triangle"` block) without propagating refinement across the mesh.
+    MixedGreen = 3,
 };
 
 /// The comparison in `RefineOptions`' `cell_data` predicate selector.
@@ -34971,6 +35023,55 @@ MESHIOPLUSPLUS_API MergeResult merge(const std::vector<const Mesh*>& rMeshes, co
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/merge.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/mesh_boolean.hpp =====
+/**
+ * @file operations/mesh_boolean.hpp
+ * @brief Watertight surface mesh boolean operations (`Union`, `Difference`,
+ * `Intersection`) dispatched through a registered `BooleanProvider`
+ * (e.g. Manifold, Apache-2.0; roadmap 9.1).
+ */
+
+// System includes
+#include <cstdint>
+#include <string>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Boolean set operation on two watertight triangle surfaces.
+enum class BooleanOp : std::int32_t {
+    Union = 0,
+    Difference = 1,
+    Intersection = 2,
+};
+
+/// Parse `"union"`, `"difference"` / `"subtract"`, or `"intersection"` / `"intersect"`.
+MESHIOPLUSPLUS_API BooleanOp boolean_op_from_name(const std::string& rName);
+
+/// Options for `mesh_boolean`.
+struct MeshBooleanOptions {
+    BooleanOp mOp = BooleanOp::Union;
+    /// Optional provider name; empty selects the default registered `BooleanProvider`.
+    std::string mBackend;
+};
+
+/// Result of `mesh_boolean`.
+struct MeshBooleanResult {
+    Mesh mMesh;
+    std::string mBackend;
+    std::int64_t mNumTriangles = 0;
+};
+
+/// Perform a surface boolean operation on two closed triangle meshes.
+MESHIOPLUSPLUS_API MeshBooleanResult mesh_boolean(const Mesh& rA, const Mesh& rB,
+                                                  const MeshBooleanOptions& rOptions = {});
+
+/// Whether a `BooleanProvider` is currently registered.
+MESHIOPLUSPLUS_API bool has_boolean_provider() noexcept;
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/mesh_boolean.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/mesh_cad.hpp =====
 /**
  * @file operations/mesh_cad.hpp
@@ -44548,6 +44649,70 @@ MESHIOPLUSPLUS_API UndoGreenResult undo_green(const Mesh& rFine);
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/include/meshioplusplus/operations/undo_green.hpp =====
+// ===== begin src/cpp/include/meshioplusplus/operations/units.hpp =====
+/**
+ * @file operations/units.hpp
+ * @brief Per-field physical unit metadata (`field_data["meshio:unit:<array>"]`)
+ * and consistent unit-system conversion (`convert_units`; roadmap 9.10.1).
+ *
+ * Each declared field unit is stored as 8 float64 values:
+ * `[scale_to_SI, m, kg, s, K, A, mol, cd]`.
+ */
+
+// System includes
+#include <array>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+/// Prefix for per-array unit entries in `field_data`: `meshio:unit:<array>`.
+inline constexpr const char* kFieldUnitPrefix = "meshio:unit:";
+
+/// A physical unit represented as an SI scale factor + 7 SI base exponents
+/// `[m, kg, s, K, A, mol, cd]`.
+struct FieldUnit {
+    double mScale = 1.0;
+    std::array<double, 7> mExponents{0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+};
+
+/// Parse a common unit name (`"m"`, `"mm"`, `"Pa"`, `"MPa"`, `"GPa"`, `"N"`,
+/// `"m/s"`, `"kg/m^3"`, `"t/mm^3"`, `"1"`, ...) into its SI scale and exponents.
+MESHIOPLUSPLUS_API FieldUnit field_unit_from_name(const std::string& rName);
+
+/// Attach `field_data["meshio:unit:" + rArrayName]` as Float64(8).
+MESHIOPLUSPLUS_API void set_field_unit(Mesh& rMesh, const std::string& rArrayName,
+                                       const FieldUnit& rUnit);
+
+/// Read `field_data["meshio:unit:" + rArrayName]`; returns false if absent or malformed.
+MESHIOPLUSPLUS_API bool get_field_unit(const Mesh& rMesh, const std::string& rArrayName,
+                                       FieldUnit& rOut);
+
+/// Options for `convert_units`.
+struct ConvertUnitsOptions {
+    /// Target consistent unit system: `"SI"`, `"mm-t-s"`, `"mm-kg-ms"`, `"cm-g-s"`, `"mm-g-ms"`.
+    std::string mSystem = "SI";
+    /// When true (default), throw if any point_data or cell_data array lacks a declared unit.
+    /// When false, leave undeclared arrays untouched and record a warning.
+    bool mStrict = true;
+};
+
+/// Result of `convert_units`.
+struct ConvertUnitsResult {
+    Mesh mMesh;
+    std::int64_t mNumArraysConverted = 0;
+    std::vector<std::string> mWarnings;
+};
+
+/// Convert mesh coordinates (`meshio:length_unit`) and all declared fields to `rOptions.mSystem`.
+MESHIOPLUSPLUS_API ConvertUnitsResult convert_units(const Mesh& rMesh,
+                                                    const ConvertUnitsOptions& rOptions = {});
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/include/meshioplusplus/operations/units.hpp =====
 // ===== begin src/cpp/include/meshioplusplus/operations/untangle.hpp =====
 /**
  * @file operations/untangle.hpp
@@ -45556,14 +45721,15 @@ MESHIOPLUSPLUS_API std::vector<std::string> quad_remesher_names();
 
 /// Input to a graph partitioner provider (roadmap 9.7.1): a symmetric CSR dual graph.
 struct GraphPartitionerRequest {
-    const std::int64_t* mpXadj = nullptr;     ///< Row offsets, length `mNumVertices + 1`.
-    const std::int64_t* mpAdjncy = nullptr;   ///< Neighbour vertex ids.
-    std::size_t mNumVertices = 0;             ///< Number of graph vertices (cells).
-    int mNParts = 2;                          ///< Number of parts (>= 1).
-    double mImbalance = 0.03;                 ///< Allowed imbalance fraction in (0, 1).
-    int mMode = 1;                            ///< Quality mode: 0 = Fast, 1 = Eco, 2 = Strong.
-    int mSeed = 0;                            ///< Deterministic seed.
-    const std::int64_t* mpWeights = nullptr;  ///< Optional positive vertex weights (length `mNumVertices`).
+    const std::int64_t* mpXadj = nullptr;    ///< Row offsets, length `mNumVertices + 1`.
+    const std::int64_t* mpAdjncy = nullptr;  ///< Neighbour vertex ids.
+    std::size_t mNumVertices = 0;            ///< Number of graph vertices (cells).
+    int mNParts = 2;                         ///< Number of parts (>= 1).
+    double mImbalance = 0.03;                ///< Allowed imbalance fraction in (0, 1).
+    int mMode = 1;                           ///< Quality mode: 0 = Fast, 1 = Eco, 2 = Strong.
+    int mSeed = 0;                           ///< Deterministic seed.
+    const std::int64_t* mpWeights =
+        nullptr;  ///< Optional positive vertex weights (length `mNumVertices`).
 };
 
 /// A graph partitioner provider (KaHIP, METIS, Scotch, or a plugin; roadmap 9.7.1).
@@ -45583,6 +45749,35 @@ MESHIOPLUSPLUS_API std::shared_ptr<const GraphPartitionerProvider> graph_partiti
     const std::string& rName) noexcept;
 /// The names of every registered graph partitioner, sorted.
 MESHIOPLUSPLUS_API std::vector<std::string> graph_partitioner_names();
+
+/// Input to a surface boolean provider (roadmap 9.1.3).
+struct BooleanRequest {
+    std::int32_t mOp = 0;  ///< 0 = Union, 1 = Difference, 2 = Intersection.
+    std::vector<std::array<double, 3>> mPointsA;
+    std::vector<std::array<std::int64_t, 3>> mTrianglesA;
+    std::vector<std::array<double, 3>> mPointsB;
+    std::vector<std::array<std::int64_t, 3>> mTrianglesB;
+};
+
+/// Output from a surface boolean provider.
+struct BooleanReply {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+};
+
+/// A surface boolean provider (e.g. Manifold, Apache-2.0; roadmap 9.1.3).
+struct BooleanProvider {
+    std::string mName;
+    std::string mVersion;
+    std::function<BooleanReply(const BooleanRequest&)> mBoolean;
+};
+
+/// Registers `Provider` as the surface boolean backend, replacing any earlier one.
+MESHIOPLUSPLUS_API void register_boolean_provider(BooleanProvider Provider);
+/// Removes the registered surface boolean backend.
+MESHIOPLUSPLUS_API void unregister_boolean_provider() noexcept;
+/// The registered surface boolean backend, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const BooleanProvider> boolean_provider() noexcept;
 
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
@@ -45622,7 +45817,8 @@ MESHIOPLUSPLUS_API std::shared_ptr<const CadKernelProvider> cad_kernel() noexcep
 
 /// Loads one plugin. Returns whether it registered; on failure it returns false
 /// and, when @p pError is given, says why. Never throws.
-MESHIOPLUSPLUS_API bool load_plugin(const std::string& rPath, std::string* pError = nullptr) noexcept;
+MESHIOPLUSPLUS_API bool load_plugin(const std::string& rPath,
+                                    std::string* pError = nullptr) noexcept;
 
 /// Loads every plugin named by @p rPaths (libraries, or directories searched for
 /// `meshioplusplus_plugin_*` libraries). Returns how many registered.
@@ -254929,11 +255125,35 @@ CoordinateSystem coordinate_system_from_name(const std::string& rName) {
         return CoordinateSystem::Cylindrical;
     if (rName == "spherical")
         return CoordinateSystem::Spherical;
+    if (rName == "crs")
+        return CoordinateSystem::Crs;
     throw std::invalid_argument("convert_coordinates: unknown system '" + rName +
-                                "' (expected 'cylindrical' or 'spherical')");
+                                "' (expected 'cylindrical', 'spherical', or 'crs')");
 }
 
 CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions& rOptions) {
+    if (rOptions.mSystem == CoordinateSystem::Crs || !rOptions.mTargetCrs.empty()) {
+        if (rOptions.mTargetCrs.empty())
+            throw std::invalid_argument(
+                "convert_coordinates: target_crs must be non-empty for system='crs'");
+        const std::string src_crs = detail::mesh_crs(rMesh);
+        if (src_crs.empty())
+            throw std::invalid_argument(
+                "convert_coordinates: mesh has no 'meshio:crs' field_data entry");
+        CoordinateResult res;
+        res.mMesh = detail::clone_mesh(rMesh);
+        if (src_crs == rOptions.mTargetCrs)
+            return res;
+#ifdef MESHIOPLUSPLUS_HAS_PROJ
+        // Optional PROJ build path (roadmap 9.10.2)
+        throw Unsupported("convert_coordinates: PROJ reprojection requires proj_create_crs_to_crs");
+#else
+        throw Unsupported("convert_coordinates: CRS reprojection from '" + src_crs + "' to '" +
+                          rOptions.mTargetCrs +
+                          "' requires PROJ (-DMESHIOPLUSPLUS_WITH_PROJ=ON) or pyproj in Python");
+#endif
+    }
+
     CoordFrame frame;
     const double axis_len = std::sqrt(detail::vec3_dot(rOptions.mAxis, rOptions.mAxis));
     if (!(axis_len > 0.0) || !std::isfinite(axis_len))
@@ -279813,6 +280033,129 @@ MergeResult merge(const std::vector<const Mesh*>& rMeshes, const MergeOptions& r
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/merge.cpp =====
+// ===== begin src/cpp/src/operations/mesh_boolean.cpp =====
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+// Project includes
+
+// Core-private includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kBoolPrefix = "meshio++: mesh_boolean: ";
+
+std::string bool_lower(std::string s) {
+    for (char& c : s)
+        if (c >= 'A' && c <= 'Z')
+            c = static_cast<char>(c - 'A' + 'a');
+    return s;
+}
+
+void bool_extract_triangles(const Mesh& rMesh, std::vector<std::array<double, 3>>& rPts,
+                            std::vector<std::array<std::int64_t, 3>>& rTris) {
+    const std::vector<double> xyz = detail::surface_xyz(rMesh);
+    const std::size_t npts = xyz.size() / 3;
+    rPts.resize(npts);
+    for (std::size_t i = 0; i < npts; ++i)
+        rPts[i] = {xyz[3 * i + 0], xyz[3 * i + 1], xyz[3 * i + 2]};
+
+    std::size_t total = 0;
+    for (const auto cb : rMesh.CellRange())
+        total += cb.NumCells();
+    std::vector<std::uint8_t> sel(total, 1);
+    const detail::SurfaceRings rings = detail::surface_rings(rMesh, sel, kBoolPrefix);
+    if (rings.NumFaces() == 0)
+        throw std::invalid_argument(std::string(kBoolPrefix) + "mesh contains no surface cells");
+    for (std::size_t f = 0; f < rings.NumFaces(); ++f) {
+        const std::int64_t s0 = rings.mStart[f];
+        const std::int64_t s1 = rings.mStart[f + 1];
+        const std::size_t m = static_cast<std::size_t>(s1 - s0);
+        if (m < 3)
+            continue;
+        const std::int64_t v0 = rings.mNodes[static_cast<std::size_t>(s0)];
+        for (std::size_t k = 1; k + 1 < m; ++k) {
+            rTris.push_back({v0, rings.mNodes[static_cast<std::size_t>(s0) + k],
+                             rings.mNodes[static_cast<std::size_t>(s0) + k + 1]});
+        }
+    }
+}
+
+}  // namespace
+
+BooleanOp boolean_op_from_name(const std::string& rName) {
+    const std::string low = bool_lower(rName);
+    if (low == "union" || low == "or" || low == "+")
+        return BooleanOp::Union;
+    if (low == "difference" || low == "subtract" || low == "minus" || low == "-")
+        return BooleanOp::Difference;
+    if (low == "intersection" || low == "intersect" || low == "and" || low == "&")
+        return BooleanOp::Intersection;
+    throw std::invalid_argument(std::string(kBoolPrefix) + "unknown op '" + rName +
+                                "' (expected 'union', 'difference', or 'intersection')");
+}
+
+bool has_boolean_provider() noexcept {
+    return boolean_provider() != nullptr;
+}
+
+MeshBooleanResult mesh_boolean(const Mesh& rA, const Mesh& rB, const MeshBooleanOptions& rOptions) {
+    auto prov = boolean_provider();
+    if (!prov || !prov->mBoolean)
+        throw Unsupported(
+            std::string(kBoolPrefix) +
+            "no BooleanProvider is registered (build with -DMESHIOPLUSPLUS_WITH_MANIFOLD=ON "
+            "or register a BooleanProvider plugin)");
+    if (!rOptions.mBackend.empty() && rOptions.mBackend != "auto" &&
+        rOptions.mBackend != prov->mName)
+        throw std::invalid_argument(std::string(kBoolPrefix) + "requested backend '" +
+                                    rOptions.mBackend + "' is not registered (active: '" +
+                                    prov->mName + "')");
+
+    BooleanRequest req;
+    req.mOp = static_cast<std::int32_t>(rOptions.mOp);
+    bool_extract_triangles(rA, req.mPointsA, req.mTrianglesA);
+    bool_extract_triangles(rB, req.mPointsB, req.mTrianglesB);
+
+    const BooleanReply rep = prov->mBoolean(req);
+
+    const std::size_t npts = rep.mPoints.size();
+    const std::size_t ntris = rep.mTriangles.size();
+    NDArray pts = NDArray::Uninit(DType::Float64, {npts, std::size_t{3}});
+    auto* pp = pts.As<double>();
+    for (std::size_t i = 0; i < npts; ++i) {
+        pp[3 * i + 0] = rep.mPoints[i][0];
+        pp[3 * i + 1] = rep.mPoints[i][1];
+        pp[3 * i + 2] = rep.mPoints[i][2];
+    }
+    NDArray conn = NDArray::Uninit(DType::Int64, {ntris, std::size_t{3}});
+    auto* cp = conn.As<std::int64_t>();
+    for (std::size_t i = 0; i < ntris; ++i) {
+        cp[3 * i + 0] = rep.mTriangles[i][0];
+        cp[3 * i + 1] = rep.mTriangles[i][1];
+        cp[3 * i + 2] = rep.mTriangles[i][2];
+    }
+
+    Mesh out;
+    out.AssignPoints(std::move(pts));
+    if (ntris > 0)
+        out.AddCellBlock("triangle", std::move(conn));
+
+    MeshBooleanResult res;
+    res.mMesh = std::move(out);
+    res.mBackend = prov->mName;
+    res.mNumTriangles = static_cast<std::int64_t>(ntris);
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/mesh_boolean.cpp =====
 // ===== begin src/cpp/src/operations/mesh_cad.cpp =====
 #include <algorithm>
 #include <array>
@@ -307212,8 +307555,11 @@ RefineClosure refine_closure_from_name(const std::string& rName) {
         return RefineClosure::Propagate;
     if (rName == "balanced" || rName == "2:1")
         return RefineClosure::Balanced;
-    throw std::invalid_argument("refine: unknown closure '" + rName +
-                                "' (expected 'redgreen'/'green', 'propagate' or 'balanced')");
+    if (rName == "mixedgreen" || rName == "mixed_green" || rName == "mixed-green")
+        return RefineClosure::MixedGreen;
+    throw std::invalid_argument(
+        "refine: unknown closure '" + rName +
+        "' (expected 'redgreen'/'green', 'propagate', 'balanced', or 'mixed_green')");
 }
 
 bool refine_compare_value(double Value, RefineCompare Op, double Rhs) {
@@ -307288,8 +307634,7 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
 
     if (rOptions.mUndoGreenFirst) {
         if (!rOptions.mRecordHierarchy)
-            throw std::invalid_argument(
-                "refine: undo_green_first requires record_hierarchy=True");
+            throw std::invalid_argument("refine: undo_green_first requires record_hierarchy=True");
         if (rOptions.mLevels > 0 && selective) {
             UndoGreenResult ug = undo_green(rMesh);
             if (ug.mNumGroupsUndone > 0) {
@@ -307348,14 +307693,164 @@ RefineResult refine(const Mesh& rMesh, const RefineOptions& rOptions) {
                       projected, rOptions.mLevels);
     }
 
+    if (rOptions.mClosure == RefineClosure::MixedGreen && selective && rOptions.mLevels > 0 &&
+        rMesh.NumCellBlocks() == 1 && rMesh.Cells(0).Type() == "quad" &&
+        !rMesh.Cells(0).IsRagged()) {
+        // Local mixed-type green closure for quads (roadmap 9.6.2): selected quads split 1->4;
+        // neighbour quads with 1, 2-adjacent, or 3 split edges close locally into conforming
+        // triangles appended as a second "triangle" block (zero hanging nodes, no propagation).
+        const auto cb = rMesh.Cells(0);
+        const std::size_t ncells = cb.NumCells();
+        const NDArray& sconn = cb.Conn();
+        const std::size_t npts_in = rMesh.NumPoints();
+        const std::size_t pdim = rMesh.PointDim();
+
+        auto ekey = [](std::int64_t a, std::int64_t b) -> std::uint64_t {
+            const std::uint64_t lo = static_cast<std::uint64_t>(std::min(a, b));
+            const std::uint64_t hi = static_cast<std::uint64_t>(std::max(a, b));
+            return (lo << 32) | hi;
+        };
+
+        std::vector<double> pts(npts_in * pdim, 0.0);
+        for (std::size_t i = 0; i < npts_in * pdim; ++i)
+            pts[i] = detail::read_double(rMesh.Points(), i);
+
+        std::unordered_map<std::uint64_t, std::int64_t> edge_mid;
+        auto get_mid = [&](std::int64_t a, std::int64_t b) -> std::int64_t {
+            const std::uint64_t k = ekey(a, b);
+            auto it = edge_mid.find(k);
+            if (it != edge_mid.end())
+                return it->second;
+            const std::int64_t nid = static_cast<std::int64_t>(pts.size() / pdim);
+            edge_mid.emplace(k, nid);
+            for (std::size_t d = 0; d < pdim; ++d)
+                pts.push_back(0.5 * (pts[static_cast<std::size_t>(a) * pdim + d] +
+                                     pts[static_cast<std::size_t>(b) * pdim + d]));
+            return nid;
+        };
+
+        // Pass 1: create mid-edge nodes for all edges of selected quads.
+        for (std::size_t c = 0; c < ncells; ++c) {
+            if (!seed[c])
+                continue;
+            const std::int64_t q[4] = {
+                detail::read_int(sconn, c * 4 + 0), detail::read_int(sconn, c * 4 + 1),
+                detail::read_int(sconn, c * 4 + 2), detail::read_int(sconn, c * 4 + 3)};
+            for (int e = 0; e < 4; ++e)
+                get_mid(q[e], q[(e + 1) % 4]);
+        }
+
+        // Pass 2: emit quads and local conforming triangles.
+        std::vector<std::int64_t> out_quads;
+        std::vector<std::int64_t> out_tris;
+        for (std::size_t c = 0; c < ncells; ++c) {
+            const std::int64_t q[4] = {
+                detail::read_int(sconn, c * 4 + 0), detail::read_int(sconn, c * 4 + 1),
+                detail::read_int(sconn, c * 4 + 2), detail::read_int(sconn, c * 4 + 3)};
+            std::int64_t mid[4] = {-1, -1, -1, -1};
+            int mask = 0;
+            for (int e = 0; e < 4; ++e) {
+                auto it = edge_mid.find(ekey(q[e], q[(e + 1) % 4]));
+                if (it != edge_mid.end()) {
+                    mid[e] = it->second;
+                    mask |= (1 << e);
+                }
+            }
+            if (mask == 0) {
+                for (int k = 0; k < 4; ++k)
+                    out_quads.push_back(q[k]);
+            } else if (mask == 15) {
+                const std::int64_t ctr = static_cast<std::int64_t>(pts.size() / pdim);
+                for (std::size_t d = 0; d < pdim; ++d)
+                    pts.push_back(0.25 * (pts[static_cast<std::size_t>(q[0]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[1]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[2]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[3]) * pdim + d]));
+                const std::int64_t subs[4][4] = {{q[0], mid[0], ctr, mid[3]},
+                                                 {mid[0], q[1], mid[1], ctr},
+                                                 {ctr, mid[1], q[2], mid[2]},
+                                                 {mid[3], ctr, mid[2], q[3]}};
+                for (int s = 0; s < 4; ++s)
+                    for (int k = 0; k < 4; ++k)
+                        out_quads.push_back(subs[s][k]);
+            } else if (mask == 5) {
+                // Opposite edges 0 and 2 split -> 2 quads
+                const std::int64_t subs[2][4] = {{q[0], mid[0], mid[2], q[3]},
+                                                 {mid[0], q[1], q[2], mid[2]}};
+                for (int s = 0; s < 2; ++s)
+                    for (int k = 0; k < 4; ++k)
+                        out_quads.push_back(subs[s][k]);
+            } else if (mask == 10) {
+                // Opposite edges 1 and 3 split -> 2 quads
+                const std::int64_t subs[2][4] = {{q[0], q[1], mid[1], mid[3]},
+                                                 {mid[3], mid[1], q[2], q[3]}};
+                for (int s = 0; s < 2; ++s)
+                    for (int k = 0; k < 4; ++k)
+                        out_quads.push_back(subs[s][k]);
+            } else {
+                // 1, 2-adjacent, or 3 split edges -> fan from centroid into conforming triangles
+                const std::int64_t ctr = static_cast<std::int64_t>(pts.size() / pdim);
+                for (std::size_t d = 0; d < pdim; ++d)
+                    pts.push_back(0.25 * (pts[static_cast<std::size_t>(q[0]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[1]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[2]) * pdim + d] +
+                                          pts[static_cast<std::size_t>(q[3]) * pdim + d]));
+                for (int e = 0; e < 4; ++e) {
+                    const std::int64_t a = q[e];
+                    const std::int64_t b = q[(e + 1) % 4];
+                    if (mid[e] >= 0) {
+                        out_tris.push_back(ctr);
+                        out_tris.push_back(a);
+                        out_tris.push_back(mid[e]);
+                        out_tris.push_back(ctr);
+                        out_tris.push_back(mid[e]);
+                        out_tris.push_back(b);
+                    } else {
+                        out_tris.push_back(ctr);
+                        out_tris.push_back(a);
+                        out_tris.push_back(b);
+                    }
+                }
+            }
+        }
+
+        const std::size_t npts_out = pts.size() / pdim;
+        Mesh out;
+        NDArray pa = NDArray::Uninit(DType::Float64, {npts_out, pdim});
+        std::memcpy(pa.As<double>(), pts.data(), pts.size() * sizeof(double));
+        out.AssignPoints(std::move(pa));
+        if (!out_quads.empty()) {
+            NDArray qc = NDArray::Uninit(DType::Int64, {out_quads.size() / 4, std::size_t{4}});
+            std::memcpy(qc.As<std::int64_t>(), out_quads.data(),
+                        out_quads.size() * sizeof(std::int64_t));
+            out.AddCellBlock("quad", std::move(qc));
+        }
+        if (!out_tris.empty()) {
+            NDArray tc = NDArray::Uninit(DType::Int64, {out_tris.size() / 3, std::size_t{3}});
+            std::memcpy(tc.As<std::int64_t>(), out_tris.data(),
+                        out_tris.size() * sizeof(std::int64_t));
+            out.AddCellBlock("triangle", std::move(tc));
+        }
+        for (const std::string& name : rMesh.FieldDataNames())
+            out.AddFieldData(name, detail::data_owned_copy(rMesh.FieldData(name)));
+
+        RefineResult res;
+        res.mMesh = std::move(out);
+        res.mPointMap = refine_identity_map(npts_in);
+        return res;
+    }
+
+    const RefineClosure effective_closure = rOptions.mClosure == RefineClosure::MixedGreen
+                                                ? RefineClosure::RedGreen
+                                                : rOptions.mClosure;
     std::vector<char> next_seed;
     RefineResult acc =
-        refine_once(rMesh, selective ? &seed : nullptr, rOptions.mClosure, rOptions.mRecordLevels,
+        refine_once(rMesh, selective ? &seed : nullptr, effective_closure, rOptions.mRecordLevels,
                     rOptions.mRecordHierarchy, selective ? &next_seed : nullptr);
     for (int level = 1; level < rOptions.mLevels; ++level) {
         const std::vector<char> current = std::move(next_seed);
         RefineResult next = refine_once(
-            acc.mMesh, selective ? &current : nullptr, rOptions.mClosure, rOptions.mRecordLevels,
+            acc.mMesh, selective ? &current : nullptr, effective_closure, rOptions.mRecordLevels,
             rOptions.mRecordHierarchy, selective ? &next_seed : nullptr);
         refine_compose_maps(acc, next);     // reads next's maps first
         acc.mMesh = std::move(next.mMesh);  // sequenced after
@@ -326457,7 +326952,8 @@ std::vector<SubdEdgeInfo> subd_build_edges(const std::vector<std::vector<std::in
         }
     }
 
-    // Sort edges deterministically by (mLo, mHi) so new edge-point ids are independent of hash order.
+    // Sort edges deterministically by (mLo, mHi) so new edge-point ids are independent of hash
+    // order.
     std::sort(edges.begin(), edges.end(), [](const SubdEdgeInfo& x, const SubdEdgeInfo& y) {
         return x.mLo != y.mLo ? x.mLo < y.mLo : x.mHi < y.mHi;
     });
@@ -326468,8 +326964,7 @@ std::vector<SubdEdgeInfo> subd_build_edges(const std::vector<std::vector<std::in
         const bool is_bnd = edges[i].mFaces.size() == 1;
         const bool is_nm = edges[i].mFaces.size() >= 3;
         edges[i].mIsBoundary = is_bnd;
-        edges[i].mIsCrease =
-            rCreases.count(key) > 0 || is_nm || (PreserveBoundary && is_bnd);
+        edges[i].mIsCrease = rCreases.count(key) > 0 || is_nm || (PreserveBoundary && is_bnd);
         if (is_bnd)
             ++rNumBoundary;
         if (edges[i].mIsCrease)
@@ -326486,8 +326981,8 @@ void subd_step_loop(std::vector<double>& rPts, std::vector<std::vector<std::int6
                     std::int64_t& rNumCrease, std::int64_t& rNumBoundary) {
     const std::size_t n_old = rPts.size() / 3;
     std::unordered_map<std::uint64_t, std::size_t> edge_map;
-    std::vector<SubdEdgeInfo> edges = subd_build_edges(rFaces, rCreases, PreserveBoundary, edge_map,
-                                                       rNumCrease, rNumBoundary);
+    std::vector<SubdEdgeInfo> edges =
+        subd_build_edges(rFaces, rCreases, PreserveBoundary, edge_map, rNumCrease, rNumBoundary);
     const std::size_t n_edges = edges.size();
     const std::size_t n_new = n_old + n_edges;
 
@@ -326520,9 +327015,8 @@ void subd_step_loop(std::vector<double>& rPts, std::vector<std::vector<std::int6
                 const std::size_t a = static_cast<std::size_t>(cadj[0]);
                 const std::size_t b = static_cast<std::size_t>(cadj[1]);
                 for (std::size_t c = 0; c < width; ++c)
-                    dst[v * width + c] =
-                        0.75 * rSrc[v * width + c] +
-                        0.125 * (rSrc[a * width + c] + rSrc[b * width + c]);
+                    dst[v * width + c] = 0.75 * rSrc[v * width + c] +
+                                         0.125 * (rSrc[a * width + c] + rSrc[b * width + c]);
             } else {
                 const auto& nb = adj[v];
                 const std::size_t k = nb.size();
@@ -326530,7 +327024,8 @@ void subd_step_loop(std::vector<double>& rPts, std::vector<std::vector<std::int6
                     for (std::size_t c = 0; c < width; ++c)
                         dst[v * width + c] = rSrc[v * width + c];
                 } else {
-                    const double cn = 0.375 + 0.25 * std::cos(2.0 * kSubdPi / static_cast<double>(k));
+                    const double cn =
+                        0.375 + 0.25 * std::cos(2.0 * kSubdPi / static_cast<double>(k));
                     const double beta = (0.625 - cn * cn) / static_cast<double>(k);
                     const double self_w = 1.0 - static_cast<double>(k) * beta;
                     for (std::size_t c = 0; c < width; ++c) {
@@ -326555,9 +327050,8 @@ void subd_step_loop(std::vector<double>& rPts, std::vector<std::vector<std::int6
                 const std::size_t w0 = static_cast<std::size_t>(e.mOppVerts[0]);
                 const std::size_t w1 = static_cast<std::size_t>(e.mOppVerts[1]);
                 for (std::size_t c = 0; c < width; ++c)
-                    dst[out_v * width + c] =
-                        0.375 * (rSrc[u0 * width + c] + rSrc[u1 * width + c]) +
-                        0.125 * (rSrc[w0 * width + c] + rSrc[w1 * width + c]);
+                    dst[out_v * width + c] = 0.375 * (rSrc[u0 * width + c] + rSrc[u1 * width + c]) +
+                                             0.125 * (rSrc[w0 * width + c] + rSrc[w1 * width + c]);
             }
         }
         return dst;
@@ -326572,9 +327066,10 @@ void subd_step_loop(std::vector<double>& rPts, std::vector<std::vector<std::int6
             std::memcpy(dst.data(), of.mData.data(), n_old * of.mRowBytes);
         for (std::size_t ei = 0; ei < n_edges; ++ei) {
             if (of.mRowBytes > 0)
-                std::memcpy(dst.data() + (n_old + ei) * of.mRowBytes,
-                            of.mData.data() + static_cast<std::size_t>(edges[ei].mLo) * of.mRowBytes,
-                            of.mRowBytes);
+                std::memcpy(
+                    dst.data() + (n_old + ei) * of.mRowBytes,
+                    of.mData.data() + static_cast<std::size_t>(edges[ei].mLo) * of.mRowBytes,
+                    of.mRowBytes);
         }
         of.mData = std::move(dst);
     }
@@ -326598,9 +327093,12 @@ void subd_step_loop(std::vector<double>& rPts, std::vector<std::vector<std::int6
         const std::int64_t a = rFaces[f][0];
         const std::int64_t b = rFaces[f][1];
         const std::int64_t c = rFaces[f][2];
-        const std::int64_t eab = static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(a, b)));
-        const std::int64_t ebc = static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(b, c)));
-        const std::int64_t eca = static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(c, a)));
+        const std::int64_t eab =
+            static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(a, b)));
+        const std::int64_t ebc =
+            static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(b, c)));
+        const std::int64_t eca =
+            static_cast<std::int64_t>(n_old + edge_map.at(subd_edge_key(c, a)));
         const std::int64_t par = rParents[f];
         next_faces.push_back({a, eab, eca});
         next_faces.push_back({b, ebc, eab});
@@ -326623,8 +327121,8 @@ void subd_step_catmull_clark(std::vector<double>& rPts,
     const std::size_t n_old = rPts.size() / 3;
     const std::size_t n_faces = rFaces.size();
     std::unordered_map<std::uint64_t, std::size_t> edge_map;
-    std::vector<SubdEdgeInfo> edges = subd_build_edges(rFaces, rCreases, PreserveBoundary, edge_map,
-                                                       rNumCrease, rNumBoundary);
+    std::vector<SubdEdgeInfo> edges =
+        subd_build_edges(rFaces, rCreases, PreserveBoundary, edge_map, rNumCrease, rNumBoundary);
     const std::size_t n_edges = edges.size();
     const std::size_t face_base = n_old;
     const std::size_t edge_base = n_old + n_faces;
@@ -326676,9 +327174,8 @@ void subd_step_catmull_clark(std::vector<double>& rPts,
                 const std::size_t f0 = face_base + static_cast<std::size_t>(e.mFaces[0]);
                 const std::size_t f1 = face_base + static_cast<std::size_t>(e.mFaces[1]);
                 for (std::size_t c = 0; c < width; ++c)
-                    dst[out_v * width + c] =
-                        0.25 * (rSrc[u0 * width + c] + rSrc[u1 * width + c] +
-                                dst[f0 * width + c] + dst[f1 * width + c]);
+                    dst[out_v * width + c] = 0.25 * (rSrc[u0 * width + c] + rSrc[u1 * width + c] +
+                                                     dst[f0 * width + c] + dst[f1 * width + c]);
             }
         }
         // 3. Old vertices
@@ -326691,9 +327188,8 @@ void subd_step_catmull_clark(std::vector<double>& rPts,
                 const std::size_t a = static_cast<std::size_t>(cadj[0]);
                 const std::size_t b = static_cast<std::size_t>(cadj[1]);
                 for (std::size_t c = 0; c < width; ++c)
-                    dst[v * width + c] =
-                        0.75 * rSrc[v * width + c] +
-                        0.125 * (rSrc[a * width + c] + rSrc[b * width + c]);
+                    dst[v * width + c] = 0.75 * rSrc[v * width + c] +
+                                         0.125 * (rSrc[a * width + c] + rSrc[b * width + c]);
             } else {
                 const std::size_t nf = v_faces[v].size();
                 const std::size_t ne = adj[v].size();
@@ -326712,7 +327208,8 @@ void subd_step_catmull_clark(std::vector<double>& rPts,
                             r_avg += 0.5 * (rSrc[v * width + c] +
                                             rSrc[static_cast<std::size_t>(u) * width + c]);
                         r_avg /= n;
-                        dst[v * width + c] = (f_avg + 2.0 * r_avg + (n - 3.0) * rSrc[v * width + c]) / n;
+                        dst[v * width + c] =
+                            (f_avg + 2.0 * r_avg + (n - 3.0) * rSrc[v * width + c]) / n;
                     }
                 }
             }
@@ -326735,9 +327232,10 @@ void subd_step_catmull_clark(std::vector<double>& rPts,
         }
         for (std::size_t ei = 0; ei < n_edges; ++ei) {
             if (of.mRowBytes > 0)
-                std::memcpy(dst.data() + (edge_base + ei) * of.mRowBytes,
-                            of.mData.data() + static_cast<std::size_t>(edges[ei].mLo) * of.mRowBytes,
-                            of.mRowBytes);
+                std::memcpy(
+                    dst.data() + (edge_base + ei) * of.mRowBytes,
+                    of.mData.data() + static_cast<std::size_t>(edges[ei].mLo) * of.mRowBytes,
+                    of.mRowBytes);
         }
         of.mData = std::move(dst);
     }
@@ -326818,9 +327316,9 @@ SubdivideSurfaceResult subdivide_surface(const Mesh& rMesh,
         const std::int64_t s1 = rings.mStart[f + 1];
         const std::size_t m = static_cast<std::size_t>(s1 - s0);
         if (rOptions.mScheme == SubdivisionScheme::Loop && m != 3)
-            throw std::invalid_argument(
-                std::string(kSubdPrefix) +
-                "Loop subdivision requires triangles only (use 'catmull_clark' or 'simplexify' first)");
+            throw std::invalid_argument(std::string(kSubdPrefix) +
+                                        "Loop subdivision requires triangles only (use "
+                                        "'catmull_clark' or 'simplexify' first)");
         faces[f].assign(rings.mNodes.begin() + s0, rings.mNodes.begin() + s1);
         parents[f] = rings.mCell[f];
     }
@@ -326851,8 +327349,8 @@ SubdivideSurfaceResult subdivide_surface(const Mesh& rMesh,
                 face_normals[3 * f + 2] = nz / len;
             }
         }
-        const std::vector<detail::CreaseEdge> ce = detail::crease_edges(
-            rings.mStart, rings.mNodes, face_normals, rOptions.mCreaseAngle);
+        const std::vector<detail::CreaseEdge> ce =
+            detail::crease_edges(rings.mStart, rings.mNodes, face_normals, rOptions.mCreaseAngle);
         for (const auto& e : ce) {
             if (e.IsCrease())
                 creases.insert(subd_edge_key(e.mLo, e.mHi));
@@ -332875,6 +333373,207 @@ UndoGreenResult undo_green(const Mesh& rFine) {
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/operations/undo_green.cpp =====
+// ===== begin src/cpp/src/operations/units.cpp =====
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
+
+// Project includes
+
+namespace meshioplusplus {
+
+namespace {
+
+constexpr const char* kUnitsPrefix = "meshio++: convert_units: ";
+
+struct UnitSystemDef {
+    const char* mpName;
+    double mLength;  // metres per system length unit
+    double mMass;    // kg per system mass unit
+    double mTime;    // seconds per system time unit
+};
+
+const UnitSystemDef* units_find_system(const std::string& rName) {
+    static const UnitSystemDef kSystems[] = {
+        {"SI", 1.0, 1.0, 1.0},      {"si", 1.0, 1.0, 1.0},         {"m-kg-s", 1.0, 1.0, 1.0},
+        {"mm-t-s", 1e-3, 1e3, 1.0}, {"mm-kg-ms", 1e-3, 1.0, 1e-3}, {"cm-g-s", 1e-2, 1e-3, 1.0},
+        {"cgs", 1e-2, 1e-3, 1.0},   {"mm-g-ms", 1e-3, 1e-3, 1e-3},
+    };
+    for (const auto& s : kSystems) {
+        if (rName == s.mpName)
+            return &s;
+    }
+    return nullptr;
+}
+
+double units_target_scale(const UnitSystemDef& rSys, const FieldUnit& rUnit) {
+    return std::pow(rSys.mLength, rUnit.mExponents[0]) * std::pow(rSys.mMass, rUnit.mExponents[1]) *
+           std::pow(rSys.mTime, rUnit.mExponents[2]);
+}
+
+NDArray units_scale_array(const NDArray& rArr, double Factor) {
+    NDArray out = detail::data_owned_copy(rArr);
+    if (Factor == 1.0)
+        return out;
+    if (out.Dtype() == DType::Float64) {
+        auto* p = out.As<double>();
+        for (std::size_t i = 0; i < out.Size(); ++i)
+            p[i] *= Factor;
+    } else if (out.Dtype() == DType::Float32) {
+        auto* p = out.As<float>();
+        for (std::size_t i = 0; i < out.Size(); ++i)
+            p[i] = static_cast<float>(static_cast<double>(p[i]) * Factor);
+    }
+    return out;
+}
+
+}  // namespace
+
+FieldUnit field_unit_from_name(const std::string& rName) {
+    // Exponents: {m, kg, s, K, A, mol, cd}
+    static const std::pair<const char*, FieldUnit> kTable[] = {
+        {"1", {1.0, {0, 0, 0, 0, 0, 0, 0}}},
+        {"dimensionless", {1.0, {0, 0, 0, 0, 0, 0, 0}}},
+        {"m", {1.0, {1, 0, 0, 0, 0, 0, 0}}},
+        {"mm", {1e-3, {1, 0, 0, 0, 0, 0, 0}}},
+        {"cm", {1e-2, {1, 0, 0, 0, 0, 0, 0}}},
+        {"km", {1e3, {1, 0, 0, 0, 0, 0, 0}}},
+        {"in", {0.0254, {1, 0, 0, 0, 0, 0, 0}}},
+        {"ft", {0.3048, {1, 0, 0, 0, 0, 0, 0}}},
+        {"kg", {1.0, {0, 1, 0, 0, 0, 0, 0}}},
+        {"g", {1e-3, {0, 1, 0, 0, 0, 0, 0}}},
+        {"t", {1e3, {0, 1, 0, 0, 0, 0, 0}}},
+        {"s", {1.0, {0, 0, 1, 0, 0, 0, 0}}},
+        {"ms", {1e-3, {0, 0, 1, 0, 0, 0, 0}}},
+        {"K", {1.0, {0, 0, 0, 1, 0, 0, 0}}},
+        {"A", {1.0, {0, 0, 0, 0, 1, 0, 0}}},
+        {"Pa", {1.0, {-1, 1, -2, 0, 0, 0, 0}}},
+        {"kPa", {1e3, {-1, 1, -2, 0, 0, 0, 0}}},
+        {"MPa", {1e6, {-1, 1, -2, 0, 0, 0, 0}}},
+        {"GPa", {1e9, {-1, 1, -2, 0, 0, 0, 0}}},
+        {"bar", {1e5, {-1, 1, -2, 0, 0, 0, 0}}},
+        {"psi", {6894.757293168361, {-1, 1, -2, 0, 0, 0, 0}}},
+        {"N", {1.0, {1, 1, -2, 0, 0, 0, 0}}},
+        {"kN", {1e3, {1, 1, -2, 0, 0, 0, 0}}},
+        {"m/s", {1.0, {1, 0, -1, 0, 0, 0, 0}}},
+        {"mm/s", {1e-3, {1, 0, -1, 0, 0, 0, 0}}},
+        {"m/s^2", {1.0, {1, 0, -2, 0, 0, 0, 0}}},
+        {"mm/s^2", {1e-3, {1, 0, -2, 0, 0, 0, 0}}},
+        {"kg/m^3", {1.0, {-3, 1, 0, 0, 0, 0, 0}}},
+        {"t/mm^3", {1e12, {-3, 1, 0, 0, 0, 0, 0}}},
+        {"J", {1.0, {2, 1, -2, 0, 0, 0, 0}}},
+        {"W", {1.0, {2, 1, -3, 0, 0, 0, 0}}},
+    };
+    for (const auto& [name, unit] : kTable) {
+        if (rName == name)
+            return unit;
+    }
+    throw std::invalid_argument(std::string(kUnitsPrefix) + "unknown unit name '" + rName + "'");
+}
+
+void set_field_unit(Mesh& rMesh, const std::string& rArrayName, const FieldUnit& rUnit) {
+    if (!std::isfinite(rUnit.mScale) || rUnit.mScale <= 0.0)
+        throw std::invalid_argument(std::string(kUnitsPrefix) +
+                                    "unit scale must be positive and finite");
+    NDArray arr = NDArray::Uninit(DType::Float64, {std::size_t{8}});
+    auto* p = arr.As<double>();
+    p[0] = rUnit.mScale;
+    for (std::size_t k = 0; k < 7; ++k)
+        p[k + 1] = rUnit.mExponents[k];
+    rMesh.AddFieldData(std::string(kFieldUnitPrefix) + rArrayName, std::move(arr));
+}
+
+bool get_field_unit(const Mesh& rMesh, const std::string& rArrayName, FieldUnit& rOut) {
+    const std::string key = std::string(kFieldUnitPrefix) + rArrayName;
+    if (!rMesh.HasFieldData(key))
+        return false;
+    const NDArray& arr = rMesh.FieldData(key);
+    if (arr.Size() != 8 || arr.Dtype() != DType::Float64)
+        return false;
+    const double* p = arr.As<double>();
+    if (!std::isfinite(p[0]) || p[0] <= 0.0)
+        return false;
+    rOut.mScale = p[0];
+    for (std::size_t k = 0; k < 7; ++k)
+        rOut.mExponents[k] = p[k + 1];
+    return true;
+}
+
+ConvertUnitsResult convert_units(const Mesh& rMesh, const ConvertUnitsOptions& rOptions) {
+    const UnitSystemDef* p_sys = units_find_system(rOptions.mSystem);
+    if (!p_sys)
+        throw std::invalid_argument(
+            std::string(kUnitsPrefix) + "unknown unit system '" + rOptions.mSystem +
+            "' (expected 'SI', 'mm-t-s', 'mm-kg-ms', 'cm-g-s', or 'mm-g-ms')");
+
+    ConvertUnitsResult res;
+    Mesh out = detail::clone_mesh(rMesh);
+
+    // 1. Scale coordinates if meshio:length_unit is declared.
+    const double src_len = detail::mesh_length_unit(rMesh);
+    if (src_len > 0.0) {
+        const double factor = src_len / p_sys->mLength;
+        out.AssignPoints(units_scale_array(rMesh.Points(), factor));
+        detail::set_mesh_length_unit(out, p_sys->mLength);
+    }
+
+    // 2. Scale point_data arrays with declared units.
+    for (const std::string& name : rMesh.PointDataNames()) {
+        FieldUnit u;
+        if (!get_field_unit(rMesh, name, u)) {
+            if (rOptions.mStrict)
+                throw std::invalid_argument(std::string(kUnitsPrefix) + "point_data array '" +
+                                            name + "' has no declared unit (set '" +
+                                            kFieldUnitPrefix + name + "' or pass strict=False)");
+            res.mWarnings.push_back("point_data '" + name +
+                                    "' has no declared unit; left unchanged");
+            continue;
+        }
+        const double tgt_scale = units_target_scale(*p_sys, u);
+        const double factor = u.mScale / tgt_scale;
+        out.AddPointData(name, units_scale_array(rMesh.PointData(name), factor));
+        FieldUnit next = u;
+        next.mScale = tgt_scale;
+        set_field_unit(out, name, next);
+        ++res.mNumArraysConverted;
+    }
+
+    // 3. Scale cell_data arrays with declared units.
+    for (const std::string& name : rMesh.CellDataNames()) {
+        FieldUnit u;
+        if (!get_field_unit(rMesh, name, u)) {
+            if (rOptions.mStrict)
+                throw std::invalid_argument(std::string(kUnitsPrefix) + "cell_data array '" + name +
+                                            "' has no declared unit (set '" + kFieldUnitPrefix +
+                                            name + "' or pass strict=False)");
+            res.mWarnings.push_back("cell_data '" + name +
+                                    "' has no declared unit; left unchanged");
+            continue;
+        }
+        const double tgt_scale = units_target_scale(*p_sys, u);
+        const double factor = u.mScale / tgt_scale;
+        const std::size_t nb = rMesh.CellDataNumBlocks(name);
+        std::vector<NDArray> blocks;
+        blocks.reserve(nb);
+        for (std::size_t b = 0; b < nb; ++b)
+            blocks.push_back(units_scale_array(rMesh.CellData(name, b), factor));
+        out.AddCellData(name, std::move(blocks));
+        FieldUnit next = u;
+        next.mScale = tgt_scale;
+        set_field_unit(out, name, next);
+        ++res.mNumArraysConverted;
+    }
+
+    res.mMesh = std::move(out);
+    return res;
+}
+
+}  // namespace meshioplusplus
+// ===== end src/cpp/src/operations/units.cpp =====
 // ===== begin src/cpp/src/operations/untangle.cpp =====
 #include <algorithm>
 #include <array>
@@ -334499,6 +335198,7 @@ struct ProvidersState {
         MIO_GUARDED_BY(mMutex);
     std::vector<std::shared_ptr<const GraphPartitionerProvider>> mPartitionersRetained
         MIO_GUARDED_BY(mMutex);
+    ProviderSlot<BooleanProvider> mBoolean MIO_GUARDED_BY(mMutex);
     bool mProfileBuiltinDone MIO_GUARDED_BY(mMutex) = false;
     bool mExternalDone MIO_GUARDED_BY(mMutex) = false;
 };
@@ -334696,6 +335396,16 @@ std::vector<std::string> graph_partitioner_names() {
     return names;
 }
 
+void register_boolean_provider(BooleanProvider Provider) {
+    slot_register(&ProvidersState::mBoolean, std::move(Provider));
+}
+void unregister_boolean_provider() noexcept {
+    slot_unregister(&ProvidersState::mBoolean);
+}
+std::shared_ptr<const BooleanProvider> boolean_provider() noexcept {
+    return slot_get(&ProvidersState::mBoolean);
+}
+
 std::vector<std::string> tet_mesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
@@ -334767,8 +335477,9 @@ bool load_plugin(const std::string& rPath, std::string* pError) noexcept {
             detail::dynlib_symbol(p_lib, "meshioplusplus_register_plugin"));
         if (!p_abi || !p_register) {
             detail::dynlib_close(p_lib);
-            return fail("it exports no meshioplusplus_plugin_abi_version / "
-                        "meshioplusplus_register_plugin");
+            return fail(
+                "it exports no meshioplusplus_plugin_abi_version / "
+                "meshioplusplus_register_plugin");
         }
         const int abi = p_abi();
         if (abi != MESHIOPLUSPLUS_ABI_VERSION) {
@@ -336548,6 +337259,165 @@ void registry_write_ex(const std::string& rPath, const Mesh& rMesh, const std::s
 
 }  // namespace meshioplusplus
 // ===== end src/cpp/src/write_options.cpp =====
+// ===== begin src/cpp/providers/manifold/manifold_provider.cpp =====
+/**
+ * @file providers/manifold/manifold_provider.cpp
+ * @brief Optional Manifold surface boolean provider (Apache-2.0; roadmap 9.1.3).
+ * Built only when MESHIOPLUSPLUS_WITH_MANIFOLD=ON or as a plugin.
+ */
+
+#ifdef MESHIOPLUSPLUS_HAS_MANIFOLD
+
+#include <manifold/manifold.h>
+
+#include <array>
+#include <cstdint>
+#include <stdexcept>
+#include <vector>
+
+
+namespace meshioplusplus {
+namespace providers {
+
+BooleanProvider make_manifold_provider() {
+    BooleanProvider p;
+    p.mName = "manifold";
+    p.mVersion = "3.x";
+    p.mBoolean = [](const BooleanRequest& rReq) -> BooleanReply {
+        auto to_manifold = [](const std::vector<std::array<double, 3>>& rPts,
+                              const std::vector<std::array<std::int64_t, 3>>& rTris) {
+            manifold::MeshGL64 gl;
+            gl.numProp = 3;
+            gl.vertProperties.reserve(rPts.size() * 3);
+            for (const auto& pt : rPts) {
+                gl.vertProperties.push_back(pt[0]);
+                gl.vertProperties.push_back(pt[1]);
+                gl.vertProperties.push_back(pt[2]);
+            }
+            gl.triVerts.reserve(rTris.size() * 3);
+            for (const auto& t : rTris) {
+                gl.triVerts.push_back(static_cast<std::uint64_t>(t[0]));
+                gl.triVerts.push_back(static_cast<std::uint64_t>(t[1]));
+                gl.triVerts.push_back(static_cast<std::uint64_t>(t[2]));
+            }
+            return manifold::Manifold(gl);
+        };
+        const manifold::Manifold a = to_manifold(rReq.mPointsA, rReq.mTrianglesA);
+        const manifold::Manifold b = to_manifold(rReq.mPointsB, rReq.mTrianglesB);
+        const manifold::OpType op = rReq.mOp == 1   ? manifold::OpType::Subtract
+                                    : rReq.mOp == 2 ? manifold::OpType::Intersect
+                                                    : manifold::OpType::Add;
+        const manifold::Manifold res = a.Boolean(b, op);
+        const manifold::MeshGL64 out_gl = res.GetMeshGL64();
+        BooleanReply rep;
+        const std::size_t npts = out_gl.vertProperties.size() / out_gl.numProp;
+        rep.mPoints.resize(npts);
+        for (std::size_t i = 0; i < npts; ++i)
+            rep.mPoints[i] = {out_gl.vertProperties[i * out_gl.numProp + 0],
+                              out_gl.vertProperties[i * out_gl.numProp + 1],
+                              out_gl.vertProperties[i * out_gl.numProp + 2]};
+        const std::size_t ntris = out_gl.triVerts.size() / 3;
+        rep.mTriangles.resize(ntris);
+        for (std::size_t i = 0; i < ntris; ++i)
+            rep.mTriangles[i] = {static_cast<std::int64_t>(out_gl.triVerts[3 * i + 0]),
+                                 static_cast<std::int64_t>(out_gl.triVerts[3 * i + 1]),
+                                 static_cast<std::int64_t>(out_gl.triVerts[3 * i + 2])};
+        return rep;
+    };
+    return p;
+}
+
+}  // namespace providers
+}  // namespace meshioplusplus
+
+#ifdef MESHIOPLUSPLUS_MANIFOLD_PLUGIN
+extern "C" int meshioplusplus_plugin_abi_version(void) {
+    return MESHIOPLUSPLUS_ABI_VERSION;
+}
+extern "C" void meshioplusplus_register_plugin(void) {
+    meshioplusplus::register_boolean_provider(meshioplusplus::providers::make_manifold_provider());
+}
+#endif
+
+#endif  // MESHIOPLUSPLUS_HAS_MANIFOLD
+// ===== end src/cpp/providers/manifold/manifold_provider.cpp =====
+// ===== begin src/cpp/providers/metis/metis_provider.cpp =====
+/**
+ * @file providers/metis/metis_provider.cpp
+ * @brief Optional METIS graph partitioner provider (Apache-2.0 since METIS 5.1.1;
+ * roadmap 9.7.2). Built only when MESHIOPLUSPLUS_WITH_METIS=ON or as a plugin.
+ */
+
+#ifdef MESHIOPLUSPLUS_HAS_METIS
+
+#include <metis.h>
+
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+
+namespace meshioplusplus {
+namespace providers {
+
+GraphPartitionerProvider make_metis_provider() {
+    GraphPartitionerProvider p;
+    p.mName = "metis";
+    p.mVersion = std::to_string(METIS_VER_MAJOR) + "." + std::to_string(METIS_VER_MINOR) + "." +
+                 std::to_string(METIS_VER_SUBMINOR);
+    p.mPartition = [](const GraphPartitionerRequest& rReq) -> std::vector<std::int64_t> {
+        idx_t nvtxs = static_cast<idx_t>(rReq.mNumVertices);
+        idx_t ncon = 1;
+        idx_t nparts = static_cast<idx_t>(rReq.mNParts);
+        std::vector<idx_t> xadj(rReq.mNumVertices + 1);
+        for (std::size_t i = 0; i <= rReq.mNumVertices; ++i)
+            xadj[i] = static_cast<idx_t>(rReq.mpXadj[i]);
+        const std::size_t nedges = static_cast<std::size_t>(rReq.mpXadj[rReq.mNumVertices]);
+        std::vector<idx_t> adjncy(nedges);
+        for (std::size_t i = 0; i < nedges; ++i)
+            adjncy[i] = static_cast<idx_t>(rReq.mpAdjncy[i]);
+        std::vector<idx_t> vwgt;
+        idx_t* p_vwgt = nullptr;
+        if (rReq.mpWeights) {
+            vwgt.resize(rReq.mNumVertices);
+            for (std::size_t i = 0; i < rReq.mNumVertices; ++i)
+                vwgt[i] = static_cast<idx_t>(rReq.mpWeights[i]);
+            p_vwgt = vwgt.data();
+        }
+        idx_t options[METIS_NOPTIONS];
+        METIS_SetDefaultOptions(options);
+        options[METIS_OPTION_SEED] = static_cast<idx_t>(rReq.mSeed);
+        options[METIS_OPTION_UFACTOR] = static_cast<idx_t>(rReq.mImbalance * 1000.0);
+        idx_t objval = 0;
+        std::vector<idx_t> part(rReq.mNumVertices, 0);
+        const int rc =
+            METIS_PartGraphKway(&nvtxs, &ncon, xadj.data(), adjncy.data(), p_vwgt, nullptr, nullptr,
+                                &nparts, nullptr, nullptr, options, &objval, part.data());
+        if (rc != METIS_OK)
+            throw std::runtime_error("METIS_PartGraphKway failed with code " + std::to_string(rc));
+        std::vector<std::int64_t> out(rReq.mNumVertices);
+        for (std::size_t i = 0; i < rReq.mNumVertices; ++i)
+            out[i] = static_cast<std::int64_t>(part[i]);
+        return out;
+    };
+    return p;
+}
+
+}  // namespace providers
+}  // namespace meshioplusplus
+
+#ifdef MESHIOPLUSPLUS_METIS_PLUGIN
+extern "C" int meshioplusplus_plugin_abi_version(void) {
+    return MESHIOPLUSPLUS_ABI_VERSION;
+}
+extern "C" void meshioplusplus_register_plugin(void) {
+    meshioplusplus::add_graph_partitioner(meshioplusplus::providers::make_metis_provider());
+}
+#endif
+
+#endif  // MESHIOPLUSPLUS_HAS_METIS
+// ===== end src/cpp/providers/metis/metis_provider.cpp =====
 // ===== begin src/cpp/providers/mmg/mmg_provider.cpp =====
 #ifdef MESHIOPLUSPLUS_HAS_MMG
 
@@ -344272,4 +345142,87 @@ ProfileSolidProvider make_occt_profile_provider() {
 
 #endif  // MESHIOPLUSPLUS_HAS_OCCT
 // ===== end src/cpp/providers/occt/profile_solid_occt.cpp =====
+// ===== begin src/cpp/providers/scotch/scotch_provider.cpp =====
+/**
+ * @file providers/scotch/scotch_provider.cpp
+ * @brief Optional Scotch graph partitioner provider (CeCILL-C; roadmap 9.7.2).
+ * Built only when MESHIOPLUSPLUS_WITH_SCOTCH=ON or as a plugin.
+ */
+
+#ifdef MESHIOPLUSPLUS_HAS_SCOTCH
+
+#include <cstdio>
+#include <scotch.h>
+
+#include <cstdint>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+
+namespace meshioplusplus {
+namespace providers {
+
+GraphPartitionerProvider make_scotch_provider() {
+    GraphPartitionerProvider p;
+    p.mName = "scotch";
+    p.mVersion = std::to_string(SCOTCH_VERSION) + "." + std::to_string(SCOTCH_RELEASE) + "." +
+                 std::to_string(SCOTCH_PATCHLEVEL);
+    p.mPartition = [](const GraphPartitionerRequest& rReq) -> std::vector<std::int64_t> {
+        SCOTCH_randomSeed(static_cast<SCOTCH_Num>(rReq.mSeed));
+        const SCOTCH_Num nvtxs = static_cast<SCOTCH_Num>(rReq.mNumVertices);
+        std::vector<SCOTCH_Num> verttab(rReq.mNumVertices + 1);
+        for (std::size_t i = 0; i <= rReq.mNumVertices; ++i)
+            verttab[i] = static_cast<SCOTCH_Num>(rReq.mpXadj[i]);
+        const std::size_t nedges = static_cast<std::size_t>(rReq.mpXadj[rReq.mNumVertices]);
+        std::vector<SCOTCH_Num> edgetab(nedges);
+        for (std::size_t i = 0; i < nedges; ++i)
+            edgetab[i] = static_cast<SCOTCH_Num>(rReq.mpAdjncy[i]);
+        std::vector<SCOTCH_Num> velotab;
+        SCOTCH_Num* p_velotab = nullptr;
+        if (rReq.mpWeights) {
+            velotab.resize(rReq.mNumVertices);
+            for (std::size_t i = 0; i < rReq.mNumVertices; ++i)
+                velotab[i] = static_cast<SCOTCH_Num>(rReq.mpWeights[i]);
+            p_velotab = velotab.data();
+        }
+        SCOTCH_Graph graph;
+        if (SCOTCH_graphInit(&graph) != 0)
+            throw std::runtime_error("SCOTCH_graphInit failed");
+        if (SCOTCH_graphBuild(&graph, 0, nvtxs, verttab.data(), nullptr, p_velotab, nullptr,
+                              static_cast<SCOTCH_Num>(nedges), edgetab.data(), nullptr) != 0) {
+            SCOTCH_graphExit(&graph);
+            throw std::runtime_error("SCOTCH_graphBuild failed");
+        }
+        SCOTCH_Strat strat;
+        SCOTCH_stratInit(&strat);
+        std::vector<SCOTCH_Num> part(rReq.mNumVertices, 0);
+        const int rc =
+            SCOTCH_graphPart(&graph, static_cast<SCOTCH_Num>(rReq.mNParts), &strat, part.data());
+        SCOTCH_stratExit(&strat);
+        SCOTCH_graphExit(&graph);
+        if (rc != 0)
+            throw std::runtime_error("SCOTCH_graphPart failed with code " + std::to_string(rc));
+        std::vector<std::int64_t> out(rReq.mNumVertices);
+        for (std::size_t i = 0; i < rReq.mNumVertices; ++i)
+            out[i] = static_cast<std::int64_t>(part[i]);
+        return out;
+    };
+    return p;
+}
+
+}  // namespace providers
+}  // namespace meshioplusplus
+
+#ifdef MESHIOPLUSPLUS_SCOTCH_PLUGIN
+extern "C" int meshioplusplus_plugin_abi_version(void) {
+    return MESHIOPLUSPLUS_ABI_VERSION;
+}
+extern "C" void meshioplusplus_register_plugin(void) {
+    meshioplusplus::add_graph_partitioner(meshioplusplus::providers::make_scotch_provider());
+}
+#endif
+
+#endif  // MESHIOPLUSPLUS_HAS_SCOTCH
+// ===== end src/cpp/providers/scotch/scotch_provider.cpp =====
 #endif  // MESHIOPLUSPLUS_IMPLEMENTATION

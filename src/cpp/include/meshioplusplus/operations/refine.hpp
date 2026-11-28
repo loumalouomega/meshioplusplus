@@ -306,6 +306,10 @@ enum class RefineClosure {
     /// meaning of "propagate", and the only mode whose cost is bounded by the
     /// selection rather than by the mesh.
     Balanced = 2,
+    /// Mixed-type green closure (roadmap 9.6.2): closes a quadrilateral with
+    /// 1, 2-adjacent, or 3 split edges locally into conforming triangles (appended
+    /// as a `"triangle"` block) without propagating refinement across the mesh.
+    MixedGreen = 3,
 };
 
 /// The comparison in `RefineOptions`' `cell_data` predicate selector.

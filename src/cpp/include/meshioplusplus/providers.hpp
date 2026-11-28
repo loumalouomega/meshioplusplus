@@ -205,14 +205,15 @@ MESHIOPLUSPLUS_API std::vector<std::string> quad_remesher_names();
 
 /// Input to a graph partitioner provider (roadmap 9.7.1): a symmetric CSR dual graph.
 struct GraphPartitionerRequest {
-    const std::int64_t* mpXadj = nullptr;     ///< Row offsets, length `mNumVertices + 1`.
-    const std::int64_t* mpAdjncy = nullptr;   ///< Neighbour vertex ids.
-    std::size_t mNumVertices = 0;             ///< Number of graph vertices (cells).
-    int mNParts = 2;                          ///< Number of parts (>= 1).
-    double mImbalance = 0.03;                 ///< Allowed imbalance fraction in (0, 1).
-    int mMode = 1;                            ///< Quality mode: 0 = Fast, 1 = Eco, 2 = Strong.
-    int mSeed = 0;                            ///< Deterministic seed.
-    const std::int64_t* mpWeights = nullptr;  ///< Optional positive vertex weights (length `mNumVertices`).
+    const std::int64_t* mpXadj = nullptr;    ///< Row offsets, length `mNumVertices + 1`.
+    const std::int64_t* mpAdjncy = nullptr;  ///< Neighbour vertex ids.
+    std::size_t mNumVertices = 0;            ///< Number of graph vertices (cells).
+    int mNParts = 2;                         ///< Number of parts (>= 1).
+    double mImbalance = 0.03;                ///< Allowed imbalance fraction in (0, 1).
+    int mMode = 1;                           ///< Quality mode: 0 = Fast, 1 = Eco, 2 = Strong.
+    int mSeed = 0;                           ///< Deterministic seed.
+    const std::int64_t* mpWeights =
+        nullptr;  ///< Optional positive vertex weights (length `mNumVertices`).
 };
 
 /// A graph partitioner provider (KaHIP, METIS, Scotch, or a plugin; roadmap 9.7.1).
@@ -232,6 +233,35 @@ MESHIOPLUSPLUS_API std::shared_ptr<const GraphPartitionerProvider> graph_partiti
     const std::string& rName) noexcept;
 /// The names of every registered graph partitioner, sorted.
 MESHIOPLUSPLUS_API std::vector<std::string> graph_partitioner_names();
+
+/// Input to a surface boolean provider (roadmap 9.1.3).
+struct BooleanRequest {
+    std::int32_t mOp = 0;  ///< 0 = Union, 1 = Difference, 2 = Intersection.
+    std::vector<std::array<double, 3>> mPointsA;
+    std::vector<std::array<std::int64_t, 3>> mTrianglesA;
+    std::vector<std::array<double, 3>> mPointsB;
+    std::vector<std::array<std::int64_t, 3>> mTrianglesB;
+};
+
+/// Output from a surface boolean provider.
+struct BooleanReply {
+    std::vector<std::array<double, 3>> mPoints;
+    std::vector<std::array<std::int64_t, 3>> mTriangles;
+};
+
+/// A surface boolean provider (e.g. Manifold, Apache-2.0; roadmap 9.1.3).
+struct BooleanProvider {
+    std::string mName;
+    std::string mVersion;
+    std::function<BooleanReply(const BooleanRequest&)> mBoolean;
+};
+
+/// Registers `Provider` as the surface boolean backend, replacing any earlier one.
+MESHIOPLUSPLUS_API void register_boolean_provider(BooleanProvider Provider);
+/// Removes the registered surface boolean backend.
+MESHIOPLUSPLUS_API void unregister_boolean_provider() noexcept;
+/// The registered surface boolean backend, or null.
+MESHIOPLUSPLUS_API std::shared_ptr<const BooleanProvider> boolean_provider() noexcept;
 
 /// Registers `Provider` as the remesher, replacing any earlier one.
 MESHIOPLUSPLUS_API void register_remesher(RemesherProvider Provider);
@@ -271,7 +301,8 @@ MESHIOPLUSPLUS_API std::shared_ptr<const CadKernelProvider> cad_kernel() noexcep
 
 /// Loads one plugin. Returns whether it registered; on failure it returns false
 /// and, when @p pError is given, says why. Never throws.
-MESHIOPLUSPLUS_API bool load_plugin(const std::string& rPath, std::string* pError = nullptr) noexcept;
+MESHIOPLUSPLUS_API bool load_plugin(const std::string& rPath,
+                                    std::string* pError = nullptr) noexcept;
 
 /// Loads every plugin named by @p rPaths (libraries, or directories searched for
 /// `meshioplusplus_plugin_*` libraries). Returns how many registered.

@@ -938,17 +938,9 @@ What the pass could not settle here, because only a scan shows it. Configuration
 
 *Admission: an operation a mesh workflow reaches for that the core's own kernels nearly give, found by reading each operation's page for what it refuses and by comparing the surface with what users of comparable libraries call. Not the algorithms the [non-goals](#non-goals-and-decisions-taken) leave to backends. Each lands on every surface by [checklist O](#landing-checklists); the anchors below are the kernels to build on, located in the code in November 2026.*
 
-### 9.1 Surface booleans through a backend
+### 9.1 Surface booleans through a backend: remaining
 
-Reopened from the non-goals, which record why a native `mesh_boolean` was not queued: the [spike](./spikes.md#surface-booleans-formerly-roadmap-7-8) was exact in topology and failed on rounding its output and on coplanar contact, the two things a dedicated library spends its complexity on. The same non-goal says the answer to such an algorithm is an optional backend, and that route was not measured. **M, measure first**
-
-- **State today.** The prototype: `mesh_boolean_spike(A, B, BooleanOp)` returning `BooleanResult {mOk, mFailure, mMesh, mReport}` with `boolean:source` cell data (`src/cpp/src/detail/mesh_boolean.hpp` line 104). The harness `src/cpp/benchmark/boolean_spike.cpp` (target `meshioplusplus_boolean_spike`) calls it directly at line 234 and prints one JSON line per run (`ok`, `watertight`, `self_intersection_free`, `rounding_inverted`, the volume identity errors, times). `tools/boolean_corpus.py` has `synthetic`, `fetch`, `run`, `summary`; the weekly `boolean_corpus` workflow runs it. Provider kinds are structs of `std::function`s in `include/meshioplusplus/providers.hpp` with named registration (`add_tet_mesher`, `tet_mesher(name)`, lines 145–166); add-on wheels follow `packages/python/meshioplusplus-mmg` and `cmake/addon_*.cmake`; plugins `cmake/plugins.cmake`.
-- **Steps.**
-  - **9.1.1 A backend switch in the harness.** `--backend spike|manifold` in `boolean_spike.cpp`, the Manifold path compiled only when `MESHIOPLUSPLUS_SPIKE_MANIFOLD` finds the library; no public API yet.
-  - **9.1.2 Measure.** [Manifold](https://github.com/elalish/manifold) (Apache-2.0†; verify its dependencies' licences, Clipper2's Boost licence among them†; guaranteed-manifold output from manifold input, coplanar faces by symbolic perturbation, its own WebAssembly build). Run the synthetic corpus (`--synthetic 78 200`) and the Thingi10K pairs on the spike's own criteria: every result watertight (`surface_watertight_check`), free of self-intersections (`find_intersections` on the output), the two volume identities, and the coplanar classes that the spike could not handle (boxes sharing a face, identical spheres, a vertex on a face). Also what it does with inputs that are not manifold (it refuses: count how many Thingi10K models that excludes, and whether `repair` first changes the count). Record the table in the spike's page beside its own.
-  - **9.1.3 If it passes: the operation.** A `BooleanProvider {mName, mVersion, mBoolean(const Mesh&, const Mesh&, BooleanOp) -> BooleanResult}` kind with `add_boolean_provider`, `boolean_provider(name)`, `boolean_provider_names()`; `mesh_boolean(a, b, op, options)` in `operations/mesh_boolean.hpp`, refusing by name with no provider; point and cell data carried through Manifold's per-triangle provenance (`boolean:source`, and a parent cell id per output triangle so `cell_data` maps); a `meshioplusplus-manifold` add-on wheel and plugin; the full WASM artifact links Manifold's own wasm build if its size is acceptable (measure). By checklist O, with a pipeline step.
-  - **9.1.4 What it unblocks.** CSG of the [primitives](./primitives.md#not-generated) (`box - cylinder`) and the scan cut by a fitted solid (the non-goal *Booleans of a scan with fitted solids*): remove both entries when it lands. OpenCASCADE's B-rep booleans stay the route for fitted solids that must remain analytic.
-- **Done when.** The corpus table is recorded; then either `meshioplusplus boolean a.stl b.stl --op union` works with the add-on installed, or the measured reason joins the spike's and the non-goal stands.
+`BooleanProvider` (`providers.hpp`), `mesh_boolean` (`operations/mesh_boolean.hpp`, Python `mesh_boolean`/`has_boolean_provider`, MCP `mesh_boolean`), and the optional Apache-2.0 Manifold provider (`src/cpp/providers/manifold/manifold_provider.cpp`, `MESHIOPLUSPLUS_WITH_MANIFOLD`) have landed. What remains is running the Thingi10K/synthetic corpus benchmark against a compiled Manifold build (`9.1.1`–`9.1.2`) and packaging the `meshioplusplus-manifold` add-on wheel/WASM build (`9.1.3`).
 
 *(9.2 smooth subdivision: `subdivide_surface` with Loop and Catmull–Clark schemes and Hoppe crease/boundary preservation has landed.)*
 
@@ -960,33 +952,15 @@ Reopened from the non-goals, which record why a native `mesh_boolean` was not qu
 
 *(9.5 high-order elevation and reduction beyond order 2 and full-Lagrange targets have landed in `convert_cells`.)*
 
-### 9.6 Mixed green refinement (remaining)
+*(9.6 mixed green refinement: single-mesh `undo_green(fine)`, `RefineOptions::mUndoGreenFirst` / `refine(..., undo_green_first=True)` (9.6.1), and local quad-to-triangle conforming `RefineClosure::MixedGreen` / `closure="mixed_green"` (9.6.2) have landed; 3-D hex-to-pyramid/tet mixed-green templates remain optional on demand.)*
 
-*(9.6.1 single-mesh `undo_green(fine)` and `RefineOptions::mUndoGreenFirst` / `refine(..., undo_green_first=True)` have landed.)*
-
-- **9.6.2 Mixed-type green.** Decide the map shape first: `CellMapKind::Global` (one global child-range per input cell) exists internally; expose it for `refine` when `mClosure = MixedGreen`, with every binding's map accessor returning the global form. Then the templates: quad with one or three marked edges into triangles, hexahedron into pyramids and tetrahedra around a refined face. **M–L, design pass first**
-
-### 9.7 Partitioning (remaining)
-
-*(9.7.1 `GraphPartitionerProvider` registry and `PartitionOptions::mMethodName` and 9.7.3 `mConnectedParts` post-pass have landed.)*
-
-- **9.7.2 METIS and Scotch providers.** METIS (`METIS_PartGraphKway`, Apache-2.0 since 5.1.1†) and Scotch (`SCOTCH_graphPart`, CeCILL-C†, LGPL-compatible) as optional compiled-in providers and plugins, in the pattern of the Netgen provider (`src/cpp/providers/netgen/`), each with a CI job like `kahip` (`ci.yml` line 591). Seeds fixed, so output is reproducible per library version; state that it is not across versions.
+*(9.7 partitioning: `GraphPartitionerProvider` registry and `PartitionOptions::mMethodName` (9.7.1), optional METIS and Scotch providers (`src/cpp/providers/{metis,scotch}/`, `MESHIOPLUSPLUS_WITH_METIS`/`_SCOTCH`, 9.7.2), and method-independent `mConnectedParts` post-pass (9.7.3) have landed.)*
 
 *(9.8 IGA extraction operators, volume closest point, B-rep face operations, and joined-patch knot removal have landed; see [IGA](./iga.md).)*
 
 *(9.9 point-cloud conditioning: `filter_points(..., voxel_mode="average")` and core `subsample_points` have landed on every surface; see [point-cloud conditioning](./filter_points.md).)*
 
-### 9.10 Units and coordinate systems
-
-#### 9.10.1 Units of fields
-
-- **State today.** Length only: `field_data["meshio:length_unit"]` with `mesh_length_unit` and `rescale_mesh_length_unit` (`include/meshioplusplus/detail/length_unit.hpp`) and Python's `_units.py` (`length_unit`, `set_length_unit`, `unit_name`); used by CGNS (`DimensionalUnits_t` on the base, `cgns.cpp` lines 647–690), DXF, UNV, MED, Radioss, STEP. MED's per-field units are kept in a side channel (`MedInfo::mFieldUnits`, `formats/med.hpp` line 162; `field_data["med:field_units"]` in Python). A field's unit travels nowhere else.
-- **Decisions to take first.** (1) Representation: recommended, the seven SI exponents plus a scale: `field_data["meshio:unit:<array>"] = [scale, m, kg, s, K, A, mol, cd]` (8 doubles), so a conversion is arithmetic with no unit database in the core; names (`"MPa"`) are parsed and printed in Python and the CLIs from a small table. (2) Which formats carry them: MED (per field), CGNS (`DimensionalUnits_t`/`DimensionalExponents_t` per array), Exodus (none: skip), EnSight (`# units` lines in the case file), UNV (the 164 dataset's unit system: derive per data type), Selafin (variable-name units, 2.4.3.4), Nastran and Abaqus decks (none: a user-declared system). (3) `convert_units(mesh, system)`: scales points, the length unit and every array with a known dimension to a target system (`SI`, `mm-t-s`, `mm-kg-ms`, …), refusing arrays with no declared unit by name unless told to leave them.
-- **Done when.** A MED file in millimetres and megapascals converts to SI and back to the same bytes. **M, design pass first**
-
-#### 9.10.2 Georeferencing
-
-Now actionable: 2.4.3 (UGRID NetCDF, ADCIRC, Selafin) and 2.4.6.1 (LAS, whose VLRs carry the CRS verbatim in `las:vlrs`) have landed, so georeferenced meshes are read. `field_data["meshio:crs"]` as a WKT2 or `EPSG:<code>` string (8.2's encoding), set by the UGRID, LAS and ADCIRC readers and written back; reprojection as a mode of [`convert_coordinates`](./coordinates.md) (`CoordinateOptions`, `operations/coordinates.hpp` line 119) through PROJ, an optional dependency in the TecIO pattern (2.4.6.2) with a Python twin through `pyproj`; without it the operation refuses by name. glTF and 3D Tiles get the ECEF convention only on request. **S–M**
+*(9.10 units and coordinate systems: per-field physical units `field_data["meshio:unit:<array>"]` (`[scale_to_SI, m, kg, s, K, A, mol, cd]`) with `convert_units` / `set_field_unit` / `field_unit` across `SI`, `mm-t-s`, `mm-kg-ms`, `cm-g-s`, and `mm-g-ms` (9.10.1), and georeferencing `field_data["meshio:crs"]` with `mesh_crs` / `set_mesh_crs` and `convert_coordinates(..., system="crs", target_crs=...)` (9.10.2) have landed.)*
 
 *(9.11 FVM face-pair quality, 9.12 bilateral/guided surface denoising, 9.13 MCF curve-skeleton extraction, 9.14 shortest geodesic paths and surface Voronoi, and 9.15 parametric FFD and RBF morphing have landed.)*
 

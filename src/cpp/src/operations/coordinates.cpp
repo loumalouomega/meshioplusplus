@@ -31,6 +31,8 @@
 
 // Project includes
 #include "meshioplusplus/operations/coordinates.hpp"
+#include "meshioplusplus/detail/crs.hpp"
+#include "meshioplusplus/exceptions.hpp"
 #include "meshioplusplus/detail/data_ops.hpp"
 #include "meshioplusplus/detail/node_adjacency.hpp"
 #include "meshioplusplus/detail/value_io.hpp"
@@ -155,11 +157,35 @@ CoordinateSystem coordinate_system_from_name(const std::string& rName) {
         return CoordinateSystem::Cylindrical;
     if (rName == "spherical")
         return CoordinateSystem::Spherical;
+    if (rName == "crs")
+        return CoordinateSystem::Crs;
     throw std::invalid_argument("convert_coordinates: unknown system '" + rName +
-                                "' (expected 'cylindrical' or 'spherical')");
+                                "' (expected 'cylindrical', 'spherical', or 'crs')");
 }
 
 CoordinateResult convert_coordinates(const Mesh& rMesh, const CoordinateOptions& rOptions) {
+    if (rOptions.mSystem == CoordinateSystem::Crs || !rOptions.mTargetCrs.empty()) {
+        if (rOptions.mTargetCrs.empty())
+            throw std::invalid_argument(
+                "convert_coordinates: target_crs must be non-empty for system='crs'");
+        const std::string src_crs = detail::mesh_crs(rMesh);
+        if (src_crs.empty())
+            throw std::invalid_argument(
+                "convert_coordinates: mesh has no 'meshio:crs' field_data entry");
+        CoordinateResult res;
+        res.mMesh = detail::clone_mesh(rMesh);
+        if (src_crs == rOptions.mTargetCrs)
+            return res;
+#ifdef MESHIOPLUSPLUS_HAS_PROJ
+        // Optional PROJ build path (roadmap 9.10.2)
+        throw Unsupported("convert_coordinates: PROJ reprojection requires proj_create_crs_to_crs");
+#else
+        throw Unsupported("convert_coordinates: CRS reprojection from '" + src_crs + "' to '" +
+                          rOptions.mTargetCrs +
+                          "' requires PROJ (-DMESHIOPLUSPLUS_WITH_PROJ=ON) or pyproj in Python");
+#endif
+    }
+
     CoordFrame frame;
     const double axis_len = std::sqrt(detail::vec3_dot(rOptions.mAxis, rOptions.mAxis));
     if (!(axis_len > 0.0) || !std::isfinite(axis_len))

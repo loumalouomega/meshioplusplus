@@ -108,6 +108,7 @@ struct ProvidersState {
         MIO_GUARDED_BY(mMutex);
     std::vector<std::shared_ptr<const GraphPartitionerProvider>> mPartitionersRetained
         MIO_GUARDED_BY(mMutex);
+    ProviderSlot<BooleanProvider> mBoolean MIO_GUARDED_BY(mMutex);
     bool mProfileBuiltinDone MIO_GUARDED_BY(mMutex) = false;
     bool mExternalDone MIO_GUARDED_BY(mMutex) = false;
 };
@@ -305,6 +306,16 @@ std::vector<std::string> graph_partitioner_names() {
     return names;
 }
 
+void register_boolean_provider(BooleanProvider Provider) {
+    slot_register(&ProvidersState::mBoolean, std::move(Provider));
+}
+void unregister_boolean_provider() noexcept {
+    slot_unregister(&ProvidersState::mBoolean);
+}
+std::shared_ptr<const BooleanProvider> boolean_provider() noexcept {
+    return slot_get(&ProvidersState::mBoolean);
+}
+
 std::vector<std::string> tet_mesher_names() {
     register_builtin_providers();
     ProvidersState& r_state = providers_state();
@@ -376,8 +387,9 @@ bool load_plugin(const std::string& rPath, std::string* pError) noexcept {
             detail::dynlib_symbol(p_lib, "meshioplusplus_register_plugin"));
         if (!p_abi || !p_register) {
             detail::dynlib_close(p_lib);
-            return fail("it exports no meshioplusplus_plugin_abi_version / "
-                        "meshioplusplus_register_plugin");
+            return fail(
+                "it exports no meshioplusplus_plugin_abi_version / "
+                "meshioplusplus_register_plugin");
         }
         const int abi = p_abi();
         if (abi != MESHIOPLUSPLUS_ABI_VERSION) {

@@ -3461,19 +3461,20 @@ def _register_operations(server: FastMCP) -> None:
         arrays: Optional[List[str]] = None,
         inverse: bool = False,
         record_coordinates: bool = True,
+        target_crs: Optional[str] = None,
         input_format: Optional[str] = None,
         output_format: Optional[str] = None,
     ) -> dict:
         """Cylindrical or spherical components about an axis, for rotating
-        machinery and pressure vessels. The points stay put;
-        record_coordinates attaches coords:cylindrical (r, theta, z) or
-        coords:spherical (r, theta polar from the axis, phi) point data, and
-        each array in `arrays` -- point or cell data, a vector (n, 3) or a
-        tensor (n, 9)/(n, 3, 3) -- is rewritten in the local basis of its point
-        (a cell's at its centroid); inverse=true converts local components back
-        to Cartesian. The axis (default +z) passes through origin; angles are
-        measured from reference projected off the axis. Reports num_arrays and
-        num_singular (points on the axis)."""
+        machinery and pressure vessels, or CRS reprojection when system='crs'.
+        The points stay put for cylindrical/spherical; record_coordinates
+        attaches coords:cylindrical (r, theta, z) or coords:spherical (r, theta
+        polar from the axis, phi) point data, and each array in `arrays` --
+        point or cell data, a vector (n, 3) or a tensor (n, 9)/(n, 3, 3) -- is
+        rewritten in the local basis of its point (a cell's at its centroid);
+        inverse=true converts local components back to Cartesian. The axis
+        (default +z) passes through origin; angles are measured from reference
+        projected off the axis. Reports num_arrays and num_singular."""
         return _guard(
             _tools.tool_convert_coordinates,
             input_path=input_path,
@@ -3485,6 +3486,7 @@ def _register_operations(server: FastMCP) -> None:
             arrays=arrays,
             inverse=inverse,
             record_coordinates=record_coordinates,
+            target_crs=target_crs,
             input_format=input_format,
             output_format=output_format,
         )
@@ -4076,6 +4078,36 @@ def _register_operations(server: FastMCP) -> None:
     ) -> dict:
         """Apply smooth Loop (triangles) or Catmull-Clark (polygonal -> quads)
         subdivision to a surface mesh with Hoppe crease/boundary preservation."""
+
+    @server.tool()
+    @_forward(_tools.tool_convert_units)
+    def convert_units(
+        input_path: str,
+        output_path: str,
+        input_format: Optional[str] = None,
+        output_format: Optional[str] = None,
+        system: str = "SI",
+        strict: bool = True,
+    ) -> dict:
+        """Convert mesh coordinates and declared physical fields
+        (field_data['meshio:unit:<array>']) to a consistent unit system
+        (SI, mm-t-s, mm-kg-ms, cm-g-s, mm-g-ms)."""
+
+    @server.tool()
+    @_forward(_tools.tool_mesh_boolean)
+    def mesh_boolean(
+        input_path_a: str,
+        input_path_b: str,
+        output_path: str,
+        op: str = "union",
+        backend: str = "",
+        input_format_a: Optional[str] = None,
+        input_format_b: Optional[str] = None,
+        output_format: Optional[str] = None,
+    ) -> dict:
+        """Compute a watertight surface boolean (union, difference, or
+        intersection) on two closed triangle meshes through a registered
+        BooleanProvider."""
 
     @server.tool()
     @_forward(_tools.tool_tessellate)

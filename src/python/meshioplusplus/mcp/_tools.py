@@ -86,6 +86,7 @@ from .. import (
     contact_pairs,
     convert_cells,
     convert_coordinates,
+    convert_units,
     convex_hull,
     crop,
     cube_sphere,
@@ -160,6 +161,7 @@ from .. import match_periodic_nodes
 from .. import measure as _measure_op
 from .. import (
     merge,
+    mesh_boolean,
     mesh_cad_surface,
     mesh_domain,
     metric_from_hessian,
@@ -4822,11 +4824,12 @@ def tool_convert_coordinates(
     arrays=None,
     inverse=False,
     record_coordinates=True,
+    target_crs=None,
     input_format=None,
     output_format=None,
 ):
     """Positions, vector and tensor fields in cylindrical or spherical
-    components about an axis."""
+    components about an axis, or CRS reprojection."""
     mesh = _load(input_path, input_format)
     out, report = convert_coordinates(
         mesh,
@@ -4837,6 +4840,7 @@ def tool_convert_coordinates(
         arrays=list(arrays or []),
         inverse=inverse,
         record_coordinates=record_coordinates,
+        target_crs=target_crs,
         return_report=True,
     )
     return _result(
@@ -6080,6 +6084,40 @@ def tool_subdivide_surface(
 ):
     """Smooth Loop or Catmull-Clark subdivision of a surface mesh."""
     return _run_op(subdivide_surface, locals(), report=True)
+
+
+def tool_convert_units(
+    input_path,
+    output_path,
+    input_format=None,
+    output_format=None,
+    system="SI",
+    strict=True,
+):
+    """Convert mesh coordinates and declared physical fields to a consistent unit system."""
+    return _run_op(convert_units, locals(), report=True)
+
+
+def tool_mesh_boolean(
+    input_path_a,
+    input_path_b,
+    output_path,
+    op="union",
+    backend="",
+    input_format_a=None,
+    input_format_b=None,
+    output_format=None,
+):
+    """Compute a watertight surface boolean (union, difference, intersection)."""
+    a = _load(input_path_a, input_format_a)
+    b = _load(input_path_b, input_format_b)
+    out, report = mesh_boolean(a, b, op=op, backend=backend, return_report=True)
+    return _result(
+        _store(out, output_path, output_format),
+        out,
+        backend=report["backend"],
+        num_triangles=int(report["num_triangles"]),
+    )
 
 
 def tool_tessellate(
@@ -9532,6 +9570,22 @@ TOOL_REGISTRY = OrderedDict(
             {
                 "fn": tool_subdivide_surface,
                 "wraps": ("subdivide_surface",),
+                "gated": None,
+            },
+        ),
+        (
+            "convert_units",
+            {
+                "fn": tool_convert_units,
+                "wraps": ("convert_units",),
+                "gated": None,
+            },
+        ),
+        (
+            "mesh_boolean",
+            {
+                "fn": tool_mesh_boolean,
+                "wraps": ("mesh_boolean",),
                 "gated": None,
             },
         ),

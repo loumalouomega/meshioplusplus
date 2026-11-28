@@ -74,10 +74,11 @@ inline constexpr const char* kCylindricalCoordsName = "coords:cylindrical";
 /// Point data: Float64 `(n, 3)`, `(r, theta, phi)` about the axis.
 inline constexpr const char* kSphericalCoordsName = "coords:spherical";
 
-/// The curvilinear system.
+/// The curvilinear or georeferencing coordinate system.
 enum class CoordinateSystem : std::int32_t {
     Cylindrical = 0,
     Spherical = 1,
+    Crs = 2,
 };
 
 /// What `convert_coordinates` converts, and about what.
@@ -95,6 +96,8 @@ struct CoordinateOptions {
     bool mInverse = false;
     /// Attach `coords:cylindrical` / `coords:spherical`.
     bool mRecordCoordinates = true;
+    /// Target CRS string (`"EPSG:<code>"` or WKT2) when `mSystem == CoordinateSystem::Crs`.
+    std::string mTargetCrs;
 };
 
 /// What `convert_coordinates` did.

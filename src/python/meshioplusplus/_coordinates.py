@@ -20,7 +20,7 @@ __all__ = ["convert_coordinates", "CYLINDRICAL_NAME", "SPHERICAL_NAME"]
 
 CYLINDRICAL_NAME = "coords:cylindrical"
 SPHERICAL_NAME = "coords:spherical"
-_SYSTEMS = ("cylindrical", "spherical")
+_SYSTEMS = ("cylindrical", "spherical", "crs")
 
 
 def _frame(axis, reference):
@@ -150,6 +150,57 @@ def _convert_py(mesh, system, axis, origin, reference, arrays, inverse, record):
     return out, {"num_arrays": num_arrays, "num_singular": num_singular}
 
 
+def _convert_crs_py(mesh, target_crs: str):
+    from ._mesh import Mesh
+    from ._units import mesh_crs, set_mesh_crs
+
+    src_crs = mesh_crs(mesh)
+    if not src_crs:
+        raise ValueError(
+            "meshio++: convert_coordinates(system='crs'): source mesh has no "
+            "field_data['meshio:crs']"
+        )
+    if not target_crs:
+        raise ValueError(
+            "meshio++: convert_coordinates(system='crs'): target_crs must be non-empty"
+        )
+    out = Mesh(
+        np.asarray(mesh.points, dtype=np.float64).copy(),
+        mesh.cells,
+        point_data=dict(mesh.point_data),
+        cell_data={k: list(v) for k, v in mesh.cell_data.items()},
+        field_data=dict(mesh.field_data),
+        point_sets=dict(mesh.point_sets),
+        cell_sets=dict(mesh.cell_sets),
+    )
+    if getattr(mesh, "regions", None):
+        out.regions = list(mesh.regions)
+    if src_crs == target_crs:
+        set_mesh_crs(out, target_crs)
+        return out, {"num_arrays": 0, "num_singular": 0}
+    try:
+        from pyproj import Transformer
+    except ImportError as exc:
+        raise RuntimeError(
+            "meshio++: convert_coordinates(system='crs'): CRS reprojection requires "
+            "PROJ in the C++ core or the optional 'pyproj' Python package"
+        ) from exc
+    transformer = Transformer.from_crs(src_crs, target_crs, always_xy=True)
+    pts = out.points
+    if pts.shape[0] > 0:
+        if pts.shape[1] >= 3:
+            x, y, z = transformer.transform(pts[:, 0], pts[:, 1], pts[:, 2])
+            pts[:, 0] = x
+            pts[:, 1] = y
+            pts[:, 2] = z
+        else:
+            x, y = transformer.transform(pts[:, 0], pts[:, 1])
+            pts[:, 0] = x
+            pts[:, 1] = y
+    set_mesh_crs(out, target_crs)
+    return out, {"num_arrays": 0, "num_singular": 0}
+
+
 def convert_coordinates(
     mesh,
     system: str = "cylindrical",
@@ -160,20 +211,21 @@ def convert_coordinates(
     arrays=(),
     inverse: bool = False,
     record_coordinates: bool = True,
+    target_crs: str | None = None,
     return_report: bool = False,
 ):
     """Positions, vector and tensor fields in cylindrical or spherical
-    components about an axis.
+    components about an axis, or CRS reprojection when ``system="crs"``.
 
-    The points stay where they are. ``record_coordinates`` attaches
-    ``coords:cylindrical`` (``r, theta, z``) or ``coords:spherical`` (``r,
-    theta, phi``, ``theta`` the polar angle from the axis) point data; each
-    array in ``arrays`` -- point or cell data, a vector ``(n, 3)`` or a tensor
-    ``(n, 9)``/``(n, 3, 3)`` -- is rewritten in the local basis of its point
-    (a cell's at its centroid), or with ``inverse=True`` from local components
-    back to Cartesian ones. Angles are measured about ``axis`` (through
-    ``origin``) from ``reference`` projected off the axis. A point on the axis
-    takes ``reference`` as its radial direction and angle 0.
+    The points stay where they are for ``"cylindrical"`` and ``"spherical"``.
+    ``record_coordinates`` attaches ``coords:cylindrical`` (``r, theta, z``) or
+    ``coords:spherical`` (``r, theta, phi``, ``theta`` the polar angle from the
+    axis) point data; each array in ``arrays`` -- point or cell data, a vector
+    ``(n, 3)`` or a tensor ``(n, 9)``/``(n, 3, 3)`` -- is rewritten in the local
+    basis of its point (a cell's at its centroid), or with ``inverse=True`` from
+    local components back to Cartesian ones. When ``system="crs"``, reprojects
+    point coordinates from ``field_data["meshio:crs"]`` to ``target_crs`` (using
+    PROJ when compiled in or ``pyproj`` in Python).
 
     :returns: the new mesh, or ``(mesh, {"num_arrays", "num_singular"})``.
     :raises ValueError: on an unknown system, a zero axis, or an array that is
@@ -182,7 +234,7 @@ def convert_coordinates(
     if system not in _SYSTEMS:
         raise ValueError(
             f"meshio++: convert_coordinates: unknown system '{system}' (expected "
-            "'cylindrical' or 'spherical')"
+            "'cylindrical', 'spherical' or 'crs')"
         )
     if isinstance(arrays, str):
         arrays = [arrays]
@@ -199,13 +251,26 @@ def convert_coordinates(
             arrays,
             bool(inverse),
             bool(record_coordinates),
+            "" if target_crs is None else str(target_crs),
         )
         out = res.pop("mesh")
         report = res
     except Exception as exc:
         if not core_op_declined(exc, "convert_coordinates"):
             raise
-        out, report = _convert_py(
-            mesh, system, axis, origin, reference, arrays, inverse, record_coordinates
-        )
+        if system == "crs":
+            out, report = _convert_crs_py(
+                mesh, "" if target_crs is None else str(target_crs)
+            )
+        else:
+            out, report = _convert_py(
+                mesh,
+                system,
+                axis,
+                origin,
+                reference,
+                arrays,
+                inverse,
+                record_coordinates,
+            )
     return (out, report) if return_report else out
